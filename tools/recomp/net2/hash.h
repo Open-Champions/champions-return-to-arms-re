@@ -49,6 +49,9 @@ inline void hmac_sha256(const uint8_t* key, size_t key_size, const uint8_t* data
 }
 }  // namespace n2
 
+#elif defined(__linux__)
+#include "hash_linux.h"           // OpenSSL's libcrypto (app/build_linux.py)
+
 #else
 #error "net2/hash.h: name this platform's SHA-256, HMAC and random source here (do not write them by hand)"
 #endif

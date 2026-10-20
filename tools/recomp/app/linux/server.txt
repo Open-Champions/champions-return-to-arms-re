@@ -1,0 +1,10 @@
+# server.txt - where rta_app goes online, read when it starts.
+#
+# The lobby server: the address you were given on a line of its own, without the # in front:
+# an IPv4 address (203.0.113.7) or a host name (lobby.example.net).
+# The room service (./online.sh IMAGE room-host | room-join CODE): a line
+#   service = HOST:PORT
+# A host name is reached inside TLS (its certificate is checked against this computer's own
+# store of trusted certificates); an address of a home network in plain text.
+# Lines that start with # are remarks.  The same on the command line: --server ADDRESS,
+# --service HOST:PORT.

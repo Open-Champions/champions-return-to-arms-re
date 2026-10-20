@@ -1,0 +1,2 @@
+// Qt's header of this name, for Linux without Qt: see glsdl.h.
+#include "glsdl.h"

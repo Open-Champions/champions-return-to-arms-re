@@ -351,6 +351,14 @@ inline std::string program_dir() {
         size_t slash = text.rfind('/');
         if (slash != std::string::npos) return slash ? text.substr(0, slash) : "/";
     }
+#elif defined(__linux__)
+    char path[4096];
+    ssize_t size = readlink("/proc/self/exe", path, sizeof(path) - 1);
+    if (size > 0) {
+        std::string text(path, (size_t)size);
+        size_t slash = text.rfind('/');
+        if (slash != std::string::npos) return slash ? text.substr(0, slash) : "/";
+    }
 #endif
     return ".";
 }

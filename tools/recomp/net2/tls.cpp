@@ -1,5 +1,6 @@
 // tls.cpp - tls.h's link with the operating system's TLS: Network.framework on macOS,
-// SChannel on Windows, none elsewhere (a start there fails and says why).
+// SChannel on Windows, the system's OpenSSL on Linux (tls_openssl.cpp), none elsewhere (a start
+// there fails and says why).
 //
 // macOS: the connection is Network.framework's own (TCP and TLS 1.2+ on a serial dispatch
 // queue of this link); what arrives is kept in a buffer the polling thread takes from; the
@@ -657,6 +658,10 @@ struct WinTls : TlsLink {
 TlsLink* tls_link() { return new WinTls(); }
 
 }  // namespace n2
+
+#elif defined(__linux__) && defined(RTA_OPENSSL)
+// ============================== Linux: OpenSSL ================================================
+#include "tls_openssl.cpp"          // the system's libssl over net/sock.h's BSD body (app/build_linux.py)
 
 #else
 // ============================== elsewhere: none ================================================

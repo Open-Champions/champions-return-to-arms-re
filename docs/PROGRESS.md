@@ -1,6 +1,6 @@
 # How complete is it
 
-Updated at every check-in of the work. **Last update: 2026-10-19, 19:40 CDT.**
+Updated at every check-in of the work. **Last update: 2026-10-20, 09:41 CDT.**
 
 One table for the whole effort to make Champions: Return to Arms (SLUS-20973 v2.00)
 playable again, online, on today's computers. The percentages are estimates by the people
@@ -26,6 +26,7 @@ a session by hand - every test drove the game by script, on one Apple-silicon Ma
 | Native build: sound | 90 % | no gaps through ten level changes; film sound in step ([native-sound](issues/native-sound.md)) | somebody listening to it |
 | Native build: online | 98 % | through the lobby with itself, with the emulator application and with a browser page, in step; three and four players with the window program (4 of 4 launches of four after a fix, up to 5,454 ticks every pair, with level change, deaths and reload); private games, chat, friends, kick, leaving and playing again nine games in a row, a dropped player and a dropped host ([native-online](issues/native-online.md)) | a second computer; a person at the controls; one host thread left behind per ended game thread |
 | Native build: Windows | 85 % | compiles and links with picture, sound, controller and online play; the same sources built for x86-64 on the Mac give byte-identical results ([native-windows](issues/native-windows.md)) | a first run on a Windows computer |
+| Native build: Linux | 75 % | builds for x86-64 and aarch64 from the same sources; floating-point table, boot check and rig comparison identical to the Mac; a Linux copy and the Mac program 1,163 ticks in step online through a level change; TLS through OpenSSL ([native-linux](issues/native-linux.md)) - all in an Ubuntu 24.04 container on the Mac | a real Linux desktop (GPU, sound, controller); an x86-64 online game; the public service |
 | Native build: in a browser | 60 % - paused | boots and plays the first level in Chrome, tick-identical to the Mac build ([native-web](issues/native-web.md)) | paused with the browser work; rebuilt with the faster renderer; sound delay; online |
 | Native build: first person and other views | 78 % | in the native program now (fix set `9ac29719`): five camera views on the game's own camera (key V), the simulation identical to overhead in every view; look with mouse or stick, the character facing the look, strafing switched on by itself in first person and shoulder; the character's own arms, weapon and spell effects in view, with the game's own animations, in both renderers (`view.first.body = off|arms|full`, [native-first-person-hands](issues/native-first-person-hands.md)) - a first-person strafing player and an overhead player 4,287 ticks in step through a level change; generated ceilings over dungeons, mines, caves and arenas, skirts beyond a level's rim, walls beside the eye no longer dropped ([native-first-person](issues/native-first-person.md), [native-first-person-controls](issues/native-first-person-controls.md), [native-first-person-world](issues/native-first-person-world.md)) | two levels with dark ground at eye height (nitdung3, obsidian); far ground in big levels loses textures sooner; ceilings with the game's own textures and drawn in Godot; distant ground in big levels (the game keeps only nine texture cells); 92 of 111 levels never looked at; nobody has played it |
 | Native build: inside Godot | 68 % | the translated game runs as a library under Godot 4.5.2; exact 3-D hand-over with the game's own normals (212 million vertices checked); the five views; Godot's light and shadows, sky continued to the zenith and distance haze in seven levels; 60 pictures a second paced in first person; a new interface drawn from the game's state with the game's own switched off (three layouts; 47 of 48 comparisons with the game's bars equal to the pixel); custom boss music from the player's own files ([native-godot](issues/native-godot.md), [native-hud](issues/native-hud.md)) | every level looked at; ceilings and torch lights; a real boss and a real second player; Windows; the regression checks re-run after the workspace move; nobody has played it |
@@ -78,6 +79,7 @@ linked document. It does not mean played by a person, or tried on two computers.
 
 ## Since the last update
 
+- Linux: the native build runs on Linux (x86-64 and aarch64), identical to the Mac in every check, and played online with the Mac program in step.
 - Godot: the 4x art pack is used (920 of 924 textures in a fight replaced, mip maps, 16x
   filtering, full-resolution picture); a heavy fight holds 60 pictures a second with the
   game's own textures (min 58.9) and averages 58 with the pack; the portal runs on the real
