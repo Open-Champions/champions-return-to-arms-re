@@ -52,7 +52,13 @@ S_KIND12_IMPACT = 0x5324E0
 S_KIND5_IMPACT = 0x5324F8
 S_KIND6_IMPACT = 0x532518
 P_KIND5 = 0x6E00C0
+P_KIND1_A = 0x6DFFD0
+P_KIND1_B = 0x6E0020
 F_INV65536 = 0x37800000
+F_KIND1_LEAD = 0x3D75C28F
+F_KIND1_SMALL = 0x3C23D70A
+F_KIND1_STEP = 0x3DCCCCCC
+F_KIND1_DIR = 0x40800000
 F_KIND5_DRAG = 0x3DA3D70A
 F_KIND5_DIR = 0x41421062
 F_RING2 = 0x40000000
@@ -246,7 +252,7 @@ class Model(SA.Model):
 
 
 class ArrowModel(RR.RangedModel):
-    """MissileWeapon_run for kinds 2 and 5.  Kinds 0 and 3 stay on RangedModel.
+    """MissileWeapon_run for kinds 1, 2 and 5.  Kinds 0 and 3 stay on RangedModel.
     obj_moveAndCollide stays a call-out: the ranged difftest runs that body for real."""
 
     def __init__(self, mem, callbacks=None, external=()):
@@ -269,13 +275,21 @@ class ArrowModel(RR.RangedModel):
                 return x, y, z
 
     def missile_run(self, this):
-        """MissileWeapon_run 0x15153c while +0xd0 is 2 or 5.
+        """MissileWeapon_run 0x15153c while +0xd0 is 1, 2 or 5.
 
         A carried arrow and an arrow whose splash byte is already set take the same
         exits as kinds 0 and 3.  A nonzero move result plays the kind's impact sample
-        (0x5324e0 for kind 2, 0x5324f8 for kind 5) and stores 0 at +0xec.  A result of
-        exactly 1 also plays the sample at +0x1bc.  The stone-hit effect is kinds 0 and
-        3 only.
+        (0x5324e0 for kinds 1 and 2, 0x5324f8 for kind 5) and stores 0 at +0xec.  A
+        result of exactly 1 also plays the sample at +0x1bc, and kind 1 first spawns
+        effect 5.  The stone-hit effect is kinds 0 and 3 only.
+
+        Kind 1 then builds (draw & 3) + 3 particle props (pool 0x148, ParticleProp_ctor
+        with 8) and the same light as kind 2.  Every frame it emits 24 pairs.  The
+        shared position is the arrow plus its velocity times 0x3d75c28f, plus a
+        rejection-ball axis times velocity times 0x3c23d70a, plus ((draw % 40) - 20)
+        times 0x3dcccccc.  The direction is a second ball times 4.  The first particle
+        of the pair is definition 0x6dffd0; the second is 0x6e0020 at that position
+        minus velocity times 0x3d75c28f.
 
         Kind 2 then: fx_ringBurst at scale 2, pool_new(0xbc) and LightEffect_ctor when a
         block comes back, world_damageInRadius of the owner at +0x4c (or 0) for the word
@@ -288,11 +302,11 @@ class ArrowModel(RR.RangedModel):
         times 10; the particle direction is a second ball times 0x41421062; the speed
         argument is 0.
 
-        Both kinds then copy the position to +0x1a4 and light_relink +0x174.  No cold
+        All three then copy the position to +0x1a4 and light_relink +0x174.  No cold
         puff and no trail.  Slot 1 with 3 runs when the frame is no longer strictly
         below +0xec, so a hit destroys the arrow on that same frame."""
         kind = s32(self.u32(this + 0xD0))
-        if kind not in (2, 5):
+        if kind not in (1, 2, 5):
             return RR.RangedModel.missile_run(self, this)
         u32 = self.u32
         if u32(this + 0x128):
@@ -320,16 +334,29 @@ class ArrowModel(RR.RangedModel):
         if s8(self.u8(this + 0xCC)):
             res |= 2
         if res:
-            sample = S_KIND12_IMPACT if kind == 2 else S_KIND5_IMPACT
+            sample = S_KIND5_IMPACT if kind == 5 else S_KIND12_IMPACT
             hit = self.call('res_find', RR.S_FX_LUMP, sample)
             self.call('sound_playOnObject', hit, this, C.ONE)
             self.w32(this + 0xEC, 0)
+            if res == 1 and kind == 1:
+                self.call('fx_spawn', 5, self.vec(this + 0x10))
             if res == 1:
                 impact = u32(this + 0x1BC)
                 if impact:
                     self.call('sound_playSample', impact, self.vec(this + 0x10), C.ONE, C.ONE, C.ZERO)
             pos = self.vec(this + 0x10)
-            if kind == 2:
+            if kind == 1:
+                count = (self.obj_rand(this) & 3) + 3
+                for _step in range(count):
+                    block = self.call('pool_new', 0x148)
+                    if block:
+                        self.call('ParticleProp_ctor', block, pos, 8)
+                block = self.call('pool_new', 0xBC)
+                if block:
+                    self.call('LightEffect_ctor', block, pos, 0, 0,
+                              F_LIGHT_A, F_LIGHT_B, C.ZERO, F_LIGHT_C, C.ZERO, C.ZERO, C.ZERO, C.ZERO,
+                              F_LIGHT_D, F_LIGHT_E, C.ONE, C.ONE)
+            elif kind == 2:
                 self.call('fx_ringBurst', pos, F_RING2)
                 block = self.call('pool_new', 0xBC)
                 if block:
@@ -346,7 +373,9 @@ class ArrowModel(RR.RangedModel):
                     self.call('LightEffect_ctor', block, pos, 0, 0,
                               C.ZERO, F_LIGHT_B, F_LIGHT_A, F_LIGHT_C, C.ZERO, C.ZERO, C.ZERO, C.ZERO,
                               F_LIGHT_D, F_LIGHT_E, C.ONE, C.ONE)
-        if kind == 5:
+        if kind == 1:
+            self._kind1_flight(this)
+        elif kind == 5:
             pos = self.vec(this + 0x10)
             vel = self.vec(this + 0x1B0)
             shifted = tuple(C.add(pos[i], C.mul(vel[i], F_KIND5_DRAG)) for i in range(3))
@@ -361,3 +390,22 @@ class ArrowModel(RR.RangedModel):
         self.call('light_relink', this + 0x174)
         if not s32(u32(RC.G_SIM_FRAME)) < s32(u32(this + 0xEC)):
             self.vcall(this, 1, 3)
+
+    def _kind1_flight(self, this):
+        """The 24 pairs kind 1 emits on the way to light_relink.  Observed at 0x151df0."""
+        pos = self.vec(this + 0x10)
+        vel = self.vec(this + 0x1B0)
+        base = tuple(C.add(pos[i], C.mul(vel[i], F_KIND1_LEAD)) for i in range(3))
+        for _count in range(24):
+            ball = self._ball(this)
+            place = []
+            for i in range(3):
+                jitter = C.mul(C.from_int(self.obj_rand(this) % 40 - 20), F_KIND1_STEP)
+                drag = C.mul(C.mul(vel[i], F_KIND1_SMALL), ball[i])
+                place.append(C.add(C.add(base[i], jitter), drag))
+            place = tuple(place)
+            dx, dy, dz = self._ball(this)
+            direction = (C.mul(dx, F_KIND1_DIR), C.mul(dy, F_KIND1_DIR), C.mul(dz, F_KIND1_DIR))
+            self.call('particle_spawn', P_KIND1_A, place, direction, C.ZERO)
+            shifted = tuple(C.sub(place[i], C.mul(vel[i], F_KIND1_LEAD)) for i in range(3))
+            self.call('particle_spawn', P_KIND1_B, shifted, direction, C.ZERO)

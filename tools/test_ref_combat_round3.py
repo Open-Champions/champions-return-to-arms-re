@@ -278,6 +278,22 @@ class ArrowTests(unittest.TestCase):
         self.assertEqual(light[4:8], (0, R3.F_LIGHT_B, R3.F_LIGHT_A, R3.F_LIGHT_C))
         self.assertFalse([c for c in cb.calls if c[0] == 'world_damageInRadius'])
 
+    def test_kind1_pairs_particles_and_spawns_effect_five_on_a_ground_hit(self):
+        C.set_fpu('ps2')
+        m, mem, cb = self.arrow(collide=1, pool=LIGHT)
+        plant_arrow(mem, kind=1)
+        m.missile_run(MISSILE)
+        self.assertEqual([args for name, args in cb.calls if name == 'fx_spawn'][0][0], 5)
+        props = [args for name, args in cb.calls if name == 'ParticleProp_ctor']
+        self.assertGreaterEqual(len(props), 3)
+        self.assertLessEqual(len(props), 6)
+        self.assertEqual(props[0][2], 8)
+        spawned = [args for name, args in cb.calls if name == 'particle_spawn']
+        self.assertEqual(len(spawned), 48)
+        self.assertEqual(spawned[0][0], R3.P_KIND1_A)
+        self.assertEqual(spawned[1][0], R3.P_KIND1_B)
+        self.assertEqual(spawned[0][2], spawned[1][2])
+
 
 if __name__ == '__main__':
     unittest.main()
