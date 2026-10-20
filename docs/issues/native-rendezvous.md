@@ -12,6 +12,12 @@ compatibility and is not touched. Every result says whether it was **Ran** or on
 
 ## STATE (rewritten at every step; read this first after a stop)
 
+**2026-10-20 14:50. Two networks: done.** Two computers in two different places - one at
+home, one away on another provider's network - played one game through the service on
+the project's server: the routes were punched straight through both routers (about 50 to
+85 ms), and with the relay forced the server carried the game; every run in step through
+a level change. Section "Two networks" below.
+
 **2026-10-14 03:15. TLS: done on this Mac, prepared for the server.** The TCP conversation
 goes inside TLS on both sides (the service with Python's `ssl`; the client with the
 operating system's TLS - macOS run, Windows compiled only), the service was reviewed for
@@ -486,9 +492,70 @@ column differed in any row below. Drawn input on every copy. Load average 9 to 5
 | `limlines`: 1 line a second, 5 at once | 2 | punched | 1 | 1 | 1,819 | not hit: the client says fewer lines than that |
 | `limconn`: 2 connections from one address | 3 | - | 1 | **0** | - | the third copy was refused 5 times ("Too many connections."), the room never had three, nobody started: the limit holds and nothing else breaks |
 
-Not run: two computers, a real router, a player behind a NAT that changes ports; a person
+Not run (then; two computers on two networks since 2026-10-20, section "Two networks"): two computers, a real router, a player behind a NAT that changes ports; a person
 at the controls; the window program in a visible window; a character imported from a
 memory card (the runs make new ones); the emulator application in a room.
+
+## Two networks (2026-10-20)
+
+The first game between two computers on two different networks. **Ran**, 2026-10-20
+14:50-15:00 CDT. Host: a second Mac (Apple silicon, macOS 26.6) on the owner's home network,
+behind its home router. Joiner: this Mac (macOS 27.2) away from home, on a different
+provider's network behind that network's router - a network that also breaks TLS on the
+way out (a middlebox answers the TLS handshake with something that is not TLS). The
+service: `rendezvous.py` on the project's server; because of that middlebox, a second,
+temporary instance of the same file in plain text (`--plain`, its own `--data` under
+`/tmp`, its own port), started for the test only and removed afterwards; the public TLS
+instance and everything else on the server were left alone.
+
+How: `n2_headless` of `local/recomp-net2/bin` (the build of 2026-10-14; its minimum system
+version lowered to 26.0 with `vtool`, nothing else changed - `otool -L`: only system
+frameworks and libraries, so it ran on the other Mac as it is) on both computers, the same
+`SLUS_209.73`, the disc image copied to the home Mac for the test and deleted afterwards.
+On that Mac it booted to the title screen by itself in 418 frames. Each side ran one copy
+with exactly `n2party.py`'s own script and options (`script_lines`, `start_copy`, imported
+from the file; a small local driver started the host on the home Mac over SSH, read its
+room code, then started the joiner here): room by code, a chat line, a new character on
+the game's own screens, start, 900 frames of drawn input in the hub, the level name written
+in one lockstep tick (`drunare`), 2,400 frames there. Both tick logs fetched to this Mac
+and compared with `tools/rig/compare.py ticks`. The UDP socket of each copy was bound to
+its computer's own Wi-Fi/Ethernet address (`--opt net2-bind=ADDRESS:0`) so that the two
+computers' VPN (both are on one private Tailscale network) could not carry the game; the
+last row is the same without it.
+
+| Run | Routes | Ping (the carrier's own measure) | Ticks compared | Datagrams | Result |
+|---|---|---|---|---|---|
+| `auto1` (routes found by themselves) | **punched**: each copy's direct route is the other's public address as the service saw it, both ways | 79-81 ms at the start, 52-68 ms in play | 4,311, hub > drunare | 2,205 each way, none by relay | no shared column differs on any tick |
+| `relay1` (`--relay force` on both) | relay through the server, both ways | (none measured on a relayed route) | 4,311, hub > drunare | 2,208 / 2,207 sent, all relayed; the joiner received 2,172 (lost ones repeated by the game's own acknowledgement) | no shared column differs |
+| `auto2` (as `auto1`, again) | punched, both ways | 70-86 ms | 4,315, hub > drunare | 2,209 / 2,212, none by relay | no shared column differs |
+| `nobind1` (no `net2-bind`, as a player would start it) | joiner > host punched to the host's public address; host > joiner to the joiner's **VPN** address (100.64.0.0/10, which the service accepts as "behind a router") | 51-86 ms | 4,315, hub > drunare | 2,206 / 2,205, none by relay | no shared column differs |
+
+Both routers kept the UDP port of each socket (the address the service saw had the
+socket's own port), so the punch needed no guessing. The service over all runs (and one
+check of the plain instance with both copies on this Mac, which the router here did not
+loop back, so relayed - as in the run of 2026-10-14): 21 connections, 5 rooms, 5 starts,
+5,359 datagrams relayed (285 kB), 2 relay drops, nothing limited.
+
+The TLS service from both sides: from the home Mac one copy reached the public TLS
+instance by its host name, opened a room (code in under 9 s) and made its character -
+**Ran**, no second player. From this Mac's network the client cannot reach it at all:
+`net2cli` says "No secure link to the service: server closed session with no
+notification (-9816)" - **Ran**; the plain instance was the only way to get this network
+into a game. A player on such a network today cannot use the public service.
+
+**Read**, from the runs: (1) a VPN address in the room's local list is taken as a straight
+route across networks when both players share that VPN; harmless here (in step), but it
+is a route nobody asked for - the client could leave 100.64.0.0/10 out of `local`, or try
+public routes first. (2) Not tried: a router that changes ports (symmetric NAT; the punch
+would fail and the relay would carry it, which `relay1` shows works across networks), IPv6,
+more than two computers, a person at the controls on either side.
+
+Changed on the server for the test and undone the same day: a transient unit
+`rta-plain-test` (`systemd-run`, user `nobody`, the repository's `rendezvous.py` copied to
+`/tmp/rta-plain` with `--data /tmp/rta-plain/data --plain` on a second port) and two UFW
+rules for that port (TCP, UDP); afterwards the unit stopped, both rules deleted, the
+folder deleted, nothing listens on that port; the lobby, the relay, the web server, the
+browser page and the `champions-net2` unit were not touched and stayed active.
 
 ## 7. The emulator application (design only)
 

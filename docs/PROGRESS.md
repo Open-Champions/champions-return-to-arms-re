@@ -1,6 +1,6 @@
 # How complete is it
 
-Updated at every check-in of the work. **Last update: 2026-10-20, 13:33 CDT.**
+Updated at every check-in of the work. **Last update: 2026-10-20, 15:02 CDT.**
 
 One table for the whole effort to make Champions: Return to Arms (SLUS-20973 v2.00)
 playable again, online, on today's computers. The percentages are estimates by the people
@@ -8,15 +8,16 @@ doing the work, not measurements; each row says what it rests on and what is sti
 for 100 %. The evidence and the conditions behind every statement are in the documents
 linked from [STATE-OF-PLAY.md](STATE-OF-PLAY.md).
 
-Three limits hold for every row, as on that page: nothing has run on a PlayStation 2 or in
-PCSX2; no two different computers have played together; nobody has yet sat down and played
-a session by hand - every test drove the game by script, on one Apple-silicon Mac.
-"Done" below therefore means: works and is verified by test on that Mac.
+Limits that hold for every row: nothing has run on a PlayStation 2 or in PCSX2; nobody has
+yet sat down and played a session by hand - every test drove the game by script. Almost all
+tests ran on one Apple-silicon Mac; the exception is one series of native games between two
+Macs on two different home networks (2026-10-20, [native-rendezvous](issues/native-rendezvous.md),
+"Two networks"). "Done" below therefore means: works and is verified by test.
 
 | Part | Done | Rests on | Still missing for 100 % |
 |---|---|---|---|
 | Mac application (the Play! emulator with this project's changes) | 98 % | 60 pictures a second at four times the resolution; the known picture faults fixed; every kind of screen looked at ([visual-check](issues/visual-check.md)); first-start faults fixed after the owner's own first start ([mac-app-start](issues/mac-app-start.md)); rolled out on fix set `9ac29719`; the release of 2026-10-14 adds the *Room* menu - rooms on our own service with no lobby or sign-in, the application and the native program in one game ([app-rendezvous](issues/app-rendezvous.md)) | a person playing a session through; a room driven from the menu by a person |
-| Online, two players | 96 % | 7.9 million lockstep ticks on the suggested fix set with no difference that reached a player ([native-soak](issues/native-soak.md)); two copies through the game's own level change | two computers on two networks |
+| Online, two players | 96 % | 7.9 million lockstep ticks on the suggested fix set with no difference that reached a player ([native-soak](issues/native-soak.md)); two copies through the game's own level change; two computers on two different networks in one game through the service on the server, punched straight through both routers (50 to 85 ms) and by the relay, 4,311 to 4,315 ticks in step through a level change ([native-rendezvous](issues/native-rendezvous.md), "Two networks") | a person at the controls on each side; a router that changes ports; a network that blocks TLS to the service (only a plain-text test instance got through) |
 | Online, three and four players | 94 % | both causes of the failed launches found and fixed, one in the lobby server and one in the emulator ([three-players](issues/three-players.md)); on the rolled-out build three and four copies launch 3 of 3 times and stay in step | players behind a real router; a level change in a game of three or four |
 | Browser version (the same emulator as WebAssembly) | 92 % | plays in Chrome and Brave, and in Safari's engine with a stall on arriving in a level ([browser-build](issues/browser-build.md)); relay with per-player limits; the page in public carries fix set `9ac29719` like the applications | further work paused; the Safari stall; Firefox and Edge never run |
 | Application and browser players in one game | 80 % | two and three players in step on one Mac ([mixed-arithmetic](issues/mixed-arithmetic.md)); one browser player is one entry in the application; the relay in public now passes datagrams between browser players and application players | never tried with real players on two networks |
@@ -80,6 +81,7 @@ linked document. It does not mean played by a person, or tried on two computers.
 
 ## Since the last update
 
+- First online games between two different networks: a Mac at home hosting, a Mac on another network joining - four games, each about 4,300 ticks in step through a level change, punched straight through both routers (52-86 ms) and once forced through the server's relay.
 - Godot: cleaner models (per-pixel shading, rim light, contact shadows, curved outlines near the camera); shops, dialogue, pause menu and bag draw correctly; ground under arena fighters; app exports for macOS, Windows and Linux with nothing of the game inside (macOS tested from a fresh folder); arena and versus games in the portal; memory-card characters (reader tested, a real import not yet).
 - Godot: a lighting preset for every one of the 111 levels, colour balance fixed; the souls-style combat mode in Godot and the portal's room screen (two Godot copies 5,931 ticks in step through a fight); the new HUD in all five views with party frames, boss bar and stamina.
 - Souls-style combat mode in the native program: lock-on, dodge, stamina, heavy attacks, guard break, poise - in step online.
