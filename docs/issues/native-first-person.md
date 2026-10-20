@@ -104,7 +104,11 @@ Selecting a view:
   in the overhead view.
 - `worldtex_stream` 0x17d830 (after the pass; keeps the 3 x 3 texture cells round the focus
   loaded) sees the drawn view's focus (eye + forward x 600) for the length of its call: a
-  view along the ground needs the cells ahead, not the ones under the camera.
+  view along the ground needs the cells ahead, not the ones under the camera. (Since
+  2026-10-17 the point is 300 ahead along the ground, `view-stream-ahead`; since 2026-10-19
+  `fpworld`'s call-out may move it 1,300 ahead for a while when the view is still, and
+  textures of cells that are no longer loaded are drawn from a copy:
+  `native-first-person-world.md` section 8.3.)
 - **The player's model in first person**: `Player_draw` 0x1a46c0 runs as always (everything
   it does to the pose cache, the status counters, the prompt code happens); the range of the
   display list it filled is noted, and when the runtime walks the list for VIF1 the data of

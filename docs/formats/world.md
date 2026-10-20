@@ -454,6 +454,15 @@ terrain element. Pieces nobody claimed lose their collision after the objects ar
   the cell** (0x179f28; in a `.tex` lump entry the same field is relative to the header).
 - The header fields and the pixel data are the texture format, described in
   `docs/formats/model-texture.md`. Decoding cell textures to pixels was not tried here. U.
+- A cell's data lies in 128 KB blocks of the texture heap (world +0x7c); a slot's block
+  list is 128 bytes at 0x7d2650 + slot x 128, the slot's cell id at 0x7d2fd0 + slot x 4,
+  the header table's address at 0x425df8 + slot x 4 (O 0x17d830). A header's +0x14 is 0
+  until the game's texture thread (0x17c730) has prepared the texture: then it points at
+  its upload chain in a pool of 1,280 pages of 4 KB - NEXT tags of 255 quadwords from page
+  to page, a RET at the end (Ran: `valor`, 2026-10-19) - which `gfx_dmaHandler` calls. A
+  drawn chunk whose header has +0x14 = 0 queues it (0x17fc78, 64 entries at 0x7d3340);
+  the pool's pages are taken back by age (+0x1c), and all of a cell's when it is unloaded
+  (0x17feb8).
 
 The world also refers to `waterenv.lmp` (water texture, loaded by name in `game_loadLevel`
 0x1e55c0) and to the lumps named by its model chunks.

@@ -14,6 +14,13 @@ named) or **Read**. Pictures are game output and stay under
 
 ## STATE (rewritten at every step; read this first after a stop)
 
+**2026-10-19/20 - section 8.1 to 8.7.** The measure is now the clear-colour swap: coverage, not
+colour, checked against the game's overhead view. The changes are in `app/fpworld.cpp` and
+`rt/runtime.cpp`: a texture shelf for cells the game has unloaded, a guard against the decoder
+slot hang that stopped `dismedal`, and wider chunk tests near the feet. An optional second stream
+focus is there, off by default. All 111 levels are walked, and the simulation is identical
+(rig, both views).
+
 **2026-10-13 22:40 - phase 1 written (sections 1 to 6); phase 2 delivered as a patch and
 new files (section 7): the level's generated ceilings and skirts, triangles cut instead of
 dropped, textures in perspective, the object walk's cell boxes.**
@@ -468,137 +475,285 @@ processes run off screen and unpaced. A level that does not load restarts the pr
    levels: A4, still open). `world-nocull`, `world-clip=off` and `view-stream=off` were tried
    and did not help.
 
-**Results.** The table is from the final build (`final-walk.tsv`). "fixed" means the walk with
-the current `rta_app` flagged it and the final build does not. Only 32 levels were walked with
-`rta_app` before the run was stopped (`before-walk.tsv`), so "ok" can include levels that
-were already fine. The "Looked at" column marks the levels of sections 1 to 7. The flags are
-measures, not verdicts. Twelve of the flagged levels were looked at in contact sheets
-(`rows.py`); their "What" column is a description. For the rest, the column holds the raw flag.
-In levels that clear to black or a dark colour, night ground and dark floors give false `hole`
-flags.
+**Results of 2026-10-17.** 108 levels walked (3 not reached before the run was stopped), 62 ok,
+3 fixed, 31 flagged, 12 not applicable. The flags were measures, not verdicts: in levels that
+clear to black or a dark colour, night ground and dark floors gave false `hole` flags. That walk
+is the "10-17" column of the table in 8.6.
 
-| Level | Looked at before | Result | What |
-| --- | --- | --- | --- |
-| airarena |  | n/a | no place for a character in this game kind (arena/pvp start) |
-| arachna1 | yes | fault | hole=3(p0-h2@-388,2661,-360) |
-| bastion1 |  | fault | the start stands at the floor's rim: beyond it nothing (B5); ground present (peek) |
-| blomedal |  | ok |  |
-| blood1 |  | ok |  |
-| boar1 |  | fault | hole=1(p0-h5@-3648,-2780,0) |
-| bossevil |  | ok |  |
-| bossgood |  | fixed | before: hole=9(p0-h1@-500,168,2) |
-| citadel | yes | ok |  |
-| compblo |  | n/a | no place for a character in this game kind (arena/pvp start) |
-| compdis |  | fault | hole=1(p3-h2@-145,243,73) void=1(p3-h2@-145,243,73) |
-| compsto |  | ok |  |
-| compval |  | ok |  |
-| compwat |  | n/a | no place for a character in this game kind (arena/pvp start) |
-| dis2 | yes | fault | dark olive clear colour matches the gorge floor |
-| disbonus |  | fixed | before: hole=11(p0-h0@938,-2352,0) void=2(p0-h1@938,-2352,0) |
-| dismedal |  | not walked | the run was stopped before this level |
-| drunare | yes | ok |  |
-| drunarm |  | fixed | before: hole=9(p2-h0@-2568,-215,0) |
-| drundar |  | ok |  |
-| endbad |  | ok |  |
-| endgood |  | ok |  |
-| fay1 |  | ok |  |
-| fay2 |  | fault | hole=4(p0-h0@-555,1732,119) |
-| fay3 |  | ok |  |
-| faybonus |  | fault | hole=3(p1-h6@1608,1241,0) |
-| fearboss | yes | ok |  |
-| firbonus |  | ok |  |
-| fire1 | yes | ok |  |
-| fire2 |  | ok |  |
-| fire3 | yes | ok |  |
-| fire4 |  | ok |  |
-| fire5 |  | ok |  |
-| firmedal |  | ok |  |
-| honor | yes | ok |  |
-| honor2 |  | ok |  |
-| hub | yes | ok |  |
-| hub2 |  | fault | hole=1(p0-h2@-288,379,2) |
-| inmine1 | yes | fault | hole=6(p2-h2@2623,-1344,23) |
-| inmine2 |  | ok |  |
-| innmedal |  | ok |  |
-| innovat1 | yes | fault | hole=2(p0-h1@2370,-682,24) |
-| innovat2 |  | fault | black above the yard (no ceiling by the rule) |
-| innpit |  | ok |  |
-| intro |  | n/a | not-entered |
-| islc1 |  | ok |  |
-| islc2 |  | ok |  |
-| islcave1 |  | ok |  |
-| islgnome |  | ok |  |
-| islgoth |  | fault | hole=1(p3-h6@-5201,3888,0) |
-| islsm1 | yes | ok |  |
-| islsm2a |  | ok |  |
-| islsm2b |  | ok |  |
-| islsm3a |  | ok |  |
-| islsm3b |  | fault | night |
-| nit1 | yes | ok |  |
-| nit2 |  | fault | hole=36(p0-h0@-96,-623,2) |
-| nitbon2 |  | ok |  |
-| nitbonus |  | fault | hole=1(p2-h3@167,-3051,-42) void=1(p2-h3@167,-3051,-42) |
-| nitdung1 | yes | ok |  |
-| nitdung2 |  | ok |  |
-| nitdung3 |  | fault | floor in front and under the feet black (brightened picture): not resolved |
-| nitdung4 |  | fault | hole=9(p0-h4@-1477,766,48) |
-| nitmar1 |  | ok |  |
-| nitmedal |  | fault | hole=36(p0-h0@-3490,-1960,3) |
-| obsfor1 |  | ok |  |
-| obsidian |  | fault | night level; ground between the feet and the far rocks black: not resolved |
-| pvparena |  | n/a | no place for a character in this game kind (arena/pvp start) |
-| pvpbas |  | n/a | no place for a character in this game kind (arena/pvp start) |
-| pvpblo |  | n/a | no place for a character in this game kind (arena/pvp start) |
-| pvpblo2 |  | n/a | no place for a character in this game kind (arena/pvp start) |
-| pvpfire |  | n/a | no place for a character in this game kind (arena/pvp start) |
-| pvpfire2 |  | n/a | no place for a character in this game kind (arena/pvp start) |
-| pvpinn |  | ok |  |
-| pvpnit |  | fault | night; dark |
-| pvptor |  | n/a | no place for a character in this game kind (arena/pvp start) |
-| pvpval |  | n/a | no place for a character in this game kind (arena/pvp start) |
-| shame1 |  | fault | hole=3(p2-h5@-6372,912,16) |
-| stobonus |  | ok |  |
-| stomedal |  | ok |  |
-| storm1 | yes | ok |  |
-| storm1a |  | fault | hole=4(p2-h4@-408,-648,15) |
-| storm1b |  | fault | night sky; flags on dark wall bases |
-| storm1c |  | fault | all ten looks the same picture: a scene held the game camera (driver) |
-| storm2 |  | fault | hole=20(p0-h0@453,-5604,-3) |
-| storm3 |  | fault | hole=2(p2-h1@-1507,-987,6) |
-| storm4 |  | ok |  |
-| storm5 |  | ok |  |
-| strife |  | ok |  |
-| swamp1 | yes | fault | void=1(p2-h7@-55,-134,64) |
-| swamp2 |  | fault | night swamp, water not seen as water (C6) |
-| torbonus |  | ok |  |
-| tormedal |  | ok |  |
-| torment0 |  | ok |  |
-| torment2 |  | ok |  |
-| torment3 |  | ok |  |
-| tormenta | yes | ok |  |
-| tormentb |  | ok |  |
-| valmedal |  | fault | night arena; flags on black under the arches |
-| valor | yes | ok |  |
-| valor2 |  | ok |  |
-| wat1 | yes | ok |  |
-| watbonus |  | ok |  |
-| wate2a |  | ok |  |
-| wate2b |  | not walked | the run was stopped before this level |
-| wate2c |  | ok |  |
-| water1 |  | fault | hole=1(p2-h4@-98,-140,23) void=6(p1-h3@140,150,9) |
-| watg2a |  | ok |  |
-| watg2b |  | not walked | the run was stopped before this level |
-| watg2c |  | ok |  |
-| watmedal |  | fault | hole=7(p0-h3@-2085,2453,19) void=7(p0-h4@-2085,2453,19) |
+### 8.1 2026-10-19: the measure (Ran)
 
-Summary: 108 levels walked (3 not reached before the stop: listed "not walked"), 62 ok,
-3 fixed, 31 flagged, 12 not applicable (arena and PvP levels without a single-player start,
-and `intro`). Of the flagged levels, the ones looked at are:
+Evidence root `local/fp-world2/` (not tracked; pictures in `pictures/`, walks in `before-a`,
+`before-b`, `final-1` to `final-3`, probes beside them, scripts in `work/`).
 
-* **Real and not fixed:** `nitdung3` (black floor ahead and under the feet), `obsidian`
-  (black ground before the far rocks), and probably more of the dark-level flags. Next step:
-  `--opt world-nocull=1` and `view-stream-ahead=0` at those places.
-* **Driver:** `storm1c` (a scene held the camera).
-* **By design:** `bastion1` (start at the floor's rim, B5).
+The driver is the same command (`tour.py native fpwalk`). What it measures changed:
 
-The flags of the other dark levels were not each confirmed.
+* **Coverage, not colour.** Every look is taken twice. For the second picture the level's clear
+  colour (`g_backgroundColor` 0x506044) is swapped for three blanks for one far from it (magenta,
+  or green when the level's own is near magenta). A pixel that takes the swapped colour is one
+  nothing was drawn on. A black floor of a night level is a floor, and a dome or a fog that lets
+  the clear colour through only in part is not counted
+  (`pictures/coverage-masks.png`: `nitdung3`, `obsidian`, `valor`, `swamp2`).
+* **The game's own view of the same place.** Where a place has a flag, the overhead view is
+  taken the same way. If nothing is drawn round the character there either (more than 3 % of
+  the middle of the picture), the `hole` and `void` flags of that place are the game's, not the
+  view's: verdict `game`, detail `as-overhead=N`.
+* **The pitch is held.** A look is made with `view.first.pitch`, `pitch_min` and `pitch_max` all
+  set to its angle. The 10-17 walk tapped cross to answer prompts, which swings the weapon. With
+  a target locked, the swing tilt of `fpcontrols` (`swing_tilt`) tipped the view up by about
+  25 degrees and kept it there: `obsidian`'s "black ground before the far rocks" was the night
+  sky in the lower half of the picture (`pictures/obsidian-tilted-before.png`).
+* **`void`** is now "more than half of the *lower* half undrawn". An open night sky above the
+  horizon is not a fault.
+* **A scene that holds the camera** (`app view info` says "the game's camera") is waited out and
+  answered with cross up to 16 times. A place where it never lets go is not judged; a level where
+  no place is judged is `held`, and the program is started again after it (after an ending's
+  scene the next level change crashed or hung the game twice; started fresh, both levels
+  walked).
+
+### 8.2 The three levels not reached; `dismedal` hung the game (Ran)
+
+`wate2b` and `watg2b` walk without a flag. `dismedal` never came back: the 10-17 run had stopped
+there, and the first walk today stopped at the same place (`p0-h4`). A sample of the stuck
+program shows the game's thread in `animcache_alloc` 0x16e388, called from `anim_emitPose` under
+`world_drawObjects` in the view's draw pass. The allocator skips decoder slots whose owner track
+carries root motion or yaw. With all 165 held it never returns (`docs/spec/animation.md` 3.1).
+Counted over the slots (owner +0x14, flags +0x1c & 0x4800): overhead, `dismedal` holds about 95;
+the views draw creatures out to 1,800 units, each pins one or two more, and one object walk went
+from 76 to 161.
+
+**Fix (`app/fpworld.cpp`, always on in a view):** while a view's object walk runs, every box it
+tests first counts the held slots. From 140 on, a box farther than 650 units from the player is
+outside (the overhead camera would not have drawn it either). From 158 on, no box passes. Drawing
+only: what is not drawn is not decoded. `dismedal` now walks (`ok`). The guard was active in 386
+object walks of its 40 looks. 10,885 boxes were left out (far creatures not drawn while the
+crowd is near). The most held was 131, and the hard limit was never reached. `app world info`
+prints these figures.
+
+### 8.3 Far ground: the shelf and a second stream focus (Ran)
+
+The game keeps the textures of nine cells of 720 x 720 units. A chunk of any other cell is not
+drawn (A4). Since 10-17 the nine are round a point 300 ahead of the eye (for the near ground), so
+in a big level 100 to 300 chunks a frame in sight had no cell.
+
+* **The shelf (`world.cells`, on).** A texture of a resident cell is copied once the game's
+  texture thread has prepared it. The copy covers its header and its upload chain: NEXT tags
+  from one 4 KB page of the thread's pool to the next, a RET at the end (`docs/formats/world.md`).
+  It goes to host memory that the runtime shows at guest addresses the console does not have
+  (`rt_shelf`, 0x08000000 up, 120 MB at most; `rt/runtime.cpp`: loads, stores and DMA reach it,
+  and the hooks of the VIF1 chain are not asked about its tags). A chunk of a cell that is not
+  resident is then drawn by the game's own `world_drawChunk`, with its texture copy. For the
+  length of that one call, the cell's slot byte and a tenth slot pointer (0x425e1c) show the
+  shelf's header table, and both are put back when it returns. The game uploads from the copy
+  like any texture. Its `gfx_dmaHandler` writes the destination into the copy, and its texture
+  cache marks the copy's header resident or not. A new level empties the shelf. Textures that
+  nothing has drawn are put into the thread's queue a few at a time while the queue is nearly
+  empty (the way `world_drawChunk` adds them, 0x17fc78), so a cell is on the shelf whole.
+* **A second stream focus (`world.sweep`, off by default).** It applies when the view is still
+  (less than 12 degrees of turn and 60 units of walk in 45 frames), the nine cells round the near
+  point are resident, and every texture of the cells round the eye and round the near point is
+  on the shelf. If the last pass still had 16 or more chunks without a cell, the stream is then
+  pointed 1,300 units ahead. It returns to the near point when the far cells have been resident
+  for 40 frames, after 300 frames, or at once when the view turns or the player walks.
+
+Measured with `work/sweepprobe.py` (eight headings, each looked at for 240 blanks; chunks in
+sight without a cell after the wait):
+
+| | `fire3`, 8 headings | `islsm3a`, 8 headings |
+| --- | --- | --- |
+| `rta_app` | 287 233 222 199 260 251 132 193 | 233 181 13 0 3 0 33 125 |
+| shelf and sweep | 47 31 39 29 66 20 11 1 | 221 73 3 0 2 0 0 67 |
+
+Seen: `pictures/fire3-far-ground-before-after.png`: with the sweep, the towers and pyramids on the
+horizon of `fire3` are there. **Why it is off:** the same six levels walked three ways
+(`ab-old`, `ab-next`, `ab-nosweep`) gave holes near the feet with the sweep on (`storm1b`,
+`hub2`) and none with it off. A turn right after a sweep, before the near cells are back, shows
+ground whose texture is on the shelf only if it was prepared, and the cells round the eye are
+not all the cells a turn brings into view. The first full walk (`interim/`, `final-*` before the
+re-walk) had 37 levels with a flag with the sweep on. With the shelf alone, distant ground keeps
+its textures for every cell that was once in reach; `world.sweep = on` (or `--opt
+world-sweep=on`) brings the far focus back for a still view.
+
+### 8.4 Holes of a chunk's size near the feet: the chunk boxes (Ran)
+
+`obsidian` at (324, -86): a straight-edged gap in the ground just ahead and right, a third of the
+lower picture (`pictures/obsidian-chunk-box-before-after.png`, left). The same gap is in
+`rta_app` and with the shelf and the sweep off. It is gone with `world-nocull=1` (every box
+passes). Boxes taller by up to 2,000 units do not help; boxes 300 wider on every side close it,
+and 120 wider nearly does. Some chunk boxes do not cover their ground. From overhead the frustum
+is hundreds of units wide at the ground, and such a box still passes. Just in front of an eye
+at head height the frustum is a few units wide, and the box falls outside a side plane while its
+ground is in the picture.
+
+**Fix:** in a view, `world_draw`'s test of a chunk's own box (call 0x189ca4) is made as the game
+makes it. Only when that fails, it is made again with the box 256 units wider on every side.
+Only chunks of plain level geometry get the second test: the kinds that draw water, lights or
+emitters (flags 0xC880) take numbers from the cosmetic generator and are tested as before. The
+box is put back after the test. Undrawn share of the lower third at that spot: 0.345 before,
+0.024 after. `world-box-xy=N` and `world-box-z=N` change the margins.
+
+The options of `fpworld` (`world-nocull`, `world-clip=off` and the rest) were read at
+`install()`, before the runtime had parsed the command line. None of them ever took. The "tried
+and did not help" of 8 (generic cause 2) was therefore not a test. They are now read at the first
+frame.
+
+### 8.5 `nitdung3` and `obsidian` (Ran)
+
+* **`nitdung3`**: no floor is drawn ahead and under the feet at the start, in the game's own
+  view as well. The emulator build's overhead picture of the same start has the same black, and
+  so does the native one (`pictures/nitdung3-emulator-native-overhead.png`). With every box
+  passing it is the same, and it shows in the coverage mask as nothing drawn, not as a dark
+  floor. It is the level's: verdict `game`.
+* **`obsidian`**: the "black ground" was the tilted view (8.1), plus the chunk-box hole of 8.4.
+  With both fixed, only one look flags (see the table).
+
+### 8.6 The table
+
+The "10-17" column is the walk of 10-17 with the old measure. "10-19, `rta_app`" is the new
+measure with the program as it is (`rta_app`), walked for the 31 flagged and the three not
+reached. "10-19, `rta_app_next`" is the new measure with the program as
+delivered, for all 111 levels: a full walk, after which the 39 levels with a flag were walked
+again once the sweep was switched off (`rewalk-*`; their row is that second walk). Verdicts: `ok`; `game` (every hole is also in the game's overhead view of that place);
+`fault`; `held` (a scene keeps the game's camera at every place: the two endings); `n/a` (no
+single-player start in this game kind). The "What" column has a description where the pictures
+were looked at; otherwise it holds the raw flags of the final walk.
+
+| Level | Looked at before | 10-17 | 10-19, `rta_app` | 10-19, `rta_app_next` | What |
+| --- | --- | --- | --- | --- | --- |
+| airarena |  | n/a |  | n/a |  |
+| arachna1 | yes | fault | ok | ok |  |
+| bastion1 |  | fault | game | game | the start stands at the floor's rim (B5); flagged places are the rim, overhead shows the gap too at most of them |
+| blomedal |  | ok |  | ok |  |
+| blood1 |  | ok |  | ok |  |
+| boar1 |  | fault | ok | ok |  |
+| bossevil |  | ok |  | ok |  |
+| bossgood |  | ok |  | ok |  |
+| citadel | yes | ok |  | fault | hole=3(p0-h3) |
+| compblo |  | n/a |  | ok |  |
+| compdis |  | fault | n/a | fault | hole=2(p0-h3) |
+| compsto |  | ok |  | n/a |  |
+| compval |  | ok |  | n/a |  |
+| compwat |  | n/a |  | fault | hole=1(p2-h3) |
+| dis2 | yes | fault | ok | ok |  |
+| disbonus |  | ok |  | ok |  |
+| dismedal |  | not walked | hung | fault | 10-17 and the first walk today: the game hung (decoder slots, 8.2); now walks, 1 look flagged |
+| drunare | yes | ok |  | ok |  |
+| drunarm |  | ok |  | ok |  |
+| drundar |  | ok |  | ok |  |
+| endbad |  | ok |  | held | the ending: a scene holds the camera at every place |
+| endgood |  | ok |  | held | the ending: a scene holds the camera at every place |
+| fay1 |  | ok |  | ok |  |
+| fay2 |  | fault | game | game | rim of the floor; partly also overhead |
+| fay3 |  | ok |  | ok |  |
+| faybonus |  | fault | ok | ok |  |
+| fearboss | yes | ok |  | ok |  |
+| firbonus |  | ok |  | fault | the clear colour (orange) is the "lava" below the cliffs: looking over an edge (by design) |
+| fire1 | yes | ok |  | ok |  |
+| fire2 |  | ok |  | ok |  |
+| fire3 | yes | ok |  | ok |  |
+| fire4 |  | ok |  | ok |  |
+| fire5 |  | ok |  | fault | floating ground: the clear colour beyond the rim, partly also overhead |
+| firmedal |  | ok |  | ok |  |
+| honor | yes | ok |  | ok |  |
+| honor2 |  | ok |  | ok |  |
+| hub | yes | ok |  | ok |  |
+| hub2 |  | fault | ok | fault | hole=1(p0-h2) |
+| inmine1 | yes | fault | fault | ok |  |
+| inmine2 |  | ok |  | ok |  |
+| innmedal |  | ok |  | fault | hole=1(p2-h7) |
+| innovat1 | yes | fault | ok | ok |  |
+| innovat2 |  | fault | ok | ok |  |
+| innpit |  | ok |  | ok |  |
+| intro |  | n/a |  | n/a | not-entered |
+| islc1 |  | ok |  | ok |  |
+| islc2 |  | ok |  | ok |  |
+| islcave1 |  | ok |  | ok |  |
+| islgnome |  | ok |  | ok |  |
+| islgoth |  | fault | fault | fault | hole=1(p3-h6) |
+| islsm1 | yes | ok |  | ok |  |
+| islsm2a |  | ok |  | ok |  |
+| islsm2b |  | ok |  | ok |  |
+| islsm3a |  | ok |  | ok |  |
+| islsm3b |  | fault | ok | ok |  |
+| nit1 | yes | ok |  | ok |  |
+| nit2 |  | fault | ok | held | a scene held the camera at every place in this walk (it walked on 10-17 and in the first walk) |
+| nitbon2 |  | ok |  | ok |  |
+| nitbonus |  | fault | ok | ok |  |
+| nitdung1 | yes | ok |  | fault | hole=5(p0-h7) |
+| nitdung2 |  | ok |  | fault | hole=3(p3-h4) |
+| nitdung3 |  | fault | game | game | no floor drawn at the start, in the game's own overhead view too (emulator picture the same): the level's |
+| nitdung4 |  | fault | fault | fault | hole=2(p2-h5) |
+| nitmar1 |  | ok |  | ok |  |
+| nitmedal |  | fault | ok | ok |  |
+| obsfor1 |  | ok |  | ok |  |
+| obsidian |  | fault | fault | fault | 10-17: view tilted about 25 degrees up by the swing tilt (driver), and a chunk-box hole (8.4); now 3 looks at one place |
+| pvparena |  | n/a |  | n/a |  |
+| pvpbas |  | n/a |  | ok |  |
+| pvpblo |  | n/a |  | n/a |  |
+| pvpblo2 |  | n/a |  | n/a |  |
+| pvpfire |  | n/a |  | n/a |  |
+| pvpfire2 |  | n/a |  | n/a | beyond the rim, partly also overhead |
+| pvpinn |  | ok |  | n/a |  |
+| pvpnit |  | fault | ok | ok |  |
+| pvptor |  | n/a |  | ok |  |
+| pvpval |  | n/a |  | n/a |  |
+| shame1 |  | fault | fault | fault | hole=5(p0-h3) |
+| stobonus |  | ok |  | ok |  |
+| stomedal |  | ok |  | ok |  |
+| storm1 | yes | ok |  | ok |  |
+| storm1a |  | fault | fault | fault | hole=4(p0-h2) |
+| storm1b |  | fault | ok | ok |  |
+| storm1c |  | fault | fault | fault | hole=1(p1-h4) |
+| storm2 |  | fault | fault | fault | beyond the rim, partly in the overhead view too; 2 looks |
+| storm3 |  | fault | ok | fault | hole=7(p0-h3) |
+| storm4 |  | ok |  | ok |  |
+| storm5 |  | ok |  | ok |  |
+| strife |  | ok |  | ok |  |
+| swamp1 | yes | fault | ok | ok |  |
+| swamp2 |  | fault | ok | fault | hole=1(p2-h5) |
+| torbonus |  | ok |  | ok |  |
+| tormedal |  | ok |  | ok |  |
+| torment0 |  | ok |  | ok |  |
+| torment2 |  | ok |  | fault | hole=2(p2-h3) |
+| torment3 |  | ok |  | fault | hole=1(p3-h2) |
+| tormenta | yes | ok |  | ok |  |
+| tormentb |  | ok |  | ok |  |
+| valmedal |  | fault | fault | ok |  |
+| valor | yes | ok |  | ok |  |
+| valor2 |  | ok |  | ok |  |
+| wat1 | yes | ok |  | ok |  |
+| watbonus |  | ok |  | fault | hole=1(p3-h2) |
+| wate2a |  | ok |  | ok |  |
+| wate2b |  | not walked | ok | fault | hole=1(p3-h6) |
+| wate2c |  | ok |  | fault | hole=6(p0-h3) |
+| water1 |  | fault | ok | ok |  |
+| watg2a |  | ok |  | ok |  |
+| watg2b |  | not walked | ok | ok |  |
+| watg2c |  | ok |  | ok |  |
+| watmedal |  | fault | ok | ok |  |
+
+Summary (10-19, `rta_app_next`): 111 levels, 70 ok, 3 `game` (`bastion1`, `fay2`, `nitdung3`), 24
+flagged, 3 `held` (the two endings, and `nit2`, where a scene held the camera at every place this
+time; on 10-17 and in the first walk today it walked), 11 n/a (arena and PvP kinds without a
+single-player start, and `intro`). On 10-17: 62 ok, 3 fixed, 31 flagged, 12 n/a, 3 not reached.
+Most of the 24 flags are 1 to 3 looks of 40: thin strips of the clear colour at a screen edge or
+over a ledge, or a cell still loading right after a turn. They move from place to place between
+walks, because the character's route depends on the fight and the timing; `storm1b`, `nitbonus`,
+`inmine1`, `fire3` and `wat1` were flagged in one walk and clean in the next. Larger and repeated:
+`firbonus` (13: the orange clear colour is the "lava" below the cliffs, the edge looked over),
+`fire5` and `storm2` (beyond the rim, partly in the overhead view too), `storm3`, `wate2c`,
+`nitdung1`, `shame1` and `storm1a` (5 to 7). These were not each looked at.
+
+### 8.7 Checked, and left
+
+* **Simulation** (`local/fp-ready/rig/check_rig.py` on `rta_orig_cells`, the unpatched game with
+  these sources). The first-person comparison report is byte-identical to section 13's
+  (SHA-256 `ba217b43…`), and the overhead report to the reference (`9cdc53c1…`). Against the hands
+  work's final first-person TSV every column is identical, `pool` included (the known 1,465
+  rows of the eye-collide fix are in both). Only an earlier build differed, in `cosmetic` at 8 ticks (5250 to 5285 of
+  `valor`) with the sweep on (8.3); with the program as delivered (sweep off) the TSV is
+  identical in every column. The overhead TSV is identical to the hands work's.
+* **Left:** cells that were never in reach of the stream point stay without textures (the far
+  focus that would reach them is off: it made holes near the feet). The guard of 8.2 can leave far creatures out in a crowded level. The 256-unit chunk
+  margin is a margin, not the cause (which boxes are wrong, and by how much, was not measured).
+  Not looked at in the Godot drawer. Not measured paced: what the shelf,
+  and the wider tests cost a frame.

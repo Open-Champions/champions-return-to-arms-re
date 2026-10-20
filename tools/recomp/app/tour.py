@@ -21,11 +21,18 @@ memory, textures held, pictures a second, what the GS model approximated.
 `fpwalk`: every named level in first person at eye height: where the level starts and N more
 places the character walks to from there (the stick, the game's own movement and collision),
 at each a turn through eight headings (the look controls, as a mouse turns them), one look 40 degrees up and
-one 40 down, small pictures.  Each picture is measured against the level's clear colour
-(g_backgroundColor): `hole` = clear colour in the lower third of a level look or anywhere in the
-look down (no ground there), `open` = clear colour above in a level the ceilings are made for,
-`void` = more than half of a level look is clear colour (walls gone), `inside` = the picture is
-one flat colour (the eye inside something).  One line per level in <out>/fpwalk.tsv.
+one 40 down, small pictures; the pitch is held at exactly those angles (a swing's tilt toward a target
+does not move it).  Every look is taken twice, the second time with the level's clear colour
+(g_backgroundColor) swapped for one far from it for three blanks: a pixel that takes the swapped colour
+is one nothing was drawn on (coverage, not brightness: a black floor of a night level is a floor).
+`hole` = such pixels in the lower third of a level look or anywhere in the look down (no ground
+there), `open` = such pixels above in a level the ceilings are made for, `void` = more than half of a
+level look's lower half is undrawn (floor and walls gone), `inside` = the picture is one flat colour (the eye inside
+something).  At every place the game's own overhead view is taken the same way: where it too has
+nothing drawn round the character, the flags of that place are the game's (`game`), not the view's.
+A place where a scene, a dialogue or a film keeps the game's camera on the frame is not judged (`held`).
+One line per level in <out>/fpwalk.tsv: ok, game (every flag is also in the overhead picture), fault, or
+held (no place had the first-person view).
 `fpreport`: the levels of those files, by fault.
 
 Pictures and logs are game output: DIR must be under local/.  Test windows are titled
@@ -387,23 +394,76 @@ FP_HEADINGS = 8
 FP_COUNT = 0.12                 # degrees of turn per mouse count of the look controls (app/fpcontrols.h)
 
 
-def measure(path, clear, interior):
-    """Fractions of a picture: clear colour in the lower third, in the upper half, in all of it;
-    and how flat it is (the spread of its brightness)."""
-    from PIL import Image, ImageStat
-    image = Image.open(path).convert('RGB').resize((160, 90))
-    w, h = image.size
-    pixels = list(image.getdata())
+def swapped_colour(clear):
+    """A clear colour far from the level's own: magenta, or green when the level's is near magenta."""
+    return (0, 255, 0) if clear[0] > 128 and clear[2] > 128 and clear[1] < 128 else (255, 0, 255)
+
+
+def undrawn_mask(path_a, path_b, swap):
+    """Which pixels of a picture nothing was drawn on: those that took the swapped clear colour in the
+    second picture (a strong move toward it in every channel that differs).  A list of rows of booleans
+    at 160 x 90, and picture A at that size."""
+    from PIL import Image
+    a = Image.open(path_a).convert('RGB').resize((160, 90), Image.NEAREST)
+    b = Image.open(path_b).convert('RGB').resize((160, 90), Image.NEAREST)
+    w, h = a.size
+    pa, pb = list(a.getdata()), list(b.getdata())
+    out = []
+    for y in range(h):
+        row = []
+        for x in range(w):
+            ca, cb = pa[y * w + x], pb[y * w + x]
+            took = True
+            for k in range(3):
+                d = cb[k] - ca[k]
+                want = swap[k] - ca[k]
+                if abs(want) > 100 and (d * want < 0 or abs(d) < abs(want) * 0.6):
+                    took = False
+                    break
+                if abs(want) <= 100 and abs(d) > 60:
+                    took = False
+                    break
+            row.append(took)
+        out.append(row)
+    return out, a
+
+
+def measure(mask, picture):
+    """Fractions of a look: undrawn in the lower third, in the upper half, in all of it (below the
+    game's HUD band), in the lower half; and how flat picture A is (the spread of its brightness)."""
+    from PIL import ImageStat
+    h, w = len(mask), len(mask[0])
     top_hud = h // 7                                         # the game's own HUD sits in the top band
 
-    def near(c):
-        return abs(c[0] - clear[0]) <= 2 and abs(c[1] - clear[1]) <= 2 and abs(c[2] - clear[2]) <= 2
-    rows = [pixels[y * w:(y + 1) * w] for y in range(h)]
-    low = [near(c) for row in rows[h * 2 // 3:] for c in row]
-    high = [near(c) for row in rows[top_hud:h // 2] for c in row]
-    every = [near(c) for row in rows[top_hud:] for c in row]
-    spread = ImageStat.Stat(image.convert('L').crop((0, top_hud, w, h))).stddev[0]
-    return sum(low) / len(low), sum(high) / len(high), sum(every) / len(every), spread
+    def frac(rows):
+        cells = [v for row in rows for v in row]
+        return sum(cells) / max(1, len(cells))
+    spread = ImageStat.Stat(picture.convert('L').crop((0, top_hud, w, h))).stddev[0]
+    return frac(mask[h * 2 // 3:]), frac(mask[top_hud:h // 2]), frac(mask[top_hud:]), frac(mask[h // 2:]), spread
+
+
+def overhead_undrawn(mask):
+    """The overhead picture: undrawn share of the middle (the ground round the character)."""
+    h, w = len(mask), len(mask[0])
+    cells = [v for row in mask[h // 4:h * 3 // 4] for v in row[w // 4:w * 3 // 4]]
+    return sum(cells) / len(cells)
+
+
+def shot_pair(m, rel, bg, clear):
+    """Picture REL and REL~b with the clear colour swapped; the undrawn mask and picture A."""
+    m.shot(rel)
+    swap = swapped_colour(clear)
+    m.poke(G_BACKGROUND, 'u32', '0x%08x' % ((bg & 0xFF000000) | swap[0] | swap[1] << 8 | swap[2] << 16))
+    m.wait(3)
+    m.shot(rel + '~b')
+    m.poke(G_BACKGROUND, 'u32', '0x%08x' % bg)
+    return undrawn_mask(os.path.join(m.out, rel + '.png'), os.path.join(m.out, rel + '~b.png'), swap)
+
+
+def hold_pitch(m, pitch):
+    """The first-person pitch, exactly: the look controls and a swing's tilt cannot move it."""
+    for key in ('pitch', 'pitch_min', 'pitch_max'):
+        m.c.ok('app view set view.first.%s %d' % (key, pitch))
 
 
 def run_fpwalk(args):
@@ -424,8 +484,8 @@ def run_fpwalk(args):
                     handle.write('\t'.join(str(x) for x in row) + '\n')
                 print('\t'.join(str(x) for x in row), flush=True)
                 names.pop(0)
-                if row[1] == 'not-entered':                 # whatever held it may hold the next: a fresh start
-                    break
+                if row[1] in ('not-entered', 'held'):       # whatever held it may hold the next (after an ending's
+                    break                                    # scene the next level change hung or crashed the game): a fresh start
         except (OSError, SystemExit, RuntimeError) as error:   # the build stopped or a level hung it: on with the next
             if names:
                 name = names.pop(0)
@@ -453,7 +513,7 @@ def walk_level(m, name, args):
             break
         m.tap('cross', 6, 30)
     m.c.ok('app view set view first')
-    m.c.ok('app view set view.first.pitch 0')
+    hold_pitch(m, 0)
     m.wait(args.fade)
     if m.position()[2] < -50000:                             # no place for a character of this game kind (the arenas)
         return [name, 'no-player']
@@ -463,6 +523,7 @@ def walk_level(m, name, args):
     ceiling = world_info(m).get('ceiling', 0) > 0
     cam = '[0x%x]' % G_CAMERA
     counts = {'hole': 0, 'open': 0, 'void': 0, 'inside': 0}
+    own = 0                                                  # flags at places where the overhead view has the same gap
     worst = {}
     shots = 0
     interior = ceiling                                       # the level gets the generated ceilings (fpworld: walled, black, no dome)
@@ -475,37 +536,88 @@ def walk_level(m, name, args):
             m.wait(args.walk)
             m.c.ok('stick l 128 128')
             m.wait(20)
+        held = view_held(m)
+        if held:                                             # the game's camera has the frame: no first-person pictures to judge
+            counts.setdefault('held', 0)
+            counts['held'] += 1
+            worst.setdefault('held', 'p%d: %s' % (point, held.replace(' ', '_')[:60]))
+            continue
         x, y, z = m.position()
         looks = [(360.0 / FP_HEADINGS if k else 0, 0) for k in range(FP_HEADINGS)] + [(360.0 / FP_HEADINGS, 40), (0, -40)]
+        here = []
         for k, (turn, pitch) in enumerate(looks):
             if turn:
                 m.c.ok('app fpc mouse %.1f 0' % (turn / FP_COUNT))
-            m.c.ok('app view set view.first.pitch %d' % pitch)
+            hold_pitch(m, pitch)
             m.wait(args.settle)
             tag = 'p%d-%s' % (point, ('h%d' % k) if not pitch else ('up' if pitch > 0 else 'down'))
-            path = os.path.join(pics, tag + '.png')
-            m.shot(os.path.join(name, tag))
+            mask, picture = shot_pair(m, os.path.join(name, tag), bg, clear)
             shots += 1
-            low, high, every, spread = measure(path, clear, interior)
+            low, high, every, lower, spread = measure(mask, picture)
             uncelled = max(uncelled, world_info(m).get('no_cell', 0))
             faults = []
             if (pitch == 0 and low > 0.03) or (pitch < 0 and every > 0.03):
                 faults.append('hole')
             if pitch > 0 and interior and high > 0.25:
                 faults.append('open')
-            if pitch == 0 and every > 0.5:
+            if pitch == 0 and lower > 0.5:                   # most of the ground half gone (an open sky above is not a fault)
                 faults.append('void')
             if spread < 6 and pitch <= 0 and every < 0.5:
                 faults.append('inside')
-            for f in faults:
-                counts[f] += 1
-                if f not in worst:
-                    worst[f] = '%s@%.0f,%.0f,%.0f' % (tag, x, y, z)
-    m.c.ok('app view set view.first.pitch 0')
-    verdict = 'ok' if not any(counts.values()) else 'fault'
+            here += [(f, tag) for f in faults]
+        game_gap = 0.0
+        if here:                                             # the game's own view of this place
+            hold_pitch(m, 0)
+            m.c.ok('app view set view overhead')
+            m.wait(args.settle + 30)
+            mask, _ = shot_pair(m, os.path.join(name, 'p%d-overhead' % point), bg, clear)
+            game_gap = overhead_undrawn(mask)
+            m.c.ok('app view set view first')
+            m.wait(args.settle + 30)
+        for f, tag in here:
+            if game_gap > 0.03 and f in ('hole', 'void'):
+                own += 1
+                continue
+            counts[f] += 1
+            if f not in worst:
+                worst[f] = '%s@%.0f,%.0f,%.0f' % (tag, x, y, z)
+    for key, value in (('pitch', 0), ('pitch_min', -65), ('pitch_max', 65)):
+        m.c.ok('app view set view.first.%s %d' % (key, value))
+    faults = {f: n for f, n in counts.items() if f != 'held'}
+    verdict = 'held' if counts.get('held') == args.points + 1 else 'ok' if not any(faults.values()) and not own else 'game' if not any(faults.values()) else 'fault'
     detail = ' '.join('%s=%d(%s)' % (f, counts[f], worst[f]) for f in counts if counts[f])
+    if own:
+        detail = (detail + ' ' if detail else '') + 'as-overhead=%d' % own
     return [name, verdict, 'clear=%02x%02x%02x' % clear, ('dome' if dome else 'nodome') + (' ceiling' if ceiling else ''), 'shots=%d' % shots, detail or '-',
             'chunks without their texture cell: %d at most' % uncelled]
+
+
+def view_state(m):
+    """The view of the last frame (`app view info`): (shown view, why the game's camera has it or '')."""
+    m.c.ok('app view info')
+    m.wait(1)
+    path = os.path.join(m.out, 'native.out')
+    with open(path, 'rb') as handle:
+        handle.seek(max(0, os.path.getsize(path) - 20000))
+        lines = [l for l in handle.read().decode('latin-1').splitlines() if '] view: selected' in l]
+    if not lines:
+        return '', ''
+    shown = re.search(r'shown (\w+)', lines[-1])
+    why = re.search(r"the game's camera: ([^;]*);", lines[-1])
+    return (shown.group(1) if shown else ''), (why.group(1).strip() if why else '')
+
+
+def view_held(m):
+    """Until the first-person view has the frame (a scene, a dialogue or a film can hold the game's
+    camera after a level starts or a walk): answered and waited out.  The reason when it never does."""
+    why = ''
+    for attempt in range(16):
+        shown, why = view_state(m)
+        if shown == 'first' and not why:
+            return ''
+        m.tap('cross', 6, 30)
+        m.wait(30)
+    return why or 'the view never had the frame'
 
 
 def world_info(m):

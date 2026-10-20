@@ -990,7 +990,22 @@ static u32 timer_count(int n) {
     return g_timers[n].base_count & 0xFFFF;
 }
 
+// ---- the shelf: host memory behind guest addresses the console does not have ----------------------
+// rt_shelf (rt.h).  Until something asks for it nothing is there, as before: an access to those
+// addresses is an access to nothing (nothing_there), a DMA address there folds into main memory.
+static u8* g_shelf = nullptr;
+static u32 g_shelf_size = 0;
+u8* rt_shelf(u32 size) {
+    if (!g_shelf && size) { g_shelf = (u8*)calloc(size, 1); if (g_shelf) g_shelf_size = size; }
+    return g_shelf;
+}
+static inline u8* shelf_at(u32 p, u32 size) {
+    return g_shelf && p >= RT_SHELF_BASE && p - RT_SHELF_BASE <= g_shelf_size && size <= g_shelf_size - (p - RT_SHELF_BASE)
+               ? g_shelf + (p - RT_SHELF_BASE) : nullptr;
+}
+
 static u8* phys(u32 addr, u32 size) {
+    if (u8* shelf = (addr & 0x80000000u) ? nullptr : shelf_at(addr & 0x0FFFFFFF, size)) return shelf;
     if (addr & 0x80000000u) {                           // scratchpad flag in a DMA address
         u32 off = addr & 0x3FFF;
         return off + size <= sizeof(g_spr) ? g_spr + off : nullptr;
@@ -1157,11 +1172,14 @@ static void dma_start(u32 ch) {
             u32 n = (u32)t & 0xFFFF, id = ((u32)t >> 28) & 7, addr = (u32)(t >> 32);
             chcr = (chcr & 0xFFFF) | ((u32)t & 0xFFFF0000u);
             bool end = false;
-            if (ch == 1 && rt_dma_tag) rt_dma_tag(tadr, stream);
+            // a tag on the shelf belongs to a subroutine put there by an application (a texture's
+            // upload): its hooks are not asked about it
+            bool shelved = g_shelf && !(tadr & 0x80000000u) && shelf_at(tadr & 0x0FFFFFFF, 16);
+            if (ch == 1 && rt_dma_tag && !shelved) rt_dma_tag(tadr, stream);
             // rt_dma_skip: this tag's data stays out of the stream; a call that is skipped takes
             // its whole subroutine with it (the level of the return stack it was made at is kept)
             static int skip_above = -1;
-            bool skip = ch == 1 && rt_dma_skip && (skip_above >= 0 || rt_dma_skip(tadr));
+            bool skip = ch == 1 && rt_dma_skip && (skip_above >= 0 || (!shelved && rt_dma_skip(tadr)));
             if (skip && id == 5 && skip_above < 0 && asp < 2) skip_above = (int)asp;
             switch (id) {
             case 0: madr = addr; tadr += 16; end = true; break;                 // refe
@@ -1296,6 +1314,8 @@ static u8* special_memory(u32& a, unsigned size) {
     // main memory seen again: uncached at 0x20000000, uncached "accelerated" at 0x30000000
     // (the game builds its display lists through that one), and the two kernel segments
     u32 top = a >> 28;
+    if (g_shelf && top != 1 && top < 4) { if (u8* shelf = shelf_at(a & 0x0FFFFFFF, size)) return shelf; }
+    if (g_shelf && top >= 8 && top <= 0xB) { if (u8* shelf = shelf_at(a & 0x1FFFFFFF, size)) return shelf; }
     if (top == 2 || top == 3) {
         u32 p = a & 0x0FFFFFFF;
         if (p <= RAM_SIZE - size) return g_ram + p;
@@ -1375,6 +1395,13 @@ void rt_call(Ctx* c, u32 target) {
         if (fn) { fn(c); return; }
     }
     rt_die("call to 0x%08x, which has no translation", target);
+}
+RecompFn rt_replace_function(u32 address, RecompFn fn) {
+    if (!g_table || address < g_text_lo || address >= g_text_hi || (address & 3)) return nullptr;
+    RecompFn& slot = g_table[(address - g_text_lo) >> 2];
+    RecompFn old = slot;
+    if (old && fn) slot = fn;
+    return old;
 }
 void rt_break(Ctx*, u32 pc, u32 code) { rt_die("BREAK %u at 0x%x", code, pc); }
 void rt_trap(Ctx*, u32 pc, const char* what) { rt_die("%s at 0x%x", what, pc); }

@@ -216,7 +216,12 @@ Consequences an implementation must keep:
 
 Take the slot at the least-recently-used end. While that slot's owner cell has ROOT or YAW
 in its flags, move the slot to the other end and look at the next one. (If every slot is
-pinned this never returns; with 165 slots that needs 165 root-motion tracks.) The previous
+pinned this never returns; with 165 slots that needs 165 root-motion tracks.) **Ran**
+(2026-10-19): drawing pins slots too - a drawn creature's ROOT / YAW tracks are decoded by
+`anim_emitPose` - and a first-person view of `dismedal`, which draws creatures out to 1,800
+units, took the count from 76 to 161 in one object walk and then to 165: the game hung in
+this loop inside the draw pass. The native views guard against it (`app/fpworld.cpp`,
+`docs/issues/native-first-person-world.md` 8.2); overhead the level holds about a hundred. The previous
 owner's slot pointer is zeroed. Reset in the slot: key tick = 1000000, joint 0's `pos.x` and
 `pos.y` = 0.0, owner = 0. **Everything else is left as it was**, including `yaw`.
 

@@ -53,6 +53,12 @@ void rt_signal_sema(u32 id);
 // Called once when the run ends, before the report is printed (an application's own
 // figures, closing its window); set before rta::run().
 extern void (*rt_at_finish)();
+// The translation of the game function at `address` that calls through a pointer (a virtual slot,
+// a handler table: rt_call) reach, replaced by `fn`; returns the one that was there (nullptr when
+// `address` has none - nothing is changed then).  Direct calls of the translated code are not
+// affected.  For a module that wraps a game function (app/soulscombat.cpp); call it on the game's
+// thread after the run has started.
+RecompFn rt_replace_function(u32 address, RecompFn fn);
 // "--opt key=value" on the command line, for modules linked with the runtime; nullptr when absent
 const char* rt_option(const char* key);
 // Two places a window program's picture options hook into (tools/recomp/app/gfx_rt.cpp); both
@@ -66,6 +72,13 @@ extern void (*rt_dma_tag)(u32 tag_address, std::vector<u32>& stream);
 // on channel 1; true = the tag is followed but its data (and, when the tag is a call, everything
 // up to the matching return) is not put into the stream.  A model that is drawn but not shown.
 extern bool (*rt_dma_skip)(u32 tag_address);
+// The shelf: `size` bytes of host memory (allocated at the first call that asks for some, zeroed;
+// later calls return it as it is) seen by guest loads, stores and DMA at RT_SHELF_BASE and its
+// mirrors - addresses where the console has no memory, so the game's own code never reaches it.
+// An application keeps draw-side data there that the game's drawing code must be able to point
+// at (app/fpworld.cpp: textures of cells the game no longer keeps).  Never asked for: nothing changes.
+const u32 RT_SHELF_BASE = 0x08000000;
+u8* rt_shelf(u32 size);
 // The price of a unit of translated code (a call or a backward branch) in cycles of the
 // virtual clock: 4, which is what makes a frame of the game take the part of a field it takes
 // on the console.  fpview sets 0 for the length of a draw pass it has put a view of its own in
