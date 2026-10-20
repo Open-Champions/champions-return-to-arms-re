@@ -28,6 +28,7 @@ either is in the repository.
 - **2026-10-20**: wired into the Windows and Linux programs as in `app_main.cpp`; on Linux Ran
   (mode off: the rig byte for byte; a Linux + Mac room with the mode through the drunare fight,
   5,016 ticks in step: `docs/issues/native-linux.md`), on Windows Built only.
+- **2026-10-20, later**: wired into the Godot library and the portal's room screen, Ran in a Godot room (part 6b).
 - **Not done**: Windows run (built, never started); the emulator application (the mode is native C++ only, no pnach
   section); an online game through the old lobby (the mode stays off there by design, 2.2);
   nobody has played it with hands; the Godot HUD part was parsed by Godot 4.5.2
@@ -276,6 +277,30 @@ offline, 4.2); a run of four copies.
 | `tools/recomp/net2/hooks.h`, `launch.cpp`, `session.cpp`, `session_net.cpp` | the room option: four hook pointers, the copy's description, the joiner following the host, the refusal, `net2_set("copy")` |
 | `tools/godot/project/hud/souls.gd`, `hud/hud.gd` | new file; three lines in `_ready` |
 | `docs/issues/native-souls-combat.md` | this |
+
+## 6b. In the Godot library (2026-10-20, Ran)
+
+- `tools/godot/build.py lib` compiles `app/soulscombat.cpp` when the snapshot has it (`-DRTAG_HAVE_SOULS`);
+  `lib/rtag.cpp` calls `soulscombat::blank` right after `fpcontrols::translate` / `take_pitch` (as `app_main.cpp`),
+  `rtag_set_option("combat.mode" | "combat.<number>")`, `rtag_has("souls")`, script lines `app souls ...`, and adds
+  `souls_want=`, `souls_on=` and `copy=fix=XXXXXXXX,words=N` (what the copy says of itself in a room, worked out as
+  `net2/launch.cpp` `souls_describe` does) to `rtag_info`. The native overlay is not called: Godot draws the HUD.
+- `main.gd --combat souls|off`. The portal: `gameflow.gd` says the copy's description to the room
+  (`net2_set "copy"`) once the game runs and whenever it changes; the **room screen** has a third choice "Combat:
+  Classic / Souls-style" (host only; guests see the host's); a joiner's library takes the host's choice by itself
+  (`follow_souls`). A copy without the mode makes the room show "The host plays with souls-style combat and NAME does
+  not have it (yet)" - now also when that copy says nothing of itself (an older Godot copy: the service's own check
+  leaves such a copy out, `net2_start` refuses all the same).
+- **Ran** (`local/godot-r6/test/`): offline `souls1` (old directory, overwritten; the figures are in the log): the
+  valor route, 1 dodge, 1 heavy, 7 light, a poise break (stagger), 3 blocks paid. Room `souls2` (two Godot portals,
+  `room6.py`, own rendezvous service on 127.0.0.1): host picks Souls-style on the room screen, the joiner says
+  `fix=170c4f08 words=32957` within a second; game launched with "souls-style combat: on for this game" on both;
+  hub > drunare, **5,931 ticks in step, no shared column differs** (`compare.py ticks`, the mode's columns included);
+  dodges 6 / 6, heavy 0 / 3, light 50 / 43, refused 0 / 10, stamina at 0 in 0 / 222 ticks, 1 hit not landed (a
+  dodge), 18 hits on players, both died in the arena. `refuse1`: the same host, joiner the fifth round's Godot build
+  (no mode): the warning on the room screen, `session.start()` -> -7 "refused", nothing launched.
+- HUD (`hud/souls.gd`): the stamina bar is the theme's own bar (`Style.bar`), on the player's frame (overhead, third
+  person) or under the two slim bars (first person), so it covers none of the middle of the picture.
 
 ## 6. The Godot HUD
 

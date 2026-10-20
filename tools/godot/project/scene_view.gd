@@ -66,7 +66,22 @@ var look := {
 	"shade": -1.0, "fog_start": 380.0, "fog_end": 1350.0, "fog_amount": 1.0, "sun_az": -1000.0, "sun_el": -1000.0,
 	"bloom_strength": 1.0, "sky_sun": 1.0, "shadow_splits": 4.0, "shadow_far": 1100.0,
 	"fill_light": 0.36, "fill_scale": 1.0, "light_energy": 1.0, "light_shadows": 2.0, "light_max": 8.0,
+	"sun_gain": 1.0, "saturation": 1.10, "contrast": 1.06, "brightness": 1.0, "preset": "on", "balance": "0.6",
 }
+# Per level presets (tools/godot/presets.py): the look keys above, by level, picked from what the level's own colours
+# are (its clear colour, its dome, its light level, the game's light nodes, the picture the game's own camera gives) by
+# a walk through every level, plus hand-tuning.  Files, each over the one before (ConfigFile: a [section] per level name,
+# [*] for every level):
+#   res://presets/levels.cfg     made by presets.py `make` (game output: it lives under local/ and is staged with the
+#                                project; it is not in the repository)
+#   res://presets/tuning.cfg     the hand-tuning (tracked: my own numbers, no colour of the game)
+#   user://look_presets.cfg      the player's own;  --look-presets FILE (main.gd) or $RTA_LOOK_PRESETS: one more on top
+# A key given on the command line or by "app look KEY VALUE" stays as given; "preset=off" leaves every preset out.
+var presets := {}                       # level -> {key: value}
+var preset_files: PackedStringArray = PackedStringArray()
+var look_given := {}                    # keys the command line or a script set: presets do not touch them
+var look_defaults := {}
+var preset_applied := ""
 var fill_sent := {}
 var card: Node                          # card.gd: the character card (the portal's Portrait.texture)
 var torches: Array = []                 # [{light, instance, address, shadow}] Godot's lights at the game's
@@ -83,6 +98,7 @@ var sun_last := Vector2(217.0, 48.0)    # the last direction a level's textures 
 # the conversion from linear light; a sun of energy (1 - shade)^2.2 therefore adds (1 - shade) of the stored colour
 # (measured: test/scene/cal).  What arrives without the sun is put in by the shader itself (rta_light_ambient).
 var shade := 0.64
+var forward_plus := true                # Forward+ / Mobile add lights in linear light; the Compatibility renderer differs (_lights)
 
 var main: Node
 var drawer: Object
@@ -130,6 +146,7 @@ static func add_globals() -> void:
 
 
 func _ready() -> void:
+	forward_plus = RenderingServer.get_current_rendering_method() != "gl_compatibility"
 	drawer = main.drawer
 	machine = main.machine
 	if main.opt.shadow:
@@ -140,7 +157,11 @@ func _ready() -> void:
 	orbit = main.opt.orbit
 	if int(main.opt.samples) > 0:
 		look.aa = str(main.opt.samples)
+	if forward_plus:
+		look.saturation = 1.22             # Forward+ greys the lit scene a little against the Compatibility renderer (fifth round)
+	look_defaults = look.duplicate()
 	set_look(String(main.opt.look))
+	_load_presets()
 	ring_image = Image.create(256, 2, false, Image.FORMAT_RGB8)
 	ring_texture = ImageTexture.create_from_image(ring_image)
 	RenderingServer.global_shader_parameter_set("rta_sky_ring", ring_texture.get_rid())
@@ -169,7 +190,7 @@ func set_look(text: String) -> void:
 			_put(kv[0].strip_edges(), kv[1].strip_edges())
 
 
-func _put(key: String, value: String) -> void:
+func _put(key: String, value: String, given := true) -> void:
 	if not look.has(key):
 		push_warning("look: no such key " + key)
 		return
@@ -177,6 +198,48 @@ func _put(key: String, value: String) -> void:
 		look[key] = value.to_float()
 	else:
 		look[key] = value
+	if given:
+		look_given[key] = true
+
+
+func _load_presets() -> void:
+	var files := PackedStringArray(["res://presets/levels.cfg", "res://presets/tuning.cfg", "user://look_presets.cfg"])
+	var extra := String(main.opt.get("look_presets", ""))
+	if extra == "" and OS.has_environment("RTA_LOOK_PRESETS"):
+		extra = OS.get_environment("RTA_LOOK_PRESETS")
+	if extra != "":
+		files.append(extra)
+	for path in files:
+		var config := ConfigFile.new()
+		if not FileAccess.file_exists(path) or config.load(path) != OK:
+			continue
+		preset_files.append(path)
+		for section in config.get_sections():
+			var d: Dictionary = presets.get(section, {})
+			for key in config.get_section_keys(section):
+				if look.has(key):
+					d[key] = str(config.get_value(section, key))
+			presets[section] = d
+	print("rta_godot: look presets: %d levels from %s" % [presets.size() - (1 if presets.has("*") else 0), ", ".join(preset_files) if not preset_files.is_empty() else "no file"])
+
+
+func _apply_preset(name: String) -> void:
+	# the defaults, then [*], then the level's own; never over what was given
+	var use := String(look.preset) != "off"
+	var d := {}
+	if use:
+		d = (presets.get("*", {}) as Dictionary).duplicate()
+		d.merge(presets.get(name, {}), true)
+	for key in look_defaults:
+		if look_given.has(key) or key == "preset":
+			continue
+		if d.has(key):
+			_put(key, String(d[key]), false)
+		else:
+			look[key] = look_defaults[key]
+	preset_applied = name if use and presets.has(name) else ""
+	if use:
+		print("rta_godot: level %s: look preset %s" % [name, str(presets.get(name, {})) if presets.has(name) else "none (defaults%s)" % (" and [*]" if presets.has("*") else "")])
 
 
 func _free_torches() -> void:
@@ -305,6 +368,7 @@ func _level() -> void:
 	if name == level:
 		return
 	level = name
+	_apply_preset(name)
 	drawer.call("sky_reset")
 	sky_version = -1
 	sky_clear = Color(-1, -1, -1)
@@ -466,10 +530,26 @@ func _lights() -> void:
 		if top > 0.05 and not level_dark:
 			tint = Color(1, 1, 1).lerp(Color(zenith.r / top, zenith.g / top, zenith.b / top), 0.30)
 		ambient = Color(s * tint.r, s * tint.g, s * tint.b)
-		var add := Color((1.0 - ambient.r), (1.0 - ambient.g), (1.0 - ambient.b))
-		var energy: float = max(add.r, add.g, add.b)
-		RenderingServer.light_set_color(sun, Color(pow(add.r / energy, 2.2), pow(add.g / energy, 2.2), pow(add.b / energy, 2.2)))
-		RenderingServer.light_set_param(sun, RenderingServer.LIGHT_PARAM_ENERGY, pow(energy, 2.2))
+		if forward_plus and String(look.balance) != "off":
+			# Forward+ (Metal, Vulkan) adds the lights in linear light: the shadowed part arrives as lin(colour x ambient)
+			# (EMISSION), so the sun must bring 1 - lin(ambient) of lin(colour) for a lit surface that faces it to be the
+			# game's own colour again.  The Compatibility rule below left Forward+'s lit scenes darker and greyer (fifth
+			# round: valor 51/61/46 against 58/65/44); Godot takes a light's colour as sRGB and makes it linear itself.
+			# Measured against the Compatibility renderer at the same ticks (local/godot-r6/balance: hub, valor, drunare,
+			# tormenta): the full linear rule overshoots it (hub 114 against 107, valor 47 against 35 of 255) - the
+			# Compatibility picture, the look of the earlier rounds, keeps its shadows deeper - and the old rule fell short
+			# (86, 29).  `balance` (0..1, default 0.6) goes that part of the way from the old rule to the linear one.
+			var lin := Color(1.0 - ambient.srgb_to_linear().r, 1.0 - ambient.srgb_to_linear().g, 1.0 - ambient.srgb_to_linear().b)
+			var peak: float = max(lin.r, lin.g, lin.b, 0.0001)
+			var old_energy: float = pow(max(1.0 - ambient.r, 1.0 - ambient.g, 1.0 - ambient.b), 2.2)
+			var part: float = clampf(float(look.balance) if String(look.balance).is_valid_float() else 0.6, 0.0, 1.0)
+			RenderingServer.light_set_color(sun, Color(lin.r / peak, lin.g / peak, lin.b / peak).linear_to_srgb())
+			RenderingServer.light_set_param(sun, RenderingServer.LIGHT_PARAM_ENERGY, lerpf(old_energy, peak, part) * float(look.sun_gain))
+		else:
+			var add := Color((1.0 - ambient.r), (1.0 - ambient.g), (1.0 - ambient.b))
+			var energy: float = max(add.r, add.g, add.b)
+			RenderingServer.light_set_color(sun, Color(pow(add.r / energy, 2.2), pow(add.g / energy, 2.2), pow(add.b / energy, 2.2)))
+			RenderingServer.light_set_param(sun, RenderingServer.LIGHT_PARAM_ENERGY, pow(energy, 2.2) * float(look.sun_gain))
 		RenderingServer.instance_set_transform(sun_instance, Transform3D(Basis(), Vector3.ZERO).looking_at(direction, Vector3(0, 0, 1)))
 	RenderingServer.global_shader_parameter_set("rta_light_ambient", Vector4(ambient.r, ambient.g, ambient.b, 1.0))
 	RenderingServer.instance_set_visible(sun_instance, sun_on)
@@ -562,12 +642,31 @@ func _post() -> void:
 	RenderingServer.environment_set_glow(environment, bloom, PackedFloat32Array([0.0, 0.35, 0.8, 1.0, 0.6, 0.0, 0.0]), 0.55 * strength, 1.0, 0.05, 0.0,
 		RenderingServer.ENV_GLOW_BLEND_MODE_SCREEN, 0.74, 2.0, 12.0, 0.0, RID())
 	var grade: bool = in_force.get("grade", false)
-	RenderingServer.environment_set_adjustment(environment, grade, 1.0, 1.06, 1.10, false, RID())
+	RenderingServer.environment_set_adjustment(environment, grade, float(look.brightness), float(look.contrast), float(look.saturation), false, RID())
 	var samples := int(String(look.aa).to_int())
 	if samples != aa_set and viewport.is_valid():
 		aa_set = samples
 		RenderingServer.viewport_set_msaa_3d(viewport, RenderingServer.VIEWPORT_MSAA_8X if samples >= 8 else (RenderingServer.VIEWPORT_MSAA_4X if samples >= 4 else (
 			RenderingServer.VIEWPORT_MSAA_2X if samples >= 2 else RenderingServer.VIEWPORT_MSAA_DISABLED)))
+
+
+func stats_text() -> String:
+	# one line for tools/godot/presets.py: what the level's own colours and lights are, as this script sees them now
+	var info: Dictionary = drawer.call("get_sky_info")
+	var clear: Color = info.get("clear", Color.BLACK)
+	var view: Dictionary = machine.get_view()
+	var eye: Vector3 = view.get("eye", Vector3.ZERO)
+	var found: Array = machine.get_lights(eye, 1300.0, 96)
+	var sum := Color(0, 0, 0)
+	for g in found:
+		sum += Color(g.colour)
+	var n: int = maxi(found.size(), 1)
+	var toward: Vector3 = info.get("sun", Vector3.ZERO)
+	return "level=%s clear=%.4f,%.4f,%.4f have_clear=%d dome=%d dark=%d light=%d far=%.0f horizon=%s zenith=%s sun=%.1f,%.1f,%.5f,%d lights=%d lights_colour=%.3f,%.3f,%.3f shade=%.3f preset=%s ground=%d" % [
+		level, clear.r, clear.g, clear.b, 1 if bool(info.get("have_clear", false)) else 0, 1 if level_dome else 0, 1 if level_dark else 0, level_light,
+		machine.peek_f32(G_FAR_CLIP), horizon.to_html(false), zenith.to_html(false), sun_found.x, sun_found.y, Vector2(toward.x, toward.y).length(),
+		int(info.get("sun_samples", 0)), found.size(), sum.r / n, sum.g / n, sum.b / n, shade, preset_applied if preset_applied != "" else "-",
+		1 if in_force.get("ground", false) else 0]
 
 
 func info_text() -> String:
@@ -581,15 +680,17 @@ func command(w: PackedStringArray) -> void:
 			print("[blank %d] rta_godot: %s" % [main.blanks, info_text()])
 		elif w.size() >= 2 and w[1] == "lights":
 			print("[blank %d] rta_godot: %s" % [main.blanks, lights_text()])
+		elif w.size() >= 2 and w[1] == "stats":
+			print("[blank %d] rta_look_stats %s" % [main.blanks, stats_text()])
 		elif w.size() >= 3:
 			_put(w[1], w[2])
 	elif w[0] == "scene" and w.size() >= 3:
 		if w[1] == "shadow":
-			look.sun = "on" if w[2] == "on" else "off"
+			_put("sun", "on" if w[2] == "on" else "off")
 		elif w[1] == "light":
-			look.lamp = "on" if w[2] == "on" else "off"
+			_put("lamp", "on" if w[2] == "on" else "off")
 		elif w[1] == "shade":
-			look.shade = w[2].to_float()
+			_put("shade", w[2])
 		elif w[1] == "describe" and w.size() >= 4:
 			# debugging: the draws of this frame that go to the 3-D surface, into a file
 			var file := FileAccess.open(w[3], FileAccess.WRITE)

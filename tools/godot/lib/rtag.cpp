@@ -24,6 +24,17 @@
 #include "fpcontrols.h"
 #define RTAG_HAVE_CONTROLS 1
 #endif
+// the souls-style combat mode (tools/recomp/app/soulscombat.h): build.py defines RTAG_HAVE_SOULS when the snapshot has
+// app/soulscombat.cpp (it needs the controls: the lock-on)
+#if defined(RTAG_HAVE_SOULS) && defined(RTAG_HAVE_CONTROLS)
+#include "soulscombat.h"
+#ifdef RTAG_HAVE_NET2
+#include "../net/netdrv.h"
+#include "../net2/hooks.h"
+#endif
+#else
+#undef RTAG_HAVE_SOULS
+#endif
 // the world for a camera inside it (tools/recomp/app/fpworld.h): build.py defines RTAG_HAVE_WORLD when the snapshot has
 // app/fpworld.cpp and the translation wraps its three functions
 #ifdef RTAG_HAVE_WORLD
@@ -158,6 +169,9 @@ struct Pads : rta::PadSource {
             fpcontrols::set_view(replayed || !controls_on ? 0 : fpview::mode(), v.active && !v.fallback, v.look_pitch);
             fpcontrols::translate(blank, state);
             if (float pitch = fpcontrols::take_pitch(); pitch != 0) fpview::add_pitch(pitch);
+#ifdef RTAG_HAVE_SOULS
+            soulscombat::blank(blank);          // the souls-style combat mode (soulscombat.h): off unless asked for; as app_main.cpp
+#endif
             const fpcontrols::Hud& h = fpcontrols::hud();
             rtag_controls o;
             memset(&o, 0, sizeof o);
@@ -343,6 +357,11 @@ void app_command(const std::string& text, uint64_t frame) {
 #ifdef RTAG_HAVE_CONTROLS
     } else if (w[0] == "fpc" && w.size() >= 2) {        // the look controls' own lines (fpcontrols.h), as the native application's
         printf("[frame %llu] fpc: %s\n", (unsigned long long)frame, fpcontrols::command(text.substr(text.find(w[1])), frame).c_str());
+        fflush(stdout);
+#endif
+#ifdef RTAG_HAVE_SOULS
+    } else if (w[0] == "souls") {                       // app souls info | on | off | lock | set NAME VALUE (soulscombat.h), as the native application's
+        printf("[frame %llu] %s\n", (unsigned long long)frame, soulscombat::command(w.size() >= 2 ? text.substr(text.find(w[1])) : std::string()).c_str());
         fflush(stdout);
 #endif
 #ifdef RTAG_HAVE_WORLD
@@ -625,6 +644,13 @@ int rtag_has(const char* feature) {
         return 0;
 #endif
     }
+    if (f == "souls") {                                 // the souls-style combat mode (combat.mode, app souls ...)
+#ifdef RTAG_HAVE_SOULS
+        return 1;
+#else
+        return 0;
+#endif
+    }
     if (f == "network" || f == "net2") {                // the network driver and a room of our own (net2_* exported beside rtag_*)
 #ifdef RTAG_HAVE_NET2
         return 1;
@@ -827,6 +853,13 @@ int rtag_set_option(const char* key, const char* value) {
 #ifdef RTAG_HAVE_CONTROLS
     if (k.compare(0, 9, "controls.") == 0) return fpcontrols::setting(key, value) ? 1 : 0;
 #endif
+    if (k.compare(0, 7, "combat.") == 0) {             // "combat.mode" = souls | off, "combat.<number>" (soulscombat.h)
+#ifdef RTAG_HAVE_SOULS
+        return soulscombat::setting(key, value) ? 1 : 0;
+#else
+        return 0;
+#endif
+    }
     if (k == "game_hud_text") {
 #ifdef RTAG_HAVE_HUD_TEXT
         bool off = v == "off" || v == "0" || v == "no";
@@ -942,6 +975,25 @@ const char* rtag_info(void) {
              (unsigned long long)m.renderer.gs.stats.textures_made, (unsigned long long)m.renderer.gs.stats.textures_held,
              (unsigned long long)m.renderer.gs.stats.texture_missing, (int)m.ended.load(), apprt::sound_figures().c_str());
     m.info = text;
+#ifdef RTAG_HAVE_SOULS
+    // the souls mode: wanted (this copy's setting) / active (the running game's); and what this copy says of itself in a
+    // room (net2_set "copy"), as tools/recomp/net2/launch.cpp souls_describe makes it: the portal says it again when it changes
+    char souls[96];
+    snprintf(souls, sizeof souls, " souls_want=%d souls_on=%d", soulscombat::wanted() ? 1 : 0, soulscombat::active() ? 1 : 0);
+    m.info += souls;
+#ifdef RTAG_HAVE_NET2
+    {
+        const rtanet::Info& net = rtanet::info();
+        uint32_t set = net.patch_set;
+        unsigned words = net.patch_words & 0x7fff;
+        if (soulscombat::wanted()) { words |= 0x8000; if (net2hook::souls_figure) set ^= net2hook::souls_figure(); }
+        if (net.patch_set != 0 || net.patch_words != 0) {
+            snprintf(souls, sizeof souls, " copy=fix=%08x,words=%u", set, words);
+            m.info += souls;
+        }
+    }
+#endif
+#endif
     return m.info.c_str();
 }
 

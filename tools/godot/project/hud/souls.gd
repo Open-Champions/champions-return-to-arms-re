@@ -12,6 +12,7 @@ extends Control
 #     var souls: Control = load("res://hud/souls.gd").new(); souls.set("hud", self); root.add_child(souls)
 
 const Style := preload("res://hud/style.gd")
+const Hud := preload("res://hud/hud.gd")
 
 const BASE := 0xE0800
 const MAGIC := 0x4c554f53
@@ -73,18 +74,34 @@ func _draw() -> void:
 	var s: float = hud.s
 	var a: float = hud.show
 	var pic: Rect2 = hud.picture
-	var w := pic.size.x * 0.24
-	var h := maxf(6.0, 9.0 * s)
-	var rect := Rect2(Vector2(pic.get_center().x - w * 0.5, pic.position.y + pic.size.y * 0.905).round(), Vector2(w, h).round())
+	var area: Rect2 = hud.area
+	# where the bar sits, by layout (hud.gd): it is the third of the player's bars and keeps clear of the others -
+	#   first person: under the two slim bars in the middle (status.gd _minimal), as long as they are
+	#   overhead, third person: on the player's frame lower left (status.gd _frame), in the gap between it and the party's
+	#   frames, as long as the frame's bars - nothing of the middle of the picture (markers, prompts, slots) is covered
+	var w: float
+	var h: float
+	var x: float
+	var y: float
+	if int(hud.layout) == Hud.LAYOUT_FIRST:
+		w = 300.0 * s
+		h = maxf(4.0, 6.0 * s)
+		x = area.get_center().x - w * 0.5
+		y = area.end.y - 96.0 * s + 30.0 * s
+	else:
+		var k: float = 0.9 if int(hud.layout) == Hud.LAYOUT_THIRD else 1.0
+		w = 280.0 * s * k
+		h = maxf(5.0, 7.0 * s * k)
+		x = area.position.x + 100.0 * s * k
+		y = area.end.y - 104.0 * s * k - 16.0 * s * k - h
+	var rect := Rect2(Vector2(x, y).round(), Vector2(w, h).round())
 	var broken := (flags & FL_BROKEN) != 0
 	var empty := (flags & FL_EMPTY) != 0
-	draw_rect(rect.grow(2.0 * s), Color(0, 0, 0, 0.55 * a))
-	draw_rect(rect, Color(0.18, 0.18, 0.18, 0.6 * a))
-	var fill := Color(0.85, 0.32, 0.2) if broken else Color(0.38, 0.8, 0.34)
-	if stamina > 0.0:
-		draw_rect(Rect2(rect.position, Vector2(rect.size.x * stamina, rect.size.y)), Color(fill, 0.9 * a))
-	if shown > stamina + 0.005:
-		draw_rect(Rect2(rect.position + Vector2(rect.size.x * stamina, 0), Vector2(rect.size.x * (shown - stamina), rect.size.y)), Color(1, 0.9, 0.5, 0.45 * a))
+	# the theme's own bar (style.gd, or a skin's), as the health and mana bars are drawn: the same frame and ghost of
+	# what was just spent; green, orange-red while the guard is broken
+	var fill_a := Color(0.85, 0.36, 0.2) if broken else Color(0.42, 0.82, 0.36)
+	var fill_b := Color(0.55, 0.18, 0.1) if broken else Color(0.2, 0.5, 0.18)
+	Style.bar(self, rect, stamina, maxf(shown, stamina), fill_a, fill_b, s, a)
 	if empty:
 		draw_rect(rect, Color(0.9, 0.12, 0.12, 0.35 * a))
 	if (flags & FL_IFRAMES) != 0:

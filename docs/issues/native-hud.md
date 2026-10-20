@@ -12,6 +12,33 @@ the game's memory while it runs. No game art, no game font: every shape is drawn
 the font is the one inside Godot (Open Sans, SIL Open Font License). Pictures, memory
 images, routes, logs and the test tones are under `local/godot-hud/`.
 
+## STATE (2026-10-20): the five views, the souls mode, the game's own screens
+
+Built in `local/godot-r6/` (the sixth Godot round, `native-godot.md`). **Ran** with Godot's own window capture
+(`app hud shot`), 1280 x 720 window, 16:9 (`local/godot-r6/test/hud/h1`, `h2`, `h3`, `h4`; sheets `h2/sheet-views.jpg`,
+`h1/sheet-screens-*.jpg`, `h4/sheet.jpg`; routes `test/hud/mkhud.py`, `mkshop.py`):
+
+| What | overhead | action | chase | shoulder | first |
+|---|---|---|---|---|---|
+| player frame: health, mana, experience | lower left | lower left | lower left (0.9) | lower left (0.9) | two slim bars lower middle |
+| party frames (2-4 players) | above the frame | above the frame | above the frame | above the frame | **lower left (new: they were not drawn in first person)** |
+| boss bar (islsm1's boss, by name, real) | top middle | top middle | top middle | top middle | top middle |
+| stamina (souls mode) | **on the player's frame** | on the frame | on the frame | on the frame | under the slim bars |
+
+- Party frames: one real second player in a Godot room (`test/souls2/pictures/real5/b-09-in-drunare.png`); four
+  frames with the HUD's own made-up players ("TEST DATA", `app hud fake-party 3`) in islsm1 in every view.
+- Stamina (`hud/souls.gd`): drawn with the theme's bar (`Style.bar`, so a skin draws it too), on the player's frame in
+  the gap below the party's frames (overhead, action, third person), under the slim bars in first person. The first
+  placement (under the middle of the picture) covered the weapon's name and the slot row in the overhead layout and
+  sat on the "attacked from behind" marker (`souls2` picture, `h1`): moved.
+- The game's own screens with the new HUD in "new" mode (the game's HUD layer off): the **bag** (both pages), the
+  **pause menu** (with the HUD's pause band), a **dialogue** (all pages, the "End / Enter Shop" choice) are the
+  game's own and whole, in the overhead and the chase view (`h1`, `h4`). The game's **map** (R3) is part of the
+  game's HUD layer and is not shown in "new" mode (the HUD's radar / compass is). **Not seen: the shop's own
+  screens** - the scripted presses ended the dialogue instead of choosing "Enter Shop" in three tries (timing of the
+  choice page); and a dialogue was not started in first person by the script (the character faced away after being
+  placed). Both want a person or a better script.
+
 ## STATE (2026-10-13, 15:50)
 
 Nothing of this work is still running; test windows are closed (checked by process id at

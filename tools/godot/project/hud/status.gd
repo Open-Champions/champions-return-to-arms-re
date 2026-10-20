@@ -80,6 +80,7 @@ func _draw() -> void:
 	if not hud.me.is_empty():
 		if hud.layout == Hud.LAYOUT_FIRST:
 			_minimal(hud.me)
+			_party()                    # the others' frames lower left, as in the other views (no frame of one's own there)
 		else:
 			_frame(hud.me)
 			_party()
@@ -188,6 +189,8 @@ func _party() -> void:
 	var w: float = 250.0 * s
 	var h: float = 50.0 * s
 	var y: float = hud.area.end.y - (104.0 + 62.0) * s * (0.9 if hud.layout == Hud.LAYOUT_THIRD else 1.0)
+	if hud.layout == Hud.LAYOUT_FIRST:
+		y = hud.area.end.y + 8.0 * s       # first person has no frame of one's own: the stack starts at the foot
 	for slot in range(hud.players.size() - 1, -1, -1):
 		var p: Dictionary = hud.players[slot]
 		if not p.get("present", false) or p.get("local", false):

@@ -9,6 +9,81 @@ Nothing derived from the game is in the repository. `tools/godot/` holds glue, b
 scripts, the Godot project's scripts and shaders. The translated code, the libraries, the
 staged project, exported applications, pictures and logs are under `local/godot-spike/`.
 
+## SIXTH ROUND (2026-10-20): the souls mode in the library and the room, look presets for all 111 levels, the HUD in five views
+
+**Read this first.**  Built into `local/godot-r6/` (`RTA_GODOT_OUT=local/godot-r6`; snapshot of `tools/recomp` taken
+2026-10-20 with `build.py snapshot --refresh`: it carries `app/soulscombat.*`, `rt_replace_function`, the net2 room
+option).  Tests, pictures and logs: `local/godot-r6/test/`, `local/godot-r6/presets/`, `local/godot-r6/balance/`.
+
+| Asked | State | Shown |
+|---|---|---|
+| the souls combat mode in the library | **done, Ran**: `build.py` compiles `soulscombat.cpp`; `rtag.cpp` calls `soulscombat::blank` beside `fpcontrols::translate`, takes `combat.*` options and `app souls ...`, says the copy's room description in `rtag_info`; `main.gd --combat souls` | offline: dodge, heavy, lights, a poise break, blocks paid (`test/souls1/out.txt`) |
+| ... on the portal's room screen | **done, Ran**: "Combat: Classic / Souls-style" (host); `gameflow.gd` says the copy's description to the room; the joiner's library follows; a copy without the mode: warning, Start refused | `test/souls2` (two Godot portals: **5,931 ticks in step**, every column equal, the mode's included; a fight in drunare, deaths), `test/refuse1` (-7 refused); `native-souls-combat.md` 6b |
+| presets for every level | **done for 111** (`tools/godot/presets.py`: walk, make, sheets, stats; `project/presets/tuning.cfg` for hand-tuning; `scene_view.gd` loads them) | `presets/sheets/LEVEL.jpg` (before above, after below), `presets/sheets/index.jpg` |
+| the Forward+ balance | **done**: the sun is computed for linear light, 0.6 of the way from the old rule (`balance`), and Forward+ grades with saturation 1.22 | `balance/` and the table below |
+| the HUD everywhere | **Ran in all five views**; party frames added to first person; stamina moved onto the player's frame | `native-hud.md` STATE 2026-10-20 |
+
+### The look presets (`tools/godot/presets.py`, `scene_view.gd`)
+
+- **The walk**: one Godot program per chunk of 8 levels from power-on (a level whose scene keeps the game's camera
+  can spoil the rest of a program: seen after `bossevil`, `dis2`, `blood1` - the walk puts the camera back to
+  following the player, `[0x4F8450]+0x34 = 1`, as `tour.py` does), at most 3 at a time, 960 x 540, unpaced.  At 300
+  ticks into each level, chase view: stop `a`; `g` the same moment with all of Godot's look off (the game's own
+  colours); `b` after a walk, `c` the camera turned, `f` first person; each stop as the fifth round drew it (`old`)
+  and with this round's balance (`base`); one `rta_look_stats` line a stop (clear colour, dome, dark, light level, far
+  plane, the painted sun, the game's light nodes near the eye).
+- **The pick** (`make`), per level: the kind (open sky 28, painted dome 19, dark 21, dark with three or more of the
+  game's lights near 43) sets shade, haze distance and amount, bloom, the game's lights' energy, contrast, a low sun
+  under a warm clear colour; brightness and saturation are moved half of the way to a target made from the `g`
+  picture (0.85 of its brightness, 1.25 of its saturation), within 0.9..1.15 and 1.0..1.4.  Each section of the made
+  file says why (`; dark, lit by the game's lights; light level 128; 7 of the game's lights near; brightness ...`).
+- **Files**: `OUT/levels.cfg` (game output, staged into the project by `build.py project` as `res://presets/levels.cfg`,
+  and into an export), `project/presets/tuning.cfg` (tracked, my numbers), `user://look_presets.cfg`, `--look-presets
+  FILE` / `$RTA_LOOK_PRESETS`.  A key given with `--look` or `app look` stays as given; `--look preset=off` leaves
+  them out.  `app look stats` prints the line the walk reads.
+- **Not seen in a view along the ground** (their pictures are the game's own camera: a scripted opening or an
+  ending): `blood1`, `bossevil`, `bossgood`, `dis2`, `endbad`, `endgood`, `intro` - presets made from their colours all
+  the same, not looked at.
+
+### The Forward+ balance (Ran, `local/godot-r6/balance`, stop a / b / c, lower two thirds, mean of 255)
+
+| level | Compatibility (fifth round's look) | Forward+, fifth round | Forward+ now (balance 0.6, the level's preset) | the game's own colours (look off) |
+|---|---|---|---|---|
+| hub | 107, saturation 0.28 | 86, 0.22 | 104, 0.23 | 115, 0.19 |
+| valor | 35, 0.58 | 29, 0.44 | 37, 0.44 | 52, 0.36 |
+| tormenta | 61, 0.53 | 48, 0.65 | 60, 0.65 | 70, 0.52 |
+
+Stop a, lower two thirds of the picture, mean brightness of 255 and mean saturation (`presets.py stats`; the
+Compatibility pictures: `presets.py walk local/godot-r6/balance --renderer gl_compatibility`).  Brightness now matches
+the Compatibility renderer within 3 of 255; the full linear rule (balance 1) went past it (hub 114, valor 47).
+Over all 111 levels, stop a: 39.7 before, 45.6 after; saturation 0.406 -> 0.439.  **Left**: valor and the hub are still
+less saturated than under Compatibility (0.44 / 0.58, 0.23 / 0.28) - its shadow tint and its sRGB approximations add
+colour that Forward+ does not; the per-level saturation of the presets can be raised in `tuning.cfg` if wanted.
+
+### Hand-tuning (`project/presets/tuning.cfg`)
+
+From the contact sheets: the hub kept at brightness 1 (the made preset dimmed it), `storm5` (ice under a pale sky)
+less bright and less glow, the four fire levels under an orange clear colour (`fire1`, `fire2`, `firbonus`,
+`firmedal`) less saturation and glow.  Ran again after the change (`presets/after-h*.out`: the presets in force).
+
+### Files changed this round
+
+`tools/godot/build.py` (soulscombat.cpp; the presets staged and exported), `lib/rtag.cpp`, `presets.py` (new),
+`project/main.gd` (`--combat`, `--look-presets`), `project/scene_view.gd` (presets, the Forward+ sun, grade keys,
+`app look stats`), `project/presets/tuning.cfg` (new), `project/export_presets.cfg` (`presets/*.cfg` exported),
+`project/portal/gameflow.gd`, `project/portal/screens/room.gd`, `project/portal/dev/shots.gd` (room5 with the
+combat choice and the refusal), `project/hud/souls.gd`, `project/hud/status.gd`.  Nothing in `tools/recomp`.
+
+### Still wrong / not done
+
+- 7 levels never reached a view along the ground in the walk (scripted openings, endings, the title): see above.
+  `islc1` and `storm4` were in a ground view before but not in the after walk (the game's camera at the stops).
+- The arenas without a place for a character (`compsto`, `pvp*`) show the character in the void: not judged.
+- The shop's own screens were not reached by the script (`native-hud.md`); a person should open one.
+- Not played with hands: the combat mode in Godot, the room option, the presets in motion.
+- Windows / Linux builds of the Godot library: not touched here (another agent's files).
+
+
 ## FIFTH ROUND (2026-10-19): Forward+ on Metal, the art pack, kept meshes written in place; the portal on the real service
 
 **Read this first.**  Built into `local/godot-r5/` (`RTA_GODOT_OUT=local/godot-r5`, new in `build.py` / `run.py`: another

@@ -46,6 +46,10 @@ var choosing := false               # we asked for the character screens and wai
 var want_choose := false            # asked for before the title screen was up: done when it is
 var chosen_round := -1              # the round a character was chosen for (a round = one game)
 var readied_round := -1
+var copy_said := ""                 # what this copy last said of itself in the room (net2_set "copy"): the fix set, the souls mode
+var copy_clock := 0.0
+var combat_has := false             # the game library has the souls-style combat mode (rtag_has "souls")
+var combat_want := false            # ... and this copy is set to play with it (its own setting; a joiner follows the host)
 
 
 func attach() -> void:
@@ -111,6 +115,46 @@ func _process(_delta: float) -> void:
 		phase_changed.emit(phase)
 	if want_choose and phase == TITLE and in_room:
 		choose()
+	copy_clock -= _delta
+	if copy_clock <= 0.0:
+		copy_clock = 0.5
+		_say_copy(game)
+
+
+# ---- the souls-style combat mode, a room option (tools/recomp/app/soulscombat.h, net2 launch.cpp) ----------------
+# Every copy of a room plays with it or none does: a copy says so in what it tells the room of itself (bit 0x8000 of
+# its fix-set word count, the mode's numbers folded into the figure: the library works that text out, RtaMachine.info
+# "copy="); a joiner's library takes the host's choice by itself; a room whose copies differ shows the warning and is
+# not started (net2_start refuses).  The host chooses on the room screen (set_combat).
+func _say_copy(game: Node) -> void:
+	if game == null or game.get("machine") == null or not bool(game.get("started")):
+		return
+	var machine: Object = game.get("machine")
+	combat_has = bool(machine.call("has", "souls"))
+	var info := String(machine.call("info"))
+	var at := info.find(" copy=")
+	combat_want = info.find("souls_want=1") >= 0
+	if at < 0:
+		return
+	var text := info.substr(at + 6).get_slice(" ", 0).replace(",", " ")
+	if text != copy_said:
+		copy_said = text
+		var r: int = portal.session.setting("copy", text)
+		print("portal: this copy says of itself: %s (%d)" % [text, r])
+
+
+func combat_available() -> bool:
+	return active and combat_has
+
+
+func set_combat(souls: bool) -> bool:
+	var game: Node = portal.handover.game
+	if game == null or game.get("machine") == null or not bool(game.get("started")):
+		return false
+	var ok := bool(game.get("machine").call("set_option", "combat.mode", "souls" if souls else "off"))
+	copy_clock = 0.0                # said again at once
+	print("portal: souls-style combat %s for this copy (%s)" % ["wanted" if souls else "not wanted", "taken" if ok else "refused"])
+	return ok
 
 
 func _moved(from: int, to: int, room: Dictionary) -> void:

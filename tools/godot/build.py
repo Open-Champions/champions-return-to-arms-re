@@ -282,6 +282,10 @@ def build_lib(args):
     # the look controls (fpcontrols.h): nothing of the runtime in them but iface.h; rtag.cpp finds the header by itself
     if os.path.exists(os.path.join(app, 'fpcontrols.cpp')):
         jobs.append((os.path.join(app, 'fpcontrols.cpp'), ['-std=c++17', opt, '-Wall', '-I', app, '-I', rt], 'a_'))
+        # the souls-style combat mode (soulscombat.h, docs/issues/native-souls-combat.md): it needs the controls (lock-on)
+        if os.path.exists(os.path.join(app, 'soulscombat.cpp')):
+            jobs.append((os.path.join(app, 'soulscombat.cpp'), rt_flags + ['-I', app, '-I', render], 'a_'))
+            lib_flags.append('-DRTAG_HAVE_SOULS')
     else:
         lib_flags.append('-DRTAG_NO_CONTROLS')
     if not args.original:
@@ -378,6 +382,14 @@ def stage_project(args):
             shutil.copy2(a, b + '.new%d' % os.getpid())
             os.replace(b + '.new%d' % os.getpid(), b)
             count += 1
+    # the per-level look presets made by presets.py from a walk through the levels (game output: OUT/presets, not in
+    # the repository) go beside the tracked hand-tuning in presets/
+    made = os.path.join(OUT, 'presets', 'levels.cfg')
+    if os.path.exists(made):
+        os.makedirs(os.path.join(to, 'presets'), exist_ok=True)
+        if not os.path.exists(os.path.join(to, 'presets', 'levels.cfg')) or not filecmp.cmp(made, os.path.join(to, 'presets', 'levels.cfg'), shallow=False):
+            shutil.copy2(made, os.path.join(to, 'presets', 'levels.cfg'))
+            count += 1
     # The staged copy is the one test runs start: its window is small and says what it is from the first
     # moment (the script gives it its final title).  An exported application is made from a copy without this.
     open(os.path.join(to, 'override.cfg'), 'w').write(
@@ -413,6 +425,10 @@ def export_app(args):
         for name in files:
             if not name.endswith(('.uid', '.import')) and name not in ('.DS_Store', 'override.cfg'):
                 shutil.copy2(os.path.join(folder, name), os.path.join(project, rel, name))
+    made = os.path.join(OUT, 'presets', 'levels.cfg')     # the look presets of presets.py (game output: this machine's application only)
+    if os.path.exists(made):
+        os.makedirs(os.path.join(project, 'presets'), exist_ok=True)
+        shutil.copy2(made, os.path.join(project, 'presets', 'levels.cfg'))
     os.makedirs(os.path.join(project, 'bin'))
     for name in ('rta_godot.macos.template_release.dylib', 'rta_godot.macos.template_debug.dylib'):
         shutil.copy2(os.path.join(OUT, 'project', 'bin', name), os.path.join(project, 'bin', name))

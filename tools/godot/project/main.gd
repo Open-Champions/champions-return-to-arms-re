@@ -40,8 +40,11 @@ extends Node
 #   --view NAME         the camera view: overhead (the game's own), action, chase, shoulder, first; V cycles them
 #                       (the game builds and culls each frame for the view itself: tools/recomp/app/fpview.h)
 #   --no-game-hud       the game's own HUD layer is left out (for a HUD drawn by Godot)
+#   --combat souls|off  the souls-style combat mode (tools/recomp/app/soulscombat.h: stamina, dodge, light / heavy attacks,
+#                       blocking with stamina, poise, lock-on); offline this copy's own, in a room the host's (portal room screen)
 #   --light, --shadow, --pull-back F, --orbit DEG     scene mode: see scene_view.gd
 #   --look K=V[,K=V...] scene mode: the look (sky, fog, sun, shadows, bloom, anti-aliasing ...): see scene_view.gd
+#   --look-presets FILE scene mode: one more file of per-level look presets over the project's (scene_view.gd, presets.py)
 #   --no-hud            the new HUD (res://hud) is not added
 #   --no-portal         (read by the portal: straight to this scene)
 #   --net2-flow ROLE:DIR   a test: a room of our own through RtaNet2 as the portal drives it (dev/net2_flow.gd); give the
@@ -110,6 +113,7 @@ var opt := {
 	"no_sound": false, "test": "", "stop_after": 0, "figures": "", "args": PackedStringArray(),
 	"view": "", "game_hud": true, "light": false, "shadow": false, "pull_back": 1.0, "orbit": 0.0,
 	"look": "", "hud": true, "speed_log": 0, "net2_flow": "", "art_pack": "", "mipmaps": true,
+	"combat": "", "look_presets": "",
 }
 var speed := {"usec": 0, "cpu": 0.0, "blanks": 0, "last": 0, "late": 0, "worst": 0}
 signal session_over(why: String)
@@ -238,11 +242,13 @@ func _parse_arguments() -> void:
 			"--figures": opt.figures = value; k += 1
 			"--view": opt.view = value; k += 1
 			"--no-game-hud": opt.game_hud = false
+			"--combat": opt.combat = value; k += 1
 			"--light": opt.light = true
 			"--shadow": opt.shadow = true
 			"--pull-back": opt.pull_back = value.to_float(); k += 1
 			"--orbit": opt.orbit = value.to_float(); k += 1
 			"--look": opt.look = value; k += 1
+			"--look-presets": opt.look_presets = value; k += 1
 			"--speed-log": opt.speed_log = value.to_int(); k += 1
 			"--no-hud": opt.hud = false
 			"--net2-flow": opt.net2_flow = value; k += 1
@@ -382,6 +388,8 @@ func _start() -> void:
 	view.set("message", "")
 	if not opt.game_hud:
 		machine.set_option("game_hud", "off")
+	if String(opt.combat) != "" and not machine.set_option("combat.mode", String(opt.combat)):
+		print("rta_godot: this game library has no souls-style combat mode (--combat %s ignored)" % opt.combat)
 	if own_picture:
 		picture_texture = ImageTexture.new()
 	else:

@@ -1058,6 +1058,9 @@ func scenario_room5() -> void:
 		await wait(0.8)
 		flow_says("joined by " + join_by)
 		await shot(p + "03-in-the-room")
+	if OS.get_environment("RTA_SHOTS_COMBAT") == "souls":
+		if await combat_souls(p):
+			return
 	# the game: characters on its own screens, Start, launch, the hub
 	await until(func() -> bool: return game_phase() == 1 and portal.shown, 300.0)
 	await wait(0.8)
@@ -1087,10 +1090,50 @@ func scenario_room5() -> void:
 	if level_to != "":
 		await until(func() -> bool: return String(portal.gameflow.status.get("level", "")) == level_to and game_tick() >= 0, 600.0)
 		var at := game_tick()
-		await until(func() -> bool: return game_tick() >= at + 600, 300.0)
+		var stay := int(OS.get_environment("RTA_SHOTS_STAY")) if OS.has_environment("RTA_SHOTS_STAY") else 600     # ticks in that level
+		await until(func() -> bool: return game_tick() >= at + stay, 300.0 + stay / 30.0)
 		flow_says("in " + level_to)
 		await shot(p + "09-in-" + level_to)
 	post(role + "_done")
 	await fetch("b_done" if role == "a" else "a_done", 300.0)
 	await wait(2.0)
 	flow_says("end")
+
+
+# room5 with RTA_SHOTS_COMBAT=souls: the host picks the souls-style combat mode on the room screen (the "combat" choice);
+# the joiner's game library takes it up by itself; both wait until every copy in the room says it has the mode
+func combat_souls(p: String) -> bool:
+	await until(func() -> bool: return bool(portal.gameflow.call("combat_available")), 300.0)
+	if portal.current_name() != "room":
+		portal.go("room")
+	await wait(0.8)
+	if role == "a":
+		await focus_key("combat")
+		await key(KEY_RIGHT)
+		flow_says("combat choice pressed")
+	await until(func() -> bool:
+		var all := room_members().size() >= 2
+		for m in room_members():
+			all = all and (int(m.get("fix_words", 0)) & 0x8000) != 0
+		return all, 120.0)
+	await wait(0.8)
+	var words := []
+	for m in room_members():
+		words.append("%s %08x/%d" % [String(m.get("name", "")), int(m.get("fix_set", 0)), int(m.get("fix_words", 0))])
+	flow_says("combat souls agreed: " + ", ".join(PackedStringArray(words)))
+	await shot(p + "04c-combat-souls")
+	if OS.get_environment("RTA_SHOTS_REFUSE") == "1" and role == "a":
+		# the other copy has no souls-style mode: the room says so, Start stays disabled, and the service refuses a start
+		await until(func() -> bool: return portal.gameflow.call("game_ready"), 300.0)
+		await wait(1.0)
+		portal.screen.rebuild()
+		await wait(0.5)
+		var b: Control = portal.screen.find_key(portal.screen, "main")
+		print("shots: a refuse: the main button %s, \"%s\"" % ["disabled" if b != null and bool(b.get("disabled")) else "ENABLED", String(b.get("text")) if b != null else "-"])
+		await shot(p + "04d-refused-room")
+		var r: int = portal.session.start()
+		await wait(1.0)
+		print("shots: a refuse: session.start() -> %d (%s); room state %d" % [r, portal.session.error_text(r), int(portal.session.room().get("state", 0))])
+		post("a_done")
+		return true
+	return false
