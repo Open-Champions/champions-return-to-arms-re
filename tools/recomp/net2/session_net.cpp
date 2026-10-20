@@ -878,6 +878,19 @@ struct Net : Backend {
             if (linked() && !fatal) { drop_link("Connecting again (" + key + " changed)..."); tries = 0; next_try = steady_ms(); }
             return NET2_OK;
         }
+        if (key == "copy") {            // what this copy says about itself, said again ("fix=%08x words=%u": the souls mode's room option)
+            unsigned long set = 0, words = 0;
+            if (sscanf(value.c_str(), "fix=%lx words=%lu", &set, &words) != 2) return NET2_ERR_ARGUMENT;
+            fix_set = (uint32_t)set;
+            fix_words = (uint16_t)words;
+            if (stage == ONLINE) {
+                char copy[96];
+                snprintf(copy, sizeof copy, "fix=%08x words=%u can=%u does=%u", fix_set, fix_words, arith_can, arith_does);
+                n++;
+                send_line("copy n=" + std::to_string(n) + " " + copy);
+            }
+            return NET2_OK;
+        }
         if (key == "mock-speed") return NET2_OK;
         return NET2_ERR_ARGUMENT;
     }

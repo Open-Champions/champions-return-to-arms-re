@@ -25,4 +25,13 @@ inline void (*after)(Ctx* c, bool from_tick) = nullptr;       // the same pass h
 inline bool (*udp_owns)(uint16_t game_port) = nullptr;
 inline int32_t (*udp_send)(uint16_t game_port, const uint8_t* data, uint32_t length, uint32_t dest_ip, uint16_t dest_port) = nullptr;
 inline bool (*udp_receive)(uint16_t game_port, uint8_t* buffer, size_t capacity, size_t& size, uint32_t& shown_ip, uint16_t& from_port) = nullptr;
+// The souls-style combat mode (tools/recomp/app/soulscombat.h), a room option: null in a program without it.
+//   souls_wanted   1 / 0: what this copy is set to (folded into the copy's description: fix_words bit 0x8000)
+//   souls_want     a joiner takes the host's choice
+//   souls_figure   folded into the copy's fix-set figure while the mode is wanted (its numbers must be the same everywhere)
+//   souls_room     the launched game's mode (1 / 0), or -1 when the room's game is over
+inline int (*souls_wanted)() = nullptr;
+inline void (*souls_want)(bool on) = nullptr;
+inline uint32_t (*souls_figure)() = nullptr;
+inline void (*souls_room)(int on) = nullptr;
 }  // namespace net2hook

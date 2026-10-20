@@ -85,7 +85,7 @@ struct Settings {
         else if (key == "game_hud") game_hud = !(value == "off" || value == "no" || value == "0" || value == "false");
         else if (key == "game_hud_text") game_hud_text = !(value == "off" || value == "no" || value == "0" || value == "false");
         else if (key == "music_volume") { music_volume = atof(value.c_str()); music_volume = music_volume < 0 ? 0 : music_volume > 1 ? 1 : music_volume; }
-        else if (key == "view" || key.compare(0, 5, "view.") == 0 || key.compare(0, 9, "controls.") == 0 || key == "world" || key.compare(0, 6, "world.") == 0)
+        else if (key == "view" || key.compare(0, 5, "view.") == 0 || key.compare(0, 9, "controls.") == 0 || key.compare(0, 7, "combat.") == 0 || key == "world" || key.compare(0, 6, "world.") == 0)
             view.push_back({key, value});       // controls.*: fpcontrols::setting; world, world.*: fpworld::setting
         else return false;
         return true;

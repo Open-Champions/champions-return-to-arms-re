@@ -293,6 +293,7 @@ void on_tasks(Ctx* c, bool from_tick) {
 }
 
 void launch_ended(bool failed, const std::string& text) {
+    if (net2hook::souls_room) net2hook::souls_room(-1);     // the room's game is over: the souls mode is this copy's setting again
     G.carrying = false;
     if (G.carrier == &G.own_carrier) G.own_carrier.end();
     G.failed = failed;
@@ -327,6 +328,34 @@ void on_after(Ctx* c, bool from_tick) {
         wr32(A_FE_NET, 0);
         launch_ended(true, "the launch did not complete (a player could not be reached, or it was cancelled)");
     }
+}
+
+// ---- the souls-style combat mode, a room option (app/soulscombat.h) -------------------------------
+// The copy's description says whether it plays with the mode: bit 0x8000 of the word count (no fix set has that
+// many words) and, folded into the figure, the mode's numbers.  A joiner takes the host's choice and says so again;
+// a copy without the mode says nothing of it, and the room then shows a mismatch and does not start.
+void souls_describe(uint32_t& set, uint16_t& words) {
+    if (net2hook::souls_wanted && net2hook::souls_wanted() == 1) { words |= 0x8000; if (net2hook::souls_figure) set ^= net2hook::souls_figure(); }
+}
+void follow_souls() {
+    if (!G.session || !net2hook::souls_wanted || !net2hook::souls_want) return;
+    net2_room_t room;
+    net2_room(G.session, &room);
+    if (room.state != NET2_ROOM_OPEN || room.my_slot == room.host_slot) return;
+    const net2_member* host = nullptr;
+    for (int k = 0; k < room.count; k++) if (room.members[k].host) host = &room.members[k];
+    if (!host || (host->fix_set == 0 && host->fix_words == 0)) return;
+    bool host_on = (host->fix_words & 0x8000) != 0;
+    if (host_on == (net2hook::souls_wanted() == 1)) return;
+    net2hook::souls_want(host_on);
+    const rtanet::Info& info = rtanet::info();
+    uint32_t set = info.patch_set;
+    uint16_t words = (uint16_t)info.patch_words;
+    souls_describe(set, words);
+    char text[64];
+    snprintf(text, sizeof text, "fix=%08x words=%u", set, words);
+    net2_set(G.session, "copy", text);
+    say("the host plays with the souls-style combat mode %s: so does this copy now", host_on ? "on" : "off");
 }
 
 // ---- the room ------------------------------------------------------------------------------
@@ -367,6 +396,21 @@ void follow_room(int64_t now) {
     d.host_slot = start.host_slot;
     d.options = start.options;
     for (int k = 0; k < start.count && k < NET2_PLAYERS; k++) memcpy(d.players[k].name, start.players[k].name, sizeof d.players[k].name);
+    // the souls-style combat mode (app/soulscombat.h) is a room option: every copy has it or none; a room whose copies
+    // differ is not launched here (net2_start refuses it at the host; this is for a host that did not ask)
+    if (net2hook::souls_room) {
+        bool all = room.count > 0, any = false;
+        for (int k = 0; k < room.count; k++) { bool on = (room.members[k].fix_words & 0x8000) != 0; all = all && on; any = any || on; }
+        if (any && !all) {
+            G.launched_session = start.session;
+            G.start_seen_ms = 0;
+            say("the room started, but its copies do not all have the souls-style combat mode: not launching");
+            tell_room(nullptr);
+            return;
+        }
+        net2hook::souls_room(all ? 1 : 0);
+        say("souls-style combat: %s for this game", all ? "on" : "off");
+    }
     G.direct = d;
     G.carrier = carrier;
     G.want_launch = true;
@@ -486,6 +530,7 @@ void on_blank(uint64_t number) {
     default:
         break;
     }
+    follow_souls();
     follow_room(now);
     play_by_itself(now);
 }
@@ -631,6 +676,7 @@ void install() {
     config.name = name.empty() ? nullptr : name.c_str();
     config.fix_set = info.patch_set;
     config.fix_words = (uint16_t)info.patch_words;
+    souls_describe(config.fix_set, config.fix_words);
     config.arith_does = (uint8_t)rtanet::arithmetic();
     config.arith_can = config.arith_does ? 2 : 1;
     config.build = "native";

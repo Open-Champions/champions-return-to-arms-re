@@ -102,7 +102,13 @@ void State::room_checks() {
         if (m.fix_set == 0 && m.fix_words == 0 && m.arith_can == 0) continue;    // said nothing about its copy
         if (!first) { first = &m; continue; }
         char text[NET2_TEXT];
-        if (m.fix_set != first->fix_set || m.fix_words != first->fix_words) {
+        if ((m.fix_words & 0x8000) != (first->fix_words & 0x8000)) {
+            // the souls-style combat mode (tools/recomp/app/soulscombat.h) is a room option every copy must have
+            snprintf(text, sizeof text, "The souls-style combat mode is %s for %s and %s for %s: every copy must have it. Do not start.",
+                     (m.fix_words & 0x8000) ? "on" : "off", m.name, (first->fix_words & 0x8000) ? "on" : "off", first->name);
+            room.mismatch = 1;
+            put(room.warning, text);
+        } else if (m.fix_set != first->fix_set || m.fix_words != first->fix_words) {
             snprintf(text, sizeof text, "%s has a different fix set (%08x, %u words) from %s (%08x, %u words): the game would fall out of step. Do not start.",
                      m.name, m.fix_set, m.fix_words, first->name, first->fix_set, first->fix_words);
             room.mismatch = 1;
@@ -387,6 +393,11 @@ int net2_start(net2* n) {
     int r = in_open_room(n, true);
     if (r) return r;
     if (n->body->s.room.count < 2) return n->body->s.error(NET2_ERR_STATE, "A game needs at least two players.");
+    // the souls-style combat mode is all or nothing (room_checks): a room whose copies differ in it is not started
+    const net2_room_t& room = n->body->s.room;
+    for (int i = 1; i < room.count; i++)
+        if ((room.members[i].fix_words & 0x8000) != (room.members[0].fix_words & 0x8000))
+            return n->body->s.error(NET2_ERR_REFUSED, "Not every copy in the room plays with the souls-style combat mode.");
     return n->body->start();
 }
 int net2_leave(net2* n) { LOCKED; return n ? n->body->leave() : NET2_ERR_ARGUMENT; }

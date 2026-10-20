@@ -118,7 +118,7 @@ def main():
         result = subprocess.run([sys.executable, os.path.join(RECOMP, 'build.py')] + game)
         if result.returncode != 0:
             return result.returncode
-    objdir = os.path.join(OUT, 'obj-' + args.name.replace('rta_', ''))
+    objdir = os.path.join(OUT, 'obj-' + (args.as_name or args.name).replace('rta_', ''))   # a build under another name keeps its own objects
     os.makedirs(objdir, exist_ok=True)
     os.makedirs(os.path.join(OUT, 'bin'), exist_ok=True)
     qtlib = os.path.join(args.qt, 'lib')
@@ -150,6 +150,8 @@ def main():
     jobs.append((os.path.join(HERE, 'fpworld.cpp'), rt_flags + ['-I', HERE, '-I', render], 'a_'))
     # the controls of the look views (plain C++: the Windows program compiles the same file)
     jobs.append((os.path.join(HERE, 'fpcontrols.cpp'), ['-std=c++17', args.opt, '-Wall', '-I', HERE, '-I', rt], 'a_'))
+    # the souls-style combat mode (soulscombat.h; docs/issues/native-souls-combat.md): reaches the game's memory and its overlay the frame list
+    jobs.append((os.path.join(HERE, 'soulscombat.cpp'), rt_flags + ['-I', HERE, '-I', render], 'a_'))
     jobs.append((os.path.join(HERE, 'look_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
     if not args.original:
         # the films: the library entry points of hle-app.txt, which only this translation leaves open

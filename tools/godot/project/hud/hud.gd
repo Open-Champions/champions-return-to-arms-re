@@ -137,6 +137,9 @@ func _ready() -> void:
 	music.set("hud", self)
 	notice_piece.set("hud", self)
 	notice_piece.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var souls: Control = load("res://hud/souls.gd").new()   # the souls-style combat mode's stamina bar and lock-on (hud/souls.gd)
+	souls.set("hud", self)
+	root.add_child(souls)
 	_find_portal.call_deferred()
 	if ClassDB.class_exists("RtaGameState"):
 		gs = ClassDB.instantiate("RtaGameState")

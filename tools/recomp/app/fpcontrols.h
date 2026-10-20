@@ -137,6 +137,13 @@ struct Hud {
     uint32_t swings = 0, hits_dealt = 0, hits_taken = 0, deaths = 0, respawns = 0;
     float last_hit_bearing = 0;         // where the last hit taken came from, degrees right (+) / left (-) of the look
     float last_hit_amount = 0;
+    // souls-style combat (app/soulscombat.h): the lock-on of this machine's look - presentation only; it reaches the
+    // simulation as the yaw word, like the mouse.  `foes`: enemies alive within lock range, nearest first
+    bool souls = false;                 // the combat mode is on: R3 / Tab / mouse button 5 lock on, L3 passes to the game
+    Mark lock;                          // the creature the look is locked to (valid = locked)
+    int foe_count = 0;
+    Threat foes[16];
+    uint32_t lock_switches = 0;         // counters
 };
 const Hud& hud();
 std::string hud_text();                 // the same as "key=value" words on one line (tests, logs)
@@ -151,6 +158,13 @@ std::string help_text();                // the keys and buttons of the look view
 // wheel N | set KEY VALUE | info | hud | log on|off.  The answer is one line.
 std::string command(const std::string& text, uint64_t blank);
 std::string figures();                  // counters for the report at the end of a run
+
+// The souls-style combat mode (app/soulscombat.h) tells the controls it is on: L3 (the dodge) is then given to the game
+// in the look views, R3 (Tab, mouse button 5) toggles the lock-on instead of reaching the game, mouse button 4 is L3,
+// and while locked the look turns to the target by itself (a flick of the mouse or the right stick changes target)
+// and the strafe mode is asked for in every look view.
+void set_souls(bool on);
+void lock_toggle();                     // any thread: at the next blank
 
 // Mouse buttons and extra keys as controller buttons (rta::PadButton bits), given the view.
 uint16_t mouse_buttons_as_pad();

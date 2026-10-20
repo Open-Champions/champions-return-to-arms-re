@@ -91,6 +91,11 @@ struct Settings {
     float swing_turn = 5.0f;            // during a swing or shot the look comes round to the simulation's target: at most this many degrees a tick (0 = never)
     float swing_turn_within = 6.0f;     // ... until the target is this near the middle of the picture
     bool swing_tilt = true;             // first person: during a swing the view tips toward a target that is above or below the picture's middle
+    // the lock-on of the souls-style combat mode (soulscombat.h)
+    float lock_range = 600.0f;          // units: a target further than this (or dead, or no enemy any more) lets go
+    float lock_turn = 0.30f;            // share of the bearing to the target the look turns a blank
+    float lock_turn_max = 9.0f;         // degrees a blank at most
+    float lock_flick = 7.0f;            // degrees of mouse turn in one blank (or the right stick past 0.85 from rest) that change target
 };
 Settings g_set;
 std::mutex g_settings_lock;
@@ -103,6 +108,8 @@ std::atomic<float> g_mouse_dx{0}, g_mouse_dy{0}, g_wheel{0};
 std::atomic<u32> g_mouse_held{0};
 std::atomic<float> g_pitch_out{0};
 std::atomic<bool> g_pointer{false};
+std::atomic<bool> g_souls{false};
+std::atomic<int> g_lock_toggle{0};
 
 void add(std::atomic<float>& a, float v) {
     float old = a.load();
@@ -111,6 +118,9 @@ void add(std::atomic<float>& a, float v) {
 
 // ---- state (the game's thread) ----------------------------------------------------------------
 Hud g_hud;
+u32 g_lock_object = 0;              // the souls mode's lock-on target (0: none)
+int g_lock_flick_side = 0;          // the right stick's flick: -1 / 1 while held past the edge
+bool g_lock_r3 = false;
 bool g_look_on = false;
 double g_look_units = 0;            // the yaw word, kept with its fraction
 float g_stick_yaw_now = 0, g_stick_pitch_now = 0;   // degrees a second, eased
@@ -264,8 +274,9 @@ void update_hud(uint64_t blank, const Body& b, bool steer, int heading_units, fl
         g_kick_pitch += size;
         g_kick_roll += (h.last_hit_bearing >= 0 ? -1.0f : 1.0f) * size * 0.8f;
     }
-    h.melee = Mark(); h.shot = Mark(); h.locked = Mark();
-    h.threat_count = 0; h.behind = 0;
+    h.melee = Mark(); h.shot = Mark(); h.locked = Mark(); h.lock = Mark();
+    h.threat_count = 0; h.behind = 0; h.foe_count = 0;
+    h.souls = g_souls.load();
     h.usable = false; h.usable_text[0] = 0; h.usable_object = 0;
     // events that do not need a living player: death and coming back
     u32 record = G_PLAYERS + (u32)std::max(0, b.slot) * PLAYER_STRIDE;
@@ -275,7 +286,7 @@ void update_hud(uint64_t blank, const Body& b, bool steer, int heading_units, fl
         g_prev_object = b.real; g_prev_hp = b.hp; g_prev_state = b.state; g_prev_start = 0;
     }
     if (b.real && g_prev_hp > 0 && b.hp <= 0) h.deaths++;
-    if (!b.have) { h.reticle = false; if (b.real) g_prev_hp = b.hp; return; }
+    if (!b.have) { h.reticle = false; g_lock_object = 0; if (b.real) g_prev_hp = b.hp; return; }
     h.weapon_class = (int8_t)B(record + REC_WEAPON_CLASS);
     h.ranged = h.weapon_class == 4 || h.weapon_class == 6;
     h.reticle = steer && h.playing && (h.ranged || b.state == 0 || b.state == 5);
@@ -293,8 +304,9 @@ void update_hud(uint64_t blank, const Body& b, bool steer, int heading_units, fl
     u32 locked = 0;
     u32 handle = W(b.object + CRE_TARGET);
     if (handle && ok(handle, 16)) locked = W(handle + 12);
-    static Threat near_threat[96];
-    int threats = 0;
+    static Threat near_threat[96], near_foe[96];
+    int threats = 0, foes = 0;
+    bool lock_seen = false;
     for (int k = 0; k < count; k++) {
         const Seen& s = seen[k];
         if (s.object == b.object || s.object == b.real) continue;
@@ -304,6 +316,13 @@ void update_hud(uint64_t blank, const Body& b, bool steer, int heading_units, fl
         float bearing = d > 0.01f ? wrap_deg(h.look_heading - std::atan2(dy, dx) * 180.0f / 3.14159265f) : 0;
         if (s.object == locked && (s.flags & FLAG_CREATURE)) mark(h.locked, s, b, bearing, d - s.r);
         if (!is_enemy(s)) continue;
+        if (F(s.object + CRE_HP) > 0 && d <= g_set.lock_range && foes < 96) {
+            Threat t;
+            t.object = s.object; t.x = s.x; t.y = s.y; t.z = s.z + s.h * 0.5f;
+            t.distance = d; t.bearing = bearing; t.in_view = std::fabs(bearing) <= fov_half;
+            near_foe[foes++] = t;
+            if (s.object == g_lock_object) { mark(h.lock, s, b, bearing, d - s.r); lock_seen = true; }
+        }
         float along = d > 0.01f ? (dx * hx + dy * hy) / d : 1;
         float rim = d - s.r;
         // melee (Player_run state 1, 0x1a9678 on): a box of the reach and +-72 in height, inside 60 degrees of the
@@ -337,6 +356,10 @@ void update_hud(uint64_t blank, const Body& b, bool steer, int heading_units, fl
     if (threats > 16) threats = 16;
     h.threat_count = threats;
     for (int k = 0; k < threats; k++) h.threats[k] = near_threat[k];
+    std::sort(near_foe, near_foe + foes, [](const Threat& l, const Threat& r) { return l.distance < r.distance; });
+    h.foe_count = std::min(foes, 16);
+    for (int k = 0; k < h.foe_count; k++) h.foes[k] = near_foe[k];
+    if (g_lock_object && !lock_seen) g_lock_object = 0;     // dead, gone, out of range: the lock lets go
 
     // a hit landed: the creature the simulation holds as the target lost hit points
     if (h.locked.valid) {
@@ -422,6 +445,29 @@ void translate(uint64_t blank, rta::PadState& state) {
     if (mouse & 1) state.buttons |= attack;
     if (mouse & 2) state.buttons |= block;
     if (mouse & 4) state.buttons |= use;
+    // the souls-style combat mode: mouse button 4 is the dodge (L3), button 5 and R3 (Tab) the lock-on
+    bool souls = g_souls.load();
+    bool lock_asked = g_lock_toggle.exchange(0) != 0;
+    if (souls) {
+        if (mouse & 8) state.buttons |= rta::PAD_L3;
+        bool r3 = (state.buttons & rta::PAD_R3) || (mouse & 16);
+        if (r3 && !g_lock_r3) lock_asked = true;
+        g_lock_r3 = r3;
+        if (look_view) state.buttons &= (u16)~rta::PAD_R3;     // the map stays shut: R3 is the lock
+    } else g_lock_object = 0;
+    if (lock_asked && souls && look_view) {
+        if (g_lock_object) g_lock_object = 0;
+        else {
+            // the enemy nearest the middle of the picture, distance counting a little
+            float best = 1e9f;
+            for (int k = 0; k < g_hud.foe_count; k++) {
+                const Threat& t = g_hud.foes[k];
+                float score = std::fabs(t.bearing) + t.distance / 20.0f + (std::fabs(t.bearing) > 70.0f ? 400.0f : 0.0f);
+                if (score < best) { best = score; g_lock_object = t.object; }
+            }
+        }
+    }
+    if (!look_view) g_lock_object = 0;
     float wheel = g_wheel.exchange(0);
     if (look_view && set.mouse_buttons && std::fabs(wheel) >= 0.5f && g_inject_left == 0) { g_inject_buttons = swap_set; g_inject_left = 3; }
 
@@ -434,7 +480,7 @@ void translate(uint64_t blank, rta::PadState& state) {
     // is given the simulated player's byte here.
     bool have_strafe = set.strafe != 0 && W(STRAFE_HOOK) == STRAFE_HOOK_WORD;
     bool strafe_view = set.strafe == 2 ? look_view : look_view && set.face[view];
-    int strafe_wanted = have_strafe && steer && strafe_view ? 1 : 0;
+    int strafe_wanted = have_strafe && steer && (strafe_view || (souls && g_lock_object)) ? 1 : 0;
     g_strafe_wanted = W(STRAFE_HOOK) == STRAFE_HOOK_WORD ? strafe_wanted : -1;
     g_strafing = false;
     if (W(STRAFE_HOOK) == STRAFE_HOOK_WORD && b.real && ok(b.real + P_STRAFE, 1)) {
@@ -502,6 +548,28 @@ void translate(uint64_t blank, rta::PadState& state) {
         float off = g_hud.locked.bearing, excess = std::fabs(off) - set.swing_turn_within;
         if (excess > 0) { turn += (off > 0 ? 1.0f : -1.0f) * std::min(excess * 0.25f, set.swing_turn); g_assist_blanks++; }
     }
+    // the souls mode's lock-on: the look comes round to the target by itself; a flick changes target
+    if (souls && g_lock_object && g_hud.lock.valid && g_hud.lock.object == g_lock_object) {
+        int side = 0;
+        if (std::fabs(mx * set.mouse_sensitivity) >= set.lock_flick) side = mx > 0 ? 1 : -1;
+        int stick_side = rx > 0.85f ? 1 : rx < -0.85f ? -1 : 0;
+        if (stick_side != 0 && g_lock_flick_side == 0) side = stick_side;
+        g_lock_flick_side = std::fabs(rx) > 0.5f ? (stick_side ? stick_side : g_lock_flick_side) : 0;
+        if (side != 0) {
+            // the next enemy on that side: the smallest bearing beyond the target's own
+            float now = g_hud.lock.bearing, best = 1e9f;
+            u32 pick = 0;
+            for (int k = 0; k < g_hud.foe_count; k++) {
+                const Threat& t = g_hud.foes[k];
+                if (t.object == g_lock_object) continue;
+                float rel = wrap_deg(t.bearing - now) * (float)side;
+                if (rel > 0.5f && rel < best) { best = rel; pick = t.object; }
+            }
+            if (pick) { g_lock_object = pick; g_hud.lock_switches++; }
+        }
+        float off = g_hud.lock.bearing;
+        turn = clampf(off * set.lock_turn, -set.lock_turn_max, set.lock_turn_max);
+    }
     // a growing yaw word turns the camera clockwise seen from above: to the right
     g_look_units += (double)turn * UNITS;
     while (g_look_units >= 32768.0) g_look_units -= 65536.0;
@@ -512,7 +580,7 @@ void translate(uint64_t blank, rta::PadState& state) {
     put32(camera + CAM_YAW_VELOCITY, 0);
     // the game's own camera stick code is held at rest: it would turn the same word (slowly) and step the zoom
     state.rx = state.ry = 128;
-    state.buttons &= (u16)~rta::PAD_L3;         // "camera behind the character" would turn the word as well
+    if (!souls) state.buttons &= (u16)~rta::PAD_L3;         // "camera behind the character" would turn the word as well (the souls mode: L3 is the dodge, and the camera stick code is held at rest anyway)
 
     // ---- move ----
     u16 in_buttons = state.buttons;
@@ -696,6 +764,10 @@ bool setting(const char* key, const char* value) {
     else if (name == "swing_tilt") s.swing_tilt = yes;
     else if (name == "swing_turn") s.swing_turn = clampf(number, 0, 30);
     else if (name == "swing_turn_within") s.swing_turn_within = clampf(number, 0, 45);
+    else if (name == "lock_range") s.lock_range = clampf(number, 100, 2000);
+    else if (name == "lock_turn") s.lock_turn = clampf(number, 0.02f, 1.0f);
+    else if (name == "lock_turn_max") s.lock_turn_max = clampf(number, 0.5f, 45);
+    else if (name == "lock_flick") s.lock_flick = clampf(number, 1, 60);
     else if (name == "strafe") s.strafe = text == "on" ? 2 : (text == "auto" || yes) ? 1 : 0;
     else if (name.compare(0, 5, "face.") == 0) {
         for (int v = 0; v < VIEW_COUNT; v++) if (name.substr(5) == views[v]) { s.face[v] = yes && v >= CHASE; return true; }
@@ -805,6 +877,9 @@ std::string figures() {
              (unsigned long long)g_turn_states, (unsigned long long)g_assist_blanks, (unsigned long long)g_strafe_sends);
     return text;
 }
+
+void set_souls(bool on) { g_souls = on; }
+void lock_toggle() { g_lock_toggle = 1; }
 
 uint16_t mouse_buttons_as_pad() {
     u32 mouse = g_mouse_held.load();
