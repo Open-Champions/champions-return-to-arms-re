@@ -223,5 +223,63 @@ class ShieldTests(unittest.TestCase):
         self.assertEqual(mem.load(SPELL + 0x1C, 4), R4.F_COOLDOWN)
 
 
+PLAYER = 0x9000
+
+
+class SparkCallbacks:
+    def __init__(self, points=2):
+        self.points, self.calls = points, []
+
+    def get(self, name):
+        def answer(*args):
+            self.calls.append((name, args))
+            if name == 'model_getSamplePointCount':
+                return self.points
+            if name == 'model_getSamplePoint':
+                return ((C.f32(4.0), C.f32(5.0), C.f32(6.0)), 0)
+            if name == 'model_getAttachPoint':
+                return (C.f32(0.0), C.f32(0.0), C.f32(0.0))
+            return 0
+        return answer
+
+
+def sparks(points=2):
+    mem = RC.Memory()
+    mem.store(PLAYER + 0x544, 4, MODEL)
+    mem.store(PLAYER + 0x10, 4, C.f32(1.0))
+    mem.store(PLAYER + 0x14, 4, C.f32(2.0))
+    mem.store(PLAYER + 0x18, 4, C.f32(3.0))
+    mem.store(RC.G_RAND_SEED, 4, 1)
+    cb = SparkCallbacks(points)
+    return R4.SparkModel(mem, cb), mem, cb
+
+
+class SparkTests(unittest.TestCase):
+    def test_silent_1_spawns_five_per_sample_point(self):
+        m, _mem, cb = sparks(2)
+        m.block_sparks(PLAYER, 1)
+        flames = [c for c in cb.calls if c[0] == 'particle_spawn']
+        self.assertEqual(len(flames), 10)
+        self.assertTrue(all(c[1][0] == R4.P_BLOCK_A for c in flames))
+        self.assertEqual(len([c for c in cb.calls if c[0] == 'model_getAttachPoint']), 2)
+
+    def test_silent_3_draws_the_balls_and_spawns_nothing(self):
+        m, _mem, cb = sparks(1)
+        m.block_sparks(PLAYER, 3)
+        self.assertFalse([c for c in cb.calls if c[0] == 'particle_spawn'])
+        self.assertEqual(len([c for c in cb.calls if c[0] == 'model_getSamplePoint']), 1)
+
+    def test_a_count_of_0_returns_after_the_hands(self):
+        m, _mem, cb = sparks(0)
+        m.block_sparks(PLAYER, 1)
+        self.assertFalse([c for c in cb.calls if c[0] == 'model_getSamplePoint'])
+        self.assertEqual(len([c for c in cb.calls if c[0] == 'model_getAttachPoint']), 2)
+
+    def test_the_round2_body_still_refuses_a_nonzero_silent(self):
+        m, _mem, _cb = sparks(1)
+        with self.assertRaises(T.Unsupported):
+            m.player_block_sparks(PLAYER, 1)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -96,16 +96,38 @@ value skips the pool and leaves `+0x1c` alone.
 The result is slot 10 of the skill at `+0x8`, called with 0 and the level byte, times
 `0x3c23d70a`.
 
-## 3. Not in this section yet
+## 3. Block sparks, silent not 0
+
+`Player_blockSparks` `0x1b9658` (*Executed*, `difftest_combat_round4.py`, seed 20973,
+40 cases, 0 mismatches, 302 of 408 instructions). The other 106 instructions are the
+silent == 0 arm, already executed by `difftest_combat_ptick.py`. `DefenceModel` still
+refuses a nonzero silent. The new body is `SparkModel.block_sparks`.
+
+Both jal sites pass 0: `Player_takeDamage` `0x1b5604` and `0x152fa8`. Who passes a
+nonzero silent is not established.
+
+A nonzero silent skips the plate sound. It still reads both hand points
+(`model_getAttachPoint` of the model at `+0x544`, indices 0 and 1) and then does not
+use their midpoint. `model_getSamplePointCount` of that model follows. A count at or
+below 0 returns.
+
+Each point is `model_getSamplePoint` of the same model, the animation state of the
+record's object (`g_players + slot x 0x4c30`, then `+0x43d8`, then `+0x114`), the
+player's position and facing, scale 1. Five times, a unit ball from the shared seed.
+The direction is the point minus `(x, y, z+36)`, times `0x3eb2b020`, plus the ball
+times `0x4098a3d7`. Silent 1 spawns definition `0x865810`. Silent 2 spawns
+`0x865860`. The speed is one further shared draw times `0x3dcccccc`. Any other
+nonzero silent draws those five balls and spawns nothing.
+
+## 4. Not in this section yet
 
 - Deflection inside the runtime. Round 2's `missile_on_touch` has the branch.
   `RangedRuntime` still refuses `item_parseDescriptor`.
 - The player's bow release in state 0.
-- `Player_blockSparks` with silent ≠ 0.
 - Death states beyond the classes already executed.
 - Combat paths of the remaining skills.
 
-## 4. What was run
+## 5. What was run
 
 `python3 tools/difftest_combat_round4.py <your SLUS_209.73>` (seed 20973, and seed 7
 for the potions). Calls, bytes outside the stack, the shared seed, the result.

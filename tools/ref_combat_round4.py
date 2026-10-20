@@ -21,6 +21,7 @@ import ref_core as C                            # noqa: E402
 import ref_creature as RC                       # noqa: E402
 import ref_combat_ranged as RR                  # noqa: E402
 import ref_combat_runtime as T                  # noqa: E402
+import ref_combat_ptick as PT                   # noqa: E402
 from ref_creature import M32, s8, s16, s32      # noqa: E402
 
 # playerProjectile_run 0x1ba940, the potion tail.  Flight particles are definitions in
@@ -64,9 +65,17 @@ F_COOLDOWN = 0x3E86A832                         # 0.263, written when the light 
 F_HUNDREDTH = 0x3C23D70A                        # the slot-10 result, times this
 SPELL_RAND = 0x16A964
 
+# Player_blockSparks 0x1b9658, the silent != 0 arm.  Both static callers pass 0.
+P_BLOCK_A = 0x865810
+P_BLOCK_B = 0x865860
+F_SPARK_SCALE = 0x3EB2B020
+F_SPARK_JITTER = 0x4098A3D7
+F_SPARK_SPEED = 0x3DCCCCCC                      # the speed scale, not the rounded tenth
+
 MODELLED = {
     'playerProjectile_run': 0x1BA940,
     'SpellHolyShield_absorb': 0x2E8534,
+    'Player_blockSparks': 0x1B9658,
 }
 
 
@@ -297,3 +306,61 @@ class ShieldModel(RR.RangedModel):
         this = (skill + self.s16(table + 8 * 10)) & M32
         stat = self.call('Skill.v10', this, 0, s8(self.u8(spell)) & M32)
         return C.mul(C.from_int(s32(stat)), F_HUNDREDTH)
+
+
+class SparkModel(PT.DefenceModel):
+    """Player_blockSparks when silent is not 0.  silent 0 stays on DefenceModel, which
+    still refuses a nonzero silent."""
+
+    def _shared_ball(self):
+        while True:
+            v = []
+            for _axis in range(3):
+                unit = C.mul(C.from_int(self.draw()), F_INV65536)
+                v.append(C.sub(C.add(unit, unit), C.ONE))
+            size = C.add(C.add(C.mul(v[0], v[0]), C.mul(v[1], v[1])), C.mul(v[2], v[2]))
+            if not C.lt(C.ONE, size):
+                return v
+
+    def block_sparks(self, P, silent):
+        """Player_blockSparks 0x1b9658 (P, silent) for silent != 0.
+
+        The plate sound and the 50 own-seed sparks are the silent == 0 arm.  A nonzero
+        silent still reads the two hand points, then discards their midpoint.  The
+        player's model sample count follows.  A count at or below 0 returns.
+
+        Each point is read from the record object's animation state (record +0x43d8,
+        then +0x114), at the player's position, facing and scale 1.  Five times: a
+        unit ball from the shared seed.  The direction is (point - (x, y, z+36)) times
+        0x3eb2b020, plus the ball times 0x4098a3d7.  Silent 1 spawns definition
+        0x865810 and silent 2 spawns 0x865860, at the sample point.  The speed is one
+        more shared draw, times 0x3dcccccc.  Any other nonzero silent draws the five
+        balls and spawns nothing.
+
+        Both jal sites pass 0 (Player_takeDamage 0x1b5604 and 0x152fa8).  Who passes a
+        nonzero silent is not established."""
+        if not silent:
+            return self.player_block_sparks(P, 0)
+        u32 = self.u32
+        for index in (0, 1):
+            self.call('model_getAttachPoint', u32(P + 0x544), self.vec(P + 0x10),
+                      self.s16(P + 0x38) & M32, (P + 0x114) & M32, index, 0, C.ONE)
+        count = s32(self.call('model_getSamplePointCount', u32(P + 0x544)))
+        if count <= 0:
+            return
+        model = u32(P + 0x544)
+        obj = u32(self._rec(P) + T.REC_OBJ)
+        facing = self.s16(P + 0x38) & M32
+        pos = self.vec(P + 0x10)
+        offset = (pos[0], pos[1], C.add(pos[2], F_THIRTY_SIX))
+        particle = P_BLOCK_A if silent == 1 else P_BLOCK_B
+        for index in range(count):
+            point, _weight = self.call('model_getSamplePoint', model, (obj + 0x114) & M32, pos,
+                                       facing, index, 1, 1, 0, C.ONE)
+            for _spark in range(5):
+                delta = tuple(C.mul(C.sub(point[i], offset[i]), F_SPARK_SCALE) for i in range(3))
+                ball = self._shared_ball()
+                direction = tuple(C.add(delta[i], C.mul(ball[i], F_SPARK_JITTER)) for i in range(3))
+                if silent in (1, 2):
+                    speed = C.mul(C.mul(C.from_int(self.draw()), F_INV65536), F_SPARK_SPEED)
+                    self.call('particle_spawn', particle, point, direction, speed)

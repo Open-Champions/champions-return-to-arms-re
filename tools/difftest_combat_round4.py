@@ -47,6 +47,7 @@ ENTRIES = {
     'potionKind2': (0x1BA940, 'i', 0, 'n', 'thrown_run', BODY),
     'potionKind3': (0x1BA940, 'i', 0, 'n', 'thrown_run', BODY),
     'holyShield': (0x2E8534, 'i', 0, 'f', 'holy_shield_absorb', SHIELD),
+    'blockSparks': (0x1B9658, 'ii', 0, 'n', 'block_sparks', (0x1B9658, 0x1B9CB8)),
 }
 FN_MODEL, FN_STAT = 0x3E0100, 0x3E0120
 KINDS = {'potionKind1': 1, 'potionKind2': 2, 'potionKind3': 3}
@@ -70,6 +71,7 @@ EXTS = {
     'model_getSamplePoint': Ext(0x178E18, 'ppviiOWO', 1, 'n'),
     'particleGroup_begin': Ext(0x18E958, 'i', 0, 'n'),
     'particleGroup_end': Ext(0x18E9A0, 'i', 0, 'n'),
+    'model_getAttachPoint': Ext(0x1754A0, 'pvipioO', 1, 'n'),
 }
 _LIGHT = Ext(0x201BD8, 'ivii', 8, 'n')
 _LIGHT.stack = 4
@@ -113,6 +115,9 @@ class World:
         self.give = True
         self.points = 4
         self.stat = 0
+        self.player = emu.alloc(0x560)
+        self.body = emu.alloc(0x20)
+        self.rec_obj = emu.alloc(0x120)
         self.dtor = 0x3C6468
 
     def respond(self, name, args, view, rng):
@@ -133,6 +138,10 @@ class World:
             point = (C.add(base[0], C.from_int(index & 3)), base[1],
                      C.add(base[2], C.from_int(index & 1)))
             return Res(0, 0, [point, C.ZERO])
+        if name == 'model_getAttachPoint':
+            pos = args[1]
+            hand = tuple(C.add(pos[i], C.from_int(args[4])) for i in range(3))
+            return Res(0, 0, [hand])
         if name == 'Skill.v10':
             return Res(self.stat)
         return Res()
@@ -143,7 +152,7 @@ class Rig:
         emu = self.emu = EE(elf, fpu_model='ps2')
         emu.div_zero = 'r5900'
         self.world = World(emu)
-        self.real = {0x1BA940, 0x2E8534, R4.SPELL_RAND}
+        self.real = {0x1BA940, 0x2E8534, 0x1B9658, R4.SPELL_RAND}
         emu.follow = type('Follow', (), {'__contains__': lambda _s, t: t in self.real or LIB_LO <= t < LIB_HI})()
         self.names = {}
         for name, ext in EXTS.items():
@@ -230,7 +239,8 @@ class Rig:
         emu, mem = self.emu, self.emu.mem
         seed_before = mem.u32(RC.G_RAND_SEED)
         mview = D.ModelView(mem)
-        cls = R4.ShieldModel if method == 'holy_shield_absorb' else R4.PotionModel
+        cls = {'holy_shield_absorb': R4.ShieldModel, 'block_sparks': R4.SparkModel}.get(
+            method, R4.PotionModel)
         model = cls(mview, Rig.Callbacks(self))
         try:
             mret = getattr(model, method)(*args)
@@ -299,6 +309,8 @@ def _cstr(mem, addr, text):
 def generate(rig, key, rng, n=0):
     if key == 'holyShield':
         return _shield(rig, rng, n)
+    if key == 'blockSparks':
+        return _sparks(rig, rng, n)
     w, mem = rig.world, rig.emu.mem
     frame = rng.randrange(1, 1 << 20)
     mem.w32(RC.G_SIM_FRAME, frame)
@@ -401,6 +413,37 @@ def _shield(rig, rng, n):
         mem.w8(spell, rng.choice((0, 1, 4, 9)))
     mem.w32(spell + 0x1C, cool)
     return (spell,)
+
+
+def _sparks(rig, rng, n):
+    w, mem = rig.world, rig.emu.mem
+    P = w.player
+    _zero(mem, P, 0x560)
+    slot = 0
+    silent, count = 1, 1
+    if n == 0:
+        silent, count = 1, 1
+    elif n == 1:
+        silent, count = 2, 2
+    elif n == 2:
+        silent, count = 1, 0
+    elif n == 3:
+        silent, count = 3, 1
+    elif n == 4:
+        silent, count, slot = 2, 1, 1
+    else:
+        silent = rng.choice((1, 1, 2, 2, 3, 5))
+        count = rng.choice((0, 1, 2, 4))
+        slot = rng.choice((0, 0, 1))
+    for i in range(3):
+        mem.w32(P + 0x10 + 4 * i, f32(rng.uniform(-40, 40)))
+    mem.w16(P + 0x38, rng.choice((0, 0x1000, 0x4000, 0xC000)))
+    mem.w32(P + 0x3C8, slot)
+    mem.w32(P + 0x544, w.body)
+    rec = (RC.G_PLAYERS + slot * RC.REC_SIZE) & M32
+    mem.w32(rec + RC.REC_OBJ, w.rec_obj)
+    w.points = count
+    return (P, silent)
 
 
 def main(argv):

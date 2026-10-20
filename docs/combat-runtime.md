@@ -872,6 +872,7 @@ each, 0 mismatches; seed 7 the same):
 | `playerProjectile_run` kind 2 | `0x1ba940` | 203 of 674 |
 | `playerProjectile_run` kind 3 | `0x1ba940` | 325 of 674 |
 | `SpellHolyShield_absorb` | `0x2e8534` | 206 of 206 |
+| `Player_blockSparks` silent ≠ 0 | `0x1b9658` | 302 of 408 |
 
 Kind 1 draws the shared seed inline for two flame particles and one more, every run.
 A hit or an expiry lays five `LooseFire` objects and five decals. Kind 2 lays one
@@ -885,6 +886,12 @@ kinds 0, 4, 5 and 6.
 241 particles. A light is made only when `+0x1c` is at most 0, and that word then
 becomes `0x3e86a832`. The result is the skill's slot 10 times `0x3c23d70a`. A sample
 count of 0 is not modelled.
+
+`Player_blockSparks` with a nonzero silent still reads the two hand points, then five
+shared-seed sparks on each sample of the record object's model. Silent 1 and 2 spawn;
+any other nonzero silent draws the balls and spawns nothing. Both jal sites pass 0.
+`DefenceModel.player_block_sparks` still refuses a nonzero silent. The 106
+instructions of the silent == 0 arm stay the round-2 difftest.
 
 `python3 -m unittest tools.test_ref_combat_round4`: the fixtures only.
 `RangedModel.thrown_run` still refuses a potion.
