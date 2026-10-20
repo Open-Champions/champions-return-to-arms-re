@@ -579,10 +579,11 @@ remains:
   and the dead state run (ref_player, executed) but respawn, `game_checkAllDead` and
   `deathTask` are not composed; `Player_interact` with an interactable object in reach is
   refused.
-- **Ranged**: arrow kinds 1, 2, 5 and 6 are executed in section 16. Still open: potion
-  kinds 1-3, deflection in the runtime, skill ranks above 0 on a missile, other
-  projectile classes (`LavaBomb`, `beetleProjectile`, ...), the player's bow release in
-  state 0, and what `damage_apply` does with a projectile as attacker (Unknown).
+- **Ranged**: arrow kinds 1, 2, 5 and 6 are executed in section 16. Potion kinds 1-3
+  are executed in section 17. Still open: deflection in the runtime, skill ranks above 0
+  on a missile, other projectile classes (`LavaBomb`, `beetleProjectile`, ...), the
+  player's bow release in state 0, and what `damage_apply` does with a projectile as
+  attacker (Unknown).
 - **Spells**: three are composed (Holy Strike, Shock of Fire, Wave of Flame). DiseaseCloud
   is executed in section 16; attaching the disease effect is composed there, not a slice
   of `damage_apply`. The other 98 skills, player state 5's aim / mana / recast inside the
@@ -855,4 +856,30 @@ player state 0, the Holy Shield light, `Player_blockSparks` with silent != 0, fu
 monster death states, and combat paths of the remaining skills.
 
 `python3 -m unittest tools.test_ref_combat_round3`: 13 tests, the fixtures only.
+
+## 17. Round 4 (2026-10-20)
+
+`docs/spec/combat-round4.md` is the prose. `tools/ref_combat_round4.py` adds the bodies.
+Round 1, round 2 and round 3 modules, APIs and pinned vectors are unchanged.
+`PotionModel` subclasses `RangedModel` and calls it for kinds other than 1, 2 and 3.
+
+Executed against the original (`tools/difftest_combat_round4.py`, seed 20973, 40 cases
+each, 0 mismatches; seed 7 the same):
+
+| Entry | Address | Instructions |
+|---|---|---|
+| `playerProjectile_run` kind 1 | `0x1ba940` | 452 of 674 |
+| `playerProjectile_run` kind 2 | `0x1ba940` | 203 of 674 |
+| `playerProjectile_run` kind 3 | `0x1ba940` | 325 of 674 |
+
+Kind 1 draws the shared seed inline for two flame particles and one more, every run.
+A hit or an expiry lays five `LooseFire` objects and five decals. Kind 2 lays one
+`poisonGasSpell` (300 frames, radius 20, damage 5) when the pool returns a block.
+Kind 3 lays a ring and `world_damageInRadius` with flags `0x40840`, skipped when the
+level name is `innpit`, then a decal only when the ground is strictly within 4, and a
+light. A potion does not clear bit 1 of the move result. The stone-hit effect stays
+kinds 0, 4, 5 and 6.
+
+`python3 -m unittest tools.test_ref_combat_round4`: the fixtures only.
+`RangedModel.thrown_run` still refuses a potion.
 
