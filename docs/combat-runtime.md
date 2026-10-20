@@ -572,20 +572,21 @@ remains:
 - **Damage numbers in a net game**: `FlyingText` objects (pool block, shared draw in the
   constructor, run list, deletion) - their lifetime is not read; the contract refuses any
   pool request from `damage_apply` (also `LightEffect` on a stun, gas, disease).
-- **Objects the defence path constructs**: `GutChunk` (blood, 1 draw in 8), the Holy
-  Shield's `LightEffect`, Strong Stance's object, the Resurrect phantom - refused.
-  `Player_blockSparks` with silent != 0 (a shared-seed user) is Observed only.
+- **Objects the defence path constructs**: GutChunk and the Strong Stance phantom are
+  executed in section 16. The Holy Shield's `LightEffect` and `Player_blockSparks` with
+  silent != 0 are still not executed.
 - **The rest of `Player_run`** inside the composed world: regeneration, instant abilities
   and the dead state run (ref_player, executed) but respawn, `game_checkAllDead` and
   `deathTask` are not composed; `Player_interact` with an interactable object in reach is
   refused.
-- **Ranged**: the arrow kinds 1, 2, 5, 6 and potion kinds 1-3, deflection, skill ranks
-  above 0 on a missile, other projectile classes (`LavaBomb`, `beetleProjectile`, ...);
-  the player's bow release in state 0 is not composed (needs `world_collectObjectsInArc`
-  wired into the tick); what `damage_apply` does with a projectile as attacker (Unknown).
-- **Spells**: three are composed (Holy Strike, Shock of Fire, Wave of Flame); the other 98
-  skills, player state 5's aim / mana / recast inside the composed world, disease entries,
-  and a creature destroyed with spells attached are refused.
+- **Ranged**: arrow kinds 1, 2, 5 and 6 are executed in section 16. Still open: potion
+  kinds 1-3, deflection in the runtime, skill ranks above 0 on a missile, other
+  projectile classes (`LavaBomb`, `beetleProjectile`, ...), the player's bow release in
+  state 0, and what `damage_apply` does with a projectile as attacker (Unknown).
+- **Spells**: three are composed (Holy Strike, Shock of Fire, Wave of Flame). DiseaseCloud
+  is executed in section 16; attaching the disease effect is composed there, not a slice
+  of `damage_apply`. The other 98 skills, player state 5's aim / mana / recast inside the
+  composed world, and a creature destroyed with spells attached are still open.
 - **Monster classes**: set-states and corpse phases of the classes not yet executed
   anywhere (Goblin's death state is executed, its other states are not);
   `loot_generateDrops` objects are not composed. Who calls 0x118b58 (Unknown).
