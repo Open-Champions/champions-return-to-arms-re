@@ -221,9 +221,14 @@ void do_launch(Ctx* c) {
     if (d.my_slot == 0) {
         // the host's choices travel to the others in the handshake (the game's own way)
         wr8(A_SETTINGS + 2, (u8)(d.options.difficulty >= 1 && d.options.difficulty <= 4 ? d.options.difficulty : 1));
-        wr8(A_SETTINGS + 3, 0);                     // play missions; the arena modes are not wired yet
-        wr8(A_SETTINGS + 4, 0);
-        wr8(A_SETTINGS + 5, 0);
+        // the game's own three modes (net2_options.mode: 0 play missions, 1 arena co-operative, 2 arena versus), the
+        // mission (mode 0: 0 = from the hub; else the net menu's 1..13) and versus's kill limit, as its net menu
+        // (states 7 to 9, docs/ui.md) leaves them in the settings block: the mode, the entry chosen, the limit's entry
+        const int mode = d.options.mode >= 0 && d.options.mode <= 2 ? d.options.mode : 0;
+        const int limit = d.options.kill_limit >= 25 ? 2 : (d.options.kill_limit >= 10 ? 1 : 0);
+        wr8(A_SETTINGS + 3, (u8)mode);
+        wr8(A_SETTINGS + 4, (u8)(mode == 0 ? (d.options.mission >= 0 && d.options.mission <= 13 ? d.options.mission : 0) : 0));
+        wr8(A_SETTINGS + 5, (u8)(mode == 2 ? limit : 0));
     }
     // frontend_startNetGame 0x1e21e0, its branch for "no lobby"
     wr8(A_LAUNCHING, 1);
