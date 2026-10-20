@@ -4,7 +4,8 @@ Status 2026-10-17, SLUS-20973 v2.00. Branch `t3/research-levels`. **Round 2 (202
 section 16 settles four points this document left contradictory or underspecified: the
 WORLD entry, the light level, recall timing in cutscenes and the moving-piece arithmetic. It
 does so by running the original code, and marks each statement it corrects with "→ 16.x"
-where the statement stands.** This document gathers in
+where the statement stands.** **Round 3 (2026-10-20): section 17 is the start rule for the
+18 levels a radius-4 query at the origin calls empty.** This document gathers in
 one place the contracts a native client needs to load an arbitrary level and move between
 levels, which until now were spread over `docs/mainloop.md` 7, `docs/data-tables.md` 7,
 `docs/spec/object-system.md` 7, `docs/issues/arena-entry.md`, `docs/audio-save.md`,
@@ -21,7 +22,8 @@ regularities come from a scan of every archive on the disc image (120 `.GOB`, 11
 `objects.ob`, 120 `script.scr`, 118 with a `.world`). Only counts are reported here.
 **Nothing in this document was run on a console, in PCSX2 or in the Play! emulator.** Section
 16 alone was **Executed** function by function in `tools/ee_emu.py`
-(`tools/difftest_levels.py`). Of
+(`tools/difftest_levels.py`). Section 17 was executed the same way
+(`tools/difftest_levels_r3.py`). Of
 the function bodies, `world_findMovingPiece` 0x182768, `water_test` 0x189438 and the
 placement code 0x321100–0x321240 were re-read instruction by instruction while writing
 `tools/ref_levels.py`. The rest were read once, by one reader.
@@ -233,7 +235,8 @@ height is ignored.
 | 0x41b520 | 4 × xyz | recall return positions |
 
 All of these are 0 in the executable's data (O). **Nothing resets the spawn positions or
-facings between levels.**
+facings between levels** (→ 17.4). The start rank is reset, to 0 or to 3, before the
+markers run.
 
 ### 5.2 Which marker places the players
 
@@ -280,8 +283,8 @@ D (119 levels):
 - **No marker has `from=gate`**, and **no object of any class has `orientation=`**.
 - The 18 levels without a marker are the front end, two cutscene archives and the 15
   `comp*`/`pvp*` arenas. The arenas place players through `ArenaPlayerStart` (15 records) and
-  `ArenaPlayerAlternate` (232) instead, via 0x30503c and `arena_pickSpawnPoint` 0x3050a4 (not
-  traced; U).
+  `ArenaPlayerAlternate` (232) instead, via 0x30503c and `arena_pickSpawnPoint` 0x3050a4
+  (→ 17.3).
 - 38 levels have one `Portal` each.
 - Of 72 (`setEntrance`, `newWorld`) pairs, 58 have a matching `name` marker in the destination.
   The other 14 fall back to the `from`/default rules.
@@ -314,8 +317,9 @@ if g_gameLevelLoaded and not g_pvpModeB:
 - Players are created only inside the "real level, not PvP B" test, and in a medal mission
   only the medal slot is created. `docs/mainloop.md` 7 step 6 and
   `docs/issues/arena-entry.md` 2 leave this out (section 14).
-- U: what `Player_ctor` 0x1a1d28 does with the position after 0x1a1db4, and whether a spawn
-  with no floor dies on the first tick (read the kill-plane test in `Player_run`).
+- What `Player_ctor` does with the position, and that a sentinel from this snap is stored
+  as-is, is in section 17 (→ 17.2). The kill plane cannot kill that spawn: it is off in
+  every level-table row (section 2).
 
 ## 6. Requesting a level change
 
@@ -857,20 +861,24 @@ committed, and nothing decoded was written out.
 
 ## 15. Open
 
-Round 2 settled none of the items below. What it settled is in section 16.
+Round 2 settled none of the items below. Round 3 settled the start height (section 17).
+What remains:
 
 1. Which row each of the 30 levels without a table row resolves to (2).
-2. Whether a spawn with no floor is caught before the first tick (5.3).
-3. `Player_ctor` beyond 0x1a1db4; readers of 0x41b7c1 or writers of 0x4f8b58 through computed
-   pointers (watchpoints).
+2. Whether some test other than the placement snap and `Player_ctor` rejects a sentinel
+   height before the first tick. Those two store it unchanged (→ 17.2). The kill plane
+   cannot fire (section 2).
+3. The rest of `Player_ctor` after the radius store and the height snap (→ 17.2). Readers
+   of 0x41b7c1, and writers of 0x4f8b58 through computed pointers, are still open.
 4. Marker order after a re-entry from a saved state (3.3).
 5. Whether a piece's changed element z survives into a reload of the same level (7.4):
    check whether `<level>.lmp` is always re-read.
-6. Arena placement (`arena_pickSpawnPoint` 0x3050a4) and the arena rotation table.
+6. `arena_pickSpawnPoint` with a0 = 0 (respawn) was read and not run. The arena rotation
+   table is still unread. The wave-start path (a0 ≠ 0) was run (→ 17.3).
 7. Texture: what −1 vs −2 and header flag 0x0008 mean; the edge rules of the unused
    flag-1 form; the look of environment-mapped chunks and whether layer-4 chunks write
    depth (compare a GS frame dump); the automap tile mapping.
-8. None of this has been run. A recorded run through a `PushTrigger` door, a gate, a recall
+8. None of this has a recorded Play! run. A recorded run through a `PushTrigger` door, a gate, a recall
    pair and a party wipe with and without a checkpoint would confirm sections 5, 9 and 10
    (`docs/VALIDATION.md`).
 
@@ -1097,3 +1105,175 @@ Proposed fix, written as a comment in `tools/test_ref_levels.py` and
 `tools/difftest_levels.py` and **not applied** here, because 24 tracked files name the
 script and other branches touch them: `git mv tools/dis.py tools/eedis.py` and update those
 references. No module imports it, so nothing else changes.
+
+## 17. Round 3: where the 18 origin-test levels start (2026-10-20)
+
+**Why this section exists.** A native client that asks `terrain_height_below` 0x1834a8
+for a floor at the origin, radius 4 (pattern 0x40800000), finds 18 of the 111 paired
+levels empty. Those 18 are the paired archives whose first `.world` has a zero moving-piece
+count (header +0x50), no chunk with flag 0x80 and no chunk with flag 0x20, and for which
+that query returns the sentinel −1000000.0 (0xC9742400). The original start is a different
+query. This section is that query, run on the original functions in `tools/ee_emu.py`
+(`tools/difftest_levels_r3.py`, seeds 0 and 20973). The ELF SHA256 is
+`292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675`.
+
+### 17.1 The marker, then one height snap
+
+The marker choice is section 5.2, unchanged. On a cold start (`g_prevLevelName` empty,
+`g_entranceName` empty, the recall flags clear, not loaded from a save) every `Player1` is
+considered in file order. The first takes at rank 1, and each later `default` whose atoi is
+nonzero takes again. The last of those wins.
+
+Among the 18 the `Player1` counts are 10 levels with one, 5 with two, 1 with six and 2 with
+none (26 records). The 16 with a marker finish at rank 1. The 2 with none are the 2 that
+contain an `ArenaPlayerStart`. A story load leaves their spawn at the previous value, which
+is (0, 0) at boot (5.1).
+
+`Player1_ctor` does call `world_findFreeSpot` for slot 0 (spread 36, radius 24, anyHeight 0).
+The placement loop does not search slot 0 again. With the recall-return flag clear it writes
+only z, for every slot below the player count (0x3211c8–0x321238):
+
+```
+spawn.z = terrain_height(f12 = 0x41400000, world, spawn)
+```
+
+`terrain_height` 0x183820 ignores the query z and returns the highest sample in that disc,
+or the sentinel. **Executed** on the 18 with the player count 1 and the cold marker's xy
+(the file position; the search not yet applied): xy unchanged, and z equal to that
+radius-12 height. All 18 are a floor.
+
+`Player_ctor` 0x1a1d28 stores the same radius and snaps again. `GameObject_ctor` sets
+object +0x1c to 24.0. The store at 0x1a2244 overwrites it with 0x41400000. From there to
+the call, no instruction stores offset 0x1c through $21, which holds the player. At
+0x1a2420–0x1a245c it loads f12 from +0x1c, calls `terrain_height` and stores f0 at
+object +0x18. It does not test the sentinel, does not call `terrain_height_below` and does
+not move x or y. **Executed:** the stretch 0x1a2220–0x1a2264 leaves +0x1c equal to
+0x41400000, and the snap stretch on the same 18 positions stores the same floor.
+
+`g_killPlaneZ` 0x4f7188 is tested at 0x1a5b38 only when the plane is above −90000
+(0xC7AFC800). Every level-table row is −100000, so the plane never fires (section 2). A
+sentinel z is stored by the snap and is not removed by that test. Whether some other
+first-tick test rejects a sentinel was not searched. These 18 are not that case: the
+radius-12 query at the cold marker is a floor on all 18.
+
+### 17.2 Why a query at the origin comes back empty
+
+Of the 18, `terrain_height` at radius 4 on the origin is a floor on 11, and `terrain_height`
+at radius 12 on the origin is a floor on the same 11. `terrain_height_below` still returns
+the sentinel there: a sample more than 12 above the query z is skipped, and the query z is
+0 (the rule in `ref_world.terrain_height_below`). `terrain_height_at_point` 0x182f28 returns
+0 off the grid and never the sentinel. On these 18 it was not the sentinel, so a test that
+ORs it with `terrain_height_below` reduces to `terrain_height_below`. The emulator and
+`ref_world` agreed on every one of these queries (0 mismatches).
+
+The other 7 have no sample within radius 12 of the origin. Each of them has a `Player1`,
+and the radius-12 query at that marker is a floor.
+
+The search can leave the marker. `world_findFreeSpot` 0x14acf8 tries up to 50 points.
+Unless anyHeight is set, it rejects a candidate whose height is not strictly less than 6.0
+(0x40C00000) above the centre, and it accepts a candidate any distance below the centre,
+including the sentinel. On a total failure it keeps the centre and clears the ok byte.
+**Executed** against the original on four synthetic worlds: a floor at 20 keeps the centre,
+a floor at 5 is taken, a floor at exactly 6 is rejected, and an off-mesh candidate is
+accepted with the sentinel. On the 18, with the object list stubbed empty and with seeds 0
+and 20973, the original search matched `ref_objects` on all 36 calls, and the following
+radius-12 snap was a floor on all 36. The seed at the moment `Player1_ctor` draws is not a
+fixed constant, because other constructors draw `g_randSeed` 0x404464 first, so this is
+those two seeds. A scatter that leaves the mesh is stored, and the snap does not walk back
+onto it.
+
+### 17.3 Arena wave start (`arena_pickSpawnPoint` 0x3050a4, a0 ≠ 0)
+
+`arena_begin` is 0x304f5c. It runs when `g_pvpModeB` is set. If mode A is clear it calls
+0x306440, stores 3 at 0x8e733a, and calls `arena_startWave` 0x305ed4 with a0 = 1. That
+calls `arena_pickSpawnPoint` with a0 ≠ 0 (the call at 0x306000 passes 1), then `pool_new`
+and `Player_ctor` at 0x30604c, so the radius-12 snap of 17.1 runs on the result. PvP B
+skips the story `Player_ctor` in the placement loop. This is the constructor that runs
+instead.
+
+For a0 ≠ 0, **Executed** (property `arena_initial`, and the two levels below):
+
+- The active count is the word from `net_countActiveSlots` 0x1ec878. The angle is the low
+  16 bits of `s16(65535 / count) * slot`, passed to `math_cos16` 0x166630 and `math_sin16`
+  0x1666e0. The multiply is the three-operand form at 0x305130. A MIPS III listing prints
+  that instruction as unknown, because the destination register is not zero. A count that is not greater than 0 divides by a
+  zero word. That quotient is left undefined; `arena_ring_angle` raises.
+- The ring radius is 180.0 (0x43340000) when `g_pvpModeA` is set, and 36.0 (0x42100000)
+  otherwise. The centre is entry 0 of the table at `*0x503888` plus `(cos·R, sin·R)`. An
+  entry is 16 bytes: xyz and an s16 angle at +0xc. z is the entry's z.
+- `world_findFreeSpot(centre, 36, 24, anyHeight 0)`. The ok byte is the caller's stack
+  slot. When it is 0, one more search from the same centre, spread 240 (0xF0), radius 24,
+  anyHeight 0. There is no third search.
+- Facing, when the facing pointer is nonzero. If the word at 0x4f7124 is nonzero, facing
+  is the table angle minus 0x4000. Otherwise facing is
+  `s16(−0x4000 − math_atan2_16(dx, dy))`, with f12 = pos.x − entry.x and f13 = pos.y −
+  entry.y (`math_atan2_16` 0x166798). When mode A is clear, facing then loses 0x8000. All
+  of these are the low 16 bits.
+- The word at 0x4f7124 has no symbol. The direct stores found are zeroes, at 0x323f44,
+  0x1e1668 and 0x1e18d8. Its address is taken at 0x13748c and 0x1e1910. Whether a nonzero
+  value is stored through those pointers is **U**. The branch was executed both ways on
+  synthetic data.
+
+On the 2 of the 18 that have an `ArenaPlayerStart`, the original wave start with count 1,
+slot 0, mode A clear, 0x4f7124 clear, seed 20973 and an empty object list matched
+`arena_initial_place`, and the radius-12 snap of that position was a floor, 2 of 2. A story
+load of those two leaves mode B clear and does not take this path. Their origin radius-12
+query is already a floor, which puts them in the 11 of 17.2.
+
+The other entry, a0 = 0, is the respawn. Its caller at 0x305818 passes a0 = 0, and
+`player_respawn` 0x1bd040 calls `Player_ctor` at 0x1bd154, so the same snap follows it.
+**Observed, not executed.** When a byte at 0x402791 is set, the index is a shared-generator
+draw modulo the count at 0x8e7342. Otherwise the function prefers table points within 240
+of the point at 0x45f048 and, failing that, searches from that point with spread 72 and
+radius 24, storing facing 0. A table point adds 0x4000 to the stored angle. The arena
+rotation table (`arena_runTask` 0x306cb8) was not read.
+
+### 17.4 Acts, gates, and what a level change leaves alone
+
+Act tables do not choose a marker (sections 4 and 7.2). A session starts at act −1, so the
+first real level is an act change, and the placement loop writes `None` into the record's
+from field (record +0x24) unless the card state is 4 or a death task is running. None of
+the 26 `Player1` records on these 18 has `from` equal to `None` or to `gate` (0 and 0), so
+that write matches nothing and the cold-start rule stands. `g_prevLevelName` is written
+before `game_loadLevel` (7.1). `g_entranceName` is not cleared by a level change (5.1).
+
+A gate arrival is `JumpGate_ctor` (5.2): `world_findFreeSpot(gate, 36, 24, anyHeight 1)`
+for each slot below the player count, facing a full draw, rank 3 with no rank test. The
+placement loop still snaps z at radius 12, including slot 0. The rank-3 test only skips the
+later scatter. The anyHeight search was not re-run on the disc. Where the level has a
+`Portal` or a `PortalHurt`, the gate's own xy was queried at radius 12 and was a floor.
+
+Entry plans **executed** on the real heightfields, with an identity search and radius 12:
+a cold start, each distinct `from`, each distinct `name`, the recall flag, and a gate when
+a portal exists. 65 plans, and none returned the sentinel. The recall flag blocks the
+`from` and `name` upgrades. The copied return xy at 0x41b520 is the player's previous
+position and is not a field of the level, so it is not one of these 65. When 0x41b51c is
+set, the placement loop copies that xy (not z) and then snaps z the same way.
+
+What a level change leaves alone, re-checked against the writers in 5.1:
+
+- `g_spawnPos` 0x4f70d0 and `g_spawnFacing` 0x4f8410 are not cleared. The writers are
+  `Player1_ctor`, `JumpGate_ctor`, `save_load` (0x221f28 and 0x221eec) and the placement
+  loop. With the recall-return flag clear, the z loop leaves xy where the markers put it.
+  **Executed** on the 18.
+- `g_playerStartRank` is cleared. `level_loadScriptAndObjects` writes 0 at 0x217ab0, or 3
+  at 0x217aac when the level was loaded from a save, before the markers run.
+- `g_entranceName` is not cleared (5.1).
+- 0x41b51c is cleared at 0x3211c4 after the xy copy. 0x41b51e is cleared at 0x3214c0.
+
+### 17.5 What the reference gained
+
+`tools/ref_levels.py` gained the following and did not change the round-1 results of
+`marker_decision`, `run_markers` or `place_players`. `place_players` still passes the
+Python float 12.0 to its callback.
+
+- `PLACEMENT_RADIUS` (0x41400000) and `player_ctor_z`
+- `ARENA_RING_MODE_A` (0x43340000), `ARENA_RING_MODE_B` (0x42100000), `ARENA_FIRST_SPREAD`
+  (36), `ARENA_RETRY_SPREAD` (240), `ARENA_SEARCH_RADIUS` (24)
+- `arena_ring_angle`, `arena_ring_centre`, `arena_initial_place`
+
+Synthetic coverage is `Round3Placement` and `Round3Arena` in `tools/test_ref_levels.py`.
+`tools/vu1_emu.py` is not on this path: the queries are scalar EE. The difftest's six
+properties all pass. On the disc, `spawn_real` reports paired 111, the 18 above, origin
+radius-4 floor 11, origin radius-12 floor 11, marker radius-12 floor 18, search-then-snap
+floor 36 of 36, arena floor 2 of 2, scenario misses 0. Private notes stay under `local/`.
