@@ -55,6 +55,7 @@ ENTRIES = {
     'missileKind1': (0x15153C, 'i', 0, 'n', 'missile_run', (0x15153C, 0x15253C)),
     'missileKind2': (0x15153C, 'i', 0, 'n', 'missile_run', (0x15153C, 0x15253C)),
     'missileKind5': (0x15153C, 'i', 0, 'n', 'missile_run', (0x15153C, 0x15253C)),
+    'missileKind6': (0x15153C, 'i', 0, 'n', 'missile_run', (0x15153C, 0x15253C)),
 }
 REAL = {0x14CB10, 0x1509D0}
 REAL_SPANS = ((0x14CB10, 0x14CF84),)
@@ -79,6 +80,7 @@ EXTS = {
     'obj_moveAndCollide': Ext(0x1509F8, 'iv', 0, 'i'),
     'fx_spawn': Ext(0x1EF270, 'iv', 0, 'n'),
     'ParticleProp_ctor': Ext(0x1549E8, 'ivi', 0, 'n'),
+    'player_getPassiveLevel': Ext(0x1BED48, 'ii', 0, 'i'),
     'fx_ringBurst': Ext(0x1F3D00, 'v', 1, 'n'),
     'pool_new': Ext(0x14FDB8, 'i', 0, 'i'),
     'sound_playOnObject': Ext(0x214230, 'pp', 1, 'n'),
@@ -124,7 +126,7 @@ class World:
         self.victims = [emu.alloc(0x30) for _ in range(4)]
         self.missiles = [emu.alloc(0x200) for _ in range(2)]
         self.light = emu.alloc(0xC0)
-        self.owners = [emu.alloc(0x20) for _ in range(2)]
+        self.owners = [emu.alloc(0x400) for _ in range(2)]
         self.collide = 0
         self.give_light = 0
         self.nodes = {}
@@ -459,7 +461,7 @@ def generate(rig, key, rng, n=0):
         mem.w32(obj + 0xC, rng.choice((0, 0x20)))
         mem.w64(obj + 0xA8, rng.choice((0, 1)))
         return (obj, target, 0x550100, rng.choice((0, 1, 4, -2 & M32)), rng.choice((0, 0, 1)))
-    if key in ('missileKind1', 'missileKind2', 'missileKind5'):
+    if key.startswith('missileKind'):
         obj = rng.choice(w.missiles)
         _zero(mem, obj, 0x1E0)
         frame = mem.u32(SA.G_SIM_FRAME) or 1
@@ -471,7 +473,7 @@ def generate(rig, key, rng, n=0):
             mem.w32(obj + 0x10 + 4 * i, pos[i])
             mem.w32(obj + 0x1B0 + 4 * i, vel[i])
         mem.w32(obj + 0x48, RR.VT_MISSILE)
-        mem.w32(obj + 0xD0, {'missileKind1': 1, 'missileKind5': 5}.get(key, 2))
+        mem.w32(obj + 0xD0, {'missileKind1': 1, 'missileKind5': 5, 'missileKind6': 6}.get(key, 2))
         mem.w32(obj + 0x44, rng.getrandbits(32))
         mem.w32(obj + 0xD8, rng.choice((1, 12, 40, 100)))
         mem.w32(obj + 0xEC, (frame + 80) & M32)
@@ -492,6 +494,9 @@ def generate(rig, key, rng, n=0):
             mem.w32(obj + 0x4C, w.nodes[owner])
             mem.w32(obj + 0x1BC, 0x11)
             mem.w16(obj + 0xFA, 0x100)
+            if key == 'missileKind6':
+                mem.w32(owner + 0xC, 0x40)
+                mem.w32(owner + 0x3C8, 3)
             return (obj,)
         if n == 3:
             w.collide, w.give_light = 1, 1

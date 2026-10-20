@@ -54,6 +54,9 @@ S_KIND6_IMPACT = 0x532518
 P_KIND5 = 0x6E00C0
 P_KIND1_A = 0x6DFFD0
 P_KIND1_B = 0x6E0020
+P_KIND6 = 0x6E0070
+F_KIND6_SCALE = 0x41ACCCCC
+F_KIND6_BIAS = 0x3FD10624
 F_INV65536 = 0x37800000
 F_KIND1_LEAD = 0x3D75C28F
 F_KIND1_SMALL = 0x3C23D70A
@@ -252,7 +255,7 @@ class Model(SA.Model):
 
 
 class ArrowModel(RR.RangedModel):
-    """MissileWeapon_run for kinds 1, 2 and 5.  Kinds 0 and 3 stay on RangedModel.
+    """MissileWeapon_run for kinds 1, 2, 5 and 6.  Kinds 0 and 3 stay on RangedModel.
     obj_moveAndCollide stays a call-out: the ranged difftest runs that body for real."""
 
     def __init__(self, mem, callbacks=None, external=()):
@@ -275,11 +278,12 @@ class ArrowModel(RR.RangedModel):
                 return x, y, z
 
     def missile_run(self, this):
-        """MissileWeapon_run 0x15153c while +0xd0 is 1, 2 or 5.
+        """MissileWeapon_run 0x15153c while +0xd0 is 1, 2, 5 or 6.
 
         A carried arrow and an arrow whose splash byte is already set take the same
         exits as kinds 0 and 3.  A nonzero move result plays the kind's impact sample
-        (0x5324e0 for kinds 1 and 2, 0x5324f8 for kind 5) and stores 0 at +0xec.  A
+        (0x5324e0 for kinds 1 and 2, 0x5324f8 for kind 5, 0x532518 for kind 6) and stores 0
+        at +0xec.  A
         result of exactly 1 also plays the sample at +0x1bc, and kind 1 first spawns
         effect 5.  The stone-hit effect is kinds 0 and 3 only.
 
@@ -302,11 +306,17 @@ class ArrowModel(RR.RangedModel):
         times 10; the particle direction is a second ball times 0x41421062; the speed
         argument is 0.
 
-        All three then copy the position to +0x1a4 and light_relink +0x174.  No cold
+        Kind 6 on a hit emits 100 particles from 0x6e0070 at the arrow position.  The
+        direction is a rejection ball times 0x41accccc, with 0x3fd10624 added to z, and
+        the speed argument is 0.  Its light matches kind 5.  Every frame, if the owner
+        is a player (flag 0x40), it calls player_getPassiveLevel(owner +0x3c8, 0x1000)
+        and ignores the result.
+
+        All four then copy the position to +0x1a4 and light_relink +0x174.  No cold
         puff and no trail.  Slot 1 with 3 runs when the frame is no longer strictly
         below +0xec, so a hit destroys the arrow on that same frame."""
         kind = s32(self.u32(this + 0xD0))
-        if kind not in (1, 2, 5):
+        if kind not in (1, 2, 5, 6):
             return RR.RangedModel.missile_run(self, this)
         u32 = self.u32
         if u32(this + 0x128):
@@ -334,7 +344,7 @@ class ArrowModel(RR.RangedModel):
         if s8(self.u8(this + 0xCC)):
             res |= 2
         if res:
-            sample = S_KIND5_IMPACT if kind == 5 else S_KIND12_IMPACT
+            sample = {5: S_KIND5_IMPACT, 6: S_KIND6_IMPACT}.get(kind, S_KIND12_IMPACT)
             hit = self.call('res_find', RR.S_FX_LUMP, sample)
             self.call('sound_playOnObject', hit, this, C.ONE)
             self.w32(this + 0xEC, 0)
@@ -366,8 +376,19 @@ class ArrowModel(RR.RangedModel):
                 node = u32(this + 0x4C)
                 attacker = u32(node + 0xC) if node else 0
                 self.call('world_damageInRadius', attacker, pos, u32(this + 0xD8), 0, 0, 0, F_24, F_OUTER72)
-            else:
+            elif kind == 5:
                 self.call('fx_spawn', 10, pos)
+                block = self.call('pool_new', 0xBC)
+                if block:
+                    self.call('LightEffect_ctor', block, pos, 0, 0,
+                              C.ZERO, F_LIGHT_B, F_LIGHT_A, F_LIGHT_C, C.ZERO, C.ZERO, C.ZERO, C.ZERO,
+                              F_LIGHT_D, F_LIGHT_E, C.ONE, C.ONE)
+            else:
+                for _count in range(100):
+                    x, y, z = self._ball(this)
+                    direction = (C.mul(x, F_KIND6_SCALE), C.mul(y, F_KIND6_SCALE),
+                                 C.add(C.mul(z, F_KIND6_SCALE), F_KIND6_BIAS))
+                    self.call('particle_spawn', P_KIND6, pos, direction, C.ZERO)
                 block = self.call('pool_new', 0xBC)
                 if block:
                     self.call('LightEffect_ctor', block, pos, 0, 0,
@@ -375,6 +396,11 @@ class ArrowModel(RR.RangedModel):
                               F_LIGHT_D, F_LIGHT_E, C.ONE, C.ONE)
         if kind == 1:
             self._kind1_flight(this)
+        elif kind == 6:
+            node = u32(this + 0x4C)
+            owner = u32(node + 0xC) if node else 0
+            if owner and u32(owner + 0xC) & 0x40:
+                self.call('player_getPassiveLevel', u32(owner + 0x3C8), 0x1000)
         elif kind == 5:
             pos = self.vec(this + 0x10)
             vel = self.vec(this + 0x1B0)

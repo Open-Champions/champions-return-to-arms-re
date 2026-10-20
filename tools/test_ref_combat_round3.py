@@ -294,6 +294,21 @@ class ArrowTests(unittest.TestCase):
         self.assertEqual(spawned[1][0], R3.P_KIND1_B)
         self.assertEqual(spawned[0][2], spawned[1][2])
 
+    def test_kind6_bursts_at_the_arrow_and_asks_a_player_owner(self):
+        C.set_fpu('ps2')
+        m, mem, cb = self.arrow(collide=1, pool=LIGHT)
+        plant_arrow(mem, kind=6, owner=OWNER)
+        mem.store(OWNER + 0xC, 4, 0x40)
+        mem.store(OWNER + 0x3C8, 4, 3)
+        m.missile_run(MISSILE)
+        spawned = [args for name, args in cb.calls if name == 'particle_spawn']
+        self.assertEqual(len(spawned), 100)
+        self.assertEqual(spawned[0][0], R3.P_KIND6)
+        self.assertEqual(spawned[0][1], (C.f32(1.0), C.f32(2.0), C.f32(3.0)))
+        self.assertEqual([args for name, args in cb.calls if name == 'player_getPassiveLevel'], [(3, 0x1000)])
+        light = [args for name, args in cb.calls if name == 'LightEffect_ctor'][0]
+        self.assertEqual(light[4], 0)
+
 
 if __name__ == '__main__':
     unittest.main()
