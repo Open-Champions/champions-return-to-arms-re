@@ -173,3 +173,59 @@ def parse_font(data):
     if any(v >= n for v in charmap) or any(g[7] >= nk for g in glyphs):
         raise ValueError('invalid glyph/kerning reference')
     return Font(word,charmap,glyphs,kerns,to,bytes(data[to:]))
+
+
+# Round 4. The 34 original-art HUD identities. `used` is the TEX header size
+# and the source rectangle (0, 0, w, h) passed by ui_drawSpriteImpl 0x17b590
+# and the clipped drawer 0x17b8b0. `upload` is the GIF image rectangle, which
+# is a different number for the bars, the button and the two status frames.
+# `rows` is one field. See the marked section of docs/hud-layout.md.
+HudArt = namedtuple('HudArt', 'lump entry used upload rows')
+
+_BAR = HudArt('HUD.LMP', '', (100, 8), (104, 8), 4)
+_STATUS = HudArt('HUD.LMP', '', (160, 46), (80, 24), 23)
+_TILE = HudArt('INTERFAC.LMP', '', (32, 32), (32, 32), 16)
+
+
+def hud_art_round4():
+    arts = []
+    for colour in ('red', 'blue'):
+        for index in range(11):
+            arts.append(_BAR._replace(entry='bar_%s%02d.tex' % (colour, index)))
+    arts.append(_STATUS._replace(entry='hud_statusbar00.tex'))
+    arts.append(_STATUS._replace(entry='hud_statusbar00glow.tex'))
+    arts.append(HudArt('INTERFAC.LMP', 'button.tex', (83, 38), (88, 40), 19))
+    for name in ('tilebot', 'tilebotleft', 'tilebotright', 'tileleft', 'tileright',
+                 'tiletop', 'tiletopleft', 'tiletopright'):
+        arts.append(_TILE._replace(entry=name + '.tex'))
+    arts.append(HudArt('INTERFAC.LMP', 'tilecenter.tex', (320, 224), (320, 224), 112))
+    return tuple(arts)
+
+
+def hud_source(art):
+    """Source rectangle both sprite drawers pass for this identity."""
+    w, h = art.used
+    return (0, 0, w, h)
+
+
+# Page sizes the catalogue carried before this round. Nine identities already
+# agreed with the TEX header; the other twenty-five did not.
+HUD_ART_OLD_PAGE = {
+    'bar': (104, 8),
+    'status': (160, 48),
+    'button': (88, 40),
+    'tile': (32, 32),
+    'center': (320, 224),
+}
+
+
+def hud_art_group(art):
+    if art.entry.startswith('bar_'):
+        return 'bar'
+    if art.entry.startswith('hud_status'):
+        return 'status'
+    if art.entry == 'button.tex':
+        return 'button'
+    if art.entry == 'tilecenter.tex':
+        return 'center'
+    return 'tile'
