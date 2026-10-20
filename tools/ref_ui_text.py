@@ -268,6 +268,14 @@ def fit_ascii(font, text, width, interlaced=True):
     return out + b'...' if len(out) != len(text) else out
 
 
+# FNT header +2. Re-checked 2026-10-20: every lh/lhu of offset 2 in
+# 0x17f000-0x182800 is a glyph field or, at 0x17ffa0/0x17ffa8, a TEX header's
+# width/height (callers at 0x3218f0-0x321aa8 pass a sprite, then ui_drawSprite).
+# Relocate 0x181a20 fixes +8, +0xc and +0x10 only. Line height stays a caller
+# argument. The header word's meaning is still unknown; nothing here reads it.
+FONT_HEADER_PLUS2_READERS = ()
+
+
 def text_scissor(left, top, right, bottom):
     """text_setClip 0x1803e0: (GS SCISSOR inclusive, logical pixel half-open).
 

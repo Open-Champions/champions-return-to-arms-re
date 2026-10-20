@@ -15,12 +15,16 @@ Evidence (SLUS-20973 v2.00, EE addresses):
   I  GS arithmetic: modulate C = (Ct*Cf) >> 7; blend 0x44 is
      ((Cs - Cd) * As >> 7) + Cd; COLCLAMP = 1 (per-frame default 0x19c86c)
      clamps to 0..255. These follow the GS definition of the register values.
-What is NOT modelled: the 16-bit draw buffer and its dither, the 1280-wide
-buffer, field selection and the present pass's 2x2 box filter. Those are why
-raster comparison against a captured original needs a tolerance (compare()).
+What is NOT modelled by composite(): the 16-bit draw buffer, field selection
+and the present pass's 2x2 box filter. dimx_matrix() / dither5() and
+present_colour() describe the dither matrix and the present gain; composite()
+does not apply them. Those are why raster comparison against a captured
+original needs a tolerance (compare()).
 """
 from collections import namedtuple
 import difflib
+
+import ref_core as F
 
 WIDTH, HEIGHT = 640, 448
 NEUTRAL = 0x80808080          # RGBAQ word: R bits 0-7, G 8-15, B 16-23, A 24-31
@@ -198,3 +202,96 @@ def diff_records(original, native, textures, layer=6):
         if op != 'equal':
             out.append((op, a[i0:i1], b[j0:j1]))
     return out
+
+
+# Dither and present gain. Not applied by composite(); see docs/ui-parity.md.
+# DIMX register id 0x44, DTHE 0x45. The 64-bit matrix is built at 0x19c46c
+# (and the same way at 0x17b210, 0x177fcc, 0x190664) and stored as GS data
+# with register id 0x44. Per-frame gfx_emitFrameSetup 0x19c9a4 writes DTHE = 1
+# and COLCLAMP (0x46) = 1 and does not rewrite DIMX.
+DIMX_WORD = 0x3131757531317575
+DIMX_REGISTER = 0x44
+DTHE_REGISTER = 0x45
+BRIGHTNESS_DEFAULT = 0x3f000000      # 0.5, stored by 0x1e6260 when the reset argument is -1
+PRESENT_GAIN_HI = 0x3f4ccccc         # 0.8
+PRESENT_GAIN_LO = 0x3e4ccccc         # 0.2
+
+
+def dimx_matrix():
+    """4x4 GS DIMX entries, low nibble first. Each nibble's low 3 bits are a
+    signed offset in -4..+3 (bit 2 is the sign)."""
+    rows = []
+    for row in range(4):
+        cells = []
+        for col in range(4):
+            nibble = (DIMX_WORD >> (4 * (row * 4 + col))) & 7
+            cells.append(nibble - 8 if nibble & 4 else nibble)
+        rows.append(tuple(cells))
+    return tuple(rows)
+
+
+def dither5(channel, x, y):
+    """Inferred GS reduction for PSMCT16 with COLCLAMP on: add the matrix
+    entry for (x & 3, y & 3), clamp to 0..255, keep the top 5 bits."""
+    v = channel + dimx_matrix()[y & 3][x & 3]
+    if v < 0:
+        v = 0
+    if v > 255:
+        v = 255
+    return v >> 3
+
+
+def scale_rgb(colour, factor):
+    """color_scale 0x19ecac: trunc(channel * factor) clamped to 0..255 for R, G
+    and B. The alpha byte is copied unchanged."""
+    out = colour & 0xff000000
+    for shift in (0, 8, 16):
+        value = F.to_int(F.mul(F.from_int((colour >> shift) & 0xff), factor))
+        if value < 0:
+            value = 0
+        if value > 255:
+            value = 255
+        out |= value << shift
+    return out
+
+
+def present_gain(brightness):
+    """0x19ce70..0x19ce94: brightness * 0.8 + 0.2."""
+    return F.add(F.mul(brightness, PRESENT_GAIN_HI), PRESENT_GAIN_LO)
+
+
+def present_channel(value, brightness):
+    """0x19ce98..0x19cef4: clamp(trunc(2 * value * gain), 0, 255).
+
+    The double is an add of the product with itself, matching the three
+    add.s pairs in gfx_present. value is the integer channel (0x44fd8c / 90 / 94,
+    or 128 when gfx_present's third argument is nonzero).
+    """
+    scaled = F.mul(F.from_int(value), present_gain(brightness))
+    n = F.to_int(F.add(scaled, scaled))
+    if n < 0:
+        n = 0
+    if n > 255:
+        n = 255
+    return n
+
+
+def present_colour(r, g, b, brightness):
+    """Packed word at 0x19cef8: R in bits 0-7 (from f22 / 0x44fd8c), G in 8-15
+    (f21 / 0x44fd90), B in 16-23 (f20 / 0x44fd94). No alpha."""
+    return (present_channel(r, brightness)
+            | (present_channel(g, brightness) << 8)
+            | (present_channel(b, brightness) << 16))
+
+
+def present_channel_step(value):
+    """One present moves each of 0x44fd8c/90/94 toward 128 (0x19cf0c..0x19cf94).
+
+    133 and above steps down by 4, below 124 steps up by 4, and 124..132 snaps
+    to 128.
+    """
+    if value >= 0x85:
+        return value - 4
+    if value >= 0x7c:
+        return 0x80
+    return value + 4

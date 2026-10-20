@@ -142,6 +142,9 @@ class FitAndClip(unittest.TestCase):
         self.assertEqual(T.text_scissor(-5, -5, 700, 500), ((0, 1279, 0, 447), (0, 0, 640, 448)))
         self.assertEqual(T.text_scissor(10, 20, 30, 40), ((20, 59, 20, 40), (10, 20, 30, 41)))
 
+    def test_header_plus2_has_no_reader_in_the_text_module(self):
+        self.assertEqual(T.FONT_HEADER_PLUS2_READERS, ())
+
 
 if __name__ == '__main__':
     unittest.main()

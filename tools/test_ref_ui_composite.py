@@ -173,5 +173,25 @@ class RecordDiff(unittest.TestCase):
             C.normalize((1, 2), TEX)
 
 
+class DitherAndPresent(unittest.TestCase):
+    def test_matrix_and_reduction(self):
+        self.assertEqual(C.dimx_matrix(), ((-3, -1, -3, -1), (1, 3, 1, 3),
+                                           (-3, -1, -3, -1), (1, 3, 1, 3)))
+        self.assertEqual(C.dither5(0, 0, 0), 0)          # 0 + -3 clamps
+        self.assertEqual(C.dither5(128, 1, 0), (128 - 1) >> 3)
+        self.assertEqual(C.dither5(255, 1, 1), 255 >> 3)
+
+    def test_scale_and_gain(self):
+        self.assertEqual(C.scale_rgb(0x80ffffff, 0x3f800000) & 0xff000000, 0x80000000)
+        self.assertEqual(C.scale_rgb(0x80404040, 0), 0x80000000)
+        # brightness 0.5 -> gain 0.6; 2 * 128 * 0.6 = 153.6, truncates to 153
+        self.assertEqual(C.present_channel(128, C.BRIGHTNESS_DEFAULT), 153)
+        self.assertEqual(C.present_colour(128, 0, 255, C.BRIGHTNESS_DEFAULT) & 0xff, 153)
+        self.assertEqual(C.present_channel(0, C.BRIGHTNESS_DEFAULT), 0)
+        self.assertEqual(C.present_channel_step(200), 196)
+        self.assertEqual(C.present_channel_step(130), 128)
+        self.assertEqual(C.present_channel_step(10), 14)
+
+
 if __name__ == '__main__':
     unittest.main()

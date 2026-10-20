@@ -387,3 +387,346 @@ def bust_meter(value, maximum, width, tick):
     n = q - _tdiv(q, 4) * 4
     fill = F.round_half_away(F.mul(F.div(F.from_int(value), F.from_int(maximum)), F.from_int(width)))
     return 'bar_yellow0%d.tex' % n, 521 + fill - 2
+
+
+# --- round 3 (2026-10-20). Existing names above are unchanged. ---
+
+def _sx16(v):
+    v &= 0xffff
+    return v - 0x10000 if v & 0x8000 else v
+
+
+def _addu(a, b):
+    return (a + b) & 0xffffffff
+
+
+# Flying numbers. Constructor 0x202158, run 0x2022a8, draw 0x1f3830.
+FLY_LIFE_PLAIN = 0x1e          # kind == 0
+FLY_LIFE_OTHER = 0xb4          # any other kind
+FLY_ALPHA0 = 0x80
+
+
+def flying_text_life(kind):
+    """0x202264..0x202274: 180 ticks when kind != 0, else 30."""
+    return FLY_LIFE_OTHER if kind else FLY_LIFE_PLAIN
+
+
+def flying_text_drift(rand_word):
+    """0x20222c..0x202258: (GameObject_rand % 60) - 30, stored at +0x78 and +0x7c."""
+    return (rand_word % 60) - 30
+
+
+def flying_text_step(life, alpha):
+    """One sim tick of FlyingText_run (0x2022a8).
+
+    life and alpha are the u16 fields +0x96 and +0x94. Alpha drops by 3 only while
+    the incoming signed life is below 31, and a negative result is stored as 0.
+    Life always drops by 1. The object deletes itself (vtable + 8) when the new
+    signed life is <= 0. Returns (life, alpha, delete).
+    """
+    life_s = _sx16(life)
+    alpha &= 0xffff
+    if life_s < 31:
+        alpha = (alpha - 3) & 0xffff
+        if _sx16(alpha) < 0:
+            alpha = 0
+    life_s -= 1
+    return life_s & 0xffff, alpha, life_s <= 0
+
+
+def flying_text_style(kind, crit, alpha):
+    """Colour word, whether +0x78 is forced to 5, and the extra world-z lift.
+
+    Kind 1 (0x1f3890) is 0x602060, forces x to 5 and adds 60 over the +72 head
+    offset. Kind 2 with +0x84 clear (0x1f38ec) is 0x406e40, also forces x to 5,
+    and adds 12. Any other kind with +0x84 set, and kind 2 with it set, is
+    alpha<<24 | 0x008080 with no lift (0x1f394c). Otherwise 0x323c3c (0x1f3968).
+    Kind 1 does not look at +0x84.
+    """
+    a = (alpha & 0xff) << 24
+    if kind == 1:
+        return a | 0x602060, True, 0x42700000
+    if kind == 2 and not crit:
+        return a | 0x406e40, True, 0x41400000
+    if crit:
+        return a | 0x008080, False, 0
+    return a | 0x323c3c, False, 0
+
+
+def flying_text_anchor_z(world_z, extra):
+    """Head offset 72 (0x42900000 at 0x1f3870) plus the style's extra lift."""
+    return F.add(F.add(world_z, 0x42900000), extra)
+
+
+def flying_text_screen(x_off, y_off, clip_x, clip_y, w):
+    """Screen point after mat4_transformPoint (0x1f3990..0x1f3a70).
+
+    clip_x/clip_y/w are the transformed point; w is the value left in f0.
+    x = x_off + trunc(0.5 * x/w) + 320, y = y_off + trunc(y/w) + 224.
+    """
+    inv = F.div(F.ONE, w)
+    x = F.to_int(F.mul(F.mul(clip_x, inv), 0x3f000000))
+    y = F.to_int(F.mul(clip_y, inv))
+    return _addu(_addu(x_off, x), 0x140), _addu(_addu(y_off, y), 0xe0)
+
+
+# Minimap mode tables, executed from minimap_applyMode 0x1e3ff0.
+# Byte offset -> raw float. 0x53e1b8 holds the offsets; its bytes +0x30 are the
+# scales (also addressed as 0x53e1e8). 0x53e218 holds the second pair.
+_MINIMAP_A = {
+    0: 0, 4: 0, 8: 0x43480000, 12: 0xc2f00000, 16: 0x43340000, 20: 0xc2f00000,
+    24: 0, 28: 0, 32: 0xc3700000, 36: 0x430c0000, 40: 0xc3700000, 44: 0x430c0000,
+    0x30: 0x3f666666, 0x34: 0x3f333333, 0x38: 0, 0x3c: 0,
+}
+_MINIMAP_B = {
+    0: 0x43a00000, 4: 0x43600000, 8: 0x42f00000, 12: 0x42c80000,
+    16: 0, 20: 0, 24: 0x43a00000, 28: 0x43600000, 32: 0x42f00000, 36: 0x42c80000,
+    40: 0, 44: 0,
+}
+_MINIMAP_F18 = {0: 0x41800000, 4: 0x41200000, 8: 0x41200000, 12: 0}   # 0x53e1f8
+_MINIMAP_F17 = {0: 0x40c00000, 4: 0x40a00000, 8: 0x40a00000, 12: 0}   # 0x53e208
+MINIMAP_APPROACH = 0x3e800000     # 0.25, 0x1e4698
+MINIMAP_SNAP = 0x3ba3d70a         # 0.005, 0x1e4674
+
+
+def minimap_params(mode, players):
+    """The five floats 0x1e3ff0 stores, as raw patterns.
+
+    Order is 0x86af58, 0x86af5c, 0x86af60, 0x86af64, 0x86af68
+    (scale, then the A-table pair, then the B-table pair). players < 2 uses
+    byte offsets (mode<<3) and (mode<<3)+4; two or more players use
+    (mode<<3)+0x18 and (mode<<3)+0x1c. Mode 0's two columns happen to match.
+    """
+    single = players < 2
+    off_lo = (mode << 3) + (0 if single else 0x18)
+    off_hi = (mode << 3) + (4 if single else 0x1c)
+    return (_MINIMAP_A[0x30 + (mode << 2)], _MINIMAP_A[off_lo], _MINIMAP_A[off_hi],
+            _MINIMAP_B[off_lo], _MINIMAP_B[off_hi])
+
+
+def minimap_extra(mode):
+    """The two floats 0x1e4cf0 passes to 0x168cac (f18 from 0x53e1f8, f17 from 0x53e208)."""
+    return _MINIMAP_F18[mode << 2], _MINIMAP_F17[mode << 2]
+
+
+def minimap_approach(current, target):
+    """One frame of the offset chase in minimap_draw (0x1e4664..0x1e46a8).
+
+    Equal values stay. A gap below 0.005 snaps to the target. Otherwise
+    current += 0.25 * (target - current). The same step is applied to each
+    of the four offset floats.
+    """
+    if F.eq(current, target):
+        return current
+    diff = F.sub(target, current)
+    if F.lt(diff & 0x7fffffff, MINIMAP_SNAP):
+        return target
+    return F.add(current, F.mul(diff, MINIMAP_APPROACH))
+
+
+def minimap_zoom(scale, stick):
+    """0x1e4ca0: the scale float times the stick zoom at 0x4f71a0, passed as f14."""
+    return F.mul(scale, stick)
+
+
+def minimap_player_blip(kind):
+    """Three bytes written for a player blip, or None when kind is not 0..3.
+
+    minimap_blipColor 0x1e40a8. The word at the object +0x3c8 is both this index
+    and the player-record index whose health (+0xac) gates the blink. Order is
+    the three out-pointers a3, t0, t1.
+    """
+    return {0: (0xb6, 0x2f, 0x3a), 1: (0x00, 0xbf, 0x00),
+            2: (0xb4, 0xb2, 0x00), 3: (0x1d, 0x20, 0xa1)}.get(kind)
+
+
+def minimap_player_drawn(health, sim_frame):
+    """0x1e4154: health <= 0 draws only on g_simFrame bit 0x20."""
+    if health <= 0 and (sim_frame & 0x20) == 0:
+        return False
+    return True
+
+
+# Compass. Label arguments are the text call; the model anchor is separate.
+COMPASS_OFFSET = (0xbde977c8, 0x3e20c38f, 0xc0b8273d)   # 0x1df728
+COMPASS_LABEL = (0x41, 0x18a, 0x83, -0x64, 0x1f4, 0x12)  # x, y, width, top, bottom, line
+COMPASS_LABEL_COLOUR = 0x632f6159
+
+
+def _row(m, row, v):
+    s = F.mul(m[row], v[0])
+    s = F.add(s, F.mul(m[row + 1], v[1]))
+    s = F.add(s, F.mul(m[row + 2], v[2]))
+    return F.add(s, m[row + 3])
+
+
+def mat4_xyz(m, v):
+    """0x165fc0: xyz of a point through a 4x4 stored as 16 consecutive floats.
+
+    Row i is m[4i:4i+4]. The w it computes is left in f0 and not stored.
+    """
+    return _row(m, 0, v), _row(m, 4, v), _row(m, 8, v)
+
+
+def compass_anchor(view, camera):
+    """World origin of the compass model (0x1df7dc..0x1df8e0).
+
+    view is g_viewProj (16 raw floats). The offset is transformed by 0x165fc0
+    and added to g_cameraPos 0x44f038. Mesh extents are not in this function.
+    """
+    x, y, z = mat4_xyz(view, COMPASS_OFFSET)
+    return F.add(x, camera[0]), F.add(y, camera[1]), F.add(z, camera[2])
+
+
+# Help box 0x1dcd1c and notice box 0x1dd014. wrap_height is text_drawWrapped's
+# return (end y - start y). Colours below are before color_scale.
+HELP_TITLE = (0x144, 0x64)
+HELP_BODY = (0x84, 0x82, 0x194, 0, 0x1c0, 0x15)     # x, y, width, top, bottom, line
+HELP_TITLE_COLOUR = 0x8028444e
+HELP_BODY_COLOUR = 0x80464646
+HELP_FRAME = (0x74, 0x5e, 0x1a0)                    # x, y, width
+HELP_INNER = (0x7c, 0x68, 0x1a0)
+HELP_INNER_TINT = 0x3f000000
+HELP_CLOSE_DELAY = 0x3c
+
+
+def help_button_alpha(close_delay):
+    """0x1dce04..0x1dce40: clamp(128 - delay*10, 0, 128)."""
+    a = 0x80 - close_delay * 10
+    if a < 0:
+        a = 0
+    if a >= 0x81:
+        a = 0x80
+    return a
+
+
+def help_button_colour(close_delay):
+    return (help_button_alpha(close_delay) << 24) | 0x464646
+
+
+def _half_toward_zero(width):
+    """0x1dce5c: (width + (width >> 31)) >> 1."""
+    return (width + (width >> 31)) >> 1
+
+
+def help_box(wrap_height, label_width):
+    """Geometry that does not depend on the pulse. Button and label share y.
+
+    The affirmation string is left-aligned at 324 - half its width; the '%c'
+    glyph sits 0x19 to its left (0x1dce6c). Frame height is the wrap height
+    plus 0x4c; the inner frame's height is the wrap height itself.
+    """
+    half = _half_toward_zero(label_width)
+    y = wrap_height + 0x8b
+    return {
+        'button': (0x144 - half - 0x19, y),
+        'label': (0x144 - half, y),
+        'frame_height': wrap_height + 0x4c,
+        'inner_height': wrap_height,
+    }
+
+
+def notice_column(word):
+    """0x1dd044: the per-slot word at 0x86aa98, times 320."""
+    return word * 320
+
+
+def notice_box(column, wrap_height):
+    """Notice geometry. column is notice_column's result. No inner frame;
+    a rectangle uses colour word 0x3f000000 (0x1dd178)."""
+    base = column
+    return {
+        'title': (base + 0xa0, 0x64),
+        'body': (base + 0x24, 0x82, 0x100, 0, 0x1c0, 0x15),
+        'button': (base + 0x87, wrap_height + 0x87),
+        'label': (base + 0xa0, wrap_height + 0x87),
+        'frame': (base + 0x1a, 0x5e, 0x10c, wrap_height + 0x4c),
+        'rect': (base + 0x22, 0x66, base + 0x12e, wrap_height + 0xb2),
+    }
+
+
+def message_box_placement(t0, t2, t3, stack0):
+    """Prologue of hud_drawMessageBox 0x1df248..0x1df2e0.
+
+    width is t0, or 0x208 when t0 is 0. x = t2 + 320. y = stack0 + 0xdc.
+    layer is 6 when t3 is -1, otherwise t3.
+    """
+    width = t0 if t0 else 0x208
+    layer = 6 if (t3 & 0xffffffff) == 0xffffffff else t3
+    return _addu(t2, 0x140), _addu(stack0, 0xdc), width, layer
+
+
+def medal_prompt(pause_menu, armed, mission_menu, network, first_active):
+    """hud_drawMedalPrompt 0x1e0698.
+
+    Nothing while pauseMenu is running or 0x4f66b0 is clear. The message box
+    is only while missionmenudraw is running; its body key is MedalRoundPickNet
+    when this machine is networked and not the first active peer. The list at
+    (320, 220) is drawn whenever the prompt is armed.
+    """
+    if pause_menu or not armed:
+        return None
+    body = None
+    if mission_menu:
+        body = 'MedalRoundPickNet' if network and not first_active else 'MedalRoundPick'
+    return {
+        'title_key': 'MedalRound' if mission_menu else None,
+        'body_key': body,
+        'box': message_box_placement(0, 0, -1, -0x1c),
+        'list': (0x140, 0xdc),
+    }
+
+
+def net_cam_show(network, other_slot, health_zero, has_object, countdown, alive):
+    """Whether hud_drawNetCamPrompt 0x1e01b8 calls Camera_cycleSpectated.
+
+    Offline never does. other_slot is the nonzero result of 0x1ec580. A dead
+    local player (health +0xac == 0) whose object is missing or whose dead
+    countdown is 0 forces the call when any player is alive.
+    """
+    if not network:
+        return False
+    show = bool(other_slot)
+    if health_zero and (not has_object or countdown == 0) and alive != 0:
+        show = True
+    return show
+
+
+NET_CAM_NAME = (0x140, 0x160)       # text_drawAsciiCentered, layer 6
+NET_CAM_PROMPT = (0x140, 0x174)     # text_drawWideCentered of 'netCamToggle'
+NET_CAM_PROMPT_COLOUR = 0x804d4d4d
+
+
+def net_cam_pad(slot):
+    """Byte offset from 0x4028dc of this slot's raw pad word (0x1e0290)."""
+    return slot * 0x58
+
+
+# Arena overlay 0x305904. A player is considered while the float at
+# 0x5038a0 + slot*12 is below 2. Each of five steps draws when
+# max(0, timer - step*0.03) <= 1.
+ARENA_STEP = 0x3cf5c28f
+
+
+def arena_player_active(timer):
+    return F.lt(timer, 0x40000000)
+
+
+def arena_step_shown(timer, step):
+    t = F.sub(timer, F.mul(F.from_int(step), ARENA_STEP))
+    if F.lt(t, F.ZERO):
+        t = F.ZERO
+    return F.le(t, F.ONE)
+
+
+def arena_pulse_args(step):
+    """Arguments of fx_pulseColor for step 0..4 (0x305aec)."""
+    return 0x80 - step * 0x10, 0x7d0 - step * 0xc8
+
+
+# item_getPicture 0x108358 is reached only through these direct calls.
+# itemList_drawGrid is called from itemList_draw; itemList_draw is called from
+# itemList_update 0x1d14c8. Live jal chains: inventory_runTask -> inventory_runPanel,
+# and shop_task -> shop_run. 0x1c7908 also calls itemList_update and has no jal caller.
+PICTURE_SITES = (0x1cc8ec, 0x1cd4b0)
+PICTURE_DIMENSION_SITES = (0x1cbd2c, 0x1cc904)

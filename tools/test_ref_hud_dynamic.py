@@ -176,5 +176,91 @@ class Bust(unittest.TestCase):
         self.assertEqual(H.bust_meter(1, 2, 51, 13), ('bar_yellow02.tex', 521 + 26 - 2))
 
 
+class FlyingText(unittest.TestCase):
+    def test_life_and_fade(self):
+        self.assertEqual(H.flying_text_life(0), 30)
+        self.assertEqual(H.flying_text_life(2), 180)
+        life, alpha, delete = 30, 0x80, False
+        ticks = 0
+        while not delete:
+            life, alpha, delete = H.flying_text_step(life, alpha)
+            ticks += 1
+        self.assertEqual(ticks, 30)
+        self.assertEqual(alpha, 0x80 - 30 * 3)
+        life, alpha = 180, 0x80
+        for _ in range(150):
+            life, alpha, delete = H.flying_text_step(life, alpha)
+            self.assertFalse(delete)
+            self.assertEqual(alpha, 0x80)
+        life, alpha, delete = H.flying_text_step(life, alpha)
+        self.assertEqual((life, alpha, delete), (29, 0x7d, False))
+
+    def test_style_and_screen(self):
+        self.assertEqual(H.flying_text_style(1, 1, 0x40)[0], 0x40602060)
+        colour, force, lift = H.flying_text_style(2, 1, 0x20)
+        self.assertEqual((colour, force, lift), (0x20008080, False, 0))
+        self.assertEqual(H.flying_text_style(2, 0, 0x10)[1:], (True, 0x41400000))
+        self.assertEqual(H.flying_text_style(0, 0, 0x10)[0], 0x10323c3c)
+        # w = 2, clip x = 128, y = 64 -> x/w = 64, half = 32, y/w = 32
+        self.assertEqual(H.flying_text_screen(5, -4, 0x43000000, 0x42800000, 0x40000000),
+                         (5 + 32 + 320, (-4 + 32 + 224) & 0xffffffff))
+
+
+class Minimap(unittest.TestCase):
+    def test_mode_tables(self):
+        self.assertEqual(H.minimap_params(0, 1),
+                         (0x3f666666, 0, 0, 0x43a00000, 0x43600000))
+        self.assertEqual(H.minimap_params(0, 4), H.minimap_params(0, 1))
+        self.assertEqual(H.minimap_params(1, 1),
+                         (0x3f333333, 0x43480000, 0xc2f00000, 0x42f00000, 0x42c80000))
+        self.assertEqual(H.minimap_params(1, 4),
+                         (0x3f333333, 0xc3700000, 0x430c0000, 0x42f00000, 0x42c80000))
+        self.assertEqual(H.minimap_params(2, 1)[1:3], (0x43340000, 0xc2f00000))
+        self.assertEqual(H.minimap_extra(0), (0x41800000, 0x40c00000))
+
+    def test_approach_and_blip(self):
+        self.assertEqual(H.minimap_approach(0, 0x43480000), 0x42480000)   # 0 -> 50 toward 200
+        self.assertEqual(H.minimap_approach(0x3b800000, 0), 0)             # 1/256 < 0.005 snaps
+        self.assertEqual(H.minimap_player_blip(1), (0, 0xbf, 0))
+        self.assertIsNone(H.minimap_player_blip(4))
+        self.assertFalse(H.minimap_player_drawn(0, 0))
+        self.assertTrue(H.minimap_player_drawn(0, 0x20))
+
+
+class CompassAndBoxes(unittest.TestCase):
+    def test_identity_anchor_is_the_offset(self):
+        ident = [0] * 16
+        ident[0] = ident[5] = ident[10] = ident[15] = F.ONE
+        self.assertEqual(H.compass_anchor(ident, (0, 0, 0)), H.COMPASS_OFFSET)
+        self.assertEqual(H.COMPASS_LABEL, (65, 394, 131, -100, 500, 18))
+
+    def test_help_and_notice(self):
+        self.assertEqual(H.help_button_alpha(0), 128)
+        self.assertEqual(H.help_button_alpha(13), 0)
+        box = H.help_box(42, 20)
+        self.assertEqual(box['label'], (324 - 10, 42 + 0x8b))
+        self.assertEqual(box['button'][0], box['label'][0] - 0x19)
+        self.assertEqual(H.notice_column(1), 320)
+        n = H.notice_box(320, 42)
+        self.assertEqual(n['title'], (480, 100))
+        self.assertEqual(n['rect'][0], 320 + 0x22)
+
+    def test_prompts_and_arena(self):
+        self.assertIsNone(H.medal_prompt(True, True, True, False, True))
+        medal = H.medal_prompt(False, True, True, True, False)
+        self.assertEqual(medal['body_key'], 'MedalRoundPickNet')
+        self.assertEqual(medal['box'], (320, 192, 0x208, 6))
+        self.assertFalse(H.net_cam_show(False, True, True, False, 0, 2))
+        self.assertTrue(H.net_cam_show(True, False, True, False, 0, 2))
+        self.assertFalse(H.net_cam_show(True, False, True, True, 5, 2))
+        self.assertEqual(H.net_cam_pad(2), 0xb0)
+        self.assertTrue(H.arena_player_active(F.ONE))
+        self.assertFalse(H.arena_player_active(0x40000000))
+        self.assertTrue(H.arena_step_shown(F.ZERO, 0))
+        self.assertFalse(H.arena_step_shown(0x40000000, 0))
+        self.assertEqual(H.arena_pulse_args(2), (0x80 - 32, 0x7d0 - 0x190))
+        self.assertEqual(H.PICTURE_SITES, (0x1cc8ec, 0x1cd4b0))
+
+
 if __name__ == '__main__':
     unittest.main()
