@@ -6,6 +6,7 @@
   python3 tools/godot/run.py -- --disc IMAGE        # the game in a Godot window (options: head of project/main.gd)
   python3 tools/godot/run.py --headless -- --script FILE --unpaced ...      # no window (picture mode only)
   python3 tools/godot/run.py --editor               # the editor on the project
+  RTA_GODOT_OUT=local/NAME  the project staged by build.py with the same variable
   RTA_GODOT=/path/to/Godot  names another Godot 4.5.2 binary (default: the one under local/godot-spike/deps)
 
 Godot's own directories (editor settings, user://, caches) are put under local/godot-spike/godot-home through
@@ -18,9 +19,9 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-OUT = os.path.join(ROOT, 'local', 'godot-spike')
+OUT = os.path.abspath(os.environ.get('RTA_GODOT_OUT', os.path.join(ROOT, 'local', 'godot-spike')))    # as build.py
 PROJECT = os.path.join(OUT, 'project')
-GODOT = os.environ.get('RTA_GODOT', os.path.join(OUT, 'deps', 'godot-editor', 'Godot.app', 'Contents', 'MacOS', 'Godot'))
+GODOT = os.environ.get('RTA_GODOT', os.path.join(ROOT, 'local', 'godot-spike', 'deps', 'godot-editor', 'Godot.app', 'Contents', 'MacOS', 'Godot'))
 
 
 def environment():

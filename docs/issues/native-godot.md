@@ -9,6 +9,74 @@ Nothing derived from the game is in the repository. `tools/godot/` holds glue, b
 scripts, the Godot project's scripts and shaders. The translated code, the libraries, the
 staged project, exported applications, pictures and logs are under `local/godot-spike/`.
 
+## FIFTH ROUND (2026-10-19): Forward+ on Metal, the art pack, kept meshes written in place; the portal on the real service
+
+**Read this first.**  Built into `local/godot-r5/` (`RTA_GODOT_OUT=local/godot-r5`, new in `build.py` / `run.py`: another
+build directory beside the shared `local/godot-spike/`, which was NOT touched; the downloads are still taken from
+`local/godot-spike/deps`).  Snapshot of `tools/recomp` taken again 2026-10-19 (it carries `net2/tls.cpp`: the game
+library links Network and Security).  Tests and pictures: `local/godot-r5/test/` (`fight.sh NAME [main.gd options]`,
+`fsum.py`, `cmp.sh`, `room.py`).
+
+| Asked | State | Shown |
+|---|---|---|
+| the renderer | **Forward+ on Metal** is the project's renderer now (`project.godot`); the Compatibility renderer still works (`--rendering-method gl_compatibility`): the shaders carry both (`CURRENT_RENDERER`) | below |
+| the art pack (the owner: "vision all blurry") | **done**: the native program's pack (`--art-pack DIR`, `$RTA_ART_PACK`, `user://settings.cfg [game] art_pack`, else `~/Library/Application Support/Play-RTA/textures` when it is there; `none` = without); mip maps for every texture, anisotropic 16x in the scene; two-field interface pictures sampled by the woven line as the native program does | `test/pairs/*-before.png` / `*-after.png`, `*-crop-before-after.jpg`; `test/fp/title-cmp.jpg` (the interface text, game's own above, pack below) |
+| full resolution | the picture is drawn at the window's own pixels and follows the window (full screen, resized) when no `--size` is given; it was fixed at the size of the first frame's window | |
+| 60 in the heaviest fight at 3024 x 1701 | **reached in the fight proper** (table); dips to 38-48 under a load average of 22-34 (another agent's three `rta_app_next` on 6 performance cores) | `test/*/out.txt` |
+| character card on the portal's character screens | **hooked**: `portal.character_card()`; the home card, my seat in the room and the current character on the character screen take it (`Portrait.live`); not seen in a run (the room runs stood in the overhead view; the card needs the character standing in a view that shows it) | |
+
+### What the time went into (sampled, `sample PID`, the fight at 3024 x 1701, Compatibility)
+
+The main thread was the limit, not the library's decoder: 81 % busy at 26 pictures a second; 62 % of it Godot's
+rendering through Apple's OpenGL-on-Metal layer (glDrawArrays 900 samples of 6271, shadows 600, post 550), 35 %
+`RtaDrawer::submit` (of it `mesh_free` 902 and `mesh_add_surface` 687: the moving characters' meshes made and freed
+every frame, 138 a list, 10,800 held).  The decoder thread (VIF1, VU1, GS model, the scene tap: `SceneTap::kicked`
+two thirds of it) was 53 % busy - 7 to 12 ms a list, on its own thread, below a picture's 16.7 ms.
+
+### What was done
+
+1. **Forward+ / Metal.**  `gs_draw.gdshaderinc`: the 2-D surfaces' depth as Forward+ wants it (0..1, reversed: near is
+   1; `1 - z`, the same winner of every depth test), the world draws' depth bias the other way; the exact sRGB inverse
+   where the Compatibility renderer needed the inverse of its own approximations (`to_linear`, also `fill.gdshader`,
+   `sky.gdshader`).  The surfaces are stored bottom up there: `RtaDrawer` (`rd`) turns over a surface read as a texture
+   (`flip_surfaces`), the picture written (`get_shown_image`) and the region shown (`get_shown_region` +
+   `get_shown_flipped`; `view.gd` draws it turned over).  First tries: everything black (the depth), then upside down,
+   then washed out (the colour) - `test/cmp/`.  Left: Forward+ is a little darker and less saturated in the lit
+   scene than the Compatibility renderer (valor's mean 51/61/46 against 58/65/44; the hub's painted sky pixel-exact):
+   the sun / ambient balance (`scene_view.gd` `light_energy`, `rta_light_ambient`) wants a second look under Forward+.
+2. **The art pack** (`extension/src/rta_pack.*`, `RtaDrawer.set_art_pack`, `main.gd` `--art-pack`, `--mipmaps`): the
+   library names every texture as the emulator-based build does (`rtag_texture_names`, new optional export; scene mode
+   turns `Gs::name_textures` on; `rtag_set_option("name_textures", "1")` for the other modes); three threads of low
+   priority read the PNG, put it over the game's own pixels enlarged where it covers only the texture's corner, make
+   the mip maps and hand it back; the texture's RID is given it (`texture_replace`), at most 48 MB a frame.  The fight
+   route: 924 textures named, 921 found in the pack's 122,205, 920 replaced from files; the title screen 19 of 19 (17
+   two-field interface pictures).  World draws sample with mip maps and anisotropy (`textureGrad` from the
+   coordinates before the wraps: no seams).
+3. **Kept meshes written in place** (`rta_scene.cpp`): a kept mesh is keyed by the draw's identity (its packets'
+   figures, kinds, corner counts, and how many draws of that identity came before it in the frame); a draw whose
+   content changed has its buffers written again (`mesh_surface_update_vertex_region` / `_attribute_region`,
+   `mesh_set_custom_aabb`).  Fight: 0.5 meshes made a list instead of 138.4, 138.5 written in place, 384 held
+   instead of 10,800; `submit()` 4.14 -> 2.84 ms a list.
+4. Not done: the decoder's own cost (`SceneTap::kicked`, `tools/recomp/render/scene_tap.cpp`: another agent's tree);
+   Godot's separate render thread (`--render-thread separate` crashed at start under Compatibility - not tried under Forward+).
+
+### Figures (the fight route of the fourth round, chase, 3024 x 1701, paced; "fight" = blanks 3600 to 4900)
+
+| Run | Renderer, textures | Fight: pictures a second min / mean / max | late (> 20 ms) | load |
+|---|---|---|---|---|
+| `base` (window in the corner) | Compatibility, the game's own | 25.4 / 41.0 / 56.0 | 662 of 1320 | 13-18 |
+| `fplus3` (window in the corner) | Forward+, the game's own | **58.9 / 60.0 / 61.0** | 94 | 13-18 |
+| `pack1` (window in the corner) | Forward+, the art pack, mip maps | 30.4 / 58.1 / 61.2 (the low ones are the windows with the route's 3024 x 1701 PNG writes) | 233 | ~13 |
+| `t-new` (no PNG writes) | Forward+, pack | 47.7 / 57.2 / 60.9 | 331 | 16-22 |
+| `t-new3` (no PNG writes, meshes in place) | Forward+, pack | 37.8 / 53.2 / 60.3 | 346 | 24-34 |
+
+Found on the way: the route's pictures (six 3024 x 1701 PNGs, `Image.save_png` on the main thread, 1.7 to 2 s each)
+were inside the fourth round's "heaviest fight" windows (blanks 4920 to 5280): those 17 to 22 pictures a second were
+the test's own writes.  Without them the Compatibility renderer is not 60 there either (sampled above), Forward+ is.
+A test window wholly off the screen is not drawn by Godot on macOS (the Compatibility renderer wrote black pictures,
+a portal program stopped at `frame_post_draw`): `RTA_TEST_OFFSCREEN=1` (main.gd, shots.gd) now puts a borderless
+test window beyond the lower right edge but for two points of its corner.
+
 ## STATE (2026-10-13, 09:15)
 
 All five stages run. Nothing of this work is still running; test windows are closed.

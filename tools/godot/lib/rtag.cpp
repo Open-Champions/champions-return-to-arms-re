@@ -225,6 +225,7 @@ struct Machine {
     rtag_scene scene_view;
     std::vector<rtag_draw> draws;
     std::vector<rtag_texture> textures;
+    std::vector<rtag_texture_name> texture_names;      // parallel to textures (rtag_texture_names)
     std::vector<rtag_target> targets;
     std::vector<const char*> shot_names, command_names;
     // the end
@@ -539,6 +540,11 @@ void fill_view(Machine& m) {
     }
     m.textures.resize(l.textures.size());
     for (size_t k = 0; k < l.textures.size(); k++) m.textures[k] = {l.textures[k].id, l.textures[k].width, l.textures[k].height, l.textures[k].rgba.data()};
+    m.texture_names.resize(l.textures.size());
+    for (size_t k = 0; k < l.textures.size(); k++) {
+        const render::TextureData& t = l.textures[k];
+        m.texture_names[k] = {t.id, t.named ? 1 : 0, t.figure, t.palette_figure, t.format, t.sent_width, t.sent_height, t.named_width, t.named_height};
+    }
     m.targets.resize(l.targets.size());
     for (size_t k = 0; k < l.targets.size(); k++) m.targets[k] = {l.targets[k].id, l.targets[k].width, l.targets[k].height, l.targets[k].screen ? 1 : 0};
     m.shot_names.clear();
@@ -570,6 +576,13 @@ extern "C" {
 
 int rtag_api_version(void) { return RTAG_API_VERSION; }
 
+uint32_t rtag_texture_names(rtag_texture_name* out, uint32_t max) {
+    if (!g_m || !out) return 0;
+    uint32_t n = (uint32_t)std::min<size_t>(max, g_m->texture_names.size());
+    for (uint32_t k = 0; k < n; k++) out[k] = g_m->texture_names[k];
+    return n;
+}
+
 int rtag_has(const char* feature) {
     std::string f = feature ? feature : "";
     if (f == "fixes") {
@@ -582,6 +595,7 @@ int rtag_has(const char* feature) {
     if (f == "films") return apprt::films_linked() ? 1 : 0;
     if (f == "picture") return 1;
     if (f == "scene3d") return 1;
+    if (f == "texture_names") return 1;
     if (f == "views") return 1;
     if (f == "world") {
 #ifdef RTAG_HAVE_WORLD
@@ -639,6 +653,7 @@ int rtag_start(const rtag_config* config) {
     m->aspect = config->aspect > 0 ? config->aspect : 4.0 / 3.0;
     if (m->aspect < 4.0 / 3.0) m->aspect = 4.0 / 3.0;
     m->scene3d = config->scene3d;
+    if (m->scene3d) m->renderer.gs.name_textures = true;    // a host may draw an art pack's pictures (rtag_texture_names)
     m->sound = config->sound;
     m->gain = config->gain;
     mkdir(m->data.c_str(), 0755);
@@ -789,6 +804,10 @@ extern "C" void rta_sound_set_music_gain(float gain);      // tools/recomp/sound
 int rtag_set_option(const char* key, const char* value) {
     if (!g_m || !key || !value) return 0;
     std::string k = key, v = value;
+    if (k == "name_textures") {                         // work out every new texture's name (rtag_texture_names)
+        g_m->renderer.gs.name_textures = !(v == "off" || v == "0" || v == "no");
+        return 1;
+    }
     if (k == "music_volume") {                          // 0..1: the game's music alone (stream 2 of the stream driver)
 #ifdef RTAG_HAVE_MUSIC_GAIN
         rta_sound_set_music_gain((float)atof(value));

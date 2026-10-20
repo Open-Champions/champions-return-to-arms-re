@@ -37,6 +37,10 @@ void RtaDrawer::setup(const Ref<RtaMachine>& p_machine, const RID& p_parent_view
     parent_viewport = p_parent_viewport;
     output_size = p_output_size;
     samples = p_samples;
+    // Forward+ / Mobile (Metal, Vulkan, Direct3D): the surfaces are stored the other way up than in the Compatibility
+    // renderer's OpenGL; a surface read as a texture, the picture shown and the picture written are turned over
+    rd = String(rs()->get_current_rendering_method()) != String("gl_compatibility");
+    if (rd) flip_surfaces = true;
     // test aids: the two conventions the drawer depends on, to be turned over from outside
     if (getenv("RTA_GODOT_FLIP")) flip_y = (float)atof(getenv("RTA_GODOT_FLIP"));
     if (getenv("RTA_GODOT_TEXFLIP")) flip_surfaces = atoi(getenv("RTA_GODOT_TEXFLIP")) != 0;
@@ -185,7 +189,8 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
         key.texa_mode = d.tex_is_target ? d.texa_mode : 0; key.ta0 = d.ta0; key.ta1 = d.ta1; key.aem = d.aem;
         memcpy(key.st_scale, d.st_scale, sizeof key.st_scale); memcpy(key.tex_size, d.tex_size, sizeof key.tex_size);
         memcpy(key.tex_offset, d.tex_offset, sizeof key.tex_offset); memcpy(key.region, d.region, sizeof key.region);
-        key.weave_half = d.weave_half;
+        // an art pack's two-field picture holds the woven picture itself: the woven line is the coordinate (-1)
+        key.weave_half = d.weave_half > 0 && woven_textures.count(texture.get_id()) ? -1.0f : d.weave_half;
     }
     std::string bytes((const char*)&key, sizeof key);
     auto found = materials.find(bytes);
@@ -209,7 +214,7 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
         s->material_set_param(material, "tex_flip", texture_flipped ? 1.0f : 0.0f);
         s->material_set_param(material, "wrap_mode", Vector2i(d.wrap_s, d.wrap_t));
         s->material_set_param(material, "region", Quaternion(d.region[0], d.region[1], d.region[2], d.region[3]));
-        s->material_set_param(material, "weave_half", d.weave_half);
+        s->material_set_param(material, "weave_half", key.weave_half);
         s->material_set_param(material, "texa", Quaternion(d.tex_is_target ? (float)d.texa_mode : 0.0f, (float)d.ta0, (float)d.ta1, d.aem ? 1.0f : 0.0f));
     }
     s->material_set_param(material, "fog_colour", Quaternion((float)d.fog_colour[0], (float)d.fog_colour[1], (float)d.fog_colour[2], d.fog ? 1.0f : 0.0f));
@@ -373,9 +378,10 @@ void RtaDrawer::submit() {
         memcpy(bytes.ptrw(), t.rgba, (size_t)t.width * t.height * 4);
         Ref<Image> image = Image::create_from_data(t.width, t.height, false, Image::FORMAT_RGBA8, bytes);
         auto old = textures.find(t.id);
-        if (old != textures.end()) s->free_rid(old->second);
+        if (old != textures.end()) { woven_textures.erase(old->second.get_id()); s->free_rid(old->second); }
         textures[t.id] = s->texture_2d_create(image);
         textures_made++;
+        texture_serial.erase(t.id);
         if (scene_mode) {                               // its pixels, for what the fill cuts out of the level's textures
             CpuTexture& copy = cpu_textures[t.id];
             copy.w = t.width; copy.h = t.height;
@@ -397,6 +403,7 @@ void RtaDrawer::submit() {
                 }
         }
     }
+    pack_frame(f);                                      // the art pack's pictures and mip maps (rta_pack.h)
     if (scene_mode && std::fabs(f.aspect - last_aspect) > 0.001f) {     // the view's shape changed: the 3-D surface's viewport follows
         last_aspect = f.aspect;
         for (auto& entry : targets) if (entry.second.screen) size_target(entry.second);
@@ -541,6 +548,8 @@ void RtaDrawer::submit() {
     }
 
     for (uint32_t k = 0; k < f.dead_texture_count; k++) {
+        if (pack) pack->forget(f.dead_textures[k]);
+        texture_serial.erase(f.dead_textures[k]);
         auto t = textures.find(f.dead_textures[k]);
         if (t == textures.end()) continue;
         s->free_rid(t->second);
@@ -573,6 +582,8 @@ RID RtaDrawer::get_shown_texture() const { return shown && shown->latest && show
 Rect2 RtaDrawer::get_shown_region() const {
     if (!shown) return Rect2();
     float sx = (float)shown->pw / shown->lw, sy = (float)shown->ph / shown->lh;
+    // Forward+: the texture holds the picture bottom up - these are its rows; get_shown_flipped() says to turn it over
+    if (rd) return Rect2(shown_rect[0] * sx, (float)shown->ph - (shown_rect[1] + shown_rect[3]) * sy, shown_rect[2] * sx, shown_rect[3] * sy);
     return Rect2(shown_rect[0] * sx, shown_rect[1] * sy, shown_rect[2] * sx, shown_rect[3] * sy);
 }
 
@@ -581,6 +592,7 @@ Ref<Image> RtaDrawer::get_shown_image() const {
     if (!texture.is_valid()) return Ref<Image>();
     Ref<Image> image = rs()->texture_2d_get(texture);
     if (image.is_valid() && image->get_format() != Image::FORMAT_RGB8) image->convert(Image::FORMAT_RGB8);
+    if (image.is_valid() && rd) image->flip_y();
     return image;
 }
 
@@ -601,12 +613,91 @@ String RtaDrawer::figures() const {
                    "%d textures made; draws drawn twice for \"depth always, and write\": %d; reads of a surface in the middle of its own draws (given last frame's picture): %d; "
                    "approximated (a blend this route cannot do, a surface reading itself, a circle of surfaces): %d; draws skipped (depth test never): %d",
                    (int64_t)frames, draws_submitted / n, vertices_submitted / n, passes_rendered / n, submit_usec / 1000.0 / n, (int64_t)materials_made, (int64_t)materials.size(),
-                   (int64_t)meshes_made, (int64_t)textures_made, (int64_t)depth_always_writes, (int64_t)stale_reads, (int64_t)approximated, (int64_t)skipped);
+                   (int64_t)meshes_made, (int64_t)textures_made, (int64_t)depth_always_writes, (int64_t)stale_reads, (int64_t)approximated, (int64_t)skipped) +
+           (pack ? vformat("; art pack: %d pictures in the folder, textures named %d, found %d, replaced %d (%d from files, %d with mip maps of their own), %d files unreadable, %d of them two-field interface pictures (sampled by the woven line), %d waiting",
+                           (int64_t)pack->size(), (int64_t)pack_named, (int64_t)pack_found, (int64_t)pack_replaced, (int64_t)pack_replaced_files,
+                           (int64_t)(pack_replaced - pack_replaced_files), (int64_t)pack->failed_files.load(), (int64_t)pack->two_field.load(), (int64_t)pack->waiting()) : String());
+}
+
+// ---- the art pack and mip maps (rta_pack.h) -------------------------------------------------
+
+int64_t RtaDrawer::set_art_pack(const String& folder, bool mipmaps) {
+    if (pack) { delete pack; pack = nullptr; }
+    pack_mipmaps = mipmaps;
+    std::string dir = folder.utf8().get_data();
+    size_t found = 0;
+    if (!dir.empty() || mipmaps) {
+        pack = new RtaPack;
+        if (!dir.empty()) found = pack->open(dir);
+        pack->start(3);
+    }
+    if (!dir.empty() && machine.is_valid()) machine->set_option("name_textures", "1");
+    return (int64_t)found;
+}
+
+Dictionary RtaDrawer::get_pack_info() const {
+    Dictionary d;
+    d["folder"] = pack ? String::utf8(pack->folder().c_str()) : String();
+    d["pictures"] = pack ? (int64_t)pack->size() : 0;
+    d["mipmaps"] = pack_mipmaps;
+    d["named"] = (int64_t)pack_named;
+    d["found"] = (int64_t)pack_found;
+    d["replaced"] = (int64_t)pack_replaced;
+    d["replaced_from_files"] = (int64_t)pack_replaced_files;
+    d["waiting"] = pack ? (int64_t)pack->waiting() : 0;
+    d["files_failed"] = pack ? (int64_t)pack->failed_files.load() : 0;
+    return d;
+}
+
+// Each frame: the new textures are handed to the pack's threads; what they finished replaces its texture's picture
+// (the RID stays: materials keep pointing at it).  At most ~48 MB of pictures a frame go to the card.
+void RtaDrawer::pack_frame(const rtag_frame& f) {
+    if (!pack) return;
+    RenderingServer* s = rs();
+    if (f.texture_count) {
+        uint32_t named = 0;
+        if (pack->size() && rta_library().rtag_texture_names) {
+            name_buffer.resize(f.texture_count);
+            named = rta_library().rtag_texture_names(name_buffer.data(), f.texture_count);
+        }
+        for (uint32_t k = 0; k < f.texture_count; k++) {
+            const rtag_texture& t = f.textures[k];
+            RtaPack::Job job;
+            job.texture = t.id;
+            job.width = t.width; job.height = t.height;
+            if (k < named && name_buffer[k].id == t.id && name_buffer[k].named) {
+                pack_named++;
+                job.file = pack->find(name_buffer[k], job.texels_w, job.texels_h);
+                if (!job.file.empty()) pack_found++;
+            }
+            if (job.file.empty() && !pack_mipmaps) continue;
+            job.own = std::make_shared<std::vector<uint8_t>>(t.rgba, t.rgba + (size_t)t.width * t.height * 4);
+            job.serial = ++pack_serial;
+            texture_serial[t.id] = job.serial;
+            pack->ask(std::move(job));
+        }
+    }
+    size_t handed = 0;
+    RtaPack::Done done;
+    while (handed < (48u << 20) && pack->take(done)) {
+        auto want = texture_serial.find(done.texture);
+        if (want == texture_serial.end() || want->second != done.serial || done.image.is_null()) continue;
+        auto t = textures.find(done.texture);
+        if (t == textures.end()) continue;
+        texture_serial.erase(want);
+        s->texture_replace(t->second, s->texture_2d_create(done.image));
+        if (done.woven) woven_textures.insert(t->second.get_id()); else woven_textures.erase(t->second.get_id());
+        handed += (size_t)done.image->get_data_size();
+        pack_replaced++;
+        if (done.from_file) pack_replaced_files++;
+    }
 }
 
 void RtaDrawer::release() {
     if (!RenderingServer::get_singleton()) return;
     RenderingServer* s = rs();
+    if (pack) { delete pack; pack = nullptr; }
+    texture_serial.clear();
     scene_release();
     fill_free();
     card_free();
@@ -627,11 +718,14 @@ void RtaDrawer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("submit"), &RtaDrawer::submit);
     ClassDB::bind_method(D_METHOD("get_shown_texture"), &RtaDrawer::get_shown_texture);
     ClassDB::bind_method(D_METHOD("get_shown_region"), &RtaDrawer::get_shown_region);
+    ClassDB::bind_method(D_METHOD("get_shown_flipped"), &RtaDrawer::get_shown_flipped);
     ClassDB::bind_method(D_METHOD("get_shown_image"), &RtaDrawer::get_shown_image);
     ClassDB::bind_method(D_METHOD("figures"), &RtaDrawer::figures);
     ClassDB::bind_method(D_METHOD("dump_surfaces", "prefix"), &RtaDrawer::dump_surfaces);
     ClassDB::bind_method(D_METHOD("release"), &RtaDrawer::release);
     ClassDB::bind_method(D_METHOD("set_scene_mode", "on"), &RtaDrawer::set_scene_mode);
+    ClassDB::bind_method(D_METHOD("set_art_pack", "folder", "mipmaps"), &RtaDrawer::set_art_pack);
+    ClassDB::bind_method(D_METHOD("get_pack_info"), &RtaDrawer::get_pack_info);
     ClassDB::bind_method(D_METHOD("set_scene_option", "name", "value"), &RtaDrawer::set_scene_option);
     ClassDB::bind_method(D_METHOD("get_scene_info"), &RtaDrawer::get_scene_info);
     ClassDB::bind_method(D_METHOD("get_world_scenario"), &RtaDrawer::get_world_scenario);

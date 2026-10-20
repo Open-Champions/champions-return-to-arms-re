@@ -34,6 +34,10 @@ void vertex() {
 }
 
 vec3 to_linear(vec3 c) {
+#if CURRENT_RENDERER != RENDERER_COMPATIBILITY
+	// Forward+ / Mobile: ALBEDO is linear light and the picture is stored with the exact sRGB curve - the inverse is exact
+	return pow((c + vec3(0.055)) * (1.0 / 1.055), vec3(2.4));
+#endif
 	// gs_draw.gdshaderinc: the colour whose round trip through the renderer's sRGB approximation is c
 	vec3 l = pow((c + vec3(0.055)) * (1.0 / 1.055), vec3(2.4));
 	vec3 x = c;

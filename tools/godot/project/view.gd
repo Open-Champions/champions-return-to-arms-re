@@ -30,7 +30,13 @@ func _draw() -> void:
 		var shown: RID = drawer.call("get_shown_texture")
 		if shown.is_valid():
 			var source: Rect2 = drawer.call("get_shown_region")
-			RenderingServer.canvas_item_add_texture_rect_region(get_canvas_item(), _picture_rect(), shown, source)
+			var rect := _picture_rect()
+			var flipped: bool = drawer.has_method("get_shown_flipped") and bool(drawer.call("get_shown_flipped"))
+			if flipped:         # Forward+ keeps the surface bottom up: turned over about the picture's middle
+				RenderingServer.canvas_item_add_set_transform(get_canvas_item(), Transform2D(0.0, Vector2(1, -1), 0.0, Vector2(0, rect.position.y * 2.0 + rect.size.y)))
+			RenderingServer.canvas_item_add_texture_rect_region(get_canvas_item(), rect, shown, source)
+			if flipped:
+				RenderingServer.canvas_item_add_set_transform(get_canvas_item(), Transform2D.IDENTITY)
 	elif texture != null:
 		draw_texture_rect(texture, _picture_rect(), false)
 	if message != "":

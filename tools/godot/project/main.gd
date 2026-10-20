@@ -20,6 +20,11 @@ extends Node
 #   --window WxH        the window's size in points
 #   --aspect W:H        the shape of the 3-D view (default 4:3; "window": the window's)
 #   --samples N         multisampling of the 3-D surface (0, 2, 4, 8)
+#   --art-pack DIR      draw/scene modes: the pictures drawn in place of the game's textures (the native program's
+#                       art_pack: a folder of PNG files from tools/play-net/upscale.py, or its parent with "replace/").
+#                       Default: $RTA_ART_PACK, else user://settings.cfg [game] art_pack, else the Play-RTA folder
+#                       (macOS ~/Library/Application Support/Play-RTA/textures) when it is there.  "none": without
+#   --mipmaps on|off    draw/scene modes: mip maps for every texture, with anisotropic filtering in the scene (default on)
 #   --script FILE       a script in the rig's language (tools/rig); its "app shot FILE.png" lines write pictures:
 #                       in picture mode the library's own, in the other modes Godot's capture of what it drew
 #                       ("app windowshot FILE.png": what is in the Godot window itself, the root viewport)
@@ -104,7 +109,7 @@ var opt := {
 	"aspect": 0.0, "aspect_window": false, "samples": 0, "script": "", "godot_shots": "", "unpaced": false, "mute": false,
 	"no_sound": false, "test": "", "stop_after": 0, "figures": "", "args": PackedStringArray(),
 	"view": "", "game_hud": true, "light": false, "shadow": false, "pull_back": 1.0, "orbit": 0.0,
-	"look": "", "hud": true, "speed_log": 0, "net2_flow": "",
+	"look": "", "hud": true, "speed_log": 0, "net2_flow": "", "art_pack": "", "mipmaps": true,
 }
 var speed := {"usec": 0, "cpu": 0.0, "blanks": 0, "last": 0, "late": 0, "worst": 0}
 signal session_over(why: String)
@@ -157,9 +162,14 @@ func _ready() -> void:
 	if opt.window != Vector2i.ZERO:
 		window.size = Vector2i(Vector2(opt.window) * window.content_scale_factor * DisplayServer.screen_get_scale())
 	if opt.test != "":
-		# out of the way: the lower right corner of the screen
+		# out of the way: the lower right corner of the screen - or, with RTA_TEST_OFFSCREEN=1, a borderless window
+		# beyond the screen's lower right edge but for its corner's two points, so nobody takes it for the game: wholly
+		# off the screen (or minimised) macOS counts it as hidden and Godot stops drawing it
 		var area := DisplayServer.screen_get_usable_rect()
 		window.position = area.position + area.size - window.size - Vector2i(24, 24)
+		if OS.get_environment("RTA_TEST_OFFSCREEN") == "1":
+			window.borderless = true
+			window.position = area.position + area.size - Vector2i(2, 2) * int(DisplayServer.screen_get_scale())
 	if opt.unpaced:
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 		Engine.max_fps = 0
@@ -216,6 +226,8 @@ func _parse_arguments() -> void:
 						opt.aspect = parts[0].to_float() / parts[1].to_float()
 				k += 1
 			"--samples": opt.samples = value.to_int(); k += 1
+			"--art-pack": opt.art_pack = value; k += 1
+			"--mipmaps": opt.mipmaps = value != "off" and value != "0"; k += 1
 			"--script": opt.script = value; k += 1
 			"--godot-shots": opt.godot_shots = value; k += 1
 			"--unpaced": opt.unpaced = true
@@ -246,6 +258,32 @@ func _parse_arguments() -> void:
 func _size_of(text: String) -> Vector2i:
 	var parts := text.split("x")
 	return Vector2i(parts[0].to_int(), parts[1].to_int()) if parts.size() == 2 else Vector2i.ZERO
+
+
+func _art_pack_folder() -> String:
+	# the folder of pictures drawn in place of the game's textures, as the native OpenGL program finds it (read where
+	# it is; nothing of it is copied)
+	var given := String(opt.art_pack)
+	if given == "none" or given == "off":
+		return ""
+	if given != "":
+		return given
+	if OS.get_environment("RTA_ART_PACK") != "":
+		return OS.get_environment("RTA_ART_PACK")
+	var config := ConfigFile.new()
+	if config.load("user://settings.cfg") == OK and String(config.get_value("game", "art_pack", "")) != "":
+		return String(config.get_value("game", "art_pack", ""))
+	var places: Array[String] = []
+	if OS.get_name() == "macOS":
+		places.append(OS.get_environment("HOME").path_join("Library/Application Support/Play-RTA/textures"))
+	elif OS.get_name() == "Windows":
+		places.append(OS.get_environment("APPDATA").path_join("Play-RTA/textures"))
+	else:
+		places.append(OS.get_environment("HOME").path_join(".local/share/Play-RTA/textures"))
+	for place in places:
+		if DirAccess.dir_exists_absolute(place):
+			return place
+	return ""
 
 
 func _saved_disc() -> String:
@@ -352,7 +390,16 @@ func _start() -> void:
 		drawer = ClassDB.instantiate("RtaDrawer")
 		drawer.call("set_shader_code", (load("res://shaders/gs_draw.gdshaderinc") as ShaderInclude).code)
 		drawer.call("setup", machine, get_viewport().get_viewport_rid(), size, opt.samples)
+		var pack := _art_pack_folder()
+		var pictures := int(drawer.call("set_art_pack", pack, bool(opt.mipmaps)))
+		print("rta_godot: art pack %s (%d pictures), mip maps %s" % [pack if pack != "" else "none", pictures, "on" if opt.mipmaps else "off"])
 		view.set("drawer", drawer)
+		if opt.size == Vector2i.ZERO:
+			# the picture is drawn at the window's own pixels, whatever the window becomes (full screen, resized):
+			# never a smaller picture enlarged
+			get_viewport().size_changed.connect(func() -> void:
+				if drawer != null and not stored.has("sharpness"):
+					drawer.call("set_output_size", _picture_size()))
 		if opt.mode == "scene":
 			drawer.call("set_scene_mode", true)
 			scene_view = Node.new()

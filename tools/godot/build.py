@@ -57,7 +57,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 RECOMP = os.path.join(ROOT, 'tools', 'recomp')
 RECOMP_OUT = os.path.join(ROOT, 'local', 'recomp-out')
-OUT = os.path.join(ROOT, 'local', 'godot-spike')
+# RTA_GODOT_OUT=local/NAME: build into another directory beside the shared one (the owner's local/godot-spike stays as it
+# is); the downloads (godot-cpp, the editor, the export templates) are taken from local/godot-spike/deps all the same
+OUT = os.path.abspath(os.environ.get('RTA_GODOT_OUT', os.path.join(ROOT, 'local', 'godot-spike')))
+DEPS = os.path.join(ROOT, 'local', 'godot-spike', 'deps')
 SRC = os.path.join(OUT, 'src')
 SNAP = os.path.join(SRC, 'recomp')
 SNAP_ORIG = os.path.join(SRC, 'recomp.orig')
@@ -70,7 +73,7 @@ RUNTIME = ['runtime.cpp', 'iop.cpp', 'script.cpp']
 NICE = ['nice', '-n', '10']
 EXPORTS = ['rtag_api_version', 'rtag_has', 'rtag_start', 'rtag_set_pad', 'rtag_step', 'rtag_poll', 'rtag_run', 'rtag_audio_pull',
            'rtag_memory', 'rtag_fields', 'rtag_info', 'rtag_ended', 'rtag_exit_code', 'rtag_stop', 'rtag_set_option',
-           'rtag_controls_hud', 'rtag_mouse', 'rtag_mouse_button', 'rtag_fill_get']
+           'rtag_controls_hud', 'rtag_mouse', 'rtag_mouse_button', 'rtag_fill_get', 'rtag_texture_names']
 # A room of our own (tools/recomp/net2/session.h, game.h): the fix-set library carries the one copy of net2 in the
 # process - the session client, the carrier of the game's datagrams and the direct launch - and hands out its plain-C
 # functions under their own names, for the portal (docs/issues/native-rendezvous.md 5.1).
@@ -334,7 +337,7 @@ def build_lib(args):
 
 def build_extension(args):
     target = 'template_release' if args.release else 'template_debug'
-    cpp = os.path.join(OUT, 'deps', 'godot-cpp', 'src')
+    cpp = os.path.join(DEPS, 'godot-cpp', 'src')
     if not os.path.exists(os.path.join(cpp, 'CMakeLists.txt')):
         print('no godot-cpp at %s: see docs/issues/native-godot.md, "From nothing"' % cpp)
         return 1
@@ -385,9 +388,9 @@ def stage_project(args):
 
 
 def export_app(args):
-    godot = os.environ.get('RTA_GODOT', os.path.join(OUT, 'deps', 'godot-editor', 'Godot.app', 'Contents', 'MacOS', 'Godot'))
-    tpz = os.path.join(OUT, 'deps', 'godot-templates', 'Godot_v4.5.2-stable_export_templates.tpz')
-    template = os.path.join(OUT, 'deps', 'godot-templates', 'templates', 'macos.zip')
+    godot = os.environ.get('RTA_GODOT', os.path.join(DEPS, 'godot-editor', 'Godot.app', 'Contents', 'MacOS', 'Godot'))
+    tpz = os.path.join(DEPS, 'godot-templates', 'Godot_v4.5.2-stable_export_templates.tpz')
+    template = os.path.join(DEPS, 'godot-templates', 'templates', 'macos.zip')
     if not os.path.exists(template):
         if not os.path.exists(tpz):
             print('no export templates at %s (docs/issues/native-godot.md, "Export")' % tpz)

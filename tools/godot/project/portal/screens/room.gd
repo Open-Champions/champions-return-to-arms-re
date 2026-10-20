@@ -390,6 +390,7 @@ class Seat extends W.Focusable:
 			return
 		portrait = W.Portrait.new()
 		portrait.character = member.get("character", {})
+		portrait.live = bool(member.get("me", false))      # my seat: the game's own picture of my character
 		portrait.framed = false
 		portrait.set_process(true)
 		add_child(portrait)

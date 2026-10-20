@@ -87,10 +87,16 @@ struct RtaDrawer::Scene {
     bool packets = true;                // draw the packets' complete geometry where the tap has it (false: the list's own triangles)
     // Meshes kept between frames: a draw whose packets are, byte for byte, those of a mesh made before (the level's chunks
     // where nothing moved and no light changed: most of a frame) takes that mesh instead of being built and sent again.
-    struct Kept { RID mesh; AABB box; uint64_t used = 0; };
+    // Kept by the draw's identity (its packets' figures, kinds and corner counts, and how many draws of that identity came
+    // before it in the frame): a draw whose content changed (a character that moved, a light that flickered) has its
+    // mesh's buffers written again in place (mesh_surface_update_*_region) instead of a mesh made and another one freed -
+    // what cost the most of a fight's frame in Forward+ (mesh_add_surface: buffers made and freed on the card).
+    struct Kept { RID mesh; AABB box; uint64_t used = 0; uint64_t content = 0; int corners = 0; bool normals = false; };
     std::unordered_map<uint64_t, Kept> kept;
+    std::unordered_map<uint64_t, uint32_t> kept_seen;  // this frame: draws of each identity so far
     bool keep = true;
-    uint64_t kept_hits = 0, kept_misses = 0, kept_corners = 0;
+    uint64_t kept_hits = 0, kept_misses = 0, kept_corners = 0, kept_updates = 0;
+    uint64_t kept_ident = 0;            // this draw's identity (0: not kept)
     uint64_t kept_key = 0;              // this draw's figure (0: not kept)
     RID kept_mesh;                      // ... and the kept mesh it found
     AABB kept_box;
@@ -436,10 +442,10 @@ Dictionary RtaDrawer::get_scene_info() const {
     info["figures"] = vformat("scene: %d lists (%d without a camera); per list %.1f draws and %.0f vertices in the world (%.1f of the draws from the vertex programs' inputs, "
                               "with normals; %.1f of them as whole packets, %.0f corners a list more than the list has: the triangles the game drops near the eye and off "
                               "screen), %.1f draws of the 2-D layer, %.2f of the game's own ground shadows left out; sky: %.2f of the game's clearing rectangles left out, %.1f dome "
-                              "draws, %.1f sprite draws placed by their depth; kept meshes: %.1f draws a list taken as they were (%.0f corners), %.1f made, %d held", (int64_t)scene->frames,
+                              "draws, %.1f sprite draws placed by their depth; kept meshes: %.1f draws a list taken as they were (%.0f corners), %.1f made, %.1f written again in place, %d held", (int64_t)scene->frames,
                               (int64_t)scene->frames_without_camera, scene->world_draws / n, scene->world_vertices / n, scene->exact_draws / n, scene->packet_draws / n,
                               (double)scene->packet_extra / n, scene->flat_draws / n, scene->blob_shadows_dropped / n, scene->fills_dropped / n, scene->dome_draws / n,
-                              scene->near_faded / n, scene->kept_hits / n, scene->kept_corners / n, scene->kept_misses / n, (int64_t)scene->kept.size());
+                              scene->near_faded / n, scene->kept_hits / n, scene->kept_corners / n, scene->kept_misses / n, scene->kept_updates / n, (int64_t)scene->kept.size());
     return info;
 }
 
@@ -450,6 +456,7 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
     sc.tap = f.scene;
     sc.valid = f.scene && f.scene->valid;
     sc.casters_used = 0;
+    sc.kept_seen.clear();
     sc.sky_active = false;
     sc.fill_draw = -1;
     sc.is_dome.clear();
@@ -530,8 +537,16 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
                 }
             }
             sc.kept_key = (h[0] ^ (h[1] * 3) ^ (h[2] * 5) ^ (h[3] * 7) ^ ((uint64_t)corners << 40)) | 1;
-            auto found = sc.kept.find(sc.kept_key);
-            if (found != sc.kept.end()) {
+            uint64_t id = 0xA24BAED4963EE407ull ^ ((uint64_t)corners << 32) ^ (normals ? 1 : 0);
+            for (uint32_t k = 0; k < d.scene_piece_count; k++) {
+                mix(id, pieces[k].mesh);
+                mix(id, ((uint64_t)pieces[k].full_count << 32) | pieces[k].kind);
+            }
+            uint32_t& seen = sc.kept_seen[id];
+            mix(id, seen++);
+            sc.kept_ident = id | 1;
+            auto found = sc.kept.find(sc.kept_ident);
+            if (found != sc.kept.end() && found->second.content == sc.kept_key && found->second.used != frames) {
                 found->second.used = frames;
                 sc.kept_hits++;
                 sc.kept_corners += corners;
@@ -616,10 +631,22 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
             for (int a = 0; a < 3; a++) { float v = q[k * 3 + a]; lo[a] = std::min(lo[a], v); hi[a] = std::max(hi[a], v); }
         box = AABB(Vector3(lo[0], lo[1], lo[2]), Vector3(hi[0] - lo[0] + 0.01f, hi[1] - lo[1] + 0.01f, hi[2] - lo[2] + 0.01f));
         if (sc.kept_key) {
-            mesh = s->mesh_create();
-            add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, corners, normals, &box);
-            sc.kept[sc.kept_key] = {mesh, box, frames};
-            sc.kept_misses++;
+            auto slot = sc.kept.find(sc.kept_ident);
+            if (slot != sc.kept.end() && slot->second.corners == corners && slot->second.normals == normals && slot->second.used != frames) {
+                // the same draw, changed: its buffers are written again where they are
+                mesh = slot->second.mesh;
+                s->mesh_surface_update_vertex_region(mesh, 0, 0, positions);
+                s->mesh_surface_update_attribute_region(mesh, 0, 0, attributes);
+                s->mesh_set_custom_aabb(mesh, box);
+                slot->second.box = box; slot->second.used = frames; slot->second.content = sc.kept_key;
+                sc.kept_updates++;
+            } else {
+                if (slot != sc.kept.end()) s->free_rid(slot->second.mesh);
+                mesh = s->mesh_create();
+                add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, corners, normals, &box);
+                sc.kept[sc.kept_ident] = {mesh, box, frames, sc.kept_key, corners, normals};
+                sc.kept_misses++;
+            }
         } else {
             mesh = mesh_for(pass);
             add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, corners, normals, &box);

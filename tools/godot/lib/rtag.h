@@ -359,6 +359,23 @@ typedef struct rtag_fill {
  * function or rtag_stop.  0: none (a level that gets none, no level yet, or a library without it).  Any thread. */
 int rtag_fill_get(rtag_fill* out);
 
+/* ---- what the emulator-based build calls each texture (optional: rtag_has("texture_names")) -----------
+ * For a host that draws pictures in place of the game's textures (an art pack: a folder of PNG files named
+ * "<figure>-<palette>-p<format>-<width>x<height>.png", figures as 16 hexadecimal digits, of a whole multiple of
+ * that size, covering the texels from the texture's corner; tools/recomp/render/texpack.h).  Parallel to the
+ * textures of the frame taken last (rtag_frame.textures, same order); `named` 0: the texture was made before
+ * naming was on (scene mode, or rtag_set_option("name_textures", "1")).  Returns the number written.  Same
+ * thread as rtag_poll; added without a change of RTAG_API_VERSION (the frame's own records are as they were). */
+typedef struct rtag_texture_name {
+    uint32_t id;
+    int32_t named;
+    uint64_t figure, palette_figure;
+    uint32_t format;
+    int32_t sent_width, sent_height;    /* the smallest rectangle from the corner that holds every texel sent */
+    int32_t named_width, named_height;  /* the size TEX0 names */
+} rtag_texture_name;
+uint32_t rtag_texture_names(rtag_texture_name* out, uint32_t max);
+
 /* ---- a room of our own (optional) ------------------------------------------------------
  * When rtag_has("net2") (the fix-set library, built with tools/recomp/net and net2): the library contains the network
  * driver, the session client of tools/recomp/net2/session.h and the direct launch of net2/game.h, and exports their

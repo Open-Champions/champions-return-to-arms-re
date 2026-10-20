@@ -9,6 +9,43 @@ Nothing derived from the game is in the repository: the portal is scripts and tw
 by code. Names of characters, classes and levels on screen come from the session or the game's
 state at run time. Pictures, the staged project and logs are under `local/godot-portal/`.
 
+## STATE (2026-10-19): the whole way on the real service, the game in scene mode, in step through a level change
+
+- **Ran: two portal programs WITH THE GAME IN SCENE MODE through a service of their own** (`local/godot-r5/test/room.py
+  loc2`: `tools/rendezvous/rendezvous.py` on 127.0.0.1; the staged project of `RTA_GODOT_OUT=local/godot-r5`, Forward+
+  on Metal, the art pack; each program its own data folder, identity and memory card; scenario `room5` of
+  `dev/shots.gd`).  In order: first start and the name on both -> B types A's friend code -> A gets the request card,
+  one press (Y) -> both friends, **presence "online"** -> A hosts -> **A invites B from the friends list (X)** -> B gets
+  the invitation card, one press -> both in the room -> the game scene boots behind each portal -> the game's own
+  character screens (walked by each copy's script, as n2party does) -> back in the room with the character -> A's
+  Start -> both in the hub (tick 90) -> at lockstep tick 1121 both copies change to drunare (`tick-do`: the pending
+  level written on each copy at the same tick, as native-rendezvous.md section 6 does) -> both play on there.
+  **Tick logs compared** (`tools/rig/compare.py ticks`): 1851 ticks (hub 1120, drunare 731), "no shared column
+  differs on any tick" (seed, level, player count, button maps, both players' position, state, hit points, gold,
+  experience, out-of-step flags, own sync hash).  Pictures: `local/godot-r5/test/loc2/pictures/real5/` (a-01 ...
+  a-09, b-01 ... b-09), contact sheet `local/godot-r5/test/loc2/pictures/sheet.jpg`.
+- **The public service** (named by its host name with `--service`, never in a file here; TLS by the client's rule):
+  **Ran in part.**  `room.py pub2 --join-by code`: both programs online through TLS ("link 2"), B's friend request
+  reached A, A accepted and saw B online (presence 1), A hosted; then A's test window stopped drawing (the
+  off-screen window above) and the run went no further - B's friends list never filled in that run, B joined
+  nothing.  After the window fix (`pub3`, `pub4`, 18:30-19:05) neither program got past "link 1": from about 19:00
+  the service's port answers a TLS hello with no TLS (`openssl s_client`: "wrong version number"; at 12:50 the
+  same command got the certificate for the host name, verify 0) and sends no greeting in plain text either.  Nothing
+  on the server was touched from here; the machine stood at a load average of 210 at the time.  Left: the public run
+  again once the service answers TLS again (`python3 local/godot-r5/test/room.py pubN --service HOST:41900
+  --join-by code`).
+- `handover.gd`: the game scene is handed over in **scene mode** (`opt.mode = "scene"`; `--mode` on the command line
+  still decides).  `portal.gd` `character_card()` gives the game's card of the local character (main.gd
+  `get_character_card`, scene mode); `widgets.gd` `Portrait.live` takes it in place of the drawn stand-in (home card,
+  my seat in the room, the current character on the character screen).  Not seen in a run: the runs stood in the
+  overhead view at the moment of the pictures, and `has_character_card()` was false ("character card none").
+- Found: `portal.gd` opened the session with `local_only` in every test, so a test could not reach the public service
+  ("link 0"); `RTA_PORTAL_PUBLIC=1` lets a test out.  `net2_game_status().level` stays the level the launch named
+  (it said "hub" in drunare): for the owner of `tools/recomp/net2/launch.cpp`.
+- Found: a test window wholly off the screen is not drawn by Godot on macOS - a portal program stopped at
+  `frame_post_draw`; `RTA_TEST_OFFSCREEN=1` puts the windows beyond the screen's edges but for two points of a
+  corner (a: lower right, b: lower left - one window over another's corner hid it too).
+
 ## STATE (2026-10-14, 00:10): a real launch from the portal
 
 - **Ran: two portal programs WITH THE GAME through a local service, two games in a row**

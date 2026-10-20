@@ -95,6 +95,7 @@ func build() -> void:
 	cap.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	var portrait := W.Portrait.new()
 	portrait.character = c
+	portrait.live = has                 # the game's own picture of this character once it has one (portal.character_card)
 	portrait.set_process(true)
 	portrait.empty_text = ""
 	var ph := inner.size.y - UI.px(34) - text_h - buttons_h - UI.px(14)

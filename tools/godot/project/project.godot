@@ -8,7 +8,7 @@ config_version=5
 config/name="Champions: Return to Arms - the translated game in Godot (spike)"
 config/description="The statically recompiled game as the game logic; Godot does window, input, sound and drawing. Needs your own disc image."
 run/main_scene="res://portal/portal.tscn"
-config/features=PackedStringArray("4.5", "GL Compatibility")
+config/features=PackedStringArray("4.5", "Forward Plus")
 
 [audio]
 
@@ -22,8 +22,9 @@ window/vsync/vsync_mode=1
 
 [rendering]
 
-renderer/rendering_method="gl_compatibility"
-renderer/rendering_method.mobile="gl_compatibility"
+renderer/rendering_method="forward_plus"
+renderer/rendering_method.mobile="mobile"
+textures/default_filters/anisotropic_filtering_level=4
 environment/defaults/default_clear_color=Color(0, 0, 0, 1)
 textures/canvas_textures/default_texture_filter=1
 textures/vram_compression/import_etc2_astc=true

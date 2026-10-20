@@ -588,13 +588,24 @@ class Portrait extends Control:
 	var texture: Texture2D
 	var empty_text := ""
 	var framed := true
+	var live := false               # the local player's own: the game's character card replaces the stand-in when there is one
 	var t := 0.0
+	var asked := 0.0
 
 	func _init() -> void:
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 	func _process(delta: float) -> void:
 		t += delta
+		if live:
+			asked -= delta
+			if asked <= 0.0:
+				asked = 0.5
+				var portal: Node = get_tree().get_first_node_in_group("portal") if is_inside_tree() else null
+				if portal != null and portal.has_method("character_card"):
+					var card: Variant = portal.call("character_card")
+					if card is Texture2D:
+						texture = card
 		queue_redraw()
 
 	func _draw() -> void:
@@ -614,7 +625,17 @@ class Portrait extends Control:
 			draw_style_box(UI.box(radius, Color(0.02, 0.022, 0.034, 0.9), UI.LINE_STRONG, maxf(1.0, UI.px(1))), r)
 		var inner := r.grow(-UI.px(3)) if framed else r
 		if texture != null:
-			draw_texture_rect(texture, inner, false)
+			if live:
+				# the card: the figure on a transparent ground, 4:5 - on the class colour, its shape kept
+				draw_polygon(PackedVector2Array([inner.position, Vector2(inner.end.x, inner.position.y), inner.end, Vector2(inner.position.x, inner.end.y)]),
+					PackedColorArray([Color(deep.r * 0.25, deep.g * 0.25, deep.b * 0.3, 0.9), Color(deep.r * 0.25, deep.g * 0.25, deep.b * 0.3, 0.9),
+						Color(deep.r, deep.g, deep.b, 0.95), Color(deep.r, deep.g, deep.b, 0.95)]))
+				var ts := Vector2(texture.get_size())
+				var k := minf(inner.size.x / maxf(ts.x, 1.0), inner.size.y / maxf(ts.y, 1.0))
+				var fit := Rect2(inner.position + (inner.size - ts * k) * 0.5, ts * k)
+				draw_texture_rect(texture, fit, false)
+			else:
+				draw_texture_rect(texture, inner, false)
 			return
 		# the ground: the class colour rising from below
 		var a := inner.position

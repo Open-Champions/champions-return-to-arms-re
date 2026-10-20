@@ -26,6 +26,7 @@
 // instead: see rta_scene.cpp.
 #pragma once
 #include "rta_machine.h"
+#include "rta_pack.h"
 
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/ref_counted.hpp>
@@ -42,6 +43,7 @@
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace godot {
@@ -57,6 +59,7 @@ class RtaDrawer : public RefCounted {
     void submit();                                  // the machine's current frame
     RID get_shown_texture() const;
     Rect2 get_shown_region() const;                 // in that texture's pixels
+    bool get_shown_flipped() const { return rd; }   // the region is stored bottom up (Forward+ / Mobile): show it turned over
     Ref<Image> get_shown_image() const;             // what Godot drew into the shown surface (after the frame was rendered)
     String figures() const;
     void dump_surfaces(const String& prefix) const; // debugging: every surface as Godot holds it now, PREFIX-s<id>-p<pass>.png
@@ -92,6 +95,10 @@ class RtaDrawer : public RefCounted {
     void set_card_turn(double radians);
     Dictionary get_card_info() const;
     Vector2i get_output_size() const { return output_size; }
+    // The art pack (rta_pack.h): the folder ("" none), and mip maps for every texture (the game's own too).  Returns the
+    // number of pictures found in the folder.  Before the first frame; textures made later take it.
+    int64_t set_art_pack(const String& folder, bool mipmaps);
+    Dictionary get_pack_info() const;
 
   protected:
     static void _bind_methods();
@@ -126,6 +133,13 @@ class RtaDrawer : public RefCounted {
     int samples = 0;
     std::string shader_code;
     std::unordered_map<uint32_t, RID> textures;
+    RtaPack* pack = nullptr;                        // set_art_pack: pictures from the pack and mip maps, made on its threads
+    bool pack_mipmaps = false;
+    std::unordered_set<uint64_t> woven_textures;   // RIDs holding an art pack's two-field picture (weave_half -1)
+    std::unordered_map<uint32_t, uint64_t> texture_serial;     // which answer of the pack's a texture waits for
+    uint64_t pack_serial = 0, pack_named = 0, pack_found = 0, pack_replaced = 0, pack_replaced_files = 0;
+    std::vector<rtag_texture_name> name_buffer;
+    void pack_frame(const rtag_frame& f);
     // scene mode: every texture's brightness, coarsely (THUMB x THUMB means): the level's light is painted into its
     // textures, and where it comes from is read out of them (rta_scene.cpp, Scene::sun_sum)
     enum { THUMB = 16 };
@@ -151,6 +165,7 @@ class RtaDrawer : public RefCounted {
     // to_linear).  Test aids turn each over.
     float flip_y = 1.0f;
     bool flip_surfaces = false;
+    bool rd = false;                                // Forward+ / Mobile: surfaces stored the other way up (setup)
     bool stored_colours = true;
     float world_bias = 0.00002f;                    // scene mode: draws that do not write depth come this much nearer (clip space)
 

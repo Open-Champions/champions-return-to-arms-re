@@ -202,7 +202,7 @@ func _open_session() -> void:
 	# environment's RTA_NET2_SERVICE, then the first line of <data>/net2-service.txt (Settings -> Online)
 	var config := {
 		"mock": bool(options.mock), "service": String(options.service), "name": profile.name_shown(),
-		"data_dir": ProjectSettings.globalize_path(profile.folder), "build": "portal", "local_only": test_mode(),
+		"data_dir": ProjectSettings.globalize_path(profile.folder), "build": "portal", "local_only": test_mode() and OS.get_environment("RTA_PORTAL_PUBLIC") != "1",     # a test may be let out (RTA_PORTAL_PUBLIC=1)
 	}
 	if not session.open(config):
 		return
@@ -760,6 +760,15 @@ func set_name_shown(value: String) -> void:
 	else:
 		_open_session()
 	top.call("build")
+
+
+func character_card() -> Texture2D:
+	# the local player's character as the game scene shows it alone, turning (main.gd get_character_card: scene mode,
+	# once the character has been seen standing); null until then - the portraits draw their stand-in
+	var g: Node = handover.game if handover != null else null
+	if g != null and g.has_method("has_character_card") and bool(g.call("has_character_card")):
+		return g.call("get_character_card")
+	return null
 
 
 func choose_character(c: Dictionary) -> void:

@@ -51,7 +51,15 @@ render_mode unshaded, cull_disabled, skip_vertex_transform, shadows_disabled, fo
 #endif
 #endif
 
-#ifdef GS_LINEAR
+#ifdef GS_WORLD
+// the scene: mip maps (the drawer makes them, and takes an art pack's pictures: rta_pack.h) and anisotropic filtering -
+// sharp far floors and no shimmer, as the native program draws its 3-D scene
+#ifdef GS_REPEAT
+uniform sampler2D tex : filter_linear_mipmap_anisotropic, repeat_enable;
+#else
+uniform sampler2D tex : filter_linear_mipmap_anisotropic, repeat_disable;
+#endif
+#elif defined(GS_LINEAR)
 #ifdef GS_REPEAT
 uniform sampler2D tex : filter_linear, repeat_enable;
 #else
@@ -125,10 +133,21 @@ void vertex() {
 	v_world = VERTEX;
 #endif
 	POSITION = PROJECTION_MATRIX * (MODELVIEW_MATRIX * vec4(VERTEX, 1.0));
+#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
 	POSITION.z += depth_bias * POSITION.w;
 #else
+	POSITION.z -= depth_bias * POSITION.w * 0.5;        // Forward+ / Mobile: depth 0..1 and reversed (near is 1)
+#endif
+#else
 	v_pos = VERTEX.xy;
+#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
 	POSITION = vec4(VERTEX.x / target_size.x * 2.0 - 1.0, (VERTEX.y / target_size.y * 2.0 - 1.0) * flip_y, VERTEX.z * 2.0 - 1.0, 1.0);
+#else
+	// Forward+ / Mobile (Metal, Vulkan): depth 0..1 and reversed (near is 1) - the same winner of every depth test as
+	// in the Compatibility renderer.  The surfaces then hold their pictures bottom up, as Godot's own 3-D does there:
+	// the drawer turns them over where they are read (rta_drawer.cpp, `rd`)
+	POSITION = vec4(VERTEX.x / target_size.x * 2.0 - 1.0, (VERTEX.y / target_size.y * 2.0 - 1.0) * flip_y, 1.0 - VERTEX.z, 1.0);
+#endif
 #endif
 }
 
@@ -143,6 +162,10 @@ float gs_wrap(float c, int mode, float lo, float hi, float size) {
 
 vec3 to_linear(vec3 c) {
 #ifdef GS_STORED_COLOURS
+#if CURRENT_RENDERER != RENDERER_COMPATIBILITY
+	// Forward+ / Mobile: ALBEDO is linear light and the picture is stored with the exact sRGB curve - the inverse is exact
+	return pow((c + vec3(0.055)) * (1.0 / 1.055), vec3(2.4));
+#endif
 	// The Compatibility renderer takes ALBEDO for an sRGB colour: it converts it to linear
 	// light, and back when it writes the pixel - each way with a fast approximation
 	// (x(x(0.3053x + 0.6822) + 0.0125), and 1.055 x^(1/2.4) - 0.055), so that the round trip
@@ -173,12 +196,20 @@ void fragment() {
 		if (weave_half > 0.0) {
 			float line = floor(tc.y);
 			tc.y = floor(line * 0.5) + mod(line, 2.0) * weave_half + 0.5;
+		} else if (weave_half < 0.0) {
+			tc.y *= 0.5;        // an art pack's two-field picture holds the woven picture itself (twice; the first copy)
 		}
 		tc.x = gs_wrap(tc.x, wrap_mode.x, region.x, region.y, tex_size.x);
 		tc.y = gs_wrap(tc.y, wrap_mode.y, region.z, region.w, tex_size.y);
 		vec2 uv = (tc + tex_offset) / tex_size;
 		if (tex_flip > 0.5) uv.y = 1.0 - uv.y;
+#ifdef GS_WORLD
+		// the footprint from the coordinates before they were wrapped: no seam where a wrap jumps
+		vec2 raw = (v_st.xy / v_st.z * st_scale + tex_offset) / tex_size;
+		vec4 t = textureGrad(tex, uv, dFdx(raw), dFdy(raw)) * 255.0;
+#else
 		vec4 t = textureLod(tex, uv, 0.0) * 255.0;
+#endif
 		if (texa.x > 0.5) {
 			bool black = texa.w > 0.5 && t.r + t.g + t.b < 0.5;
 			t.a = (texa.x > 1.5 && t.a >= 127.5) ? texa.z : (black ? 0.0 : texa.y);

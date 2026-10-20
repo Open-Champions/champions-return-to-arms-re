@@ -93,6 +93,7 @@ class Card extends W.Focusable:
 			return
 		portrait = W.Portrait.new()
 		portrait.character = character
+		portrait.live = current             # the character played now: the game's own picture of it (portal.character_card)
 		portrait.framed = false
 		portrait.set_process(true)
 		add_child(portrait)

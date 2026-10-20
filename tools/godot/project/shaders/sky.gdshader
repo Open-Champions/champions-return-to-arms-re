@@ -15,6 +15,10 @@ void vertex() {
 }
 
 vec3 stored(vec3 c) {
+#if CURRENT_RENDERER != RENDERER_COMPATIBILITY
+	// Forward+ / Mobile: ALBEDO is linear light and the picture is stored with the exact sRGB curve - the inverse is exact
+	return pow((c + vec3(0.055)) * (1.0 / 1.055), vec3(2.4));
+#endif
 	// the renderer takes ALBEDO for linear light and stores 1.055 x^(1/2.4) - 0.055 of it (gs_draw.gdshaderinc,
 	// to_linear): what goes in is the colour whose stored value is c
 	vec3 light = pow((c + vec3(0.055)) * (1.0 / 1.055), vec3(2.4));

@@ -25,6 +25,8 @@ var run_number := 0
 var role := ""                      # duo: "a" or "b", two programs through one service
 var sync_dir := ""
 var service := ""
+var join_by := "invite"              # room5: how B comes into A's room - "invite" (from the friends list) or "code"
+var level_to := ""                   # room5: the level both games are to be in at the end (the copies' tick-do changes it)
 
 
 func _ready() -> void:
@@ -39,6 +41,8 @@ func _ready() -> void:
 			"--role": role = args[k + 1]; k += 1
 			"--sync": sync_dir = args[k + 1]; k += 1
 			"--service": service = args[k + 1]; k += 1
+			"--join-by": join_by = args[k + 1]; k += 1
+			"--level-to": level_to = args[k + 1]; k += 1
 		k += 1
 	var window := get_window()
 	window.title = "AGENT TEST - portal pictures"
@@ -46,6 +50,14 @@ func _ready() -> void:
 	window.size = Vector2i(Vector2(480, 270) * DisplayServer.screen_get_scale())
 	var area := DisplayServer.screen_get_usable_rect()
 	window.position = area.position + area.size - window.size - Vector2i(24, 24) - (Vector2i(window.size.x + 16, 0) if role == "b" else Vector2i.ZERO)
+	if OS.get_environment("RTA_TEST_OFFSCREEN") == "1":
+		# beyond the screen's lower right edge but for two points of its corner (wholly off the screen macOS counts it
+		# as hidden and Godot stops drawing): nobody takes it for the game
+		window.borderless = true
+		var dot := int(DisplayServer.screen_get_scale())
+		window.position = area.position + area.size - Vector2i(2, 2) * dot
+		if role == "b":         # b: the lower LEFT corner (a window over another's corner would hide it)
+			window.position = Vector2i(area.position.x - window.size.x + 2 * dot, area.position.y + area.size.y - 2 * dot)
 	if role != "":
 		window.title = "AGENT TEST - portal duo " + role
 	AudioServer.set_bus_mute(0, true)
@@ -56,8 +68,8 @@ func _ready() -> void:
 	add_child(view)
 	DirAccess.make_dir_recursive_absolute(out_dir)
 	await get_tree().process_frame
-	for name in ["smoke", "walk", "states", "friends", "room", "join", "settings", "ratios", "real", "duo", "noservice", "duo2"]:
-		if only.is_empty() and (name in ["smoke", "real", "duo", "noservice", "duo2"]):
+	for name in ["smoke", "walk", "states", "friends", "room", "join", "settings", "ratios", "real", "duo", "noservice", "duo2", "room5"]:
+		if only.is_empty() and (name in ["smoke", "real", "duo", "noservice", "duo2", "room5"]):
 			continue
 		if only.is_empty() or only.has(name):
 			print("shots: ", name)
@@ -134,6 +146,7 @@ func shot(name: String) -> void:
 	await RenderingServer.frame_post_draw
 	var image := vp.get_texture().get_image()
 	var path := out_dir.path_join(name + ".png")
+	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
 	image.save_png(path)
 	count += 1
 	print("shots: wrote %s (%d x %d)" % [path, image.get_width(), image.get_height()])
@@ -962,3 +975,122 @@ func scenario_duo2() -> void:
 		await shot(p + r + "-09-back-in-the-room")
 	post(role + "_done")
 	await fetch("b_done" if role == "a" else "a_done", 120.0)
+
+
+# ---- two programs WITH THE GAME in scene mode, the whole way a player goes (room.py) ----------------
+# Friends by code and presence, a room, B in by an invitation from the friends list (--join-by invite) or by the
+# room's code (--join-by code), the game's own character screens (walked by each copy's script), Start, the game
+# launched behind the portal, the hub, and a level change in one lockstep tick (each copy's tick-do); then both
+# end.  Pictures under real5/.
+func scenario_room5() -> void:
+	await open_portal(Vector2i(1920, 1080), {}, {"mock": false, "service": service, "stub_game": false})
+	var p := "real5/" + role + "-"
+	await type("Tester One" if role == "a" else "Tester Two")
+	await key(KEY_ENTER)
+	await until(func() -> bool: return portal.session.online(), 60.0)
+	me_says("online")
+	if role == "a":
+		post("a_code", String(portal.session.me().friend_code))
+		await until(func() -> bool: return not portal.session.requests().is_empty(), 90.0)
+		await wait(0.4)
+		await shot(p + "01-friend-request-arrives")
+		await key(KEY_Y)
+		await until(func() -> bool: return portal.session.friends().size() >= 1, 30.0)
+		await until(func() -> bool: return int(portal.session.friends()[0].get("presence", 0)) >= 1, 30.0)
+		portal.go("friends")
+		await wait(0.8)
+		print("shots: a friend ", portal.session.friends()[0])
+		await shot(p + "02-friends-two-is-online")
+		post("a_friends")
+		portal.home()
+		await wait(0.3)
+		await focus_key("host")
+		await key(KEY_ENTER)
+		await until(func() -> bool: return int(portal.session.room().state) == 2, 30.0)
+		await wait(0.5)
+		me_says("hosting")
+		post("room", String(portal.session.room().code))
+		if join_by == "invite":
+			portal.go("friends")
+			await wait(0.6)
+			var two := String(portal.session.friends()[0].id)
+			await focus_key("friend:" + two)
+			await key(KEY_X)
+			await wait(0.4)
+			await shot(p + "03-invitation-sent")
+			post("a_invited")
+		await until(func() -> bool: return int(portal.session.room().count) >= 2, 120.0)
+		if portal.current_name() != "room":
+			portal.go("room")
+		await wait(0.8)
+		flow_says("two in the room")
+		await shot(p + "04-two-in-the-room")
+	else:
+		var code := await fetch("a_code", 120.0)
+		portal.go("friends")
+		await wait(0.4)
+		await focus_key("add_code")
+		await type(code)
+		await key(KEY_ENTER)
+		await until(func() -> bool: return portal.session.friends().size() >= 1, 90.0)
+		await fetch("a_friends", 60.0)
+		await wait(0.5)
+		portal.screen.rebuild()
+		await shot(p + "01-friends-one-is-online")
+		var room := await fetch("room", 120.0)
+		if join_by == "invite":
+			await fetch("a_invited", 60.0)
+			await until(func() -> bool: return not portal.session.invites().is_empty(), 60.0)
+			await wait(0.5)
+			await shot(p + "02-invitation-arrives")
+			await key(KEY_Y)
+		else:
+			await wait(1.0)
+			portal.screen.rebuild()
+			await shot(p + "02-friends-one-is-in-a-room")
+			portal.home()
+			await wait(0.3)
+			portal.go("join")
+			await wait(0.4)
+			await type(room)
+			await key(KEY_ENTER)
+		await until(func() -> bool: return int(portal.session.room().state) == 2, 60.0)
+		await wait(0.8)
+		flow_says("joined by " + join_by)
+		await shot(p + "03-in-the-room")
+	# the game: characters on its own screens, Start, launch, the hub
+	await until(func() -> bool: return game_phase() == 1 and portal.shown, 300.0)
+	await wait(0.8)
+	await press_main()
+	await wait(4.0)
+	flow_says("character screens")
+	await shot(p + "05-the-games-own-character-screens")
+	await until(func() -> bool: return game_phase() == 3 and portal.shown, 300.0)
+	await wait(1.0)
+	flow_says("chosen")
+	await shot(p + "06-back-in-the-room-with-a-character")
+	if role == "a":
+		await until(func() -> bool:
+			var b: Control = portal.screen.find_key(portal.screen, "main")
+			return b != null and not bool(b.get("disabled")) and int(portal.session.room().get("count", 0)) >= 2, 300.0)
+		await wait(0.6)
+		await shot(p + "07-everybody-ready")
+		await press_main()
+		flow_says("start pressed")
+	await until(func() -> bool: return int(portal.session.room().state) >= 3, 300.0)
+	await until(func() -> bool: return game_phase() == 6 and game_tick() >= 90, 180.0)
+	flow_says("in the level")
+	await wait(1.0)
+	await shot(p + "08-in-the-hub")
+	var card: Variant = portal.call("character_card")
+	print("shots: %s character card %s" % [role, "a texture" if card is Texture2D else "none"])
+	if level_to != "":
+		await until(func() -> bool: return String(portal.gameflow.status.get("level", "")) == level_to and game_tick() >= 0, 600.0)
+		var at := game_tick()
+		await until(func() -> bool: return game_tick() >= at + 600, 300.0)
+		flow_says("in " + level_to)
+		await shot(p + "09-in-" + level_to)
+	post(role + "_done")
+	await fetch("b_done" if role == "a" else "a_done", 300.0)
+	await wait(2.0)
+	flow_says("end")

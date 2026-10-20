@@ -82,6 +82,9 @@ func _make_game() -> Node:
 		var profile: RefCounted = portal.profile
 		if String(opt.get("disc", "")) == "":
 			opt["disc"] = profile.disc_path()
+		# the game as the portal hands it over: scene mode - the 3-D scene under Godot's camera and lights, the art pack,
+		# the new HUD (main.gd); "--mode picture|draw" on the command line still decides, since main.gd reads it after this
+		opt["mode"] = "scene"
 		opt["view"] = String(profile.setting("view"))
 		if bool(profile.setting("wide")):
 			opt["aspect_window"] = true
