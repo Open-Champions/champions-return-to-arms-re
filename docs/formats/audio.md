@@ -73,7 +73,7 @@ closing offset equals the VAT file size in all 117 checked files.
 | 0x44 | u32 | Claimed sample rate; sent to driver, stored but not used (HELLO+0xd28) |
 | 0x48 | u16 | 0 mono, 1 stereo; interpreted at HELLO+0x35c |
 | 0x4a | s16 | Language: current 0x44fddc preferred; 0 fallback |
-| 0x4c | u32 | Loop restart value; interpreted as `offset + (value & 0x7ffffc00) * 2` when looping; **inferred** from 0x211df8, all observed values zero |
+| 0x4c | u32 | Loop restart value. **Executed** (`stream_serviceQueues` 0x211df8, `tools/difftest_audio.py` "loop restart"): with the loop bit set and the remaining count exactly 0 after the read, position becomes `offset + ((value & 0x7ffffc00) << 1)` and remaining becomes `length` minus that span, both as 32-bit words. Zero rewinds to the entry offset. Nonzero values skip in steps of 0x800; bits below 10 and bit 31 add nothing. A span past the length wraps the remaining word. Every observed NTSC record is still 0; the nonzero cases were synthetic |
 
 The table is searched by exact, case-sensitive name; the last applicable duplicate
 wins (0x210e60, 0x210f38). `stream_queueRandomByPrefix` 0x211190 selects among
@@ -108,5 +108,6 @@ but no executable string names them. `PORKO.VAG` differs from `porko_l.vag` in
 - **Unknown:** exact acoustic parity of a new decoder's interpolation and final mix;
   the native recompiled sound study measured this separately in
   `docs/issues/native-sound.md` section 4.
-- **Unknown:** nonzero directory loop-restart values and the purpose of the 48 kHz
-  labels. Both need a suitable asset or a controlled running capture.
+- **Unknown:** the purpose of the 48 kHz labels. A listening check is what would
+  settle whether those entries are mislabelled. The loop-restart field is executed
+  above; no NTSC record has been observed nonzero.

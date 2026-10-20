@@ -89,8 +89,11 @@ scaled by `g_sfxVolume` 0x4f8940. Every new effect batch writes VOLL, VOLR, pitc
 sample start, ADSR1 0xff, ADSR2 0x1fc0 and loop address 0x5000, then key-on.
 ADSR is effectively a gate (attack reaches full in about three output samples;
 release silences within two). Every displayed frame `sound_update` 0x212670
-services delayed samples, sequences, streams and the register batch. Every eighth
-sound frame it checks SPU end flags to reclaim non-looping voices. Up to 32 delayed
+services delayed samples, sequences, streams and the register batch. It services
+the stream queues when `g_soundFrame` 0x4f8954 has its low two bits clear, and it
+reads the end flags when that word's low three bits are clear, both before it
+increments the counter. The 16-frame cases use two different counters; they are
+recorded with the music policy below. Up to 32 delayed
 samples wait at 0x8723f8. Freeze zeros pitch for voices without the play-while-frozen
 flag (`sound_pauseResumeVoices` 0x212340). `sound_muteFor` 0x216588 makes direct
 sample starts return −1 while its countdown at 0x877240 is active.
@@ -114,17 +117,45 @@ use two SPU voices; stream 1 uses one. `audio_streamStatus` 0x211b20 and
 `audio_streamPosition` 0x216480 are blocking driver queries, with position zero
 when inactive.
 
-Queue flag meanings read in 0x211548/0x211df8: 1 loop, 2 fade/stop current before
-starting the new entry (flag 2 alone is a stop marker), 4 wait for current to end,
-8 hold until released, 0x20 recognized by voice/ambience suppression, 0x80 on
-ambience one-shots. **Unknown:** 0x40 and 0x100 are passed by callers but their full
-meaning has not been traced (`docs/formats/anim-audio.md` 3.4). The stream driver
-volume target RPC 0x70 changes current volume every 6 ms: −0x20 per tick,
-+0x40 on stream 0 or +0xc0 on streams 1/2. A stop from full 0x3fff therefore takes
-about 3.07 s before `stream_serviceQueues` clears the old stream and starts the next.
-**Inferred:** one stream 2 cannot play two music entries simultaneously, so original
-music changes are sequential fades, not overlapping crossfades. Do not substitute
-the Godot client's optional custom boss soundtrack for this original rule.
+Queue flag meanings, read in `stream_startQueued` 0x211548 and
+`stream_serviceQueues` 0x211df8, and for 0x40 and 0x100 executed at the callers
+below (`tools/difftest_audio.py`, properties "queue promote", "stream status" and
+"flag callers"): 1 loop, 2 fade/stop the current entry before the new one starts
+(flag 2 alone is a stop marker), 4 wait for the current entry to end, 8 hold until
+released, 0x20 recognized by voice and ambience suppression, 0x80 on ambience
+one-shots. Bits 0x40 and 0x100 are stored on the entry. `audio_streamStatus`
+returns them with bit 0 set, except that a held entry which is only queued reports
+idle. Neither service routine branches on 0x40 or 0x100.
+
+**Executed:** bit 0x40 tells a later caller to fade-stop stream 2. These slices
+call `stream_queueStop(2)` when `audio_streamStatus(2)` has bit 0x40, and make no
+stream-2 call otherwise: 0x18c468–0x18c488, 0x18d7cc–0x18d7e8, 0x18e2d4–0x18e2f4,
+0x1d9040–0x1d922c and 0x1e10f4–0x1e1114. `music_playGlobal` is entered with flags
+0x41, stored as 0x63, for `mx_main_l.vag` at 0x18d7a0 and for `mx_maintheme_l.vag`
+at 0x1e10b8. Boss music is stored as 0x123 and the level-poll track as 0x122, so
+those fade-stops leave both of them playing. The front end's first queue of
+`mx_maintheme_l.vag` uses flags 1 or 5 (0x1e09b0, 0x1e09c4), which also lack 0x40.
+
+**Executed:** bit 0x100 tells cutscene teardown to leave that stream-2 entry
+alone. Both slices read the gate word 0x44fd10. In the `cut_runFrame` slice
+0x199e54–0x199e98, a set gate plus status bit 0x80 and no 0x100 calls
+`audio_streamStop(2)`; every other combination leaves stream 2. In the `cut_end`
+slice 0x19a114–0x19a168, a clear gate does nothing to stream 2, a set gate with
+0x100 does nothing, a set gate with 0x80 and no 0x100 hard-stops stream 2, and
+any other set-gate status, including idle, calls `stream_clearQueue(2)` and leaves
+the active entry. Boss music is queued with 0x103 and the level poll with 0x102,
+so both carry 0x100. An ambience one-shot is 0x80 without 0x100, so a cutscene
+hard-stops it. A music entry with neither bit loses its queue and keeps playing.
+
+The stream driver volume target RPC 0x70 changes current volume every 6 ms: −0x20
+per tick, +0x40 on stream 0 or +0xc0 on streams 1/2. A stop from full 0x3fff
+therefore takes about 3.07 s before `stream_serviceQueues` clears the old stream
+and starts the next. **Executed** for a queued fade bit, including a second boss
+(`stream_startQueued` 0x211548, property "queue promote"): while the driver status
+volume word at 0x8771c0 + stream×16 + 8 is nonzero, the entry stays queued and the
+service sends RPC 0x70. At volume 0 it sends 0x60 and 0x70 and promotes the entry.
+The two spans are not heard together. Do not substitute the Godot client's
+optional custom boss soundtrack for this original rule.
 
 **Observed music entry points:** `music_playGlobal` 0x2110e0 queues a `MOUTH.VAT`
 entry on stream 2 with flags OR 0x22; `music_playLevel` 0x215f48 queues a level VAT
@@ -161,36 +192,106 @@ the creature type name at +0x34 is compared without case (`libc_strcasecmp`
 | `snowboss` | — | `mx_ba_whitetormentor_l.vag` |
 
 **Observed level poll** (`mainloop_pollAmbientAudio` 0x322520–0x3226dc,
-`libc_strstr` 0x3b96a8): once per displayed frame a countdown at 0x4f608c is
-decremented. At zero it is reset to 14,400–21,599 frames (240–360 seconds at
-60 Hz) using `g_cosmeticSeed` 0x404460. If stream 2's queued flags lack 0x20,
-the routine walks the current level's `dialog.bin` directory in order and queues
-the first name containing `_env_` or `mx_theme` through
-`music_playLevel(name, 0x102)` at 0x322634. Separately, every 16th displayed
-frame, if stream 0 is idle, it queues the first level-directory name containing
-`amb_` through `stream_queueLevelIndex(0, index, 3)` at 0x3226c0. This corrects
-the earlier **inference** in `docs/formats/anim-audio.md` 3.4 and
-`docs/audio-save.md` that stream 0 was only seen for the intro. The `amb_` scan
-is separate from `ambient.bin` one-shots (`ss_*`), which use stream 2 only
-when no music is active or queued (0x2149d0).
+`libc_strstr` 0x3b96a8): once per displayed frame the countdown word at 0x50608c
+(the load is 0x32254c) is decremented. The image word is 0x2a30. At zero it is
+reset to 14,400–21,599 frames (240–360 seconds at 60 Hz) using `g_cosmeticSeed`
+0x404460. If stream 2's queued flags lack 0x20, the routine walks the current
+level's `dialog.bin` directory in order and queues the first name containing
+`_env_` or `mx_theme` through `music_playLevel(name, 0x102)` at 0x322634.
+Separately, when `g_drawFrame` 0x44fdd0 has its low four bits clear, if stream 0
+is idle, it queues the first level-directory name containing `amb_` through
+`stream_queueLevelIndex(0, index, 3)` at 0x3226c0. The image value of that counter
+is 0x400, so the image frame itself is one of those frames. This corrects the
+earlier **inference** in `docs/formats/anim-audio.md` 3.4 and `docs/audio-save.md`
+that stream 0 was only seen for the intro. The `amb_` scan is separate from
+`ambient.bin` one-shots (`ss_*`), which use stream 2 only when no music is active
+or queued (0x2149d0).
 
-`music_updateDucking` 0x212500 reads stream 1 status; when its 0x20 bit is set it
-sets the duck target to about 0.2, then eases its scalar by 1/60 per update and
-applies it through `music_applyVolume` 0x215e78. `g_musicVolume` is 0x4f8944;
-`audio_setChannelVolume` 0x216690 and `audio_sendVolumes` 0x2166e0 send stream
-scales and stereo option. **Unknown:** ordering of simultaneous boss
-overrides and any additional transition path; level scripts and cutscene keys can
-also queue named tracks, so the poll's first match is not an exhaustive level
-playlist. `game_loadLevel` 0x1e55c0 has an `enttag`
-first-entry path, but no NTSC directory contains that tag (`docs/formats/anim-audio.md`
-3.6). Never infer a track from the level name alone.
+`music_updateDucking` 0x212500 is **executed** (`tools/difftest_audio.py` "duck",
+repeated under the six `tools/ee_emu.py` rounding setups). The current scalar is
+0x4f894c, image 0x3f800000, and the target is 0x4f8a0c, image 0. When
+`audio_streamStatus(1)` has bit 0x20, the target is set to 0x3e4cccd0 (about
+0.20000005, one ulp above the ordinary 0.2 pattern 0x3e4ccccd). The target then
+always gains 0x3c888888 (about 1/60) and is clamped to 0x3f800000 when the sum
+exceeds 1. While the voice bit stays set, the target therefore holds at
+0x3e5ddde1. With the bit clear, the target stays where it is and keeps taking that
+same step toward 1. The current scalar moves toward the target by 0x3c23d70a
+(about 0.01) per call, and snaps to the target when one step would pass it. If
+the level name at 0x44fe18 compares equal to `actintro` and the language byte
+0x44fddc is nonzero, the scalar is then stored as the integer 0. Language 0
+leaves it; the image name is empty and the image language is 0. When the scalar's
+float value changed and stream 2's status has bit 0x20,
+`audio_setChannelVolume(2, scalar * g_musicVolume * 0x3f480000)` runs.
+`g_musicVolume` is 0x4f8944. `music_setDuck` 0x216570 writes `1 − argument` to
+the target and leaves the current scalar alone: argument 0 stores 0x3f800000,
+argument 1 stores 0, and the ordinary 0.2 pattern 0x3e4ccccd stores 0x3f4ccccc.
+The next duck update still adds 0x3c888888 to that target. `music_playGlobal`
+queues only when `g_musicVolume` compares at or above 0x3d4ccccc; the equal
+pattern is open and a smaller pattern, including 0, queues nothing.
+
+**Executed boss override** (`creature_startBossMusic` 0x1192b0,
+`creature_stopBossMusic` 0x1192f8; property "boss override"). A creature with no
+boss name leaves stream 2 untouched. A creature with a name calls
+`audio_streamStop(2)` and then `music_playGlobal(name, 0x103)`. A second start
+does the same thing: the stop clears the queue, and the new call leaves exactly
+one `mouth.vat` entry, flags 0x123, whose offset, length and restart are the new
+directory span. The active name stays empty until `stream_startQueued` promotes
+the entry. The queued file name is always `mouth.vat`; the VAT span is what
+distinguishes the two bosses. The fade bit inside 0x123 then applies the volume
+rule above, so the replacement waits until the status volume word reads 0.
+`audio_streamStop` does not itself write that word. A start whose music volume
+is below 0x3d4ccccc, or whose directory row is missing or has length 0, has
+already stopped stream 2 and then queues nothing. `creature_stopBossMusic`
+appends an empty-name entry with flags 2 whenever the creature has a boss name,
+including when the queued span belongs to a different boss. A creature with no
+boss name does not append.
+
+**Executed frame counters** (properties "cadence image", "sound cadence" and
+"draw cadence"). `g_soundFrame` 0x4f8954, image 0, is the counter for the 4-frame
+queue service, the 8-frame end-flag reads, and the 16-frame volume send. Inside
+`sound_update` the service runs when the low two bits are 0. The increment is
+stored next. The two end-flag reads, `0x35ee38` with register ids 0x1700 and
+0x1701, run when the new value's low three bits equal 1, the same calls as a
+low-three-bits test of the value on entry. `audio_sendVolumes` 0x2166e0 runs
+after the increment, when the new value's low four bits are 0, so the value on
+entry ended in 0xf. The 16-frame `amb_` poll and the group-volume refresh use
+`g_drawFrame` 0x44fdd0, image 0x400. `animsound_updateGroupVolumes` 0x170238
+writes on the same low-four-bits test as the poll. The poll also requires stream
+0 status 0 and a directory name containing `amb_`. Both counters are
+process-lifetime words, and their image phases match a counter that started at 0.
+They move apart when one advances alone. The loading-screen thread increments
+`g_drawFrame` (`docs/mainloop.md`) and `game_loadLevel` calls `sound_update`
+twice (`docs/issues/sync-breakers.md`); those two splits were not re-executed
+in this round.
+
+Level scripts and cutscene keys can also queue named tracks, so the poll's first
+match is not an exhaustive level playlist. `game_loadLevel` 0x1e55c0 has an
+`enttag` first-entry path, but no NTSC directory contains that tag
+(`docs/formats/anim-audio.md` 3.6). Never infer a track from the level name alone.
 
 ## Film, cutscenes and lip sync
 
-**Observed:** intro movie setup queues `porko_l.vag` on stream 0 held and releases
-it when the movie is ready (`splash_introMovie` 0x321788). **Unknown:** exact video
-frame-to-audio resynchronization or drift correction for that movie; this evidence
-only establishes the start hold.
+**Executed** (`splash_introMovie` 0x321788; the `movie_update` slice
+0x3209f8–0x320af0; properties "intro drift" and "movie drift"). The splash queues
+`porko_l.vag` on stream 0 with flag 8 and does not write the sync gate byte
+0x506034. The image gate is 0. `movie_enableAudioSync` 0x3205c8 sets that byte
+and zeroes `g_movieFrame` 0x506038; `movie_disableAudioSync` 0x3205e0 clears the
+byte. The US v2.00 executable contains no `jal` encoding of either address and no
+pointer-sized word equal to either address. `movie_update` 0x3205ec itself has
+two `jal` encodings. With the gate clear, each update decodes, increments
+`g_movieFrame`, does not read a stream position, and leaves the last position at
+0x8eb000 unchanged.
+
+With the gate forced on, the compared stream is stream 2, which is not the
+intro's stream 0. An unchanged position decodes and increments the frame. A
+changed position is stored as the last sample before the choice. Video time is
+`float(g_movieFrame) * 0x3d08ab85 − 0x3d8f5c28`. Audio time is
+`float(position − 0x400) * 0x3798eadb`, with the subtraction wrapped to 32 bits
+before the conversion. The picture is held, and the frame stays, when the
+absolute gap is at least 0x3ca3d70a and the video time is greater than or equal
+to the audio time. A video time behind the audio time decodes even when the gap
+is larger than that threshold. The intro never takes this path: nothing in the
+executable calls the enable function.
 
 Cutscene and NPC `.dbin` nodes name their text key and voice entry separately; there
 is no text-to-audio naming rule (`cut_loadDialog` 0x1964d4,
@@ -214,8 +315,10 @@ controlled differential test before claiming bit-exact cutscene synchronization.
 ## Implementation and proof boundary
 
 `tools/ref_audio.py` is a pure, synthetic-fixture contract for headers, ADPCM blocks,
-VAT directory/interleave, duration and camera gain. It does not emulate SPU2 mixing,
-queue state, cosmetic RNG, or disc reads. `docs/issues/native-sound.md` reports a
+VAT directory/interleave, duration and camera gain. `tools/ref_audio_playback.py`
+is the queue, duck, loop-restart, cadence and movie-sync half, checked against
+the original functions by `tools/difftest_audio.py`. Neither emulates SPU2 mixing,
+cosmetic RNG, or disc reads. `docs/issues/native-sound.md` reports a
 recompiled-game comparison, not verification of this separate Godot client. Sound in
 the handwritten native client remains unverified until an affected scene is heard or
 captured there, including a level change, speech, 3-D motion and a boss transition.
