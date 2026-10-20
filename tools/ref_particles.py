@@ -22,8 +22,10 @@ no game data is embedded.
 Precision.  The effects are cosmetic, so this model uses Python floats rounded to 32 bits
 where the original stores a float (f32()) and C truncation where it converts to an integer
 (cvt.w.s).  It is meant to be exact for the integer fields (particle records, ticks, pool
-behaviour, texture coordinates) and close for the float ones.  Angles use the float
-cosine of the angle, not the original's math_cos16 0x166630 (see docs/spec/core.md).
+behaviour, texture coordinates) and close for the float ones.  Angles use the host
+cosine of the angle, not the original's math_cos16 0x166630 (docs/spec/core.md,
+docs/spec/trig16.md).  The schedule fields do not read that cosine.  A yaw of 0 does:
+the host sine is +0, and math_sin16(0) is +2^-22, so an x offset gains a y component.
 
 What each part mirrors
     ParticleDef.build      particleDef_init 0x18ee70 (via particleDef_ctor 0x18f3d0 / _set 0x18f118)
