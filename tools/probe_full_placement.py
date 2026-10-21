@@ -657,6 +657,7 @@ class Probe:
         self.disc = clips
         self.clip_names = {}                    # clip address -> entry name (--clips)
         self.loaded_entries, self.clips_missing = {}, []
+        self.elf, self.scratch = elf, None
         if clips is not None:
             self.executed = dict(self.executed)
             for addr, prop in ANIM_BODIES.items():
@@ -747,16 +748,26 @@ class Probe:
                 self.clips_missing.append('%s::%s' % key)
                 self.loaded_entries[key] = None
             else:
+                # The relocation runs on a scratch interpreter, never on the probe's own: a
+                # load is often asked for inside a stub's answer (res_find), where a nested
+                # call would wreck the interrupted function.  The relocated bytes are copied
+                # back; a store outside the file would be refused.
                 emu = self.rig.emu
-                addr = emu.alloc(len(data) + 0x40)
-                emu.mem.write(addr, data)
-                # inside a stub's answer: the loader's own steps stay out of the probe's trace
-                saved = emu.r[29], emu.trace, emu.calls
-                emu.r[29], emu.trace, emu.calls = emu.stack_hi - 0x100, [], []
-                try:
-                    emu.call(relocate, addr, max_steps=MAX_STEPS)
-                finally:
-                    emu.r[29], emu.trace, emu.calls = saved
+                size = len(data) + 0x40
+                addr = emu.alloc(size)
+                if self.scratch is None:
+                    self.scratch = EE(self.elf)
+                    self.scratch.record_calls = False
+                sc = self.scratch
+                sc.mem.map(addr, size)
+                sc.mem.write(addr, bytes(data) + bytes(0x40))
+                sc.reset_log()
+                sc.record_writes = True
+                sc.call(relocate, addr, max_steps=MAX_STEPS)
+                stray = [w for w in sc.writes if not addr <= w[1] < addr + size]
+                if stray:
+                    raise EmuError('relocating %s::%s stored outside it at %#x' % (lump, entry, stray[0][1]))
+                emu.mem.write(addr, bytes(sc.mem.read(addr, size)))
                 self.loaded_entries[key] = addr
                 self.clip_names[addr] = entry
         return self.loaded_entries[key]
@@ -1086,8 +1097,8 @@ def report(probe):
                                                       mem.u32(c + 0x3D0)))
     print('  serial %d; states entered (frame:state): %s' % (probe.serial, ', '.join('%d:%#x' % s for s in probe.states[:24])))
     if probe.disc is not None:
-        print('  clips: %d relocated from the disc (anim bodies real)%s' % (
-            probe.clips_loaded, '; missing: %s' % ', '.join(probe.clips_missing) if probe.clips_missing else ''))
+        print('  clips and models: %d relocated from the disc (anim bodies real)%s' % (
+            sum(1 for a in probe.loaded_entries.values() if a), '; missing: %s' % ', '.join(probe.clips_missing) if probe.clips_missing else ''))
         mem, c = probe.rig.emu.mem, probe.world.C
         print('  position at state changes (frame:state @ x,y): %s' % ', '.join(
             '%d:%#x@%.0f,%.0f' % t for t in probe.track[:24]))
