@@ -209,7 +209,24 @@ allocations and 54 gold. The last health potion was consumed normally. All three
 accepted trials exit zero with no timeouts or valid player-death rows; 21 reported
 dead targets retain their flags/positions on reentry. A separate probe died and
 automatically restored the older checkpoint despite process exit zero, and remains
-rejected. The next northern checkpoint and mission completion are still open.
+rejected. The next northern checkpoint and mission completion remained open at
+that stage.
+
+Two further ordinary Holy Strike kills add 50 XP, reaching 1,496 XP. Normal Square
+loot adds one armor item, raising its bag count from three to four; no equipped
+bonus is claimed. Ordinary walking reaches a new northern Savepoint. Its actual
+card write, transaction-gated pause-menu Load and separate fresh-process frontend
+Load preserve 1,496 XP, level two, Strength 49, Holy Strike two, zero unspent points,
+54 gold and the new armor item. The fresh Load creates a live Player at the new
+checkpoint with 24.5562 HP and 36.6 mana. The 310,392-byte card is distinct from
+all preserved earlier checkpoint cards.
+
+All nine accepted continuation trials exit zero without timeouts or valid
+live-player death rows. Twenty-three reported defeated targets retain their
+raw-verified death state and positions; this is not a completeness claim about the
+entire object pool. The fresh-load endpoint is paused and bounded, with living
+enemies nearby. Longer unpaused survival, the good exit to `strife`, completion of
+the initial Plane of War level and the wider quest remain unqualified.
 
 Earlier overwrite attempts pressed Cross while the overwrite screen required Square;
 they wrote no new checkpoint and correctly loaded the older zero-XP save. This was
@@ -472,9 +489,9 @@ Both scripts completed, the driver exited zero and all owned test processes stop
 The clients had fresh separate cards; this continuation used no gameplay memory
 writes, direct calls, teleports or level/inventory fixtures. Body-collision-aware
 walking paths and read-only frame/coordinate conditions drove ordinary pad inputs.
-This trial establishes local mission entry and recall. Revival, mission completion,
-disconnect/rejoin and cross-machine play remain unqualified; the later automatic
-party-wipe recovery trial is recorded below.
+This trial establishes local mission entry and recall. It does not qualify revival,
+mission completion, disconnect/rejoin or cross-machine play; later bounded local
+checkpoint-recovery and survivor-revival trials are recorded below.
 
 **Ran natural co-op combat on the input-fixed build:** one kobold died, the two
 player slots earned 37/55 XP, normal health/mana potions were consumed, and both
@@ -502,8 +519,9 @@ persisted and are not invented. This is observed gameplay plus corrected offline
 evaluation, not a claim that the original driver invocation passed. A further
 waypoint probe timed out before combat and remains excluded from successful runs.
 No gameplay state writes were used in either combat route. Their scope excludes
-automatic checkpoint recovery, tested separately below. Survivor revival, four
-players, WAN and full mission completion remain unqualified.
+automatic checkpoint recovery, tested separately below. These combat routes do
+not qualify survivor revival, four players, WAN or full mission completion; later
+bounded local-client tests are recorded separately.
 
 **Ran owner-card persistence on the diagnostic build identified above:** two fresh,
 distinctly named level-one characters each saved through the actual hub Savepoint
@@ -536,6 +554,17 @@ match between the final co-op records, each saved card and its fresh Load. This
 includes used health/mana potions and the host's consumed recall. The source cards
 remain byte-identical during verification. This establishes earned owner-card
 persistence through separate offline Loads; online card rejoin is untested.
+
+A separate normal-shop trial on that guarded-palette build opens and closes both
+players' shop UI, confirms the Buy/Sell chooser and purchases two health potions.
+The host's health-potion stack rises from two to four while gold falls 500 to 292
+to 84: each purchase costs 208 gold, matching the inspected fixed-price item
+definition. The
+joiner's gold/items and both players' recall/mana stacks remain unchanged. All
+1,951 confirmed ticks across 48 shared columns match, both children exit zero and
+both players finish alive in the hub. Canonical item-definition/quantity snapshots
+independently verify the purchases; earlier incorrect menu-input trials remain
+failed and are not treated as shop defects.
 
 Network pause-menu Load is deliberately disabled by the existing game code.
 These offline loads verify the owner-card files; shared party-wipe recovery and
@@ -585,8 +614,42 @@ The original game's tick deliberately substitutes a zero pad while spawn
 protection is nonzero ([pad-selection research](../spec/player-tick.md#2-which-pad-the-tick-reads-0x1a56400x1a5764));
 24 exact supported-ELF instruction anchors independently verify this gate. Early
 post-revival stick holds therefore do not establish a control defect. Later host
-death prevents the strict usable-controls endpoint. Those whole invocations remain
-failed; safe after-protection controls and a clean survivor-revival route are open.
+death prevents the strict usable-controls endpoint in those invocations; they
+remain failed.
+
+A later fresh guarded-palette trial passes actual survivor resurrection and both
+players' subsequent controls. All 4,805 confirmed ticks across 55 shared columns
+match, both children exit zero, and neither an all-dead event nor an automatic Load
+occurs. The joiner returns at half HP, protection counts from 90 to zero, and
+source-backed control gates clear before ordinary movement. The joiner and host
+move 33.86 and 8.96 units. Only three further shared ticks follow the host's first
+movement, so this establishes a bounded control response rather than a long soak.
+
+A further independent trial extends revival through a normal recall and fresh hub
+controls on the same guarded-palette executable. Both children exit zero and all
+5,666 confirmed ticks across 59 shared columns match, with no out-of-sync or
+dropped-player flags. The host remains alive while the joiner dies and revives at
+16.4 of 32.8 HP; protection expires and both players move before recall. The host
+uses normal guard and periodic potion-button attempts, with three actual health
+consumptions from four to one. The game's ordinary health-plus-pending-heal gate
+determines acceptance; no health/stat writes or invulnerability are used.
+
+Normal recall consumes exactly one host recall, two to one. Raw canonical item
+snapshots preserve the remaining health/mana stacks, per-player XP and gold across
+the return. This fresh-character trial has zero XP in both slots and does not add
+a new earned-XP claim. Actual hub rows span ticks 4,968 through 5,666: 699 matching
+live rows, including 600 before fresh hub movement. Host and joiner then move
+107.76 and 83.59 units and remain stationary for 20 further confirmed ticks after
+release. Both finish alive at 27.7734 / 21.4099 HP, without party-wipe recovery or
+automatic Load. The preceding completed tick-log row 4,967 still belongs to
+`blood1` and is excluded from the hub count.
+
+An intervening longer trial timed out waiting for a healing condition that the
+guarded host never needed. That whole invocation remains failed; it did not reach
+recall. The accepted continuation uses event-gated death/revival and ordinary
+periodic potion attempts without requiring unnecessary damage. These results
+qualify the stated local two-client intervals; full campaign, WAN and long-session
+stability remain open.
 
 ## Windows tick-log completion
 
