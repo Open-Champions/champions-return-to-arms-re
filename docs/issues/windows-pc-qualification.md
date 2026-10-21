@@ -1726,6 +1726,61 @@ The candidate is private and uninstalled. No NPC decision, new battle, new Save,
 mission or campaign completion, four physical controllers, WAN, general
 performance or console pixel fidelity is qualified here.
 
+## Private live input control and default-off comparison
+
+A private opt-in Windows prototype accepts bounded ordinary controller leases
+for four logical owners and read-only state snapshots. It exposes no game-memory
+write or game-function interface. The build passes 79 Windows CPU checks and
+eight Python fake-client tests, alongside the previously verified 98 core
+checks. A control relink of all 88 baseline objects matches the accepted
+four-controller build apart from its COFF timestamp; the prototype rebuilds one
+translation unit and reuses the other 87 objects. Those build and synthetic-test
+results do not establish actual gameplay or physical-controller behavior.
+
+With the control option disabled, the new binary completes the case 18
+route with all 1,899 rows and 338 columns identical: 641,862 watched values,
+without shifting or normalization. All six party anchors retain canonical items,
+equipment/auxiliary references, 48 skill entries, statistics, allocations, quests
+and saved return metadata. Nevertheless, **strict default-off equivalence fails**.
+The first three PNGs match exactly, but the later three differ by 2, 4 and 12 RGB
+pixels, with a maximum channel change of two and no alpha differences. These are
+actual decoded pixel differences, not PNG metadata changes. Full RAM comparisons
+also retain 315 changed bytes: 240 in source-attributed card date/time and menu
+structures, 65 in CD-request and sound structures, and ten stack bytes whose
+writer remains unproved. Structure identification establishes neither the cause
+of different values nor harmlessness or graphics causation. No bytes are ignored
+or normalized, and no rerun is used to replace this failed comparison.
+
+A separate ordinary fresh party Load and hub test completes with clean game and
+client exits, 2,557 watched rows and no timeout. Its entire earlier Load prefix,
+1,323 rows across 332 common columns, matches exactly. Raw-state review verifies
+four isolated eight-field owner leases, a four-field joint lease and the default
+eight-field expiry. Each isolated lease moves its owner while the other three
+remain stationary. Cancellation produces three actual held guest samples before
+neutralization, and disconnect produces one; both releases precede their
+32-field expiries. Stale sessions, repeated request IDs and expired requests are
+rejected, followed by working current-session input. These are software-input
+observations, not physical-device or input-to-display latency measurements.
+
+Independent raw review correlates 485 atomic 29-span snapshots with the same watched
+fields, checks the actual guest-input intervals at command field F+1 without
+shifting rows, and verifies three full canonical party anchors. All four retain
+unchanged HP, XP 51/51/51/77, 500 gold each and Recall quantities 1/2/2/2. Mana
+regenerates during the hub interval; whole Player-record immutability across that
+interval is not claimed. The final
+30 neutral fields also have stationary XYZ for all four. Independent acceptance covers this finite software-input hub case; client
+acknowledgements and clean exits alone do not qualify it. Earlier evaluator failures remain preserved
+with separate reader corrections, without game-data or native-code fixes.
+
+Both trials read 311,272 game-card bytes and write zero. Generated network
+bootstrap/address sidefiles are recorded separately from the four seeded game
+save/icon files. Original and copied party saves, the earlier 1,888-XP checkpoint,
+source inputs and all eight installed programs retain their hashes. The current
+installed build remains unchanged; this candidate is neither installed nor
+promoted. The strict graphics gap remains open, as do full campaigns, physical
+controllers, WAN/NAT, public discovery operation, latency, general performance,
+console fidelity and qualification of the Godot bridge.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
