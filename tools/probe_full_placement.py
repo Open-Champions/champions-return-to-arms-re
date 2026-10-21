@@ -18,6 +18,8 @@ Needs your own SLUS_209.73 (US v2.00).  Without it the script says so and exits 
                    a stand-in for the attacking player of the native smoke test
     --all          do not stop at the first unexecuted body: answer it with 0 and go on,
                    so the run lists every one it meets, with the tick of its first call
+    --type NAME    the type name the constructor gets (default AntQueen / Skeleton / Soul),
+                   e.g. SkeletonBow or SkeletonSwordOHW to fix the Skeleton's weapon kind
     --pool         pool_new hands out zero-filled blocks (default: it refuses, so no effect
                    object is built); the objects built in them do not run
 
@@ -69,7 +71,8 @@ def executed_bodies():
     names = ('ref_creature', 'ref_arena_monsters', 'ref_monsters_1', 'ref_combat_ctors',
              'ref_potion_ctors', 'ref_combat_round3', 'ref_combat_round4', 'ref_combat_round5',
              'ref_combat_round6', 'ref_skills_a', 'ref_skills_b', 'ref_skills_c',
-             'ref_combat_ctors2', 'ref_antqueen_run', 'ref_fire_touch', 'ref_phprop', 'ref_soul_run')
+             'ref_combat_ctors2', 'ref_antqueen_run', 'ref_fire_touch', 'ref_phprop', 'ref_soul_run', 'ref_skeleton_run',
+             'ref_combat_death', 'ref_weapon_holder', 'ref_sweep')
     for name in names:
         try:
             mod = importlib.import_module(name)
@@ -115,7 +118,7 @@ RUN_SWITCHES = {
 }
 RUN_STATES_EXECUTED = {
     'AntQueen_run': set(range(0x1A)),   # every arm: tools/difftest_antqueen_run.py (this round)
-    'Skeleton_run': {0, 1},
+    'Skeleton_run': set(range(0x18)),   # every arm: tools/difftest_skeleton_run.py
     'Soul_run': set(),
 }
 try:                                    # every Soul arm: tools/difftest_soul_run.py
@@ -153,6 +156,7 @@ PLACEMENTS = {
     'native': {'antqueen': (0, 140), 'skeleton': (70, 140), 'soul': (-60, 100)},
 }
 SKELIGHTS = (((80, 0), 0x8000), ((-40, 0), 0))
+FIXTURE_PAGE = 0x00C00000              # difftest_creature's fixture handles live in this page
 POOL_LIMIT = 4000                       # blocks --pool hands out before refusing again
 FACING = 0xC000
 LEVEL = b'drunare'                      # any level but airhub (the Soul class tests that name)
@@ -408,9 +412,11 @@ SERVICES -= RECORDED
 # The probe
 # ---------------------------------------------------------------------------------------
 class Probe:
-    def __init__(self, elf, kind, placement='round5', serial=0, stop_first=True, executed=None, pool=False):
+    def __init__(self, elf, kind, placement='round5', serial=0, stop_first=True, executed=None, pool=False,
+                 type_name=None):
         self.kind, self.stop_first = kind, stop_first
         self.pool, self.pool_used, self.blocks = pool, 0, {}
+        self.type_name = type_name
         self.executed = executed if executed is not None else executed_bodies()
         self.symbols = symbol_names()
         self.events, self.first_seen, self.defaulted, self.clips = [], {}, {}, {}
@@ -426,6 +432,10 @@ class Probe:
         world.probe = self
         rig.script_rng = random.Random(0)
         emu.unpatch()                           # the run switches run for real here
+        # The world's fixture handles (model 0x00c00040, the on-kill skill 0x00c00100, resources
+        # 0x00c00200) point into a page nothing backs.  Executed bodies that read the model
+        # (creature_dropHeldPartAsProp at a death) get zeros there (AUTHORED, like the rest).
+        mem.map(FIXTURE_PAGE, 0x1000)
         self.name_of = {}
         for addr, name in rig.names.items():
             self.name_of[addr] = name
@@ -540,7 +550,7 @@ class Probe:
         for i, v in enumerate((float(x), float(y), 0.0)):
             mem.wf32(pos + 4 * i, v)
         name = emu.alloc(32)
-        mem.write(name, TYPE_NAMES[self.kind] + b'\0')
+        mem.write(name, (self.type_name or TYPE_NAMES[self.kind]) + b'\0')
         emu.r[29] = emu.stack_hi - 0x100
         ctor = {'antqueen': (0x236C70, (c, name, pos, FACING, world.props)),
                 'skeleton': (0x2A5AF4, (c, pos, FACING, world.props, name, 0)),
@@ -637,6 +647,10 @@ class Probe:
 # ---------------------------------------------------------------------------------------
 def report(probe):
     print('%s on the %s placement:' % (probe.kind, probe.placement))
+    if probe.kind == 'skeleton':
+        mem, c = probe.rig.emu.mem, probe.world.C
+        print('  type %s, weapon kind +0x3d0 = %d' % ((probe.type_name or TYPE_NAMES['skeleton']).decode(),
+                                                      mem.u32(c + 0x3D0)))
     print('  serial %d; states entered (frame:state): %s' % (probe.serial, ', '.join('%d:%#x' % s for s in probe.states[:24])))
     if probe.stopped:
         print('  STOP: %s' % probe.stopped)
@@ -655,7 +669,7 @@ def report(probe):
 def main(argv):
     args = list(argv)
     elf, ticks, kinds, serial, placement, stop_first = None, 300, ('antqueen', 'skeleton', 'soul'), 0, 'round5', True
-    hit_every, hit_amount, pool = 0, 10.0, False
+    hit_every, hit_amount, pool, type_name = 0, 10.0, False, None
     while args:
         a = args.pop(0)
         if a == '--ticks':
@@ -670,6 +684,8 @@ def main(argv):
             stop_first = False
         elif a == '--pool':
             pool = True
+        elif a == '--type':
+            type_name = args.pop(0).encode()
         elif a == '--hit-every':
             hit_every = int(args.pop(0), 0)
         elif a == '--hit-amount':
@@ -690,7 +706,7 @@ def main(argv):
     RC.C.set_fpu(DC.OPTIONS['fpu'])
     executed = executed_bodies()
     for kind in kinds:
-        probe = Probe(elf, kind, placement, serial, stop_first, executed, pool)
+        probe = Probe(elf, kind, placement, serial, stop_first, executed, pool, type_name)
         probe.placement = placement
         probe.run(ticks, hit_every, hit_amount)
         report(probe)
