@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Compare bounded arena helper models with the owner's US v2.00 executable.
+
+Usage: python3 tools/difftest_arena_match_core.py path/to/SLUS_209.73 --seed 20973
+"""
+import argparse
+import os
+import random
+
+from ee_emu import EE, float_to_raw
+import ref_arena_match_core as R
+
+M32 = 0xFFFFFFFF
+FIELDS = (0xE4, 0x228, 0x22C, 0xD0, 0xD2, 0xD4, 0xD8)
+HALVES = {0xE4, 0xD0, 0xD2, 0xD4}
+
+
+def writes(emu, wanted):
+    return {address: value for _, address, _, value in emu.writes if address in wanted}
+
+
+def test_scale(path, rng):
+    checked = 0
+    for _ in range(100):
+        emu = EE(path)
+        creature = emu.alloc(0x500)
+        fields = {}
+        for offset in FIELDS:
+            if offset in HALVES:
+                value = rng.randrange(0, 1000)
+                emu.mem.w16(creature + offset, value)
+            else:
+                value = float_to_raw(rng.uniform(1, 500))
+                emu.mem.w32(creature + offset, value)
+            fields[offset] = value
+        factors_f = tuple(rng.choice((0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0))
+                          for _ in range(5))
+        expected = R.scale_stats(fields, tuple(map(float_to_raw, factors_f)))
+        emu.call(R.SCALE_STATS, creature, fargs=factors_f)
+        actual = {offset: (emu.mem.u16(creature + offset) if offset in HALVES
+                           else emu.mem.u32(creature + offset)) for offset in FIELDS}
+        assert actual == expected, ('scaleStats', fields, factors_f, actual, expected)
+        assert not emu.calls, ('scaleStats made unexpected calls', emu.calls)
+        checked += 1
+    return checked
+
+
+def test_empty_visit(path):
+    checked = 0
+    for flags in (0, 0x20, 0x21, 0x22, 0x28, 0x40, 0x60, 0x68, 0x40020):
+        for state in (0, 1, 0x7FFF, 0xFFFF):
+            for count in (0, 7, 0xFFFF):
+                emu = EE(path)
+                creature = emu.alloc(0x500)
+                emu.mem.w32(creature + 0xC, flags)
+                emu.mem.w16(creature + 0x312, state)
+                emu.mem.w16(R.LIVE_COUNT, count)
+                expected = R.empty_wave_visit(flags, state, count)
+                emu.call(R.EMPTY_WAVE_VISIT, creature)
+                actual = emu.mem.u16(R.LIVE_COUNT)
+                assert actual == (count if expected is None else expected), (flags, state, count, actual, expected)
+                actual_writes = writes(emu, {R.LIVE_COUNT})
+                assert actual_writes == ({} if expected is None else {R.LIVE_COUNT: expected})
+                assert not emu.calls
+                checked += 1
+    return checked
+
+
+def test_next(path):
+    checked = 0
+    for increment in (0, 1, 2, 0xFFFF):
+        emu = EE(path)
+        emu.follow = {R.PREPARE_WAVE}
+        emu.default_ret = 0
+        emu.mem.w16(R.LIVE_COUNT, 7)
+        emu.mem.w16(R.SAVED_COUNT, 9)
+        emu.call(R.NEXT_WAVE, increment)
+        expected_calls = [(0x322954, 15), (R.PREPARE_WAVE, None),
+                          (0x19F018, None), (0x14A610, 0x306A28),
+                          (0x305ED4, increment)]
+        actual_calls = [(call.target, call.args[0] & M32 if want is not None else None)
+                        for call, (_, want) in zip(emu.calls, expected_calls)]
+        assert actual_calls == expected_calls and len(emu.calls) == len(expected_calls), (actual_calls, expected_calls)
+        assert writes(emu, {R.LIVE_COUNT, R.SAVED_COUNT}) == R.prepare_wave()[1]
+        checked += 1
+    return checked
+
+
+def test_shutdown(path):
+    checked = 0
+    for found in (0, 1):
+        for spawn_ptr, monster_ptr in ((0, 0), (0x100001, 0x100002)):
+            emu = EE(path)
+            emu.follow = set()
+            emu.default_ret = 0
+            emu.stub(0x19E5E8, ret=found)
+            for address, value in ((0x503888, spawn_ptr), (0x50388C, monster_ptr),
+                                   (0x503890, 3), (0x41B500, 4), (0x41B4FC, 5)):
+                emu.mem.w32(address, value)
+            expected_calls, expected_writes = R.shutdown(found, spawn_ptr, monster_ptr)
+            emu.call(R.SHUTDOWN)
+            actual_calls = [(call.target, call.args[0] & M32) for call in emu.calls]
+            assert actual_calls == expected_calls, (actual_calls, expected_calls)
+            assert writes(emu, set(expected_writes)) == expected_writes
+            if not found:
+                assert not emu.writes
+            checked += 1
+    return checked
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('elf')
+    parser.add_argument('--seed', type=int, default=20973)
+    args = parser.parse_args()
+    if not os.path.isfile(args.elf):
+        raise SystemExit('executable missing')
+    rng = random.Random(args.seed)
+    for name, fn in (('scaleStats', lambda: test_scale(args.elf, rng)),
+                     ('empty-wave visit', lambda: test_empty_visit(args.elf)),
+                     ('nextWave', lambda: test_next(args.elf)),
+                     ('shutdown', lambda: test_shutdown(args.elf))):
+        print('%s: %d matched' % (name, fn()))
+
+
+if __name__ == '__main__':
+    main()
