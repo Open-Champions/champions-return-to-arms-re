@@ -6,6 +6,10 @@ US `SLUS_209.73` v2.00. Prose of `tools/probe_full_placement.py` (tests:
 two takeDamage wrappers, six destructors and potion 1's fire entry
 (`docs/spec/combat-ctors-2.md`, `docs/spec/antqueen-run.md`, `docs/spec/fire-touch.md`).
 
+**Round 3 (2026-10-21, `t3/research-combat-ctors-3`): §6.** It supersedes §3.3 and §4.
+Every item of §4's list 1–8 is executed now. On this placement the three classes run the
+default Full fight to their deaths without meeting an unexecuted body.
+
 Evidence words as in `CONTRIBUTING.md`. This is a **probe**, not a comparison: the
 original's own code decides the path, and the probe only records which bodies that path
 reaches. Everything it says about the original is *Executed* in `tools/ee_emu.py`; the
@@ -150,3 +154,117 @@ Sizes in instructions from the run switches' jump tables (`0x54bf00`, `0x54c2c0`
   constructors are listed from the native run and the class bodies instead.
 - The probe's answers for `GameObject_ctor`, `Creature_setStats` and `balance_lookup` are
   fixtures; a seed-exact reproduction of the native's numbers is not claimed.
+
+## 6. Round 3: after items 1–8 (2026-10-21)
+
+### 6.1 What was executed
+
+Every body listed here ran against a model on seeds 20973 and 7 with 0 mismatches. The
+prose is in the documents named.
+
+| §4 # | Bodies | Document |
+|---|---|---|
+| 1 | `Skeleton_run`, every state (808 of 809 instructions; the one left is dead) | `skeleton-run.md` §3 |
+| 2 | `creature_allyInLineOfFire` (132 of 133), and under it `world_countLivingNonplayerCreaturesInBox` (60/60) and `creature_objInArcRange` (106/106); `Creature_leadTargetPoint` (54/54) | `skeleton-run.md` §4, §4a, §5 |
+| 3 | `Soul_run`, every state 0–0x22 (1061 of 1062; the one left is dead) | `soul-run.md` |
+| 4 | `Creature_setCharm` (25/25) | `soul-run.md` §4 |
+| 5 | `Skeleton_onNearbyEvent` (49/49), `Skeleton_hasShield` (25/25) | `skeleton-run.md` §6 |
+| 6 | Under `GutChunk_ctor`: `PhProp_ctor`, `Prop_ctorNamedLaunch`, `Prop_launch`, `PhProp_initPhysics` (668 of 668) | `gut-chunk.md` |
+| 7 | `Skeleton_shatter`, WeaponShield slot 11, `creature_dropHeldPartAsProp`, `PhProp_ctor2`, `Gold_ctor2`; `loot_generateDrops`, `creature_bossRank`, `player_giveExp`, `player_getSkillRank` and `anim_findTrack`, which other difftests had already executed (see below) | `combat-death.md`, `gut-chunk.md` §7a–7b |
+| 8 | Weapon1 and WeaponShield slots 1–17, the element setters, `creature_buildElementDamage`, `damageDesc_getElement` | `weapon-holder.md` |
+
+Five death-path bodies of §4 #7 were not missing. `loot_generateDrops` (`difftest_items`),
+`creature_bossRank`, `player_giveExp`, `player_getSkillRank` (`difftest_combat`) and
+`anim_findTrack` (`difftest_anim`) had been executed. The probe could not see them because
+their modules keep no address table. The same holds for the item bodies the loot reaches.
+The probe now lists:
+
+- the `difftest_items` bodies by property, in `ITEM_BODIES`. The properties were rerun on
+  2026-10-21, 22 of 22 PASS. The list also takes in their two game callees,
+  `item_getUnitMultiplier` and `item_randomizeVariant`;
+- `ref_combat_death.EXECUTED`, for the rest.
+
+**Findings that change the seed:**
+
+- A bleeding hit's gut chunk costs **1 shared draw** (`GameObject_ctor`) and 7 own draws.
+- Each shattered bone (`PhProp_ctor2`) and the gold pile (`Gold_ctor2`) cost 1 shared draw
+  each.
+- A Skeleton constructed with an element makes **one shared draw** in the holder's element
+  setter (`weapon-holder.md`). The constructor difftest could not see it, because the holder
+  was a stub there.
+
+### 6.2 Probe changes
+
+All are AUTHORED and labelled in `tools/probe_full_placement.py`.
+
+- `--pool` hands out zero-filled blocks. The objects built in them do not run.
+- `--type NAME` sets the constructor's type name, so `SkeletonBow` (kind 4) and the others
+  can be probed. The report prints the weapon kind `+0x3d0`.
+- The page `0x00c00000` that holds the world's fixture handles is zero-filled. The fixture
+  model `0x00c00040` was a pointer to nothing, and `creature_dropHeldPartAsProp` (executed)
+  reads it at a Skeleton's death.
+- These became services:
+  - the rigid-body calls `rigidbody_init`, `quat_*` and `rigidbody_updateDerived`. The
+    body's one draw is the cosmetic seed;
+  - `obj_stopRunning`;
+  - the lookups `model_getMeshJoint`, `anim_getJointMatrix` and `resref_get`, as `res_find`
+    and `model_getBounds` already were;
+  - `libc_sprintf`, answered by rendering the format.
+- `MAX_STEPS` is 400 M per call. A boss's death builds items with the real C string
+  routines, and 4 M steps was not enough. That was a budget, not an unexecuted body.
+
+### 6.3 Results
+
+`python3 -u tools/probe_full_placement.py --pool --class … [--ticks N] [--hit-every 25]
+[--serial s] [--type T] [--placement native] [--all]`. The log is
+`local/probe/full-placement-r3.txt` (untracked). In every row there was no STOP and no
+unexecuted body, with `--all` too.
+
+| Class | Run | States entered (frame:state) | End |
+|---|---|---|---|
+| Skeleton (kind 1), serial 1 or 31 | idle, 3,000 ticks | 0:0, 121:1, 123:3 | still chasing at 3,000 (see 6.4) |
+| Skeleton, native placement | idle, 3,000 | 0:0, 2:3 | still chasing |
+| SkeletonBow (kind 4) | idle, 3,000 | 0:0, 121:1, 123:3, 156:8, then 3/8 every 20 and 7 frames | no stop |
+| Skeleton, serial 1 | hit every 25 | 25:3, 99:0x12, 100:3, 199:0x12, 200:3, **299:0x14** | death; shatter (17 bone props), the bonechip loot, then the delete |
+| Skeleton, serial 31 | hit every 25 | 32:3, 99/199/274:0x12, **299:0x14** | death, as above |
+| SkeletonBow | hit every 25 | 3/8 with 0x12 on hits, **0x14** at 299 | death, as above |
+| AntQueen | idle, 3,000 | as round 2 (0, 1, 3, 8/9, 0x17, 0x18, 3/6) | no stop |
+| AntQueen | hit every 25 | flinches 24 and 174, **299:0x14** | death: boss loot (items built through `difftest_items` bodies, 3 PhProps and 3 gold piles), 16 gut chunks earlier; 300 ticks of state 0x14 |
+| Soul, both placements | idle, 3,000 | 0/1 alternating (391:0, 513:1, …) | no stop |
+| Soul | hit every 25 | 0/1 | no stop: a player's hit is not a Demon's |
+
+Answer, round 3: on the round-5 placement, the original AntQueen, Skeleton (melee and bow)
+and Soul run the default Full fight, idle for 3,000 ticks and attacked to their deaths,
+through executed bodies and services only.
+
+### 6.4 Limits found this round
+
+- **The idle Skeleton never closes in.** Its states 1 and 3 walk by root motion from the
+  clip, and the probe's clip clock has none (§5). A melee Skeleton never reaches its swing
+  (state 6) or block (0x11) here. Those arms are executed (`skeleton-run.md`), but the probe
+  does not show when the native would reach them.
+- **The bow never releases.** State 8's release waits for event bit 0 of
+  `Creature_stepAnim`, and the clip clock raises no events. No arrow block (`0xb0`, `0x74`,
+  `0x1c8`) is asked for. The release arm and its projectile calls are executed by
+  `difftest_skeleton_run`. The arrow constructors run there as recording stubs, and are
+  executed elsewhere (`skeleton-run.md` §8).
+- §3.1's "frame 32 (ready tick 33) with serial 31" does not reproduce. With serials 30–32
+  the probe's Skeleton first enters state 3 at frame 123, after the idle timer. The native's
+  tick-33 figure was measured with its own placement and timing; it is not this probe's.
+- The objects the pool hands out never run. Each new object would need its own run body
+  for that: `GutChunk_run` (on `PhProp_run`, about 890 instructions of rigid-body physics),
+  the bone props' `PhProp_run`, `Gold_run`, and the arrows.
+
+### 6.5 What is still missing, ranked
+
+Nothing on this placement stops the probe. Ranked by when the native could reach it:
+
+| # | Body | Address | Reached |
+|---|---|---|---|
+| 1 | `GutChunk_run` and `PhProp_run` (gut chunks, bone props) | `0x1edb18`, `0x155fcc` | every frame after the first bleeding hit or shatter; own draws only, plus decals and particles |
+| 2 | `Gold_run`, `Gold_onTouch`; the item props' run and pickup | `0x157b58`, `0x157a9c` | after a death, while the loot lies |
+| 3 | The arrows' and `MissileWeapon`'s runs | — | after a bow release |
+| 4 | Holder slots 18–24 (draw, per-frame update, save/load) and Weapon2's slots; slot 21 stays *recorded* | — | every Skeleton tick (slot 21) |
+| 5 | `creature_getAttachMatrix0`, `model_getAttachMatrix` | `0x287940`, `0x1795f8` | a Soul held by its owner (Minion), state 0x1d |
+| 6 | `AntWave_ctor` and the AntWave object | `0x238654` | AntQueen state 0x19, which nothing requests |
+| 7 | The touch dispatch and the Frost Armor carrier's burn tick (§4 #10) | — | potion 1 on a player |
