@@ -225,7 +225,7 @@ unexecuted body, with `--all` too.
 | Skeleton (kind 1), serial 1 or 31 | idle, 3,000 ticks | 0:0, 121:1, 123:3 | still chasing at 3,000 (see 6.4) |
 | Skeleton, native placement | idle, 3,000 | 0:0, 2:3 | still chasing |
 | SkeletonBow (kind 4) | idle, 3,000 | 0:0, 121:1, 123:3, 156:8, then 3/8 every 20 and 7 frames | no stop |
-| Skeleton, serial 1 | hit every 25 | 25:3, 99:0x12, 100:3, 199:0x12, 200:3, **299:0x14** | death; shatter (17 bone props), the bonechip loot, then the delete |
+| Skeleton, serial 1 | hit every 25 | 25:3, 99:0x12, 100:3, 199:0x12, 200:3, **299:0x14** | death: shatter and the bonechip loot (17 PhProp blocks of 0x248 between them, one gold pile of 0xc0), then the delete |
 | Skeleton, serial 31 | hit every 25 | 32:3, 99/199/274:0x12, **299:0x14** | death, as above |
 | SkeletonBow | hit every 25 | 3/8 with 0x12 on hits, **0x14** at 299 | death, as above |
 | AntQueen | idle, 3,000 | as round 2 (0, 1, 3, 8/9, 0x17, 0x18, 3/6) | no stop |
