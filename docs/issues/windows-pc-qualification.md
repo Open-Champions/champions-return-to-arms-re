@@ -18,6 +18,10 @@ release or a completed campaign.
   `a460538b8a0463c4be76aea436a538c1c2fd9f779be207510f94d6561ed200e3`.
 - Input-fixed window executable SHA-256:
   `ec4ad87a48651bca44fc70bfb545b198dd82901bb0aee736480869d4065e5256`.
+- Subsequent diagnostic-only GS counter build, window executable SHA-256:
+  `2533bca8ec77c73a4127c5edd2951246020f247a49ab2987035b621f05fb86f4`.
+  This build repeats the full arithmetic/PNG/boot/62-input receipt below; earlier
+  gameplay and network observations retain the input-fixed build identity above.
 - Generated game code, original data, executable binaries, saves, screenshots and
   raw logs remain private. Only authored changes and summarized receipts are contributed.
 
@@ -49,6 +53,7 @@ Build with the existing installer from your own supported disc. Then, on Windows
 
 ```powershell
 python tools/recomp/app/win/tests/run.py --cxx C:/toolchains/bin/x86_64-w64-mingw32-clang++.exe
+python tools/recomp/render/tests/run.py --cxx C:/toolchains/bin/x86_64-w64-mingw32-clang++.exe
 python tools/recomp/app/win/qualify.py --disc C:/private/return-to-arms.iso
 python -m unittest discover -s tools -p "test_*.py"
 ```
@@ -69,6 +74,8 @@ are recorded and checked again after execution. Raw output must remain local.
 | VU0 boot receipt | 466,083 calls, 26,111,361 instructions |
 | Rebuilt application's software inputs | 62 cases passed, held state and neutral release |
 | Raw XInput conversion, separate production harness | 39 cases passed under FE_TOWARDZERO |
+| GS transfer diagnostics and pending-upload order | 54 authored checks, zero failures |
+| Recorded renderer replay | 3,011 completed frames with identical draw/texture/resource checksums |
 | Earlier visible baseline session | 461.219 seconds, 59.8 pictures/s at 1280x960, clean exit |
 | Earlier visible sound-device session | WASAPI, 460.43 seconds taken, no request gaps above 30 ms |
 
@@ -102,6 +109,37 @@ and awarded 67 XP. The matched no-cast route left the target at 28.7678 HP with 
 XP and the hero died. This verifies an actual offensive outcome, rather than only
 a casting animation.
 
+**Ran on the input-fixed native executable, seven paired classes:** Barbarian,
+Cleric, Shadowknight, Ranger, Wizard, Berserker and Shaman each killed an initial
+kobold and earned 67 XP from a normal level-one character. Cleric used starting
+Holy Strike, Wizard Shock of Frost and Shaman Poison Bolt; the other four used
+starting weapons, including the Ranger bow. Each matched no-attack control earned
+zero XP and left its target alive. Each pair's pre-combat 32 MiB snapshot matched
+byte for byte. All seven attacking characters stayed above zero HP throughout the
+combat segment, including a minimum of 1.748 HP for the Ranger.
+
+These runs initialized blank cards, used ordinary creation/dialogue/portal/checkpoint
+and load menus, then used starting health/mana potions through normal controls.
+They pinned the CPU-counter reads at `0x3229f0` and `0x322a00` to repeat the initial
+random seed; they did not write health, mana, position, XP, levels, point pools,
+skill ranks, enemy HP or inventory. This is headless automated combat evidence,
+not physical controller or rendered/audio proof. Each character remained level one;
+a fully natural earned first level and later mission completion remain unqualified.
+
+**Ran a normal earned-XP persistence follow-up:** a Cleric killed the initial
+kobold, earned 67 XP, saved at the checkpoint, confirmed overwrite with Square and
+loaded that save. Three fresh corrected trials wrote the same 310,392-byte save;
+XP remained 67 and the defeated enemy remained dead. Two independent continuations
+also recalled to the hub and returned to `blood1`, retaining 67 XP and ending alive
+at 20.9424 and 20.9039 HP. No XP, health, inventory or position writes were used.
+
+Earlier overwrite attempts pressed Cross while the overwrite screen required Square;
+they wrote no new checkpoint and correctly loaded the older zero-XP save. This was
+a test-input error, not an established persistence defect. Load readiness now witnesses
+the actual card-transfer busy-to-idle transaction, idle card state and a valid live
+player before issuing further controls. Pause clearing alone occurs before the new
+player exists and is insufficient for this same-level load.
+
 **Ran with explicitly prepared level 25, pending-level state and points:** all seven classes spent points in the
 actual skill menus; each learned an active skill through the menu. No skill-rank or
 binding writes were used. A prepared low-health cleric's learned healing spell
@@ -127,10 +165,29 @@ sweep, not 111 completed missions. The audit found 108 distinct pixel images.
 Four names share identical world/object payloads, explaining that duplicate group.
 
 All sweep runs reported zero unimplemented VU1 instructions and zero unknown GS
-registers. Other counters remain unresolved: `fire4` recorded 36 unhandled GS-memory
-transfers and 72 draws without a texture; `torment0` and `tormenta` recorded 261
-and 219 such draws, compared with the hub run's total of 69. These totals include
-boot and do not isolate the final frame's visual defect.
+registers. The original `fire4` sweep reported 36 unsupported GS-memory transfers.
+A later recording reproduces 36 in the same-length segment and 63 over the longer
+capture; every event has zero width and height. Empty rectangles move no pixels,
+consistent with the bounded pixel loops in the [pinned PCSX2 implementation](https://github.com/PCSX2/pcsx2/blob/5b6e6e23eba403b589495c1abf8266eb1309a5b1/pcsx2/GS/GSState.cpp#L3057).
+The correction changes only the unsupported-transfer counter guard. It preserves
+all original upload flushes and command order; a pending-upload fixture specifically
+protects that ordering. Nonempty unsupported transfers are still counted.
+
+The 54 authored GIF-packet checks pass. CPU replay of the same private recording
+leaves all 3,011 completed frame checksums identical, including vertices/fog, complete
+draw commands, uploaded RGBA, target lifecycle and display rectangle/aspect. Nonempty
+copy commands stay at 4,537 while skipped transfers change from 63 to zero. An actual
+rebuilt-app `fire4` smoke also completes: 4,843 surface copies, zero skipped transfers,
+zero unimplemented VU1 instructions/unknown registers, and an inspected 960x720 image.
+This is a diagnostic correction, not a heat-haze or console-image fidelity fix.
+
+Missing-texture fidelity remains unresolved: the original `fire4`, `torment0` and
+`tormenta` runs reported 72, 261 and 219 draws without a texture, respectively, against
+69 accumulated during boot. The new trace isolates Torment's settled issue to 1x1
+indexed strips with a palette upload but no uploaded image at the sampled address.
+The current renderer does not retain general GS video memory across image sets.
+No assumed palette/index fallback was added; the expected retained texel still needs
+reference evidence. These state counters are not missing-pixel counts.
 
 Inspected captures show textured hub, ice, fire and stone-platform scenes. Forced
 offline entry into three PvP arenas instead leaves the player at Z=-100000; longer
@@ -178,12 +235,25 @@ python -B tools/recomp/net2/n2party.py local/pc-relay --players 2 --kind window 
 Use fresh output directories for independent trials. Both commands own a temporary
 loopback service and fresh individual cards, and do not contact public players.
 
+**Ran a further natural two-player mission round trip:** both characters walked
+from the hub spawn; ordinary dialogue unlocked the mission for both. The host's
+portal interaction loaded `blood1` on both clients. A normal recall consumed the
+host's starting stack from 2 to 1 and returned both players to the hub. The run
+matched all 2,768 shared confirmed frames, including quest availability, positions,
+HP, XP, seed/hash and recall stacks, with zero out-of-sync or dropped-player flags.
+Both scripts completed, the driver exited zero and all owned test processes stopped.
+The clients had fresh separate cards; this continuation used no gameplay memory
+writes, direct calls, teleports or level/inventory fixtures. Body-collision-aware
+walking paths and read-only frame/coordinate conditions drove ordinary pad inputs.
+This establishes local mission entry and recall; co-op combat, checkpoint persistence,
+mission completion, disconnect/rejoin and cross-machine play remain unqualified.
+
 This uses the existing native rendezvous direct-launch integration: it prepares
 frontend/launch globals and calls the existing player-select and game-launch paths.
 Character-menu selection and subsequent play are controller-scripted; there are no
 rig `poke`/`call` commands or level/stat/inventory fixtures in these trials.
 It does not test the original online menu flow, internet connectivity, different
-PCs, multiplayer mission transitions or long-session stability.
+PCs or long-session stability.
 
 ## Remaining qualification
 
