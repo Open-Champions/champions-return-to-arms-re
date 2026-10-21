@@ -26,3 +26,13 @@ The original also multiplies the converted integer by the single-precision
 The arena family filters run constructor calls during their setup and later
 lifecycle calls. The scope is the individual executed bodies with the listed
 call-outs. It does not establish complete level-load or retail play behavior.
+# Weapon holder slot 1
+
+The two executed bodies at 0x11afb0 and 0x11bc18 update the embedded holder
+hand bytes. The base holder accepts hand 1: it stores the low entry byte at
++0x08 and sets/clears flag bit 0 at +0x04 according to whether the entry is
+nonzero. The shield holder additionally accepts hand 2, storing at +0x98 and
+setting/clearing flag bit 1. Unsupported hands return 1 without writes. The
+return on a supported hand is the new flag byte. `tools/difftest_holder_attach.py`
+compared each body with this reference model on 300 authored cases for each of
+seeds 20973 and 7, with zero differences.
