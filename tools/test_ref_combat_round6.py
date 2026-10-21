@@ -184,6 +184,14 @@ class Round6Test(unittest.TestCase):
         self.assertEqual(model.calls[1][1][0], R6.FMT_ICE)
         self.assertEqual(model.calls[2][1][0], 8)
 
+    def test_pustule_at_the_launch_limit_destroys_itself(self):
+        mem = memory()
+        plant(mem, OBJ)
+        mem.poke(OBJ + 0x64, 4, 301)
+        model = R6.Model(mem, Callbacks())
+        model.pustule_run(OBJ)
+        self.assertEqual(names(model), ['Creature.v1'])
+
     def test_smoke_far_from_the_view_does_not_step(self):
         mem = memory()
         model = R6.Model(mem, Callbacks(near=0))

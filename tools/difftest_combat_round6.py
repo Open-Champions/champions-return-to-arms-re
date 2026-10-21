@@ -39,6 +39,7 @@ Ext = RC.Ext
 OPTIONS = {'seed': 20973, 'filter': None}
 
 RAND, END = 0x1509D0, 0x2DA928
+COS, SIN = 0x166630, 0x1666E0
 FN_DTOR, FN_ENEMY = 0x3E0100, 0x3E0120
 FN_STAT10, FN_STAT13 = 0x3E0140, 0x3E0160
 
@@ -48,6 +49,7 @@ ENTRIES = {
     'multifireHit': (0x2DA610, 'ii', 'multifire_on_hit', ((0x2DA610, 0x2DA928),)),
     'multifireEnd': (0x2DA928, 'ii', 'multifire_end', ((0x2DA928, 0x2DAA4C),)),
     'smokeGen': (0x31C898, 'i', 'smoke_gen_run', ((0x31C898, 0x31CAC4),)),
+    'pustule': (0x30BDE0, 'i', 'pustule_run', ((0x30BDE0, 0x30C4AC),)),
 }
 FOLLOW = {
     'poisonGas': {RAND},
@@ -55,6 +57,7 @@ FOLLOW = {
     'multifireHit': {RAND, END},
     'multifireEnd': {RAND},
     'smokeGen': set(),
+    'pustule': {RAND, COS, SIN},
 }
 EXTS = {
     'particle_spawn': Ext(0x18F3F8, 'pvv', 1, 'n'),
@@ -67,6 +70,8 @@ EXTS = {
     'trail_release': Ext(0x192800, 'p', 0, 'n'),
     'res_find': Ext(0x17365C, 'ps', 0, 'i'),
     'sound_playOnObject': Ext(0x214230, 'pp', 1, 'n'),
+    'sound_playAtPos': Ext(0x214428, 'pv', 1, 'n'),
+    'terrain_height': Ext(0x183820, 'pv', 1, 'f'),
     'isNearView': Ext(0x1E77C0, 'p', 1, 'i'),
     'SmokeGen_stepParticles': Ext(0x31CAC8, 'p', 0, 'n'),
     'Creature.v1': Ext(FN_DTOR, 'ii', 0, 'n'),
@@ -112,6 +117,8 @@ class World:
         self.corpse = emu.alloc(0x80)
         self.bolt = emu.alloc(0x90)
         self.smoke = emu.alloc(0x500)
+        self.pustule = emu.alloc(0x180)
+        self.world_word = emu.alloc(0x10)
         self.skill = emu.alloc(0x80)
         self.skill_vt = emu.alloc(0x80)
         self.obj_vt = emu.alloc(0x20)
@@ -133,6 +140,7 @@ class World:
         self.give_block = True
         self.near = True
         self.entry = 0xA10000
+        self.ground = f32(0.0)
 
     @staticmethod
     def _plant(mem, table, slot, fn):
@@ -158,6 +166,8 @@ class World:
             return Res(1 if self.near else 0)
         if name == 'res_find':
             return Res(self.entry)
+        if name == 'terrain_height':
+            return Res(f=self.ground)
         return Res(0)
 
 
@@ -223,7 +233,7 @@ class Rig:
             elif kind == 'D':
                 canon.append(desc_canon(mem, reg))
             elif kind == 's':
-                canon.append(('buf', self.buffers.get(reg, b'?')))
+                canon.append(('buf', self.buffers[reg]) if reg in self.buffers else reg)
             elif kind == 'n':
                 outs.append(reg)
             else:
@@ -250,6 +260,8 @@ class Rig:
                 for j, obj in enumerate(res.outs[0] if res.outs else ()):
                     emu.mem.w32(ptr + 4 * j, obj)
                 emu.mem.w32(ptr + 4 * len(res.outs[0] if res.outs else ()), 0)
+            if ext.ret == 'f':
+                emu.f[0] = res.f & M32
             return res.ret
         return stub
 
@@ -262,6 +274,8 @@ class Rig:
                 res = self.rig.world.respond(name, args, None, None)
                 if name == 'libc_sprintf':
                     return ('buf', res.outs[0])
+                if name == 'terrain_height':
+                    return res.f & M32
                 if res.outs:
                     return res.outs[0]
                 return res.ret & M32
@@ -379,6 +393,8 @@ def generate(rig, key, rng, kind):
         return _hit(w, mem, rng, kind)
     if key == 'multifireEnd':
         return _end(w, mem, rng, kind)
+    if key == 'pustule':
+        return _pustule(w, mem, rng, kind)
     return _smoke(w, mem, rng, kind)
 
 
@@ -593,6 +609,36 @@ def _smoke(w, mem, rng, kind):
     return (obj,)
 
 
+def _pustule(w, mem, rng, kind):
+    obj = w.pustule
+    _zero(mem, obj, 0x180)
+    mem.w32(obj + 0x48, w.obj_vt)
+    mem.w32(obj + 0x44, rng.getrandbits(32) or 1)
+    mem.w32(obj + 0x10, f32(1.0))
+    mem.w32(obj + 0x14, f32(2.0))
+    mem.w32(obj + 0x18, f32(10.0))
+    mem.w32(obj + 0x58, f32(0.25))
+    mem.w32(obj + 0x5C, f32(-0.25))
+    mem.w32(obj + 0x60, f32(-1.0))
+    mem.w32(obj + 0x54, f32(-100.0))
+    mem.w32(RC.G_WORLD, w.world_word)
+    w.ground = f32(1.5)
+    if kind == 'old':
+        mem.w32(obj + 0x64, 301)
+    elif kind == 'burst-done':
+        mem.w32(obj + 0x6C, 1)
+        mem.w32(obj + 0x64, 40)
+    elif kind == 'drops':
+        mem.w32(obj + 0x6C, 1)
+        mem.w32(obj + 0x64, 2)
+    elif kind == 'fall':
+        mem.w32(obj + 0x64, 4)
+    elif kind == 'land':
+        mem.w32(obj + 0x54, f32(100.0))
+        mem.w32(obj + 0x64, 1)
+    return (obj,)
+
+
 SCENARIOS = {
     'poisonGas': ('expire', 'idle', 'grow', 'reject', 'above', 'negative', 'no-owner', 'empty', 'skip', 'two'),
     'diseaseCorpse': ('empty', 'half', 'flags', 'spawn-then-stop', 'no-handle', 'pool-empty',
@@ -601,6 +647,7 @@ SCENARIOS = {
                      'player-slot', 'monster-no', 'monster-yes', 'monster-negative', 'already'),
     'multifireEnd': ('already', 'quiet', 'ice', 'stone'),
     'smokeGen': ('far', 'spent', 'negative', 'off-frame', 'empty', 'mixed'),
+    'pustule': ('old', 'burst-done', 'drops', 'fall', 'land'),
 }
 
 

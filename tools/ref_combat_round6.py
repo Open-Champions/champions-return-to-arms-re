@@ -47,12 +47,21 @@ F_1000 = 0x447A0000
 F_3 = 0x40400000
 SMOKE_FLAGS = 0x0100C040                        # lui 0x100 / ori 0xc040 at 0x31ca6c
 
+# Pustule_run 0x30bde0.  Definitions and the two sound words are immediates.
+PUS_FALL, PUS_DROP = 0x8E7548, 0x8E74F8
+PUS_LUMP, PUS_SOUND = 0x552328, 0x552388
+PUS_GRAVITY = 0xBE4CCAB3
+PUS_DROP_GRAVITY = 0xBEE1C9F7
+PUS_AGE = 0x420ECCFB                            # burst dies once the timer float exceeds this
+PUS_LIFE = 0x12D                                # 301: the launch timer destroys the blob
+
 MODELLED = {
     'poisonGasSpell_run': 0x1FD0F0,
     'DiseaseCorpse_run': 0x2CE4A4,
     'MultiFireProjectile_onHit': 0x2DA610,
     'MultiFireProjectile_end': 0x2DA928,
     'SmokeGen_run': 0x31C898,
+    'Pustule_run': 0x30BDE0,
 }
 
 
@@ -261,3 +270,70 @@ class Model(SA.Model):
             if flags & 1 or not (flags & 0x20):
                 continue
             self._apply(victim, obj, SMOKE_FLAGS, desc, damage, damage)
+
+    def pustule_run(self, obj):
+        """Pustule_run 0x30bde0 (blob).
+
+        A burst whose timer float is above 0x420eccfb, or any timer of 301 or more,
+        destroys the blob (slot 1 with 3).  Until the burst flag +0x6c is set the blob
+        falls: +0x60 gains 0xbe4ccab3, the position gains the velocity at +0x58, and
+        three particles (0x8e7548) are laid back along that step.  Reaching the floor
+        float +0x54 starts the burst: the timer is cleared, a sound is played at the
+        position, and ten drops are stored at +0x70 and +0xe8.  From then on, including
+        the burst tick, each drop moves by its velocity, its z velocity gains
+        0xbee1c9f7, and one particle (0x8e74f8) is spawned.  The timer then advances.
+        The blob's own generator is the only one drawn.
+        """
+        timer = s32(self.u32(obj + 0x64))
+        if self.u32(obj + 0x6C) and C.lt(PUS_AGE, C.from_int(timer)):
+            self.delete_self(obj)
+            return
+        if not timer < PUS_LIFE:
+            self.delete_self(obj)
+            return
+        if not self.u32(obj + 0x6C):
+            old = self.vec(obj + 0x10)
+            self.w32(obj + 0x60, C.add(self.u32(obj + 0x60), PUS_GRAVITY))
+            step = []
+            for j in range(3):
+                now = C.add(self.u32(obj + 0x10 + 4 * j), self.u32(obj + 0x58 + 4 * j))
+                self.w32(obj + 0x10 + 4 * j, now)
+                step.append(C.sub(old[j], now))
+            for _ in range(3):
+                share = C.mul(C.from_int(self.obj_rand(obj)), RC.F_2M16)
+                pos = self.vec(obj + 0x10)
+                point = tuple(C.add(pos[j], C.mul(step[j], share)) for j in range(3))
+                self.call('particle_spawn', PUS_FALL, point, (C.ZERO, C.ZERO, C.ZERO), C.ZERO)
+            if C.le(self.u32(obj + 0x18), self.u32(obj + 0x54)):
+                self.w32(obj + 0x64, 0)
+                self.w32(obj + 0x6C, 1)
+                entry = self.call('res_find', PUS_LUMP, PUS_SOUND)
+                self.call('sound_playAtPos', entry, self.vec(obj + 0x10), C.ONE)
+                base = self.vec(obj + 0x10)
+                ground = self.call('terrain_height', self.u32(RC.G_WORLD), self.vec(obj + 0x10), 0x41000000)
+                base = (base[0], base[1], C.add(ground, 0x41400000))
+                for i in range(10):
+                    radius = C.mul(C.from_int(self.obj_rand(obj)), RC.F_2M16)
+                    angle = self.obj_rand(obj)
+                    x = C.add(base[0], C.mul(C.mul(radius, C.cos16(angle)), 0x40C3693C))
+                    y = C.add(base[1], C.mul(C.mul(radius, C.sin16(angle)), 0x40C3693C))
+                    angle2 = self.obj_rand(obj)
+                    spin = C.mul(C.mul(C.from_int(self.obj_rand(obj)), RC.F_2M16), 0x3F49FB1E)
+                    vx = C.mul(C.mul(C.cos16(angle2), spin), 0x408DAF39)
+                    vy = C.mul(C.mul(C.sin16(angle2), spin), 0x408DAF39)
+                    self.wvec(obj + 0x70 + 12 * i, (x, y, base[2]))
+                    self.wvec(obj + 0xE8 + 12 * i, (vx, vy, C.mul(C.ONE, 0x408DAF39)))
+            if not self.u32(obj + 0x6C):
+                self.w32(obj + 0x64, (self.u32(obj + 0x64) + 1) & M32)
+                return
+        for i in range(10):
+            place, velocity = obj + 0x70 + 12 * i, obj + 0xE8 + 12 * i
+            for j in range(3):
+                self.w32(place + 4 * j, C.add(self.u32(place + 4 * j), self.u32(velocity + 4 * j)))
+            self.w32(velocity + 8, C.add(self.u32(velocity + 8), PUS_DROP_GRAVITY))
+            scale = C.mul(C.mul(C.from_int(self.obj_rand(obj)), RC.F_2M16), 0x40A729F7)
+            speed = tuple(C.mul(self.u32(velocity + 4 * j), scale) for j in range(3))
+            ball = self.obj_ball(obj)
+            point = tuple(C.add(C.mul(ball[j], 0x403FEE34), self.u32(place + 4 * j)) for j in range(3))
+            self.call('particle_spawn', PUS_DROP, point, speed, C.ZERO)
+        self.w32(obj + 0x64, (self.u32(obj + 0x64) + 1) & M32)
