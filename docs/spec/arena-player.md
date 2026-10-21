@@ -171,11 +171,10 @@ light draws twice in total, which section 7 does not include.
 
 ## 7. Tick and damage reuse
 
-`Player_run` `0x1a5030` has an executed reference (`tools/ref_player.py`,
-`tools/difftest_player.py`, `docs/spec/player-tick.md`). `Player_takeDamage`
-`0x1b5330` and `Player_processDamage` `0x1b2cc0` are executed in
-`docs/spec/combat-player-defence.md`. Those comparisons used authored player
-objects, not this constructor's output.
+A player built by this constructor chain then runs `Player_run`, `Player_takeDamage`
+and `Player_processDamage` against their executed models in
+`tools/difftest_arena_player_tick.py` (`docs/spec/arena-player-tick.md`): 1,500 ticks
+and 800 damage cases per seed, no mismatches.
 
 ## Limits
 
