@@ -18,6 +18,8 @@ Needs your own SLUS_209.73 (US v2.00).  Without it the script says so and exits 
                    a stand-in for the attacking player of the native smoke test
     --all          do not stop at the first unexecuted body: answer it with 0 and go on,
                    so the run lists every one it meets, with the tick of its first call
+    --pool         pool_new hands out zero-filled blocks (default: it refuses, so no effect
+                   object is built); the objects built in them do not run
 
 What it is
     A probe, not a comparison.  The original constructor and run function of ONE class run
@@ -67,7 +69,7 @@ def executed_bodies():
     names = ('ref_creature', 'ref_arena_monsters', 'ref_monsters_1', 'ref_combat_ctors',
              'ref_potion_ctors', 'ref_combat_round3', 'ref_combat_round4', 'ref_combat_round5',
              'ref_combat_round6', 'ref_skills_a', 'ref_skills_b', 'ref_skills_c',
-             'ref_combat_ctors2', 'ref_antqueen_run', 'ref_fire_touch')
+             'ref_combat_ctors2', 'ref_antqueen_run', 'ref_fire_touch', 'ref_phprop')
     for name in names:
         try:
             mod = importlib.import_module(name)
@@ -135,6 +137,9 @@ SERVICES = {
     'players_anyWithinRadius', 'player_speedScale',
     'isNearCameraFocus480',             # camera only; its callers are particle/effect code
     'obj_delete',                       # the deferred delete (docs/spec/object-system.md)
+    # the physics prop's rigid body and its bookkeeping (docs/spec/gut-chunk.md 9): the body's
+    # one draw is the cosmetic seed, not the shared one
+    'rigidbody_init', 'quat_fromMat3', 'quat_normalize', 'rigidbody_updateDerived', 'obj_stopRunning',
 }
 
 
@@ -143,6 +148,7 @@ PLACEMENTS = {
     'native': {'antqueen': (0, 140), 'skeleton': (70, 140), 'soul': (-60, 100)},
 }
 SKELIGHTS = (((80, 0), 0x8000), ((-40, 0), 0))
+POOL_LIMIT = 4000                       # blocks --pool hands out before refusing again
 FACING = 0xC000
 LEVEL = b'drunare'                      # any level but airhub (the Soul class tests that name)
 HP = 120.0
@@ -250,7 +256,15 @@ class World(DCT.World):
         return Res()
 
     def on_pool_new(self, args, view, rng):
-        return Res(0)                           # no effect objects: reported by the caller
+        """No block (the default), or with --pool a fresh zero-filled block as pool_new
+        hands out (docs/spec/object-system.md); the object built in it does not run."""
+        probe = self.probe
+        if not probe.pool or probe.pool_used >= POOL_LIMIT:
+            return Res(0)
+        probe.pool_used += 1
+        size = args[0] & M32
+        probe.blocks[size] = probe.blocks.get(size, 0) + 1
+        return Res(self.emu.alloc(max(size, 0x10)))
 
     def on_Creature_setStats(self, args, view, rng):
         c = args[0]
@@ -389,8 +403,9 @@ SERVICES -= RECORDED
 # The probe
 # ---------------------------------------------------------------------------------------
 class Probe:
-    def __init__(self, elf, kind, placement='round5', serial=0, stop_first=True, executed=None):
+    def __init__(self, elf, kind, placement='round5', serial=0, stop_first=True, executed=None, pool=False):
         self.kind, self.stop_first = kind, stop_first
+        self.pool, self.pool_used, self.blocks = pool, 0, {}
         self.executed = executed if executed is not None else executed_bodies()
         self.symbols = symbol_names()
         self.events, self.first_seen, self.defaulted, self.clips = [], {}, {}, {}
@@ -626,6 +641,8 @@ def report(probe):
             print('  %-10s %-40s first at frame %d (ready tick %d)' % (cls, name, tick, tick + 1))
     services = sorted(n for n, (_t, c) in probe.first_seen.items() if c == 'service')
     print('  services answered: %s' % ', '.join(services))
+    if probe.blocks:
+        print('  pool blocks handed out (size x count): %s' % ', '.join('%#x x%d' % kv for kv in sorted(probe.blocks.items())))
     if probe.defaulted:
         print('  answered 0 by default: %s' % ', '.join('%s x%d' % kv for kv in sorted(probe.defaulted.items())))
 
@@ -633,7 +650,7 @@ def report(probe):
 def main(argv):
     args = list(argv)
     elf, ticks, kinds, serial, placement, stop_first = None, 300, ('antqueen', 'skeleton', 'soul'), 0, 'round5', True
-    hit_every, hit_amount = 0, 10.0
+    hit_every, hit_amount, pool = 0, 10.0, False
     while args:
         a = args.pop(0)
         if a == '--ticks':
@@ -646,6 +663,8 @@ def main(argv):
             placement = args.pop(0)
         elif a == '--all':
             stop_first = False
+        elif a == '--pool':
+            pool = True
         elif a == '--hit-every':
             hit_every = int(args.pop(0), 0)
         elif a == '--hit-amount':
@@ -666,7 +685,7 @@ def main(argv):
     RC.C.set_fpu(DC.OPTIONS['fpu'])
     executed = executed_bodies()
     for kind in kinds:
-        probe = Probe(elf, kind, placement, serial, stop_first, executed)
+        probe = Probe(elf, kind, placement, serial, stop_first, executed, pool)
         probe.placement = placement
         probe.run(ticks, hit_every, hit_amount)
         report(probe)
