@@ -187,7 +187,7 @@ def scenario(world, rng, mem, case):
 
 def run(elf, seed, cases, tally):
     world = World.__new__(World)
-    real = set(D.EXECUTED.values())
+    real = {a for n, a in D.EXECUTED.items() if n not in D.EXECUTED_ELSEWHERE}
     rig = MiniRig(elf, real, STUBS, world)
     World.__init__(world, rig.emu, random.Random(seed))
     world.build()
@@ -252,7 +252,7 @@ def main(argv):
             print('FAIL  calls to addresses neither real nor stubbed: %s' % {hex(a): n for a, n in rig.unknown.items()})
             tally.bad.setdefault('unknown', []).append(str(rig.unknown))
     ok = tally.report() and 'unknown' not in tally.bad
-    names = {v: k for k, v in list(D.EXECUTED.items()) + list(D.EXECUTED_ELSEWHERE.items())}
+    names = {v: k for k, v in D.EXECUTED.items()}
     bodies = sorted((a, e) for a, e in D.BODY_END.items() if a != D.LOOT)
     lines = DW.coverage_lines(trace, rig.emu.mem, bodies, names)
     if loot:

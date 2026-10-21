@@ -66,9 +66,18 @@ SKILL_POINT_STEPS = ((6, 1), (0x10, 2), (0x1A, 3), (0x24, 4))
 
 EXECUTED = {'Skeleton_shatter': SHATTER, 'creature_bossRank': BOSS_RANK, 'player_getSkillRank': SKILL_RANK,
             'Player_slot39': PLAYER_SLOT39, 'player_giveExp': GIVE_EXP, 'anim_findTrack': FIND_TRACK}
-# executed by tools/difftest_items.py (ref_items.loot_generate_drops) and rerun for its
-# coverage by tools/difftest_combat_death.py --loot
-EXECUTED_ELSEWHERE = {'loot_generateDrops': LOOT}
+# Executed by tools/difftest_items.py against tools/ref_items.py (docs/spec/items.md):
+# loot_generateDrops (its 'loot' job, rerun here for the coverage) and what that job runs
+# for real underneath it; loot_spawnGold by the 'gold' job (Gold constructor 0x157668,
+# terrain and pool answered there).  Listed in EXECUTED so that the probe runs them.
+EXECUTED_ELSEWHERE = {
+    'loot_generateDrops': LOOT, 'loot_spawnGold': 0x100974,
+    'item_generateFromSpecialTable': 0x104758, 'item_generateWithAffixes': 0x104CA4,
+    'item_generateFlag35Entry': 0x106214, 'item_generateFlag45Entry': 0x106658,
+    'item_generateConsumable': 0x108590, 'level_monsterLevelTimes0_4': 0x1EBF20,
+    'level_monsterLevelTimesDifficulty': 0x1EBF70,
+}
+EXECUTED.update(EXECUTED_ELSEWHERE)
 BODY_END = {SHATTER: 0x2A815C, BOSS_RANK: 0x10DBD8, SKILL_RANK: 0x1BF398, PLAYER_SLOT39: 0x3C3B58,
             GIVE_EXP: 0x1D32E4, FIND_TRACK: 0x170DF8, LOOT: 0x101998}
 
