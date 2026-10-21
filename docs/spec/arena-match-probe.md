@@ -13,13 +13,20 @@ recipe-0 classes as Goblin (index 3), Mummy (index 1), and Scorpion (index 0).
 execute their original bodies. The original factory selects the pool size
 and constructor; the probe asserts both for each requested index. The
 **authored constructor fixture** returns a creature-shaped block with its
-original class vtable and known stats. Its AI tick does not run in this probe.
-Virtual slots 27 and 34 are recording stubs during construction; the world
+original class vtable and authored stats. Their scaled values are not asserted by this probe.
+Its AI tick does not run in this probe.
+Virtual slots 27 and 34 run their original bodies during construction; the world
 free-spot service supplies the requested point. The factory
 mapping was separately compared for all 30 names in
 `tools/difftest_monster_build.py`. The constructor fixture is distinct from
 the neutral constructor difftests in `docs/spec/arena-goblin.md` and
 `docs/spec/arena-mummy.md`.
+
+Each spawn now allocates its 0x18-byte SpellArena record. The probe checks
+the owner, vtable, and shared-seed draw against the documented spawn contract.
+The 0x590-byte player replacement at `arena_startWave` still returns null,
+and class constructors are fixtures; the resulting seed stream is therefore
+verified for this constructed probe, not for a complete real match.
 
 | Wave | Constructor fixtures | Original factory calls | Original spawn calls | Original scale calls | Indices |
 |---:|---:|---:|---:|---:|---|
@@ -42,8 +49,8 @@ original `Creature_takeDamage` `0x116638`, `Creature_processDamage` `0x110d30`,
 state filter `0x10a9c0`, and the Goblin/Mummy/Scorpion death set-state bodies
 execute. All nine objects reach state `0x14`; the world walk checks their
 death flag. The original task sees the empty wave and advances: wave 0 has
-2 objects, wave 1 has 3 more, and wave 2 has 4 more. Wave 2 is reached by frame
-1,687. The driver does **not** execute player input, an attack animation,
+2 objects, wave 1 has 3 more, and wave 2 has 4 more. The driver stops after
+1,687 frames when it kills wave 2's objects. It does **not** execute player input, an attack animation,
 collision, class AI, or the full constructors. It demonstrates arena flow and
 damage-to-death on authored objects; it cannot establish a live match or
 real-world timing.

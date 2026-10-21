@@ -1,4 +1,8 @@
 # area: arena — addresses named while working through docs/issues/arena-desync.md. Only addresses no other file names.
+003063fc	arena_prepareWave	resets live count, walks objects with arena_saveWaveVisit, copies live count to saved count; docs/spec/arena-match-core.md
+00306a28	arena_saveWaveVisit	classifies arena creatures for saved-pointer array; docs/spec/arena-match-core.md
+008e733e	g_arenaLiveCount	s16 live creature count during arena world walks; docs/spec/arena-match-core.md
+008e7340	g_arenaSavedCount	s16 saved creature pointer count at next wave; docs/spec/arena-match-core.md
 00198f64	cut_onVoiceDoneMsg	handler of game message id 0: increments g_cutVoiceDoneCount; registered by cut_registerNetMsg
 00198f7c	cut_regridHiddenCreature	per-object callback of cut_setup, first walk: a creature with inert bit 8 is linked back into the grid and gets inert bit 2, so the actor box query can find it
 00198fd0	cut_ungridHiddenCreature	per-object callback of cut_setup, second walk (call 0x19b3a4): a creature with inert bit 8 goes back off the grid and loses inert bit 2

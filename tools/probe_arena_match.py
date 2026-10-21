@@ -10,6 +10,7 @@ import argparse
 from collections import Counter
 
 import difftest_arena_modes as D
+import ref_monster_build as B
 from ref_core import ZERO
 
 
@@ -100,11 +101,12 @@ def install_factory_fixture(emu):
     """Follow original world_createObject/factory with constructor fixtures.
 
     The constructor fixture retains the original class vtable and gives scaling
-    known HP, damage, armour and experience values. Slot 34 and slot 27, which
+    authored HP, damage, armour and experience values. Slot 34 and slot 27, which
     need class resources, are recording stubs. The factory row is also compared
     independently by difftest_monster_build.py for all 30 arena names.
     """
     created = []
+    spells = []
     pending = {'index': None, 'block': None}
 
     def find_spot(e):
@@ -119,8 +121,15 @@ def install_factory_fixture(emu):
 
     def pool_new(e):
         size = e.r[4] & 0xFFFFFFFF
-        if pending['index'] is None or size == 0x18:
-            return 0  # no arena spell block in this constructed world
+        if size == 0x590 and e._fresh_call.site == 0x306030:
+            return 0  # startWave's player replacement is outside this creature fixture
+        if size == B.SPELL_SIZE and pending['index'] is None:
+            block = e.alloc(size)
+            spells.append((block, e.mem.u32(B.G_RAND_SEED)))
+            return block
+        if pending['index'] is None:
+            raise ValueError('unexpected pool_new size 0x%x at 0x%x outside factory' %
+                             (size, e._fresh_call.site))
         assert size == SIZES[pending['index']], (pending['index'], size)
         pending['block'] = e.alloc(size)
         return pending['block']
@@ -161,7 +170,18 @@ def install_factory_fixture(emu):
     emu.stub(POOL_NEW, function=pool_new)
     for constructor in CONSTRUCTORS.values():
         emu.stub(constructor, function=construct)
-    emu.stub(ADD_SPELL, ret=0)
+    def add_spell(e):
+        creature, spell = (e.r[4] & 0xFFFFFFFF, e.r[5] & 0xFFFFFFFF)
+        assert spells and spell == spells[-1][0], (creature, spell, spells)
+        block, old_seed = spells[-1]
+        new_seed = (old_seed * 0x19660D + 0x3C6EF35F) & 0xFFFFFFFF
+        assert e.mem.u32(B.G_RAND_SEED) == new_seed
+        assert e.mem.u32(block + 0xC) == creature
+        assert e.mem.u32(block + 0x10) == new_seed >> 16
+        assert e.mem.u32(block + 0x14) == B.VT_SPELL_ARENA
+        return 0
+
+    emu.stub(ADD_SPELL, function=add_spell)
     for table in VTABLES.values():
         for slot in (27, 34):
             emu.stub(emu.mem.u32(table + 8 * slot + 4), ret=0)

@@ -19,6 +19,6 @@ spawn count is: 4:11, 25:11, 16:9, 6:8, 3:6, 20:5, 11:4, 12:4, 15:4,
 minimum class set for the first recipe's waves 0–2, in that order of first use.
 
 **Verification:** `python3 tools/difftest_arena_modes.py
-/Users/syndicatemike/champions-re/SLUS_209.73 --quick --seed 20973` passed
+local/SLUS_209.73 --quick --seed 20973` passed
 302/302, including original `arena_startWave` calls compared with the wave model.
 This is function-level execution with a constructed test state, not a live match.

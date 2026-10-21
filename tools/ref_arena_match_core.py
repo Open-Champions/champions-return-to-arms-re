@@ -30,14 +30,14 @@ def scale_stats(fields, factors):
     the product. +0xe4/+0xd0/+0xd2/+0xd4 are signed halfwords, multiplied
     as floats then truncated toward zero.
     """
-    hp, armor, attack, damage, speed = factors
+    hp, armor, damage, attack, speed = factors
     return {
         0xE4: C.to_int(C.mul(C.from_int(s16(fields[0xE4])), armor)) & 0xFFFF,
         0x228: C.from_int(C.to_int(C.mul(fields[0x228], hp))),
         0x22C: C.from_int(C.to_int(C.mul(fields[0x22C], hp))),
-        0xD0: C.to_int(C.mul(C.from_int(s16(fields[0xD0])), attack)) & 0xFFFF,
-        0xD2: C.to_int(C.mul(C.from_int(s16(fields[0xD2])), attack)) & 0xFFFF,
-        0xD4: C.to_int(C.mul(C.from_int(s16(fields[0xD4])), damage)) & 0xFFFF,
+        0xD0: C.to_int(C.mul(C.from_int(s16(fields[0xD0])), damage)) & 0xFFFF,
+        0xD2: C.to_int(C.mul(C.from_int(s16(fields[0xD2])), damage)) & 0xFFFF,
+        0xD4: C.to_int(C.mul(C.from_int(s16(fields[0xD4])), attack)) & 0xFFFF,
         0xD8: C.from_int(C.to_int(C.mul(fields[0xD8], speed))),
     }
 
@@ -95,7 +95,7 @@ def restore_saved_player_record(saved):
 
 
 def player_respawn_body(local, network, pvp_a, placement_a, placement_b,
-                        old_object, new_object, max_hp):
+                        old_object, new_object, max_hp, old_object_slot1):
     """Original player_respawn wrapper, with constructor and world services as call-outs.
 
     Returns (call targets, direct stores, findFreeSpot range/radius or None). The
@@ -105,7 +105,7 @@ def player_respawn_body(local, network, pvp_a, placement_a, placement_b,
     calls = [0x13E150]
     if local:
         calls.append(0x1EB000)
-    calls += [0xF00004, 0x14FDB8]  # fixture's old-object virtual slot 1, pool_new
+    calls += [old_object_slot1, 0x14FDB8]  # old-object virtual slot 1, pool_new
     find = None
     if new_object:
         if placement_a != -1:

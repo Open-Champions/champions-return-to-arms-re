@@ -220,7 +220,7 @@ def test_player_respawn(path, seed):
                     emu.stub(0x14ACF8, function=find)
                     expected_calls, expected_stores, expected_find = R.player_respawn_body(
                         local, network, pvp_a, *placement, old, new,
-                        float_to_raw(100.0))
+                        float_to_raw(100.0), emu.mem.u32(vtable + 0xC))
                     emu.call(R.PLAYER_RESPAWN, 0, pos, 0, *placement)
                     targets = [call.target for call in emu.calls]
                     assert targets == expected_calls, (local, network, pvp_a, placement,
