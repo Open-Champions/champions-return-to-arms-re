@@ -77,7 +77,7 @@
 00284b68	Marr_deathEffects	(this, animEvents) from Marr_run state 0x14: stages +0x4a0 1-3 timed by +0x4a4; light, camera shake, particles from generator 0x404468, white screen rectangle, obj_delete
 002858ac	Marr_initParticleDefs	(1, 0xffff): particle definitions 0x8e3d30-0x8e3e70 used by Marr_deathEffects
 00285b10	Marr_staticInit	32-byte stub: 0x2858ac(1, 0xffff)
-00287940	creature_getAttachMatrix0	(creature, out mat34): 0x175330(scale +0xdc, model classDef+0xc, pos, facing, anim +0x114, attach index 0, out). Callers only Soul_draw 0x2a96a4, Soul_run 0x2aa748, Soul_setState 0x2ab0d8; located between Minion_setState and Tormentor_ctor, used by neither
+00287940	creature_getAttachMatrix0	(creature, out): model_getAttachWorldMatrix(+0xdc, (+0x24)->+0xc, pos, s16 +0x38, +0x114, 0); executed (difftest_attach_matrix, also inside Soul_run 0x1d)
 0028b91c	FallPlatform_findPathToGoal	(this, depth): marks +0x6a/+0x60, recurses through a random untriggered neighbour (156-unit box, own generator) until a `goal` platform is reached; +0x64 = frame on the path
 00296ddc	levelObjects_initParticleDefs	(1, 0xffff): particle definitions 0x5012e0-0x501750 and 0x8e3fc0-0x8e4420 used by FireTrail, Teleporter, Sparks, IceBall, SpiritAnchor and their neighbours
 00297768	levelObjects_staticInit	32-byte stub: 0x296ddc(1, 0xffff)
@@ -93,8 +93,8 @@
 002a3de0	Orc_severPart	only caller Orc_setState case 0x14 (parts 1-5): hides a model part, creates a GutChunk at the bone; parts 6/7 (drop a hand part as PhProp) are never passed
 002a4240	Orc_hasShield	Returns true when weapon-holder slot 15 (model entry of hand 2) is in 0x0f..0x17. Callers: Orc slot 12 (0x2a2f88) and Orc_setState (0x2a36dc). "Shield" is Inferred (same use as MaleDarkElf_hasShield); provable part: hand2EntryIn0f_17. Not a SeaMonster function
 002a59f0	Scorpion_severPart	only caller Scorpion_setState 0x2a5908 (case 0x14): sets model-variant bit 1<<n and creates a GutChunk; sits in the Skeleton address range but is not a Skeleton function
-002a7da0	Skeleton_hasShield	true when the hand-2 part (holder offset 0x7c, hand 2) is 0x60 or 0x62; only caller Skeleton slot 12
-002a7ef0	Skeleton_shatter	(this, group) only caller Skeleton_setState case 0x14 with group 8: fills static mask list 0x8e44c0, creates one PhProp (0x1556c0) per mask present in +0x220 and clears those bits
+002a7da0	Skeleton_hasShield	holder slot 15 (hand 2) answering 0x60 or 0x62 -> 1; no holder -> 0; only caller Skeleton slot 12. Executed: docs/spec/skeleton-run.md 6
+002a7ef0	Skeleton_shatter	(this, group): groups 1-5 and 8 (6, 7 empty) fill the mask list 0x8e44c0; for each mask present in +0x220 a pool_new(0x248) and PhProp_ctor2 with the 64-bit part bits and launch 0x107 on the stack; the bits are cleared even without a block. Executed: docs/spec/combat-death.md
 002a815c	Skeleton_findLeader	UNREFERENCED (no call, no data pointer): links this skeleton (+0x3c8) to the nearest other Skeleton within 120 that has no follower (+0x3cc); name describes the body only
 002a8378	Skeleton_followLeader	UNREFERENCED (no call, no data pointer): moves toward a point 48 behind/beside the skeleton linked at +0x3c8 at speed 50 and copies its facing; name describes the body only
 002a873c	Skeleton_chainReaches	only caller the unreferenced 0x2a815c: walks the +0x3c8 chain from one skeleton, 1 when it reaches the given one or a null

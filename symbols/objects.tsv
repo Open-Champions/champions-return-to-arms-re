@@ -47,7 +47,7 @@
 0014f120	obj_linkToGrid	first link; flag 0x2 objects go to the off-grid list; only caller the prediction-copy clone (0x13b58c) - GameObject_ctor links inline with the flags already zeroed
 0014f200	obj_delete	deferred delete: leaves the run list, joins the delete list 0x5db4e0; destroyed at the start of the next runObjects; 50 callers
 0014f248	obj_runEveryFrame	moves the run link (+4) to the active list 0x5db3a8; 155 callers
-0014f290	obj_stopRunning	removes the run link; 26 callers
+0014f290	obj_stopRunning	removes the run link; 26 callers (Prop_launch bit 0x80 unless +0x140 has 2; Soul_run 0x22 end); body not executed
 0014f2b8	obj_runEvery60	moves the run link to the next of the 60 slowest lists (round robin 0x4039fc); 76 callers
 0014f330	obj_runEvery15	moves the run link to the next of the 15 slow lists (round robin 0x403a00); 7 callers
 0014f3a8	world_flushDeleteList	destroys every object on the delete list (iterator with g_excludeMask); no caller and no stored pointer found - the flushes that run are inline copies in runObjects, world_loadRecords, world_deleteAllObjects
@@ -81,35 +81,35 @@
 00150900	mem_usedBytes	
 00150948	mem_printLumps	prints used blocks whose tag ends in .lmp
 00150e48	Projectile_ctor	(obj, Vec3 *pos, owner, classDef): flags |= 0x4081, radius 12, owner handle at +0x4c; 28 callers
-00150ee4	MissileWeapon_ctor	19 callers; body not read
-00151454	MissileWeapon_dtor	slot 1 of MissileWeapon; identified from the vtable, body not read
-0015153c	MissileWeapon_run	slot 4 of MissileWeapon; identified from the vtable, body not read
+00150ee4	MissileWeapon_ctor	(obj, kind, modelA, modelB, pos*, vel*, facing, owner; stack: launch, impact, dmin, dmax, wrating, iflags, attack, dflags, item); 19 callers; executed (difftest_combat_ranged, docs/spec/combat-projectiles.md 3)
+00151454	MissileWeapon_dtor	slot 1 of MissileWeapon: trail, light, handles +0x128, +0x124, +0xbc..+0x5c, +0x4c, then GameObject_dtor; executed (difftest_combat_ranged)
+0015153c	MissileWeapon_run	slot 4 of MissileWeapon: stuck follow, self-destroy on hit state +0xcc, obj_moveAndCollide, expiry +0xec; executed for kinds 0 and 3 (difftest_combat_ranged); no gravity; a stuck arrow has no expiry; executed chained from the real ctor (difftest_arrow_run)
 0015253c	MissileWeapon_draw	slot 5 of MissileWeapon; identified from the vtable, body not read
-00152a18	MissileWeapon_onTouch	slot 6 of MissileWeapon, inherited by playerProjectile; identified from the vtable, body not read
-00153314	MissileWeapon_slot17	slot 17 of MissileWeapon, inherited by LavaBomb, beetleProjectile, playerProjectile; identified from the vtable, body not read
+00152a18	MissileWeapon_onTouch	slot 6 of MissileWeapon, inherited by playerProjectile: hit state +0xcc (one victim per frame), owner enemy test, Penetrating Arrows (2 g_randSeed draws, victim list +0x124), stick (player owner only), deflection (1 draw), damage_apply with owner or self; executed (difftest_combat_ranged); stick and Penetrating Arrows need owner flag 0x40 (0x152ba0, 0x152c90): a monster's arrow never sticks; a deflection leaves +0xcc 0; executed chained on Skeleton arrows (difftest_arrow_run)
+00153314	MissileWeapon_nearestSamplePoint	slot 17 of MissileWeapon (this, creature), inherited by LavaBomb, beetleProjectile, playerProjectile: nearest sample point among those with weight >= 0.75 of the largest, 0 = none; executed (difftest_combat_ranged); was MissileWeapon_slot17
 00153514	AnimatedMissile_ctor	body not read
 001536e8	AnimatedMissile_run	slot 4 of AnimatedMissile; identified from the vtable, body not read
 00153900	AnimatedMissile_onTouch	slot 6 of AnimatedMissile; identified from the vtable, body not read
 001539fc	Prop_ctor	(obj, Vec3 *pos, angle): factory entry 'Prop'; flags |= 0x1809, radius 4
 00153ac0	Prop_ctorNamed	(obj, pos, lump, model, texture, partMask, propFlags, matrix): flags |= 0x1809; prop flag 2 -> runs every frame, 4 -> flag 0x1000
-00153c88	Prop_ctorRes	as Prop_ctorNamed with already-resolved resources; flags |= 0x5809
+00153c88	Prop_ctorRes	as Prop_ctorNamed with resolved entries, flags |= 0x5809; one shared draw (GameObject_ctor); executed docs/spec/phprop-run.md
 00153de8	Prop_ctorLaunch	(obj, pos, launchFlags): GameObject_ctor then Prop_launch
-00153e54	Prop_ctorNamedLaunch	(obj, pos, lump, model, texture, partMask, launchFlags): random facing from GameObject_rand, bounds from the model, then Prop_launch
+00153e54	Prop_ctorNamedLaunch	(obj, pos, lump, model, texture, part mask, launch): GameObject_ctor (ONE SHARED DRAW), table 0x511d58, names copied, model/texture by res_find, ONE OWN DRAW facing, centre of the unhidden bounds; launch bit 4 moves by the centre; then Prop_launch. Executed: docs/spec/gut-chunk.md 5
 00154028	Prop_ctor6	another Prop constructor; body not read
-001541a0	Prop_launch	(obj, launchFlags): flags |= 0x1809 (moves to grid B), random velocity from GameObject_rand by flag bits, lifetime +0x10e, runs every frame
-00154514	Prop_run	slot 4 of Prop, inherited by ItemProp; identified from the vtable, body not read
+001541a0	Prop_launch	(obj, launch): flags |= 0x1809, radius 4; velocity by launch bits 1/8/0x10/0x20/0x40 from own draws (later bits overwrite); life +0x10e 180 or 0x7fff; +0x140 bits; 0x80 stops it; option 0x44fe08 bit 0x100 damps. Executed: docs/spec/gut-chunk.md 6
+00154514	Prop_run	slot 4 of Prop and ItemProp: sweep and slide, gravity 26.999998/tick, bounce x0.4, roll x0.98, spin decay 10; life +0x10e: at 0 flag 1 + obj_stopRunning unless prop flag 2; < -60 sinks 0.1; < -300 slot 1; obj_delete when z+120 < first alive player's z. Executed: docs/spec/gold-run.md
 001548bc	Prop_draw	slot 5 of Prop, inherited by ParticleProp; identified from the vtable, body not read
 001549e8	ParticleProp_ctor	body not read
 00154a4c	ParticleProp_run	slot 4 of ParticleProp; identified from the vtable, body not read
-00154d10	PhProp_interactPrompt	slot 13 of PhProp, inherited by GutChunk, LooseIceChunk, PhIce; identified from the vtable, body not read
-00155020	PhProp_interact	slot 14 of PhProp, inherited by GutChunk, LooseIceChunk, PhIce; identified from the vtable, body not read
-00155110	PhProp_initPhysics	(obj, launchFlags): builds the rigid body from the model bounds, random spin from three GameObject_rand calls; 17 callers
+00154d10	PhProp_interactPrompt	slot 13: +0x104 = g_simFrame; "PickUp" + " " + item name + " x n" when count +0x14c >= 2; returns 1. Executed: docs/spec/gold-run.md
+00155020	PhProp_interact	slot 14 (prop, slot): item bit 39 -> tryPickup for every slot < g_numPlayers (own copies), else the slot; any taken -> slot 1 (prop, 3). Executed: docs/spec/gold-run.md
+00155110	PhProp_initPhysics	(obj, launch): rigidbody_init from the scaled bounds, velocities /60, spin from THREE OWN DRAWS (x2, x10 with launch 0x10 or 0x400), +0x22c = highest part bit, damping -0.1 (0x800) or -0.4. Executed: docs/spec/gut-chunk.md 7
 00155394	PhProp_ctor3	PhProp constructor variant; body not read
-001556c0	PhProp_ctor2	PhProp constructor variant used by GutChunk; body not read
-00155a0c	PhProp_ctor	(scale, obj, pos, lump, model, texture, partMask, launchFlags, itemRecord): with an item record it becomes an ItemPhProp (flag 0x100000, leaves grid B); 23 callers
+001556c0	PhProp_ctor2	(scale; obj, pos, facing, model, anim, lump, model name, texture; stack: 64-bit part bits, launch, item): the prop of one body part (Skeleton_shatter), placed by the joint matrix x rot(facing + 0x4000); one shared draw. Executed: docs/spec/gut-chunk.md 7a
+00155a0c	PhProp_ctor	(scale; obj, pos, lump, model, texture, part mask, launch, item record): Prop_ctorNamedLaunch, table 0x511ba8, empty item record at +0x148, flags |= 0x4000; an item makes it an item prop (+0x238 = 1, flags 0x100000, minus 0x800/0x4000); PhProp_initPhysics; item + launch & 0x19 -> one own draw and a swish sound. Executed: docs/spec/gut-chunk.md 4
 00155bdc	PhProp_ctor4	PhProp constructor variant; body not read
 00155dac	PhProp_ctorFromLevel	factory entry 'ItemPhProp' (0x248 bytes); body not read
-00155fcc	PhProp_run	slot 4 of PhProp, inherited by LooseIceChunk; identified from the vtable, body not read
+00155fcc	PhProp_run	slot 4 of PhProp (0x511ba8): water test every 8th frame, gravity, hull-point ground contact (impulse, push), rigidbody_integrate, terrain move/sweep, StaticFire when +0x23a=1; rest (life<=0 and still, or life<-220) builds Prop_ctorNamed/Prop_ctorRes/ItemProp_ctor3 (one shared draw) then obj_delete; obj_delete 120 under the first alive player; executed docs/spec/phprop-run.md
 00156db4	PhProp_draw	slot 5 of PhProp, inherited by LooseIceChunk, PhIce; identified from the vtable, body not read
 00156f6c	PhProp_saveState	slot 9 of PhProp, inherited by GutChunk, LooseIceChunk, PhIce; identified from the vtable, body not read
 00157020	PhProp_loadState	slot 8 of PhProp, inherited by GutChunk, LooseIceChunk, PhIce; identified from the vtable, body not read
@@ -118,12 +118,12 @@
 00157464	UserParamProp_interactPrompt	slot 13 of UserParamProp; identified from the vtable, body not read
 001574e8	UserParamProp_interact	slot 14 of UserParamProp; identified from the vtable, body not read
 00157530	UserParamProp_draw	slot 5 of UserParamProp; identified from the vtable, body not read
-00157668	Gold_ctor2	Gold constructor variant; 3 callers; body not read
+00157668	Gold_ctor2	(obj, pos, value): the gold pile: GameObject_ctor (ONE SHARED DRAW), table 0x511a88, +0x80 = value, flags |= 0x220c, clip resref 0x6e01b0 pushed with 0x204, runs every frame. Executed: docs/spec/gut-chunk.md 7b
 00157754	Gold_ctor	factory entry for class names starting with 'Gold' (0xc0 bytes)
 00157a6c	Gold_saveState	slot 9 of Gold; identified from the vtable, body not read
 00157a84	Gold_loadState	slot 8 of Gold; identified from the vtable, body not read
-00157a9c	Gold_onTouch	slot 6 of Gold; identified from the vtable, body not read
-00157b58	Gold_run	slot 4 of Gold; identified from the vtable, body not read
+00157a9c	Gold_onTouch	slot 6 (pile, toucher): toucher flags lack 0x20000 and have 0x40, countdown 0, amount +0x80 != 0 -> coin sound, hud_addGoldFloater(toucher+0x3c8, pos, amount), amount 0, obj_delete. Whole amount to one slot, no g_numPlayers, no draws. Executed: docs/spec/gold-run.md
+00157b58	Gold_run	slot 4 of Gold: countdown +0x4c (0x29) down one per tick; drop sound when +0x50 == g_simFrame-18; anim_advanceUnitSpeed(+0x58); clip end (+0x5e & 0x80) zeroes it and obj_stopRunning (else the pile stays on the run list); no draws. Executed: docs/spec/gold-run.md
 00157c04	Gold_draw	slot 5 of Gold; identified from the vtable, body not read
 0015806c	CosmeticPropAnim_ctor	factory entry 'CosmeticPropAnim' (0x98 bytes)
 001580e8	CosmeticPropAnim_ctorFlag	factory entry 'Flag' (0x98 bytes)
@@ -142,14 +142,14 @@
 00158d0c	charDirectional_LightD_ctor	factory entry
 00158d8c	Prop_saveState	slot 9 of Prop, inherited by ParticleProp; identified from the vtable, body not read
 00158f04	Prop_loadState	slot 8 of Prop, inherited by ParticleProp; identified from the vtable, body not read
-001590ec	ItemProp_ctor2	ItemProp constructor variant; 5 callers; body not read
-001592bc	ItemProp_ctor3	ItemProp constructor variant; body not read
+001590ec	ItemProp_ctor2	(obj, pos, item, launch): Prop_ctorNamedLaunch(mask -1, launch; all 7 callers pass 0) then record and flags as ctor3, +0x110 = mat34_setPosRotZ(pos, facing+0x4000); runs Prop_run. Executed: docs/spec/gold-run.md
+001592bc	ItemProp_ctor3	(obj, pos, item, matrix): the resting item: Prop_ctorNamed(..., "equipmnt.lmp", row of 0x3e9ce0, mask -1, prop flags 0) - one shared draw, never runs; table 0x511c38; record copied to +0x148; flags |= 0x102000 & ~0x1800 (& ~0x3000 with bit 39). Executed: docs/spec/gold-run.md, docs/spec/phprop-run.md
 00159458	ItemProp_ctor	factory entry 'ItemProp' (0x190 bytes)
 001596a4	ItemProp_saveState	slot 9 of ItemProp; identified from the vtable, body not read
 00159758	ItemProp_loadState	slot 8 of ItemProp; identified from the vtable, body not read
-00159870	ItemProp_interactPrompt	slot 13 of ItemProp; identified from the vtable, body not read
+00159870	ItemProp_interactPrompt	slot 13 of ItemProp; same as PhProp_interactPrompt. Executed: docs/spec/gold-run.md
 0015991c	ItemProp_draw	slot 5 of ItemProp; identified from the vtable, body not read
-00159b38	ItemProp_interact	slot 14 of ItemProp; identified from the vtable, body not read
+00159b38	ItemProp_interact	slot 14 of ItemProp; same instructions as PhProp_interact. Executed: docs/spec/gold-run.md
 00159c20	str_prefixDiffers	(s, prefix): 0 when s starts with prefix ignoring case; the factory's prefix test; 27 callers
 00159c94	world_objectFactory	(className, Vec3 *pos, angle, char **props): one long chain of name tests, each followed by pool_new(size) and a constructor; returns the object or 0. Table in docs/objects.md
 0015d9c8	world_saveFilter	(className): 1 for the class names listed at 0x403a68 (Lantern, Torch, Fire, Line, Blocker, ...): never written to a save and re-created from the level file instead

@@ -265,12 +265,12 @@
 003c1b90	WeaponObject_slot23	only WeaponObject uses it (vtable 0x50d010 slot 23), 52 bytes; forwards the call to slot 23 of the object at this+4 when that pointer is set
 003c1bd8	WeaponObject_slot24	only WeaponObject uses it (vtable 0x50d010 slot 24), 52 bytes; forwards the call to slot 24 of the object at this+4 when that pointer is set
 003c1c20	Weapon1_typeinfo	type-info getter (vtable entry 0) for Weapon1, base WeaponInterface, WeaponCommon; descriptor at 0x908100
-003c1d08	Weapon1_setFireWeapons	only Weapon1 uses it (vtable 0x50cf40 slot 2), 44 bytes (was Weapon1_slot2)
-003c1d38	Weapon1_slot3	only Weapon1 uses it (vtable 0x50cf40 slot 3), 44 bytes
-003c1d68	Weapon1_slot4	only Weapon1 uses it (vtable 0x50cf40 slot 4), 44 bytes
-003c1d98	Weapon1_slot5	only Weapon1 uses it (vtable 0x50cf40 slot 5), 44 bytes
-003c1dc8	Weapon1_slot6	only Weapon1 uses it (vtable 0x50cf40 slot 6), 44 bytes
-003c1df8	Weapon1_slot7	only Weapon1 uses it (vtable 0x50cf40 slot 7), 44 bytes
+003c1d08	Weapon1_setFireWeapons	slot 2 (hand): element setter, creature_buildElementDamage kind 1 (id 0x15) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c1d38	Weapon1_slot3	slot 3 (hand): element setter, creature_buildElementDamage kind 6 (id 0x1f) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c1d68	Weapon1_slot4	slot 4 (hand): element setter, creature_buildElementDamage kind 2 (id 0x16) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c1d98	Weapon1_slot5	slot 5 (hand): element setter, creature_buildElementDamage kind 3 (id 0x17) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c1dc8	Weapon1_slot6	slot 6 (hand): element setter, creature_buildElementDamage kind 4 (id 0x18) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c1df8	Weapon1_slot7	slot 7 (hand): element setter, creature_buildElementDamage kind 5 (id 0x26) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
 003c1e28	Weapon2_typeinfo	type-info getter (vtable entry 0) for Weapon2, base Weapon1; descriptor at 0x908120; also initialises Weapon1 inline
 003c1fc8	Weapon2_setFireWeapons	only Weapon2 uses it (vtable 0x50ce70 slot 2), 100 bytes (was Weapon2_slot2)
 003c2030	Weapon2_slot3	only Weapon2 uses it (vtable 0x50ce70 slot 3), 100 bytes
@@ -278,19 +278,19 @@
 003c2100	Weapon2_slot5	only Weapon2 uses it (vtable 0x50ce70 slot 5), 100 bytes
 003c2168	Weapon2_setShockWeapons	only Weapon2 uses it (vtable 0x50ce70 slot 6), 100 bytes (was Weapon2_slot6)
 003c21d0	Weapon2_slot7	only Weapon2 uses it (vtable 0x50ce70 slot 7), 100 bytes
-003c2238	Weapon2_setElement	only Weapon2 uses it (vtable 0x50ce70 slot 8), 116 bytes (was Weapon2_slot8)
+003c2238	Weapon2_setElement	slot 8 (hand, kind): hand 0/1 -> build +0x50, hand 0/2 -> build +0xe0 (hand 0 two shared draws). Executed: weapon-holder-slots.md 5.7 (was Weapon2_slot8)
 003c22b0	WeaponShield_typeinfo	type-info getter (vtable entry 0) for WeaponShield, base Weapon1; descriptor at 0x9080f0; also initialises Weapon1 inline
-003c23e0	WeaponShield_slot2	only WeaponShield uses it (vtable 0x50cda0 slot 2), 44 bytes
-003c2410	WeaponShield_slot3	only WeaponShield uses it (vtable 0x50cda0 slot 3), 44 bytes
-003c2440	WeaponShield_slot4	only WeaponShield uses it (vtable 0x50cda0 slot 4), 44 bytes
-003c2470	WeaponShield_slot5	only WeaponShield uses it (vtable 0x50cda0 slot 5), 44 bytes
-003c24a0	WeaponShield_slot6	only WeaponShield uses it (vtable 0x50cda0 slot 6), 44 bytes
-003c24d0	WeaponShield_slot7	only WeaponShield uses it (vtable 0x50cda0 slot 7), 44 bytes
-003c2500	WeaponShield_slot8	only WeaponShield uses it (vtable 0x50cda0 slot 8), 48 bytes
-003c2530	WeaponShield_slot9	only WeaponShield uses it (vtable 0x50cda0 slot 9), 48 bytes
-003c2560	WeaponShield_slot10	only WeaponShield uses it (vtable 0x50cda0 slot 10), 48 bytes
-003c2590	WeaponShield_slot15	only WeaponShield uses it (vtable 0x50cda0 slot 15), 20 bytes
-003c25c0	WeaponShield_slot16	only WeaponShield uses it (vtable 0x50cda0 slot 16), 52 bytes
+003c23e0	WeaponShield_slot2	WeaponShield slot 2 (hand): element setter, creature_buildElementDamage kind 1 (id 0x15) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c2410	WeaponShield_slot3	WeaponShield slot 3 (hand): element setter, kind 6 (id 0x1f) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c2440	WeaponShield_slot4	WeaponShield slot 4 (hand): element setter, kind 2 (id 0x16) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c2470	WeaponShield_slot5	slot 5 (hand): element setter kind 3 (id 0x17); one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c24a0	WeaponShield_slot6	slot 6 (hand): element setter kind 4 (id 0x18); one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c24d0	WeaponShield_slot7	slot 7 (hand): element setter kind 5 (id 0x26); one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c2500	WeaponShield_slot8	slot 8 (hand, kind): as Weapon1 slot 8. Executed: docs/spec/weapon-holder.md 3.4
+003c2530	WeaponShield_slot9	slot 9: as Weapon1. Executed: docs/spec/weapon-holder.md 3.4
+003c2560	WeaponShield_slot10	slot 10: as Weapon1. Executed: docs/spec/weapon-holder.md 3.4
+003c2590	WeaponShield_slot15	slot 15 -> part: hand 2 -> +0x98, hand 1 -> +8, else 0. Executed: docs/spec/weapon-holder.md 3.4
+003c25c0	WeaponShield_slot16	slot 16 -> element: hand 1 -> damageDesc_getElement (linked call), else 0. Executed: docs/spec/weapon-holder.md 3.4
 003c2608	Creature_typeinfo	type-info getter (vtable entry 0) for Creature, base GameObject; descriptor at 0x908130
 003c2688	Creature_default_slot27	shared by 4 classes at slot 27, e.g. AntWave, CdEyeball, StrongStancePhantom; stores its 16-bit argument at this+0x232
 003c2700	Creature_default_slot33	shared by 76 classes at slot 33, e.g. Agony, Amphian, Ant; 8 bytes; returns the float at this+0x3c0
@@ -316,17 +316,17 @@
 003c2c28	charDirectional_LightD_dtor	inline destructor of charDirectional_LightD (vtable 0x511e78 slot 1), 76 bytes
 003c2c90	charDirectional_LightD_typeinfo	type-info getter (vtable entry 0) for charDirectional_LightD, base GameObject; descriptor at 0x908730
 003c2ce0	WorldPart_typeinfo	type-info getter (vtable entry 0) for WorldPart, base GameObject; descriptor at 0x908620
-003c2d30	Prop_dtor	inline destructor of Prop (vtable 0x511d58 slot 1), 76 bytes
+003c2d30	Prop_dtor	slot 1 of Prop: the same code as PhProp_dtor; executed (difftest_prop_dtors)
 003c2d98	Prop_typeinfo	type-info getter (vtable entry 0) for Prop, base GameObject; descriptor at 0x908360
 003c2de8	ParticleProp_dtor	inline destructor of ParticleProp (vtable 0x511cc8 slot 1), 76 bytes
 003c2e50	ParticleProp_typeinfo	type-info getter (vtable entry 0) for ParticleProp, base Prop; descriptor at 0x908440; also initialises Prop inline
-003c2ed8	ItemProp_dtor	inline destructor of ItemProp (vtable 0x511c38 slot 1), 76 bytes
+003c2ed8	ItemProp_dtor	slot 1 of ItemProp: the same code as PhProp_dtor (Prop table 0x511d58); executed (difftest_prop_dtors)
 003c2f40	ItemProp_typeinfo	type-info getter (vtable entry 0) for ItemProp, base Prop; descriptor at 0x908390; also initialises Prop inline
-003c2fc8	PhProp_dtor	inline destructor of PhProp (vtable 0x511ba8 slot 1), 76 bytes
+003c2fc8	PhProp_dtor	slot 1 of PhProp: +0x48 = Prop table 0x511d58, GameObject_dtor(this, 0), bit 0: tail jump to pool_free; executed (difftest_prop_dtors)
 003c3030	PhProp_typeinfo	type-info getter (vtable entry 0) for PhProp, base Prop; descriptor at 0x9087d0; also initialises Prop inline
 003c30b8	PhIce_dtor	inline destructor of PhIce (vtable 0x511b18 slot 1), 76 bytes
 003c3120	PhIce_typeinfo	type-info getter (vtable entry 0) for PhIce, base PhProp; descriptor at 0x908420; also initialises Prop, PhProp inline
-003c31d8	Gold_dtor	inline destructor of Gold (vtable 0x511a88 slot 1), 92 bytes
+003c31d8	Gold_dtor	slot 1 of Gold: +0x48 = 0x511a88, AnimState_dtor(+0x58, 2), GameObject_dtor(this, 0), bit 0: pool_free; executed (difftest_prop_dtors)
 003c3250	Gold_typeinfo	type-info getter (vtable entry 0) for Gold, base GameObject; descriptor at 0x908470
 003c32a0	Container_dtor	inline destructor of Container (vtable 0x5119f8 slot 1), 76 bytes
 003c3308	Container_typeinfo	type-info getter (vtable entry 0) for Container, base GameObject; descriptor at 0x908140
@@ -408,7 +408,7 @@
 003c4c80	NPC_slot16	only NPC uses it (vtable 0x50f590 slot 16), 8 bytes; returns the word at this+0x428
 003c4c88	StrongStancePhantom_dtor	inline destructor of StrongStancePhantom (vtable 0x50f448 slot 1), 108 bytes
 003c4cf8	StrongStancePhantom_typeinfo	type-info getter (vtable entry 0) for StrongStancePhantom, base Creature; descriptor at 0x908430
-003c4d48	GutChunk_dtor	inline destructor of GutChunk (vtable 0x50f3b8 slot 1), 76 bytes
+003c4d48	GutChunk_dtor	slot 1 of GutChunk: the same code as PhProp_dtor (Prop table 0x511d58); executed (difftest_prop_dtors)
 003c4db0	GutChunk_typeinfo	type-info getter (vtable entry 0) for GutChunk, base PhProp; descriptor at 0x908260; also initialises Prop, PhProp inline
 003c4e68	LooseIceChunk_dtor	inline destructor of LooseIceChunk (vtable 0x50f328 slot 1), 76 bytes
 003c4ed0	LooseIceChunk_typeinfo	type-info getter (vtable entry 0) for LooseIceChunk, base PhProp; descriptor at 0x908660; also initialises Prop, PhProp inline
@@ -818,11 +818,11 @@
 003cdd40	SpellDiseaseEffect_typeinfo	type-info getter (vtable entry 0) for SpellDiseaseEffect, base Spell; descriptor at 0x909060
 003cdd90	SkillFireArrow_typeinfo	type-info getter (vtable entry 0) for SkillFireArrow, base Skill; descriptor at 0x909070
 003cdde0	SkillFireArrow_slot7	only SkillFireArrow uses it (vtable 0x518e70 slot 7), 36 bytes; returns the texture icheatarrow.tex from icons.lmp (same shape as Skill_default_slot7)
-003cde04	FireArrowProjectile_dtor	inline destructor of FireArrowProjectile (vtable 0x518de0 slot 1), 132 bytes
+003cde04	FireArrowProjectile_dtor	slot 1 (table 0x518de0): table, light_dtor(+0x70, 2), table 0x5120b8, handle_clear(+0x4c), GameObject_dtor(this, 0), bit 0: tail jump to pool_free 0x150470; executed (difftest_arrow_run, docs/spec/arrow-run.md 5.6)
 003cde88	FireArrowProjectile_typeinfo	type-info getter (vtable entry 0) for FireArrowProjectile, base Projectile; descriptor at 0x909080
 003cded8	SkillColdArrow_typeinfo	type-info getter (vtable entry 0) for SkillColdArrow, base Skill; descriptor at 0x9090a0
 003cdf28	SkillColdArrow_slot7	only SkillColdArrow uses it (vtable 0x518f88 slot 7), 36 bytes; returns the texture iccoldarrow.tex from icons.lmp (same shape as Skill_default_slot7)
-003cdf4c	ColdArrowProjectile_dtor	inline destructor of ColdArrowProjectile (vtable 0x518ef8 slot 1), 132 bytes
+003cdf4c	ColdArrowProjectile_dtor	slot 1 (table 0x518ef8): the same code as FireArrowProjectile_dtor; executed (difftest_arrow_run)
 003cdfd0	ColdArrowProjectile_typeinfo	type-info getter (vtable entry 0) for ColdArrowProjectile, base Projectile; descriptor at 0x909090
 003ce020	SkillPoisonArrow_typeinfo	type-info getter (vtable entry 0) for SkillPoisonArrow, base Skill; descriptor at 0x9090b0
 003ce070	SkillPoisonArrow_slot7	only SkillPoisonArrow uses it (vtable 0x5190a0 slot 7), 36 bytes; returns the texture icpoisonarrow.tex from icons.lmp (same shape as Skill_default_slot7)
@@ -834,7 +834,7 @@
 003ce248	MultiFireProjectile_typeinfo	type-info getter (vtable entry 0) for MultiFireProjectile, base Projectile; descriptor at 0x9090e0
 003ce298	SkillExplodeArrow_typeinfo	type-info getter (vtable entry 0) for SkillExplodeArrow, base Skill; descriptor at 0x909100
 003ce2e8	SkillExplodeArrow_slot7	only SkillExplodeArrow uses it (vtable 0x5192d0 slot 7), 36 bytes; returns the texture icexplodingarrow.tex from icons.lmp (same shape as Skill_default_slot7)
-003ce30c	ExplodeArrowProjectile_dtor	inline destructor of ExplodeArrowProjectile (vtable 0x519240 slot 1), 108 bytes
+003ce30c	ExplodeArrowProjectile_dtor	slot 1 (table 0x519240): no light; table 0x5120b8, handle_clear(+0x4c), GameObject_dtor(this, 0), bit 0: pool_free; executed (difftest_arrow_run)
 003ce378	ExplodeArrowProjectile_typeinfo	type-info getter (vtable entry 0) for ExplodeArrowProjectile, base Projectile; descriptor at 0x9090f0
 003ce3c8	SkillArchery_typeinfo	type-info getter (vtable entry 0) for SkillArchery, base Skill; descriptor at 0x909110
 003ce418	SpellFireFlares_typeinfo	type-info getter (vtable entry 0) for SpellFireFlares, base Spell; descriptor at 0x909120
