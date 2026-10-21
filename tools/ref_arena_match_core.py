@@ -9,6 +9,7 @@ SCALE_STATS = 0x1185D8
 EMPTY_WAVE_VISIT = 0x3069E8
 NEXT_WAVE = 0x305E9C
 PREPARE_WAVE = 0x3063FC
+SAVE_WAVE_VISIT = 0x306A28
 SHUTDOWN = 0x304FB0
 LIVE_COUNT = 0x8E733E
 SAVED_COUNT = 0x8E7340
@@ -45,9 +46,25 @@ def empty_wave_visit(flags, state, count):
     return (count + 1) & 0xFFFF
 
 
-def prepare_wave():
-    """0x3063fc: clear counts after an effect and walk the arena objects."""
-    return ((0x19F018, None), (0x14A610, 0x306A28)), {LIVE_COUNT: 0, SAVED_COUNT: 0}
+def save_wave_visit(flags, state, count):
+    """0x306a28: classify an arena creature for the saved pointer array.
+
+    Returns (kind, new count). The array stores object pointers at 4*count before
+    increment. A dead or hidden creature is destroyed through virtual slot 1.
+    """
+    if not flags & 0x20:
+        return 'skip', count
+    if flags & 0x68 == 0x20 and s16(state) >= 0:
+        return 'save', (count + 1) & 0xFFFF
+    if flags & 0x40 and not flags & 0x08 and s16(state) >= 0:
+        return 'skip', count
+    return 'destroy', count
+
+
+def prepare_wave(live_after_walk=0):
+    """0x3063fc: reset live count, walk objects, copy the count to saved count."""
+    return ((0x19F018, None), (0x14A610, SAVE_WAVE_VISIT)), \
+        {LIVE_COUNT: 0, SAVED_COUNT: live_after_walk & 0xFFFF}
 
 
 def next_wave(increment):

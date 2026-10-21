@@ -3,7 +3,7 @@
 US `SLUS_209.73` v2.00. **Executed** in `tools/ee_emu.py` against
 `tools/ref_arena_match_core.py` with `tools/difftest_arena_match_core.py`,
 seeds 20973 and 7: 100 stat scales, 108 empty-wave visits, four next-wave
-calls and four shutdowns per seed; no mismatches. The tests construct state and
+calls, 32 saved-pointer visits and four shutdowns per seed; no mismatches. The tests construct state and
 stub outside services. They do not establish a live match.
 
 ## `Creature_scaleStats` 0x1185d8
@@ -36,11 +36,27 @@ four states and three starting counts.
 
 The body calls screen effect `0x322954` with 15, then preparation `0x3063fc`,
 then `arena_startWave` `0x305ed4` with its original argument. Preparation calls
-`0x19f018`, clears the live count `0x8e733e` and saved count `0x8e7340`,
-then walks objects through `0x14a610` with callback `0x306a28`.
+`0x19f018`, clears the live count `0x8e733e`, walks objects through `0x14a610`
+with callback `0x306a28`, then copies the resulting live count into the saved
+count `0x8e7340`. The test injects nonzero counts after the walk and verifies
+that copy.
 The difftest executes preparation inside nextWave. The screen effect, its
 `0x19f018` service, world walk and startWave are recording stubs; their own
 bodies are outside this comparison. Neither function draws the shared seed.
+
+### Saved monster pointer record
+
+The pointer at `0x50388c` is an array of four-byte creature pointers. The
+callback `0x306a28` uses signed halfword `0x8e733e` as the next index. A living
+non-player creature (flags +0xc masked by `0x68` equal `0x20`, signed halfword
++0x312 nonnegative) gets byte +0x231 set to `0xff`, moves off the grid through
+`obj_moveOffGrid` `0x14ef48`, and its pointer is stored at array[count]. The
+count increments with 16-bit wrap. An alive player is skipped. A hidden or dead
+creature calls its virtual slot 1 instead; this call was stubbed in the
+comparison. The callback's original body was executed for 32 combinations of
+flags, state and count per seed. Array bounds at a negative or excessive count
+are not established. The saved count at `0x8e7340` then controls the next
+`arena_startWave` reuse path.
 
 ## `arena_shutdown` 0x304fb0
 

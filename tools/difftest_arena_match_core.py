@@ -68,21 +68,56 @@ def test_empty_visit(path):
 
 def test_next(path):
     checked = 0
-    for increment in (0, 1, 2, 0xFFFF):
+    for increment, live in ((0, 0), (1, 3), (2, 7), (0xFFFF, 0)):
         emu = EE(path)
         emu.follow = {R.PREPARE_WAVE}
         emu.default_ret = 0
         emu.mem.w16(R.LIVE_COUNT, 7)
         emu.mem.w16(R.SAVED_COUNT, 9)
+        def walker(e):
+            e.mem.w16(R.LIVE_COUNT, live)
+            return 0
+        emu.stub(0x14A610, function=walker)
         emu.call(R.NEXT_WAVE, increment)
         expected_calls = [(0x322954, 15), (R.PREPARE_WAVE, None),
-                          (0x19F018, None), (0x14A610, 0x306A28),
+                          (0x19F018, None), (0x14A610, R.SAVE_WAVE_VISIT),
                           (0x305ED4, increment)]
         actual_calls = [(call.target, call.args[0] & M32 if want is not None else None)
                         for call, (_, want) in zip(emu.calls, expected_calls)]
         assert actual_calls == expected_calls and len(emu.calls) == len(expected_calls), (actual_calls, expected_calls)
-        assert writes(emu, {R.LIVE_COUNT, R.SAVED_COUNT}) == R.prepare_wave()[1]
+        assert emu.mem.u16(R.LIVE_COUNT) == live
+        assert emu.mem.u16(R.SAVED_COUNT) == live
         checked += 1
+    return checked
+
+
+def test_saved_record(path):
+    checked = 0
+    for flags in (0, 0x20, 0x21, 0x22, 0x28, 0x40, 0x60, 0x40020):
+        for state in (0, 0xFFFF):
+            for count in (0, 3):
+                emu = EE(path)
+                creature = emu.alloc(0x500)
+                table = emu.alloc(0x100)
+                vtable = emu.alloc(0x20)
+                dead_fn = 0xF00004
+                emu.mem.w32(creature + 0xC, flags)
+                emu.mem.w16(creature + 0x312, state)
+                emu.mem.w32(creature + 0x48, vtable)
+                emu.mem.w32(vtable + 0xC, dead_fn)
+                emu.mem.w32(0x50388C, table)
+                emu.mem.w16(R.LIVE_COUNT, count)
+                emu.follow = set()
+                emu.default_ret = 0
+                kind, new_count = R.save_wave_visit(flags, state, count)
+                emu.call(R.SAVE_WAVE_VISIT, creature)
+                assert emu.mem.u16(R.LIVE_COUNT) == new_count
+                assert emu.mem.u32(table + 4 * count) == (creature if kind == 'save' else 0)
+                assert emu.mem.u8(creature + 0x231) == (0xFF if kind == 'save' else 0)
+                targets = [call.target for call in emu.calls]
+                assert targets == ({'skip': [], 'save': [0x14EF48],
+                                    'destroy': [dead_fn]}[kind]), (flags, state, targets, kind)
+                checked += 1
     return checked
 
 
@@ -119,6 +154,7 @@ def main():
     for name, fn in (('scaleStats', lambda: test_scale(args.elf, rng)),
                      ('empty-wave visit', lambda: test_empty_visit(args.elf)),
                      ('nextWave', lambda: test_next(args.elf)),
+                     ('saved pointer record', lambda: test_saved_record(args.elf)),
                      ('shutdown', lambda: test_shutdown(args.elf))):
         print('%s: %d matched' % (name, fn()))
 
