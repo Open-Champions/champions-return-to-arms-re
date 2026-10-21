@@ -373,7 +373,8 @@ models always have a table; that case is not executed.
 
 ## 8. The resting prop's constructors
 
-*Executed* (all instructions of each).
+*Executed* (all instructions of each). `Prop_ctorNamed` and `ItemProp_ctor3` were also
+executed, independently, by `tools/difftest_gold.py` in the same round (`tools/ref_gold.py`).
 
 - **Prop_ctorNamed** `0x153ac0` (obj, position, lump, model, texture; t1 the 64-bit mask, t2
   the bits, t3 the 3×4 matrix):
