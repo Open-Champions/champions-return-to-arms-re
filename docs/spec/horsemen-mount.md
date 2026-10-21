@@ -380,3 +380,36 @@ picker, trampling, the dead mount's run-off.
 - The per-variant name the mount receives is registered by `GameObject_ctor`, a call-out in
   this test (Inferred from `docs/spec/object-system.md` 2.2 step 7); which script, if any,
   addresses a mount by that name was not looked for.
+
+## 11. What the native client should implement, ranked
+
+For open-champions-godot `native/` (state read on 2026-10-21 from the creature-stats
+worktree: `script_commands_objects.cpp` refuses the four rider records as "mounted Horsemen
+needs Nightmare_ctor"; `arena_monsters.cpp` already has the rider's mounted set-state and
+head from `tools/ref_arena_monsters.py`, and treats `Nightmare_ctor` as an external).
+
+1. **Account a rider record as two blocks and two shared draws** (section 1.1), even
+   while it stays refused: `pool_new(0x478)` then `pool_new(0x3d8)` (only when the first
+   succeeded), and two `GameObject_ctor` draws, rider first. Today the refused record
+   counts one block and one unmodelled draw, so the pool and the draw count after it are
+   short by one each. Small, and it keeps later pool exhaustion right.
+2. **`Nightmare_ctor` and the mounted tail of `Horsemen_ctor`** (sections 1.1, 2.3): this
+   alone turns the four records into built objects. It reuses what the native already has
+   (`Creature_ctor` with the property list, `Creature_setStats` from the object's own
+   generator, `creature_setDefEntryParams`), plus the two `handle_link`s, the direct
+   `Nightmare_setState(0)` (one own draw) and `Horsemen_setState(0x1b)`, in the order of
+   1.1. Test vectors: `tools/difftest_horsemen_mount.py` factory rows (section 9.2).
+3. **The mount's tick and set-state** (sections 3.2, 4, 5): `Nightmare_run`,
+   `Nightmare_setState` with the rider push table, slots 10 and 11, the charge-target picker
+   and `Creature_angleToTarget`. No shared-seed draws; every random choice is the mount's own
+   generator. Without it a built mount stands still and the rider never leaves 0x1b.
+4. **The lifecycle edges exactly as executed** (section 6): mount death → rider 0x23 through
+   the rider's own filter (including the stranded-rider outcome, which must not be
+   "fixed"), the dead mount's 100-tick run-off without collision and its deletion, the
+   rider's dismount clip and return to state 0. The tick order of the pair is still Unknown
+   (section 3): keep it a host decision that is reported, not assumed.
+5. **Presentation**: the seat transform (attach point 10 of the mount at facing·(−20)) times
+   the inverse of the rider's attach point 9 for the rider's model matrix, and the mount's
+   fade (section 7). Nothing in simulation reads these.
+6. **Leave refused**: a set-state 0x19 / 0x1a request has no known caller (section 6).
+   Implement the executed cases but do not invent a trigger for them.
