@@ -154,6 +154,9 @@ moves an entry to `g_goldPending[slot]` when `(frame − start) * 3 > 127` and t
 eighth of the pending amount into record +0xe4 each frame. The timing uses only the frame
 counter, so it is the same on every machine although the path is not.
 
+Screen geometry, the button that sends each message, the skill-rank cost and
+the save-file item index are `docs/menus.md`.
+
 ## How the pieces work
 
 ### Opening and closing the inventory
