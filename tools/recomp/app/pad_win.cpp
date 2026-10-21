@@ -1,6 +1,9 @@
 // pad_win.cpp - pad_host.h for Windows: game controllers through XInput.
 //
-// Written and compiled on a Mac with a cross-compiler; NOT RUN (docs/issues/native-windows.md).
+// Windows input mapping and motor lifecycle have isolated native regression coverage
+// (win/tests/run.py); local app and injected-route evidence is recorded in
+// docs/issues/windows-pc-qualification.md. Physical actuation and felt vibration are
+// separate checks; a synthetic pad never drives physical motors.
 //
 // XInput is what an Xbox controller speaks, and what Steam Input or DS4Windows make a
 // PlayStation controller speak; a PlayStation controller by itself is not seen here.  The
@@ -40,7 +43,10 @@ const float STICK_DEAD_ZONE = 0.15f;
 const float TRIGGER_PRESSED = 0.30f;
 
 typedef DWORD(WINAPI* GetState)(DWORD, XINPUT_STATE*);
+typedef DWORD(WINAPI* SetState)(DWORD, XINPUT_VIBRATION*);
 GetState g_get_state;
+SetState g_set_state;
+WORD g_left_motor = 0, g_right_motor = 0;
 void (*g_log)(const std::string&);
 std::mutex g_lock;
 int g_slot = -1;                        // the XInput slot that is port 1; -1: none
@@ -90,6 +96,21 @@ void from_xinput(const XINPUT_GAMEPAD& g, rta::PadState& state) {
 
 void say(const std::string& line) { if (g_log) g_log(line); }
 
+// g_lock held. Remember only successful commands; do not repeatedly write zero
+// while unfocused, or interfere with another application's controller use.
+void motors(uint8_t small, uint8_t large) {
+    WORD left = WORD(large) * 257u, right = small ? 65535u : 0u;
+    if (left == g_left_motor && right == g_right_motor) return;
+    if (!g_set_state || g_slot < 0) return;
+    XINPUT_VIBRATION vibration{left, right};
+    DWORD status = g_set_state((DWORD)g_slot, &vibration);
+    if (status == ERROR_SUCCESS) {
+        g_left_motor = left; g_right_motor = right;
+    } else if (status == ERROR_DEVICE_NOT_CONNECTED) {
+        g_left_motor = g_right_motor = 0;
+    }                                  // retain an outstanding command after a transient failure so a stop can retry
+}
+
 // with g_lock held: look through the slots for a controller
 void scan() {
     g_next_scan = GetTickCount64() + 1000;
@@ -121,7 +142,11 @@ void start(void (*log)(const std::string& line)) {
     for (const char* name : {"xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll"}) {
         if (HMODULE module = LoadLibraryA(name)) {
             g_get_state = (GetState)(void*)GetProcAddress(module, "XInputGetState");
-            if (g_get_state) { say(std::string("controllers: ") + name); break; }
+            if (g_get_state) {
+                g_set_state = (SetState)(void*)GetProcAddress(module, "XInputSetState");
+                say(std::string("controllers: ") + name);
+                break;
+            }
         }
     }
     if (!g_get_state) say("controllers: no XInput library on this machine; keyboard only");
@@ -131,6 +156,7 @@ void start(void (*log)(const std::string& line)) {
 bool read(rta::PadState& state) {
     std::lock_guard<std::mutex> hold(g_lock);
     if (g_test_attached) {
+        motors(0, 0);                  // retry a failed stop after synthetic takeover
         state.buttons = g_test_buttons;
         if (g_test_values[4] >= TRIGGER_PRESSED) state.buttons |= rta::PAD_L2;
         if (g_test_values[5] >= TRIGGER_PRESSED) state.buttons |= rta::PAD_R2;
@@ -145,15 +171,30 @@ bool read(rta::PadState& state) {
     XINPUT_STATE s;
     if (g_get_state((DWORD)g_slot, &s) != ERROR_SUCCESS) {
         say("controller detached: " + g_name);
+        motors(0, 0);
+        g_left_motor = g_right_motor = 0;
         g_slot = -1;
         g_name.clear();
         g_generation++;
         g_next_scan = GetTickCount64() + 1000;
         return false;
     }
-    if (!in_front()) return false;      // a real controller is listened to only by the application in front
+    if (!in_front()) {
+        motors(0, 0);                  // a background application must not leave vibration running
+        return false;
+    }
     from_xinput(s.Gamepad, state);
     return true;
+}
+
+void rumble(uint8_t small, uint8_t large) {
+    std::lock_guard<std::mutex> hold(g_lock);
+    if (g_test_attached) {
+        motors(0, 0);                  // scripted pads may only release an outstanding physical command
+        return;
+    }
+    if (!in_front()) small = large = 0;
+    motors(small, large);
 }
 
 std::string name() {
@@ -166,6 +207,7 @@ uint32_t generation() { return g_generation; }
 void test(const std::string& command, uint16_t buttons, const float values[6]) {
     std::lock_guard<std::mutex> hold(g_lock);
     if (command == "connect") {
+        motors(0, 0);                  // a synthetic pad takes over port 1
         g_test_attached = true;
         g_test_buttons = 0;
         for (float& v : g_test_values) v = 0;
