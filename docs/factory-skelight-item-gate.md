@@ -12,9 +12,9 @@ residency result. It retains no executable or asset bytes.
   `intro` at `0x53d678`. The comparison is case-sensitive: `INTRO` takes the
   non-front-end branch. An equal result branches to `0x1e5730`, skipping
   item loading. A different world calls lump residency at `0x1e56a4` with
-  `hud.lmp` at `0x53d680`. Absent HUD goes to `0x1e56b4` and the item loader
-  call at `0x1e56bc`; resident HUD goes to `0x1e5708` and skips it. The
-  difftest covers all three outcomes.
+  `hud.lmp` at `0x53d680`. Absent HUD executes the item loader call at
+  `0x1e56bc` (`0x108434`); resident HUD goes to `0x1e5708` and skips it.
+  The difftest reaches or skips that call in all three outcomes.
 
 The branch and identities are observed. Whether an independently hosted
 Godot level attach has the original `hud.lmp` residency is unknown. "First

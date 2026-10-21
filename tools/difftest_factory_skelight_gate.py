@@ -22,8 +22,8 @@ def check_gate(path):
     # is supplied, once with each result. No resource bytes are retained.
     for name, resident, expected in (
         ('intro', 0, 0x1e5730),
-        ('INTRO', 0, 0x1e56b4),
-        ('hub', 0, 0x1e56b4),
+        ('INTRO', 0, 0x1e56c4),
+        ('hub', 0, 0x1e56c4),
         ('hub', 1, 0x1e5708),
     ):
         ee = EE(path)
@@ -31,7 +31,9 @@ def check_gate(path):
         ee.mem.write(world, name.encode('ascii') + b'\0')
         ee.set_reg('s7', world)
         ee.stub(0x17306c, ret=resident)
-        assert ee.run(0x1e5688, until=(0x1e56b4, 0x1e5708, 0x1e5730),
+        ee.stub(0x1713c0)
+        ee.stub(0x108434)
+        assert ee.run(0x1e5688, until=(0x1e56c4, 0x1e5708, 0x1e5730),
                       max_steps=3000) == 'stop'
         assert ee.pc == expected, (name, resident, ee.pc)
         calls = {c.site: c for c in ee.calls}
@@ -41,6 +43,9 @@ def check_gate(path):
         if name != 'intro':
             assert calls[0x1e56a4].target == 0x17306c
             assert calls[0x1e56a4].args[0] == 0x53d680
+        assert (0x1e56bc in calls) == (name != 'intro' and not resident)
+        if 0x1e56bc in calls:
+            assert calls[0x1e56bc].target == 0x108434
         print(f'item gate: {name}, hud resident={resident}, next={expected:#x} (PASS)')
 
 
