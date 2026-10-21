@@ -15,7 +15,7 @@ and constructor; the probe asserts both for each requested index. The
 **authored constructor fixture** returns a creature-shaped block with its
 original class vtable and authored stats. Their scaled values are not asserted by this probe.
 The fighting scenario runs bounded class AI ticks on those fixtures.
-Virtual slots 27 and 34 run their original bodies during construction; the world
+Virtual slots 27 and 34 are recording stubs during construction; the world
 free-spot service supplies the requested point. The factory
 mapping was separately compared for all 30 names in
 `tools/difftest_monster_build.py`. The constructor fixture is distinct from
@@ -25,7 +25,8 @@ the neutral constructor difftests in `docs/spec/arena-goblin.md` and
 Each spawn now allocates its 0x18-byte SpellArena record. The probe checks
 the owner, vtable, and shared-seed draw against the documented spawn contract.
 The 0x590-byte player replacement at `arena_startWave` still returns null,
-and class constructors are fixtures; the resulting seed stream is therefore
+class constructors are fixtures, and slots 27 and 34 are stubbed during
+construction; the resulting seed stream is therefore
 verified for this constructed probe, not for a complete real match.
 
 | Wave | Constructor fixtures | Original factory calls | Original spawn calls | Original scale calls | Indices |
@@ -62,8 +63,10 @@ melee event. The original `Creature_hitTargetAtReach`, `damage_apply`,
 `Player_takeDamage`, and `Player_processDamage` bodies run. The player then deals
 authored lethal damage to clear the wave. On both seeds the three waves finish
 in 1,688 task frames: 9 enemy hits are accepted and the player's authored
-10,000 HP becomes 9,910. This exercises class attacks and player damage
-processing with scripted sight, positions and animation events. It does not
+10,000 HP became 9,910 in the executed probe for seeds 20973 and 7. The probe
+now bounds cumulative loss by nine documented 10–20 damage rolls; exact HP is
+a result for those seeds, not a general assertion. This exercises class attacks
+and player damage processing with scripted sight, positions and animation events. It does not
 establish world collision, player input, full creature constructors, or a live
 match.
 
@@ -101,9 +104,13 @@ draw from the shared generator.
 `tools/difftest_arena_match_combat.py` adds 69 comparisons per seed 20973 and 7:
 all 25 Orc2 set-state and run numbers in a neutral recruit fixture, close and
 distant chase for all four classes, four melee hits through Player damage
-processing (100 to 90 HP per isolated case), four lethal damage/death paths,
+processing (a 10–20 HP loss per isolated case), four lethal damage/death paths,
 and Scorpion sting at difficulty values 0, 2 and 3. The original bodies run;
-base activity, sight, animation and world services have fixed answers. The
+base activity, sight, animation, `Creature_filterState` and world services have
+fixed answers. Rooted, stunned and cooldown rewrites are unexercised. The Orc2
+run/set-state call lists and distant chase state are regression pins for seeds
+20973 and 7; the CLI rejects other seeds because the documented random recruit
+branch can change the distant state. The
 other class variants and their spell/projectile branches remain open.
 
 Of the two common later indices, index 25 is `snobadge` and uses the Badger
@@ -117,4 +124,4 @@ recipe-0 waves 0–2 through the original factory and arena task with constructo
 fixtures. The fighting fixture executes nine enemy hits and Player damage ticks;
 69 class comparisons per seed cover Orc2 neutral states and four-class melee.
 Native order and proof limits are ranked above. The canonical coordination log
-is `/Users/syndicatemike/Projects/open-champions/COORDINATION.md`.
+is the coordination log in the open-champions repo.

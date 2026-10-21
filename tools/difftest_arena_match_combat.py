@@ -6,8 +6,10 @@ Usage: PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_arena_match_combat.py
 
 The target is a player-shaped object behind a real target handle. Original
 class run/set-state, hit-reach, damage-apply and Player_takeDamage bodies run.
-Base activity, animation events, sight, weapon-holder and world services have
-documented fixed answers. This is not a full Player tick or a live match.
+Base activity, animation events, sight, weapon-holder, Creature_filterState
+and world services have fixed answers. Rooted, stunned and cooldown rewrites
+are unexercised. Orc run/set-state call lists are original-body regression pins
+for seeds 20973 and 7. This is not a full Player tick or a live match.
 """
 import argparse
 import hashlib
@@ -87,7 +89,7 @@ def check_chase(path, kind, seed, near):
     if not near:
         assert not request, (kind, seed, 'distant chase requests', request)
         assert 0x1143E8 in targets(emu), (kind, seed, 'move to player')
-        assert emu.mem.u16(creature + 0x232) == R.chase_state(kind, False)
+        assert emu.mem.u16(creature + 0x232) == R.chase_state(False)
         return 1
     assert len(request) == 1, (kind, seed, 'chase state requests', request)
     asked = request[0].args[1] & 0xFFFFFFFF
@@ -97,7 +99,7 @@ def check_chase(path, kind, seed, near):
         own = (seed * 0x19660D + 0x3C6EF35F) & 0xFFFFFFFF
         want = 7 if (own >> 16) % 6 == 0 else 6
     else:
-        want = R.chase_state(kind, True)
+        want = R.chase_state(True)
     assert actual == want, (kind, seed, 'attack choice', actual, want)
     assert emu.mem.u32(creature + 0x234) != 0
     assert emu.mem.u32(player + 0xC) & 0x40
@@ -116,11 +118,14 @@ def check_melee_hit(path, kind, seed):
         assert matching[0].args[0] & 0xFFFFFFFF == first_arg, (kind, seed, hex(target))
     hit = next(call for call in emu.calls if call.target == R.HIT_REACH)
     assert tuple(arg & 0xFFFF for arg in hit.args[1:4]) == (10, 20, 30)
-    assert emu.mem.u32(player + 0xC8) == 0x41200000, (kind, seed, 'queued 10 HP damage')
+    # docs/gameplay.md §2.5 steps 9–10: zero armour leaves a 10..20 base roll.
+    queued = emu.mem.f32(player + 0xC8)
+    assert 10.0 <= queued <= 20.0, (kind, seed, 'queued melee damage', queued)
     assert emu.mem.u32(player + 0x2DC) & 8, (kind, seed, 'player damage flag')
     emu.follow.add(R.PLAYER_PROCESS_DAMAGE)
     emu.call(R.PLAYER_PROCESS_DAMAGE, player)
-    assert emu.mem.u32(0x4D8AF0 + 0xAC) == R.player_hp_after_melee(), (kind, seed, 'player HP')
+    hp = emu.mem.f32(0x4D8AF0 + 0xAC)
+    assert hp == 100.0 - queued, (kind, seed, 'player HP', hp, queued)
     assert emu.mem.u32(player + 0xC8) == 0, (kind, seed, 'damage queue consumed')
     assert emu.mem.u16(creature + 0x232) == 3, (kind, seed, 'attack exit')
     return 1
@@ -165,6 +170,8 @@ def main():
     parser.add_argument('elf')
     parser.add_argument('--seed', type=int, default=20973)
     args = parser.parse_args()
+    if args.seed not in (20973, 7):
+        parser.error('regression call and chase pins are validated only for seeds 20973 and 7')
     with open(args.elf, 'rb') as source:
         assert hashlib.sha256(source.read()).hexdigest() == EXPECTED_SHA256
     count = check_orc_states(args.elf, args.seed)

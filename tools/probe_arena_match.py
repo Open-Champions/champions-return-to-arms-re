@@ -321,7 +321,10 @@ def run_match(path, seed, attacked, max_frames=2400, fighting=False):
         if fighting:
             emu.fighting_player_hits = len(D.calls(emu, PLAYER_TAKE_DAMAGE))
             assert emu.fighting_player_hits == 9, emu.fighting_player_hits
-            assert emu.mem.f32(D.PLAYERS + 0xAC) == 9910.0
+            # docs/gameplay.md §2.5 steps 9–10: each of nine zero-armour hits
+            # rolls within the authored 10..20 range. Exact HP is seed-specific.
+            hp = emu.mem.f32(D.PLAYERS + 0xAC)
+            assert 10000.0 - 20.0 * 9 <= hp <= 10000.0 - 10.0 * 9, hp
     else:
         assert waves == [(0, 2)], waves
     return emu, waves, frame + 1

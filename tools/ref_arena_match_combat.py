@@ -1,8 +1,11 @@
 """Bounded combat expectations for recipe-0 enemies and the Orc2 recruit.
 
 These are class-body contracts on an authored player handle and answered base
-services.  The hit helper, damage dispatcher, and Player_takeDamage execute in
-the difftest.  Full Player ticks, animation resources, and world collision do not.
+services.  Creature_filterState is stubbed to return zero, so rooted, stunned
+and cooldown state rewrites are unexercised. The hit helper, damage dispatcher,
+and Player_takeDamage execute in the difftest. Full Player ticks, animation
+resources, and world collision do not. ORC_RUN and ORC_SET are regression pins
+from original-body traces on seeds 20973 and 7, not independently derived calls.
 """
 
 SPECS = {
@@ -63,22 +66,17 @@ def orc_neutral_calls(kind, state):
     raise ValueError(kind)
 
 
-def chase_state(kind, near):
-    """A close first sight test picks melee; a distant target stays in chase."""
+def chase_state(near):
+    """Pinned-seed chase choice; distant random recruit branches remain open."""
     if not near:
         return 3
-    return 7 if kind == 'scorpion_sting' else 6
+    return 6
 
 
 def melee_hit(kind, player, creature):
     """Expected original hit-dispatch chain for a player target."""
     return ((HIT_REACH, creature), (DAMAGE_APPLY, player),
             (PLAYER_TAKE_DAMAGE, player))
-
-
-def player_hp_after_melee():
-    """The authored unblocked 10-damage hit takes 100 HP to 90 HP."""
-    return 0x42B40000
 
 
 def scorpion_sting_damage(difficulty):
