@@ -284,7 +284,7 @@ D (119 levels):
 - The 18 levels without a marker are the front end, two cutscene archives and the 15
   `comp*`/`pvp*` arenas. The arenas place players through `ArenaPlayerStart` (15 records) and
   `ArenaPlayerAlternate` (232) instead, via 0x30503c and `arena_pickSpawnPoint` 0x3050a4
-  (→ 17.3).
+  (→ 17.3, 18).
 - 38 levels have one `Portal` each.
 - Of 72 (`setEntrance`, `newWorld`) pairs, 58 have a matching `name` marker in the destination.
   The other 14 fall back to the `from`/default rules.
@@ -339,7 +339,7 @@ if g_gameLevelLoaded and not g_pvpModeB:
 | `script_runMedalSuccess` 0x141b98 / `runMedalFail` 0x141e24 | `g_levelName` (retry) | 0xff | medal player's confirm |
 | `missionMenu_run` 0x232220 | mission row +0x08 / +0x0c / +0x10 / +0x14 | 0xff | chooser's lockstep pad |
 | `jumpgate_menuRun` state 5 0x27e1d0 | the menu's fixed destination, else the selected list entry | 0xff | section 9 |
-| `arena_runTask` 0x306cb8 | arena rotation | 0xff | PvP only (U: table not followed) |
+| `arena_runTask` 0x306cb8 | arena rotation | 0xff | PvP, mode A set (→ 18) |
 | `net_launchUpdate` 0x137560 | hub name or the PvP arena | 0xff | net launch |
 | front end 0x1e20ac, 0x1e24f4; `main` 0x323ef4; `playerSel_finish` 0x22a424 | `intro`, `strife`, new-game destination | 0xff | — |
 | front end "Start Net Game" 0x1e17d8 | `kelethin` | 0xff | debug entry; there is no `KELETHIN.GOB` (U whether it is reachable) |
@@ -862,6 +862,7 @@ committed, and nothing decoded was written out.
 ## 15. Open
 
 Round 2 settled none of the items below. Round 3 settled the start height (section 17).
+Round 4 settled the three archives whose cold origin has no floor (section 18).
 What remains:
 
 1. Which row each of the 30 levels without a table row resolves to (2).
@@ -873,8 +874,9 @@ What remains:
 4. Marker order after a re-entry from a saved state (3.3).
 5. Whether a piece's changed element z survives into a reload of the same level (7.4):
    check whether `<level>.lmp` is always re-read.
-6. `arena_pickSpawnPoint` with a0 = 0 (respawn) was read and not run. The arena rotation
-   table is still unread. The wave-start path (a0 ≠ 0) was run (→ 17.3).
+6. `arena_pickSpawnPoint` with a0 = 0 (respawn) was read and not run. The rotation that
+   requests the next arena level, and the wave start on the three cold-origin archives,
+   are section 18. The wave-start path on the other arenas was run in section 17 (→ 17.3).
 7. Texture: what −1 vs −2 and header flag 0x0008 mean; the edge rules of the unused
    flag-1 form; the look of environment-mapped chunks and whether layer-4 chunks write
    depth (compare a GS frame dump); the automap tile mapping.
@@ -1218,15 +1220,17 @@ On the 2 of the 18 that have an `ArenaPlayerStart`, the original wave start with
 slot 0, mode A clear, 0x4f7124 clear, seed 20973 and an empty object list matched
 `arena_initial_place`, and the radius-12 snap of that position was a floor, 2 of 2. A story
 load of those two leaves mode B clear and does not take this path. Their origin radius-12
-query is already a floor, which puts them in the 11 of 17.2.
+query is already a floor, which puts them in the 11 of 17.2. Three further archives have an
+`ArenaPlayerStart` and no floor at the origin. They have water chunks, so they are not in
+these 18 (→ 18).
 
 The other entry, a0 = 0, is the respawn. Its caller at 0x305818 passes a0 = 0, and
 `player_respawn` 0x1bd040 calls `Player_ctor` at 0x1bd154, so the same snap follows it.
 **Observed, not executed.** When a byte at 0x402791 is set, the index is a shared-generator
 draw modulo the count at 0x8e7342. Otherwise the function prefers table points within 240
 of the point at 0x45f048 and, failing that, searches from that point with spread 72 and
-radius 24, storing facing 0. A table point adds 0x4000 to the stored angle. The arena
-rotation table (`arena_runTask` 0x306cb8) was not read.
+radius 24, storing facing 0. A table point adds 0x4000 to the stored angle. The rotation
+that requests the next arena level is section 18.
 
 ### 17.4 Acts, gates, and what a level change leaves alone
 
@@ -1277,3 +1281,171 @@ Synthetic coverage is `Round3Placement` and `Round3Arena` in `tools/test_ref_lev
 properties all pass. On the disc, `spawn_real` reports paired 111, the 18 above, origin
 radius-4 floor 11, origin radius-12 floor 11, marker radius-12 floor 18, search-then-snap
 floor 36 of 36, arena floor 2 of 2, scenario misses 0. Private notes stay under `local/`.
+
+## 18. Round 4: the three archives with no floor at the cold origin (2026-10-20)
+
+**Why this section exists.** A radius-12 `terrain_height` at the cold story slot is a floor
+on 108 of the 111 paired archives and the sentinel on 3. Those 3 sit outside section 17
+because each has water chunks, so that section's geometry filter skipped them. A client
+that snaps the cold slot therefore loads 108 and stops on these 3. The original places
+them somewhere else. This section is that placement, run on the original functions in
+`tools/ee_emu.py` (`tools/difftest_levels_r4.py`, seeds 0 and 20973). The ELF SHA256 is
+`292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675`.
+
+Each of the 3 has zero moving pieces, zero chunks with flag 0x20, water chunks (24, 112
+and 7), no `Player1`, no `Portal` and one `ArenaPlayerStart`. The cold slot is the origin
+(rank 0; the previous spawn is 0 at boot). The radius-12 query there is the sentinel, and
+so is the same query at radius 4, 24, 36, 48, 64 and 96. `terrain_height` ignores chunk
+flags, so a water sample counts as a floor. The queries below returned a height.
+
+### 18.1 Who requests them
+
+The 13 act lists (86 rows at `g_actLevelTables` 0x4f8e48) and the four level-name fields
+of the 13 mission rows (`g_missionTable` 0x4fe540, +0x08 through +0x14) contain none of
+the three names. **Observed.** A bounded search of every archive in the data directory
+finds each name twice in its own archive, as the lump name and the `.world` name, and in
+no other archive.
+
+The names live in the mode-A pointer table at 0x5037b8: 13 names, then a null. The three
+are indices 8, 10 and 12. Two of them also sit in the mode-B table at 0x503798 (7 names,
+then a null), at indices 1 and 3. The mode-B selector below reads index 0 of that table.
+
+**Observed**, frontend 0x1e18f4–0x1e1984. The chosen menu string is tested with `strstr`:
+
+- the substring at 0x53d008 (`vs`) stores 1 or 0 at `g_pvpModeA` 0x4f711c
+- the substring at 0x53d010 (`scramble`) stores 1 or 0 at 0x4f7124
+- the substring at 0x53d020 (`arena`) contributes to `g_pvpModeB` 0x4f7120
+
+Mode B is stored as 1 when the arena substring hits, or when the facing word was set.
+Every store that names the displacement 0x711c or 0x7120 writes 0: mode A at 0x1e1664,
+0x1e18dc and 0x323f34, and mode B at 0x1e1670, 0x1e18e4, 0x307160, 0x3234f4 and 0x323f38.
+The menu tests above, and the net launch below, store through a register that holds the
+address. When mode A is set, this handler opens the menu at 0x4f6c98.
+`frontend_startPlayerSelect` 0x1e3ba0 also runs from 0x1e19c0, 0x1e1a48, 0x1e1a78,
+0x1e1ad0 and 0x1e1ba4. With mode B set it copies the name from the picker 0x304bc8 to
+0x4fdc30.
+
+The picker, **observed**:
+
+- Mode A set: `game_scanCm1Vars(0)` returns the word at 0x4f7110, and that word indexes
+  0x5037b8.
+- Mode A clear: the dividend is the mode-A word, which is 0, and the divisor is the
+  halfword at 0x503886, which is 5. The remainder is 0, so the record at 0x503868. Five
+  records of 6 bytes live there. The first byte's low nibble, through the shift in
+  `arena_record_table_offset`, is the table-B index. Those five nibbles are 0, 1, 5, 3
+  and 2. Record 0 selects index 0, which is not one of the three. The high nibble is the
+  count walked by 0x306440; it does not select the level.
+
+`game_set4f7110` 0x1ec830 stores its argument at 0x4f7110, or the result of
+`game_scanCm1Vars(1)` when the argument is −1. That scan walks `m11cm1`, `m9cm1`,
+`m8cm1`, `m7cm1`, `m6cm1`, `m5cm1`, `m4cm1`, `m2cm1` and `m1cm1`. It returns 0..7 for the
+first one set, 8 when `m1cm1` is set, and 9 when none is set. The frontend at 0x1e204c
+and boot at 0x323e90 pass −1, so the saved index on that path is 0..9. Net launch
+0x1374a8 clears both mode words, sets mode B when its type byte is 1, 2 or 3, sets mode A
+when the type is 2 or 3, sets 0x4f7124 when the type is 3, and then, if mode A is set,
+stores the word at offset 0xf4 of the message as the index. That word is not clamped.
+What a peer writes there is **U**.
+
+The rotation is `arena_runTask` 0x306b78. When the countdown halfword at 0x8e733c reaches
+0x1e0, or 0x3c0 while `g_networkMode` is set, and the halfword at 0x8e733a is nonzero:
+if mode A is clear the task calls `arena_nextWave(1)` and stays on the same level. If mode
+A is set, the byte at 0x8e7343 becomes `(byte + 1) mod 13`, and a remainder of 0 is
+replaced by `game_scanCm1Vars(0)`, the saved index. Table A of that byte is copied to
+`g_pendingLevel` with orientation 0xff (the copy is at 0x306cb8). `arena_begin` 0x304f5c,
+called from the load at 0x1e6028, stores 3 at 0x8e733a. That is the only store with
+displacement 0x733a.
+
+The byte survives an arena-to-arena load. `arena_init` 0x304c4c returns at once when mode
+B is clear. When mode B is set, 0x307d48 reports whether `g_prevLevelName` is in the
+current mode's table. If it is, and the word at 0x503894 is 0, init skips the reset and
+leaves the byte alone. The timer path does not store 0x503894. It also does not call
+`arena_shutdown` 0x304fb0, and that function is the only remover of the arena task: the
+pointer 0x306b78 is built only at 0x304de0 (the `task_add` in init) and at 0x305000
+(the `task_remove` in `arena_shutdown`). The next timer therefore advances the same byte. The word at 0x503894
+is cleared on the full init path (0x304dcc) and set to 1 at 0x306dd4 and 0x306f94; the
+load after that takes the full init and stores the saved index back into the byte.
+
+On the menu path the saved index S is 0..9. The levels played are table A at S, then
+S+1, and so on through 12, then S again. Indices 10 and 12 are on every such cycle.
+Index 8 is on it for S in 0..8, and it is the first level when S is 8. It is absent when
+S is 9.
+
+The mode-B path at 0x306cc8 reads the halfword at 0x8e7338, adds 1 in a register, divides
+by 3 and then by the record count, and does not store the sum. The strcpy is at 0x306d1c.
+The only store with displacement 0x7338 is 0x304db8, which writes −1. `(−1 + 1) / 3`
+modulo 5 is record 0 again. That path is reached when 0x8e733a is 0 and mode A is clear.
+After `arena_begin` the halfword is 3. Init (0x1e5cdc) and begin (0x1e6028) both sit
+inside the load, init first.
+
+### 18.2 The point the player stands on
+
+`arena_init`, on the full path and on the continuation, stores 1 at 0x8e7342 and calls
+0x30503c with index 0 and xyz 0. Entry 0 of the table at `*0x503888` is the origin until
+a record replaces it.
+
+The `ArenaPlayerStart` factory at 0x15a284 calls 0x30503c with a0 = 0. It overwrites
+entry 0 and leaves the count alone. The `ArenaPlayerAlternate` factory at 0x15a2b0 calls
+it with a0 = −1, so it writes at the count and increments. With the count at 1, the first
+alternate is entry 1. Entry 0 is the Start, whichever record was built first.
+
+`arena_begin` runs when mode B is set (17.3). Mode A set skips 0x306440, and the ring
+radius is 180 (0x43340000). `arena_startWave` calls `arena_pickSpawnPoint` with a0 = 1.
+PvP B skips the story `Player_ctor`. The radius-12 snap of 17.1 runs on this result.
+
+Slot 0's angle is `s16(65535 / count) * 0`, which is 0 for every positive count, so that
+slot's centre does not depend on the player count. `cos16(0)` is 1 and the x offset is
+exactly 180. The y offset is `sin16(0)` times 180, which is not 0. z is the Start's z.
+
+**Executed**, count 1, slot 0, mode A set, 0x4f7124 clear, the collect stub writing an
+empty list, seeds 0 and 20973: the original wave start matches `arena_initial_place` on
+6 of 6 calls. Radius 12 at the origin is the sentinel, 0 of 3. At the Start it is a
+floor, 3 of 3. At the mode-A slot-0 centre it is a floor, 3 of 3. The ctor snap stores
+that floor, 6 of 6.
+
+The same radius-12 query is a floor at the mode-A centres for counts 2 and 4, every slot.
+Those centres were compared in the reference. The emulator ran the wave start for slot 0.
+
+### 18.3 Whether the seed and the object list move the snap off the floor
+
+`world_findFreeSpot` returns a point at most 36 from the centre. When every try fails it
+keeps the last point that passed the terrain tests, or the centre. An object only rejects
+a try (17.2). The result stays inside that disc.
+
+On each of the 3, at the mode-A slot-0 centre and at the other angles of counts 2 and 4:
+every integer offset inside radius 37 has a floor at radius 11.25, 0 misses out of 4293
+on each centre. A point of the spread-36 disc is at most half a unit from one of those
+lattice points on each axis. 11.25 plus that distance is under 12, and radius 37 leaves
+more than that distance outside the spread, which covers a candidate the adder places a
+few ulps past 36. Every point the search can return has a radius-12 floor, and so does
+the centre. The seed changes which point is chosen. The ground result stays a floor for
+every seed and every object list.
+
+**Executed** on the original with the empty collect stub, the two seeds: 6 of 6 snaps are
+floors, and the positions match the reference. The reference search with every parsed
+record constructed at its xyz, default radius 24 and flags 0 (solid), also snaps to a
+floor, 6 of 6. Those stand-ins are not the radii the class constructors store. The
+lattice is what covers the real list. The emulator agreed with the reference on the
+origin, the Start, the slot-0 centre and every searched point (0 mismatches).
+
+A disc with a hole does lose the floor. **Executed** on a synthetic one-sample pad: one
+seed of the original search keeps a floor and another accepts a point whose radius-12
+snap is the sentinel (`seed_matters`). On a synthetic solid disc the same call keeps a
+floor. The reference, for seeds 0..15 and 20973, with and without a solid object on the
+centre, keeps a floor on every call, including the calls that return ok 0.
+
+### 18.4 What the reference gained
+
+Round 1–3 results of `marker_decision`, `run_markers`, `place_players` and the round-3
+arena functions are unchanged.
+
+- `ARENA_MODE_A_COUNT` (13), `ARENA_MODE_B_COUNT` (7), `ARENA_RECORD_BYTES` (6)
+- `arena_mode_a_next`, `arena_record_table_offset`, `arena_register_spawn`
+
+Synthetic coverage is `Round4ArenaEntry` and `Round4Ground`. `tools/vu1_emu.py` is not on
+this path. The difftest's two properties pass. On the disc, `cold_three` reports cold 3,
+origin floor 0, Start floor 3, ring floor 3, search snap 6 of 6, stand-in snaps 6 of 6,
+lattice misses 0, act hits 0, mission hits 0, other-archive name hits 0. Private notes
+stay under `local/`.
+
+Still **U**: `arena_pickSpawnPoint` with a0 = 0 (17.3), and the word a net peer stores at
+message offset 0xf4.
