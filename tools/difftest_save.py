@@ -379,6 +379,12 @@ def test_config(elf):
         parsed = S.parse_config(image)
         report('config.fields', parsed.music == 0.5 and parsed.buttons[0][0] == 0x40,
                'music 0.5, first mask 0x%x' % parsed.buttons[0][0])
+    dirty = bytes([0xAB]) * S.CONFIG_SIZE
+    ee.mem.write(G_CONFIG, dirty)
+    ee.mem.w8(G_SCHEME, 2)
+    call(ee, CONFIG, 1)
+    compare('config.one_row', ee.mem.read(G_CONFIG, S.CONFIG_SIZE),
+            S.config_set_defaults(1, 2, dirty))
 
 
 def _players(names, golds):
@@ -515,6 +521,16 @@ def test_load(elf):
     side = cstr(ee, G_SIDE)
     report('load.subname', pending == b'hub_west' and side == b'hub_west',
            'pending %r side %r' % (pending, side))
+
+    ee = boot(elf)
+    inputs, position, matrix, tail = _common(card=4)
+    prepare(ee, inputs, position, matrix, tail, (), inputs.acts)
+    run_build(ee, inputs)
+    ee.mem.w16(G_SAVE + 0x68, 0x1111)
+    call(ee, SAVE_LOAD)
+    report('load.ignores_record_size',
+           cstr(ee, G_PLAYERS) == b'Aria' and ee.mem.s32(G_PLAYERS + 0xE4) == 777,
+           'name %r gold %s' % (cstr(ee, G_PLAYERS), ee.mem.s32(G_PLAYERS + 0xE4)))
 
 
 def test_count_and_clear(elf):
