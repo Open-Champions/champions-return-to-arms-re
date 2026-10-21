@@ -2,10 +2,18 @@
 """fromdisc.py - build the native game from YOUR OWN disc image, on this computer.
 
   python3 tools/install/fromdisc.py --platform mac|linux|windows --disc "/path/to/your image.iso"
-          [--desktop DIR] [--no-launcher] [--jobs N]
+          [--desktop DIR] [--no-launcher] [--jobs N] [--godot]
+          [--launcher-name NAME] [--service HOST:PORT] [--progress]
+  python3 tools/install/fromdisc.py --find [DIR ...]     # the disc images of US v2.00 in the usual places
+  python3 tools/install/fromdisc.py --check FILE         # exit code 0 when FILE is one
 
 The step the three installers (install-mac.command, install-linux.sh, install-windows.ps1)
-share once their toolchain is in place.  The game's code is never distributed: it is
+and the "Champions Setup" programs (tools/install/setup/) share once their toolchain is in place.
+--progress adds lines "@progress PERCENT TEXT" for a setup window's progress bar; --service puts
+the room service's address where the program reads it (the launcher on a Mac, server.txt beside the
+program on Windows and Linux) - the address comes from whoever hands out the setup, never from here.
+
+The game's code is never distributed: it is
 translated here, from the executable on the player's own disc.
 
   1. reads the disc image (ISO 9660), copies SLUS_209.73 out of it to the top of this
@@ -36,6 +44,8 @@ import shutil
 import struct
 import subprocess
 import sys
+import threading
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -48,6 +58,59 @@ SECTOR = 2048
 
 def say(text):
     print('[install] ' + text, flush=True)
+
+
+PROGRESS = {'on': False, 'last': -1}
+
+
+def progress(percent, text):
+    """A line for a setup window (--progress): "@progress PERCENT TEXT"."""
+    if PROGRESS['on']:
+        percent = max(PROGRESS['last'], min(100, int(percent)))
+        PROGRESS['last'] = percent
+        print('@progress %d %s' % (percent, text), flush=True)
+
+
+class Watch:
+    """While a build step runs: how many object files it has written so far, as a share of the expected number,
+    turned into the setup window's percent (from .. to).  Only a picture of the progress; the step says when it is done."""
+    def __init__(self, folders, expected, low, high, text, first_text=None):
+        self.folders, self.expected, self.low, self.high, self.text = folders, max(1, expected), low, high, text
+        self.first_text = first_text or text
+        self.start, self.stop = time.time(), threading.Event()
+        self.thread = threading.Thread(target=self.run, daemon=True)
+
+    def count(self):
+        n = 0
+        for top in self.folders:
+            for folder, _, files in os.walk(top):
+                for name in files:
+                    if name.endswith(('.o', '.obj')):
+                        try:
+                            if os.path.getmtime(os.path.join(folder, name)) >= self.start - 1:
+                                n += 1
+                        except OSError:
+                            pass
+        return n
+
+    def run(self):
+        while not self.stop.wait(2.0):
+            n = self.count()
+            if n == 0:
+                progress(self.low, self.first_text)
+            else:
+                share = min(0.97, n / float(self.expected))
+                progress(self.low + (self.high - self.low) * share, '%s (%d of about %d files)' % (self.text, n, self.expected))
+
+    def __enter__(self):
+        if PROGRESS['on']:
+            self.thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self.stop.set()
+        if self.thread.is_alive():
+            self.thread.join(5)
 
 
 # ---- the disc image -------------------------------------------------------------------------
@@ -114,10 +177,74 @@ def extract_elf(image):
     return True
 
 
+def check_disc(image):
+    """True when the image holds the US v2.00 executable (reads the directory and the executable only)."""
+    try:
+        found = iso_find(image, ELF_NAME)
+        if not found:
+            return False
+        offset, size = found
+        if not 1000000 < size < 20000000:
+            return False
+        with open(image, 'rb') as f:
+            f.seek(offset)
+            data = f.read(size)
+        return data[:4] == b'\x7fELF' and elf_crc(data) == ELF_CRC
+    except (OSError, ValueError, struct.error, IndexError):
+        return False
+
+
+def usual_places():
+    home = os.path.expanduser('~')
+    places = [os.path.join(home, d) for d in ('Downloads', 'Desktop', 'Documents')]
+    if sys.platform == 'darwin':
+        places.append(os.path.join(home, 'Library', 'Application Support', 'Play-RTA'))
+        places += [os.path.join('/Volumes', v) for v in sorted(os.listdir('/Volumes'))] if os.path.isdir('/Volumes') else []
+    elif os.name == 'nt':
+        places += ['%s:\\' % c for c in 'DEFGHIJKLMNOPQRSTUVWXYZ' if os.path.exists('%s:\\' % c)]
+    else:
+        user = os.environ.get('USER', '')
+        for top in ('/media/' + user, '/run/media/' + user, '/mnt'):
+            if os.path.isdir(top):
+                places += [os.path.join(top, v) for v in sorted(os.listdir(top))]
+    return places
+
+
+def find_discs(places, depth=2):
+    """Disc images (.iso, 1 to 9 GB) of the US v2.00 release under the given folders, a few levels deep."""
+    found, seen = [], set()
+    for top in places:
+        top = os.path.abspath(os.path.expanduser(top))
+        if not os.path.isdir(top):
+            continue
+        base = top.rstrip(os.sep).count(os.sep)
+        for folder, dirs, files in os.walk(top):
+            if folder.rstrip(os.sep).count(os.sep) - base >= depth:
+                dirs[:] = []
+            dirs[:] = [d for d in dirs if not d.startswith('.') and not d.endswith(('.app', '.photoslibrary'))]
+            for name in files:
+                if not name.lower().endswith('.iso'):
+                    continue
+                path = os.path.join(folder, name)
+                try:
+                    real = os.path.realpath(path)
+                    if real in seen or not 1000000000 < os.path.getsize(path) < 9000000000:
+                        continue
+                except OSError:
+                    continue
+                seen.add(real)
+                if check_disc(path):
+                    found.append(path)
+    return found
+
+
 # ---- the build --------------------------------------------------------------------------------
-def run(command):
+def run(command, watch=None):
     say('running: ' + ' '.join(os.path.relpath(c, ROOT) if os.path.isabs(c) and c.startswith(ROOT) else c for c in command))
-    return subprocess.run(command, cwd=ROOT).returncode == 0
+    if watch is None:
+        return subprocess.run(command, cwd=ROOT).returncode == 0
+    with watch:
+        return subprocess.run(command, cwd=ROOT).returncode == 0
 
 
 def vu1_translation():
@@ -132,17 +259,19 @@ def vu1_translation():
             os.remove(fast)
 
 
-def build(target, jobs):
+def build(target, jobs, high=96):
     py = sys.executable
+    watch = Watch([OUT], {'mac': 75, 'linux': 85, 'windows': 91}[target], 12, high,
+                  'Compiling the program', 'Translating the game\'s code to C++')
     if target == 'mac':
-        ok = run([py, os.path.join(APP, 'build.py')] + (['--qt', os.environ['RTA_QT']] if os.environ.get('RTA_QT') else []))
+        ok = run([py, os.path.join(APP, 'build.py')] + (['--qt', os.environ['RTA_QT']] if os.environ.get('RTA_QT') else []), watch)
         program = os.path.join(OUT, 'bin', 'rta_app')
     elif target == 'linux':
-        ok = run([py, os.path.join(APP, 'build_linux.py'), '--jobs', str(jobs)])
+        ok = run([py, os.path.join(APP, 'build_linux.py'), '--jobs', str(jobs)], watch)
         arch = {'x86_64': 'x86_64', 'amd64': 'x86_64', 'aarch64': 'aarch64', 'arm64': 'aarch64'}.get(platform.machine().lower(), platform.machine())
         program = os.path.join(OUT, 'linux', 'rta-linux-' + arch, 'rta_app')
     else:
-        ok = run([py, os.path.join(APP, 'build_win.py'), '--jobs', str(jobs)])
+        ok = run([py, os.path.join(APP, 'build_win.py'), '--jobs', str(jobs)], watch)
         program = os.path.join(OUT, 'win', 'rta-windows', 'rta_app.exe')
     if not ok or not os.path.exists(program):
         say('the build did not finish: the lines above say why')
@@ -179,7 +308,9 @@ def godot_library(target, jobs):
         return None
     for step in steps:
         say('running: ' + ' '.join(os.path.relpath(c, ROOT) if os.path.isabs(c) and c.startswith(ROOT) else c for c in step))
-        if subprocess.run(step, cwd=ROOT, env=env).returncode != 0:
+        with Watch([out], 70, 80, 97, 'Building the Godot version'):
+            code = subprocess.run(step, cwd=ROOT, env=env).returncode
+        if code != 0:
             say('the Godot library did not build: the lines above say why (the native program is built all the same)')
             return None
     if made is None:
@@ -195,6 +326,18 @@ def godot_library(target, jobs):
     os.replace(final + '.part', final)
     say('the Godot application\'s game library: ' + final)
     return final
+
+
+# ---- the room service --------------------------------------------------------------------------
+def set_service(program, service):
+    """A line "service = HOST:PORT" in server.txt beside the program (Windows, Linux: read when it starts)."""
+    path = os.path.join(os.path.dirname(program), 'server.txt')
+    lines = open(path).read().splitlines() if os.path.exists(path) else []
+    lines = [l for l in lines if not l.strip().replace(' ', '').startswith('service=')]
+    lines.append('service = ' + service)
+    with open(path, 'w') as f:
+        f.write('\n'.join(lines) + '\n')
+    say('the room service: %s (in %s)' % (service, path))
 
 
 # ---- the launcher -----------------------------------------------------------------------------
@@ -213,33 +356,40 @@ def desktop_dir(given):
     return os.path.join(os.path.expanduser('~'), 'Desktop')
 
 
-def launcher_mac(desktop, program, disc):
-    app = os.path.join(desktop, 'Champions RTA Native.app')
+def launcher_mac(desktop, program, disc, name='Champions RTA Native', service=''):
+    app = os.path.join(desktop, name + '.app')
     macos = os.path.join(app, 'Contents', 'MacOS')
     os.makedirs(macos, exist_ok=True)
+    ident = 'org.open-champions.' + (''.join(c for c in name.lower() if c.isalnum()) or 'rta') + '-launcher'
     plist = ('<?xml version="1.0" encoding="UTF-8"?>\n'
              '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
              '<plist version="1.0"><dict>\n'
              '<key>CFBundleExecutable</key><string>launch</string>\n'
-             '<key>CFBundleIdentifier</key><string>org.open-champions.rta-native-launcher</string>\n'
-             '<key>CFBundleName</key><string>Champions RTA Native</string>\n'
+             '<key>CFBundleIdentifier</key><string>%s</string>\n'
+             '<key>CFBundleName</key><string>%s</string>\n'
              '<key>CFBundlePackageType</key><string>APPL</string>\n'
              '<key>LSMinimumSystemVersion</key><string>13.0</string>\n'
-             '</dict></plist>\n')
+             '</dict></plist>\n') % (ident, name.replace('&', '&amp;').replace('<', '&lt;'))
     open(os.path.join(app, 'Contents', 'Info.plist'), 'w').write(plist)
     script = os.path.join(macos, 'launch')
     q = lambda s: "'" + s.replace("'", "'\\''") + "'"
+    env = ''
+    qt = os.environ.get('RTA_QT', '')
+    if qt and os.path.isdir(os.path.join(qt, 'plugins', 'platforms')):
+        env += 'export QT_PLUGIN_PATH=%s\n' % q(os.path.join(qt, 'plugins'))    # an official Qt build does not know where it is
+    if service:
+        env += 'export RTA_NET2_SERVICE=${RTA_NET2_SERVICE:-%s}\n' % q(service)
     open(script, 'w').write('#!/bin/sh\n# made by tools/install/fromdisc.py: the native build of this workspace with your disc image\n'
-                            'mkdir -p %s\nexec %s --disc %s "$@" > %s 2>&1\n'
-                            % (q(os.path.join(OUT, 'app-data')), q(program), q(disc), q(os.path.join(OUT, 'app-data', 'rta_app-log.txt'))))
+                            '%smkdir -p %s\nexec %s --disc %s "$@" > %s 2>&1\n'
+                            % (env, q(os.path.join(OUT, 'app-data')), q(program), q(disc), q(os.path.join(OUT, 'app-data', 'rta_app-log.txt'))))
     os.chmod(script, 0o755)
     return app
 
 
-def launcher_linux(desktop, program, disc):
+def launcher_linux(desktop, program, disc, name='Champions RTA Native', service=''):
     folder = os.path.dirname(program)
     exec_line = '"%s" "%s"' % (os.path.join(folder, 'play.sh'), disc)
-    entry = ('[Desktop Entry]\nType=Application\nName=Champions RTA Native\n'
+    entry = ('[Desktop Entry]\nType=Application\nName=%s\n' % name +
              'Comment=The native build of Champions: Return to Arms, made from your own disc\n'
              'Exec=%s\nPath=%s\nTerminal=false\nCategories=Game;\n' % (exec_line, folder))
     made = []
@@ -247,7 +397,8 @@ def launcher_linux(desktop, program, disc):
     for d in (apps, desktop):
         try:
             os.makedirs(d, exist_ok=True)
-            path = os.path.join(d, 'rta-native.desktop')
+            path = os.path.join(d, 'rta-native.desktop' if name == 'Champions RTA Native' else
+                                ''.join(c for c in name.lower() if c.isalnum() or c == '-') + '.desktop')
             open(path, 'w').write(entry)
             os.chmod(path, 0o755)
             made.append(path)
@@ -259,9 +410,9 @@ def launcher_linux(desktop, program, disc):
     return made[-1] if made else None
 
 
-def launcher_windows(desktop, program, disc):
+def launcher_windows(desktop, program, disc, name='Champions RTA Native', service=''):
     # a shortcut through the Windows Script Host (no extra module): rta_app.exe --disc "<image>"
-    link = os.path.join(desktop, 'Champions RTA Native.lnk')
+    link = os.path.join(desktop, name + '.lnk')
     ps = ('$s = (New-Object -ComObject WScript.Shell).CreateShortcut(\'%s\'); $s.TargetPath = \'%s\'; '
           '$s.Arguments = \'--disc "%s"\'; $s.WorkingDirectory = \'%s\'; $s.Save()'
           % (link.replace("'", "''"), program.replace("'", "''"), disc.replace("'", "''"), os.path.dirname(program).replace("'", "''")))
@@ -271,18 +422,35 @@ def launcher_windows(desktop, program, disc):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    parser.add_argument('--platform', choices=('mac', 'linux', 'windows'), required=True)
-    parser.add_argument('--disc', required=True, help='your own disc image of Champions: Return to Arms (SLUS-20973, v2.00)')
+    parser.add_argument('--platform', choices=('mac', 'linux', 'windows'))
+    parser.add_argument('--disc', help='your own disc image of Champions: Return to Arms (SLUS-20973, v2.00)')
     parser.add_argument('--desktop', help='where the launcher goes (default: this user\'s desktop)')
     parser.add_argument('--no-launcher', action='store_true')
     parser.add_argument('--godot', action='store_true', help='also the game library of the Godot application (tools/godot)')
     parser.add_argument('--jobs', type=int, default=max(1, min(8, os.cpu_count() or 4)))
+    parser.add_argument('--launcher-name', default='Champions RTA Native', help='the name of the launcher (default: Champions RTA Native)')
+    parser.add_argument('--service', default='', help='the room service, HOST:PORT, as the program is to find it')
+    parser.add_argument('--progress', action='store_true', help='lines "@progress PERCENT TEXT" for a setup window')
+    parser.add_argument('--find', nargs='*', metavar='DIR', help='only list the disc images of US v2.00 in these folders (default: the usual places)')
+    parser.add_argument('--check', metavar='FILE', help='only check one disc image: exit code 0 when it is US v2.00')
     args = parser.parse_args()
+    if args.check:
+        ok = os.path.isfile(args.check) and check_disc(args.check)
+        print('%s: %s' % (args.check, 'US v2.00' if ok else 'not the US v2.00 disc image'))
+        return 0 if ok else 1
+    if args.find is not None:
+        for path in find_discs(args.find or usual_places()):
+            print(path, flush=True)
+        return 0
+    if not args.platform or not args.disc:
+        parser.error('--platform and --disc are needed (or --find)')
+    PROGRESS['on'] = args.progress
     disc = os.path.abspath(os.path.expanduser(args.disc))
     if not os.path.isfile(disc):
         say('no such file: ' + disc)
         return 1
     say('workspace: ' + ROOT)
+    progress(1, 'Reading your disc image')
     try:
         if not extract_elf(disc):
             return 1
@@ -290,10 +458,15 @@ def main():
         say(str(e))
         return 1
     if args.platform != 'linux':          # Linux interprets VU1 anyway (native-linux.md: its flush-to-zero mode)
+        progress(4, 'Translating the graphics programs')
         vu1_translation()
-    program = build(args.platform, args.jobs)
+    progress(12, 'Translating the game\'s code to C++')
+    program = build(args.platform, args.jobs, 78 if args.godot else 97)
     if not program:
         return 1
+    if args.service and args.platform != 'mac':
+        set_service(program, args.service)
+    progress(80 if args.godot else 97, 'Building the Godot version' if args.godot else 'Making the launcher')
     library = godot_library(args.platform, args.jobs) if args.godot else None
     os.makedirs(os.path.join(ROOT, 'local'), exist_ok=True)
     with open(os.path.join(ROOT, 'local', 'install.txt'), 'w') as f:
@@ -303,12 +476,13 @@ def main():
         desktop = desktop_dir(args.desktop)
         make = {'mac': launcher_mac, 'linux': launcher_linux, 'windows': launcher_windows}[args.platform]
         try:
-            where = make(desktop, program, disc)
+            where = make(desktop, program, disc, args.launcher_name, args.service)
         except OSError as e:
             where = None
             say('no launcher: %s' % e)
         if where:
             say('launcher: ' + where)
+    progress(100, 'Done')
     say('done.  Higher-resolution art is a separate, optional step with your own textures: docs/issues/native-graphics.md, section 3 "The art pack"')
     return 0
 

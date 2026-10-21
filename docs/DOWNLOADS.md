@@ -1,6 +1,6 @@
 # Get the game and play
 
-Updated with each release. **Last update: 2026-10-20** (section 8: the native version from your own disc). Current release: fix set
+Updated with each release. **Last update: 2026-10-21** (section 8: **Champions Setup**, one file to double-click on Mac, Windows and Linux, that builds the native version from your own disc). Current release: fix set
 `9ac29719` (31 sections), and in the Mac application the new **Room** menu (section 4).
 How complete each part is: [PROGRESS.md](PROGRESS.md).
 
@@ -120,7 +120,59 @@ button. Everything else is here, and you can build each version yourself with yo
 
 The native version is the game's own code translated to C++ and built into a program for
 your computer - no emulator, no BIOS. Because that code comes from the game, it can never be
-handed out: **every player translates it from their own disc**. One script per system does
+handed out: **every player translates it from their own disc**, on their own computer.
+
+### 8.1 Champions Setup: one file, double-click it
+
+**You need your own disc image of Champions: Return to Arms (US, v2.00). Download the setup
+for your computer, double-click it, it finds your disc image and does the rest.**
+
+The setups are on the same private page as the other downloads (section 1: the link comes
+from the person who invited you), or you make them yourself from this repository (below).
+
+| | Mac | Windows 10 / 11 | Linux |
+|---|---|---|---|
+| **Download** | `Champions-Setup-Mac.zip` (about 65 MB): the app **Champions Setup** | `Champions-Setup-Windows.exe` (about 7 MB) | `Champions-Setup-Linux.zip` (about 60 MB): `Champions-Setup-Linux.sh` |
+| **First start** | macOS cannot check the app: **Done**, then **System Settings → Privacy & Security → Open Anyway** | "Windows protected your PC": **More info → Run anyway** (no administrator rights needed) | double-click the `.sh` (or `bash Champions-Setup-Linux.sh`) |
+| **Fetches by itself** (official sources, pinned versions, size and SHA-256 checked) | Apple's command line tools (Apple's own window: one click on **Install**); Qt 6.11.3 from download.qt.io (30 MB) unless Homebrew's Qt is there | Python 3.13.9 ("embeddable", python.org, 10 MB) and the compiler llvm-mingw 20261006 (its GitHub release, 180 MB) into `%LOCALAPPDATA%\Champions\tools` - nothing is installed into Windows | the compiler and the SDL 2, OpenSSL and EGL development files from your distribution (apt, dnf, pacman, zypper; your system asks for your password) |
+| **Then** | **Champions** and **Champions Godot** in `~/Applications` and on the desktop | **Champions** on the desktop and in the Start menu | **Champions** and **Champions Godot** in the applications menu and on the desktop |
+| **Ran** (2026-10-21) | from a fresh home folder: found the image in Downloads, built native and Godot (with Homebrew's Qt, and again with the downloaded official Qt), both started; not yet: the first-start prompts of a downloaded copy, Apple's tools installed by it | from a fresh user folder with a space in its name, in a Windows 11 ARM virtual machine: found the image in Downloads, fetched Python and llvm-mingw, built in 4 minutes, made both shortcuts and started the game (the machine has no OpenGL driver: with Mesa beside it the game shows its first screen); not yet: an Intel or AMD PC | in a fresh Ubuntu 24.04 container (64-bit ARM, terminal, as root): installed the packages, found the image, built native and Godot's library in 7 minutes; the program shows its first screen headless; not yet: the zenity / kdialog window, pkexec, x86-64 |
+
+What every setup does: it looks for your disc image (an `.iso` file) in Downloads, on the
+Desktop, in Documents and on other drives - on a Mac also in
+`~/Library/Application Support/Play-RTA/` - and takes the one whose `SLUS_209.73` is the US
+v2.00 executable (checksum `4028A55F`), whatever the file is called; if there is none it opens
+one file window. Then a progress bar while it copies the executable out of the image,
+translates it and builds the program (15 to 45 minutes; the computer stays usable), puts the
+launchers in place and starts **Champions**. Starting a setup again later updates the build
+(quick). Everything it makes stays in your own folders:
+`~/Library/Application Support/Champions` (Mac), `%LOCALAPPDATA%\Champions` (Windows),
+`~/.local/share/champions` (Linux) - never share those folders, they hold the translated game.
+
+**What is in a setup** - and what never is: the project's source code (this repository), the
+setup's own small program, the Godot version as exported without any game library (Mac and
+Linux; the Windows Godot version has no game library yet), and for the private page a
+`setup.ini` with the room service's address. **Never** a disc image, the game's executable, a
+translation of it, a program or library built from it, or any of the game's data.
+`tools/install/setup/build_setups.py` checks every file of every setup, also inside the
+archives in it, for disc images, PS2 executables, pieces of the game's executable, translated
+code and the translation's function table, and writes the list of what is in it beside it.
+
+**Make the setups yourself** (on a Mac with Apple's command line tools and Homebrew's
+`mingw-w64`; nothing is downloaded):
+
+```
+python3 tools/install/setup/build_setups.py          # local/dist-setups/: the three setups and their contents lists
+python3 tools/install/setup/build_setups.py --service HOST:PORT   # with your room service as their default
+```
+
+The Godot version comes from `tools/godot/build.py export` (macOS, Linux); without an export
+the setups are made without it.
+
+### 8.2 The scripts, in a copy of this repository
+
+The scripts below do the same from a copy of this repository, in a terminal or with a double-click.
+One script per system does
 all of it: it checks (and, after you say yes, installs) the compiler, asks for your disc
 image, copies the game's executable `SLUS_209.73` out of it, translates and builds, and puts
 **Champions RTA Native** on your desktop. Your disc image is only read; nothing is uploaded
@@ -141,7 +193,7 @@ You need your disc image of the **US release, SLUS-20973, version 2.00** as an `
 | **Disc image** | a file window | a file window | a file window (zenity / kdialog), else typed |
 | **Time** | 1 to 30 minutes | 5 to 40 minutes | 1 to 40 minutes |
 | **Then start** | **Champions RTA Native** on the desktop | **Champions RTA Native** on the desktop | **Champions RTA Native** in the applications menu and on the desktop, or `play.sh` |
-| **State** | tested from a fresh folder ([issues/native-app.md](issues/native-app.md) 14) | **not yet run on Windows** | tested in a fresh Ubuntu 24.04 container |
+| **State** | tested from a fresh folder ([issues/native-app.md](issues/native-app.md) 14) | run from a fresh folder in a Windows 11 ARM virtual machine ([issues/native-windows.md](issues/native-windows.md)) | tested in a fresh Ubuntu 24.04 container |
 
 - The first time on a Mac, Finder may say the script is from the Internet: right-click it,
   choose **Open**, then **Open** again. In a terminal: `bash tools/install/install-mac.command`.
