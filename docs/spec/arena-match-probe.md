@@ -24,7 +24,7 @@ the neutral constructor difftests in `docs/spec/arena-goblin.md` and
 
 Each spawn now allocates its 0x18-byte SpellArena record. The probe checks
 the owner, vtable, and shared-seed draw against the documented spawn contract.
-The 0x590-byte player replacement at `arena_startWave` still returns null,
+Without `--real-player`, the 0x590-byte player replacement at `arena_startWave` returns null,
 class constructors are fixtures, and slots 27 and 34 are stubbed during
 construction; the resulting seed stream is therefore
 verified for this constructed probe, not for a complete real match.
@@ -70,18 +70,67 @@ and player damage processing with scripted sight, positions and animation events
 establish world collision, player input, full creature constructors, or a live
 match.
 
+## Real Player replacement and tick (`--real-player`, 2026-10-21)
+
+With `--real-player` the probe no longer refuses the `0x590` allocation. Recipe 0 is the
+first recipe record, the only one waves 0–2 use. In waves 0–2 the following execute in
+one emulator state:
+
+- the slot loop of `arena_startWave`;
+- the old player's slot-1 destructor;
+- `pool_free` → `pool_new` reuse of the same block (zero-filled);
+- `Player_ctor` → `Creature_ctor` → `GameObject_ctor`;
+- `game_resetTimers4f84a8`;
+- `arena_pickSpawnPoint` with the C library;
+- every frame, `Player_run` with its modelled helpers and `Player_pickAttackAnim`.
+
+Each piece has its own difftest (`docs/spec/arena-player.md`,
+`docs/spec/arena-player-tick.md`). Results, identical in shape on seeds 20973 and 7:
+
+| Scenario | Frames | Waves reached (cumulative objects) | Player constructions | `Player_run` ticks | States (ticks) | Shared draws in `Player_run` | Final seed |
+|---|---:|---|---:|---:|---|---:|---|
+| idle, 20973 | 2,400 | 0 (2) | 1 | 2,400 | 2: 2,400 | 0 | `0x03199571` |
+| fighting, 20973 | 1,688 | 0, 1, 2 (2, 5, 9) | 3 | 1,688 | 1: 1,100; 2: 588 | 36 | `0x65c9ba25` |
+| idle, 7 | 2,400 | 0 (2) | 1 | 2,400 | 2: 2,400 | 0 | `0xed4ea82b` |
+| fighting, 7 | 1,688 | 0, 1, 2 (2, 5, 9) | 3 | 1,688 | 1: 1,100; 2: 588 | 36 | `0x324380ff` |
+
+Every wave places the player at the original ring point x = 36.0, y = `0x37100000`,
+z = 0, facing 1. The new object reuses the old block, and the constructor draws exactly
+once. Fighting still sees 9 accepted enemy hits. Record HP ends at 9,851 (seed 20973)
+and 9,879 (seed 7), inside the nine-roll 10–20 bound; the probe asserts only the
+bound. The 36 draws are combo swings in `Player_pickAttackAnim`. The driver taps
+attack every 30 frames during fighting, as an authored pad binding.
+
+**Placement is now faithful for this state** (one active slot, offline, mode B, entry 0
+at the origin). The player's own share of the seed stream is also faithful: one draw
+per construction and one per combo swing, with the same rules as the executed models.
+**The match's seed stream as a whole is not faithful yet**, for these reasons:
+
+- The creature constructors are still fixtures. Each real one makes at least the base
+  `GameObject_ctor` draw (`arena-monsters.md` §2.1, `arena-goblin.md`), so waves 0–2
+  are missing at least 9 shared draws.
+- Animation callees are stubs, so swings never finish (state 1 persists). Idle
+  fidgets, which need four animation tracks, never happen.
+- `Player_move` is a stub. Its only draw, on entering water, cannot occur in this dry
+  fixture (`combat-movement.md` §3).
+- The idle-voice draw needs 3,600 frames; idle stops at 2,400.
+
 Commands, with the disc-derived executable placed only in ignored `local/`:
 
 ```text
 PYTHONDONTWRITEBYTECODE=1 python3 tools/probe_arena_match.py local/SLUS_209.73 --seed 20973
 PYTHONDONTWRITEBYTECODE=1 python3 tools/probe_arena_match.py local/SLUS_209.73 --seed 7
+PYTHONDONTWRITEBYTECODE=1 python3 tools/probe_arena_match.py local/SLUS_209.73 --seed 20973 --real-player
+PYTHONDONTWRITEBYTECODE=1 python3 tools/probe_arena_match.py local/SLUS_209.73 --seed 7 --real-player
 ```
 
 The native client's prerequisites, ranked by first dependency and wave reach:
 
 1. Replace the player at `arena_startWave` with a real 0x590-byte Player
-   constructor, record link, tick and input path. The probe refuses that
-   allocation and rebinds its authored player for combat.
+   constructor, record link, tick and input path. **Executed** with
+   `--real-player` (section above): constructor chain, destructor, pool reuse,
+   placement and tick. Still needed for exact play: real animation stepping,
+   `Player_move` with world collision, and real pad input.
 2. Build the Goblin constructor with its base Creature/stat and holder chain,
    then run/set-state, target pursuit, attack, damage and death. Wave 0 needs two.
 3. Build the Mummy constructor and class combat path for wave 1.

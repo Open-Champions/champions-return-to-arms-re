@@ -5,14 +5,19 @@ The wave plan, ring placement, arena_spawnMonster, world_createObject, class
 factory, and stat scaling execute in ee_emu. The class constructors are
 authored fixtures because their full object/resource fixture is separate.
 The fighting variant executes class attacks and Player damage processing on
-authored positions and fixed service answers. This is not a live match; no game
-bytes are saved.
+authored positions and fixed service answers. With --real-player the old player's
+destructor, pool reuse, the whole Player constructor chain, original placement and
+Player_run run for real (docs/spec/arena-player.md). This is not a live match; no
+game bytes are saved.
 """
 import argparse
 from collections import Counter
 
 import difftest_arena_modes as D
+import difftest_player as DP
+import ref_arena_player as RA
 import ref_monster_build as B
+import ref_player as RP
 from ref_core import ZERO
 
 
@@ -35,6 +40,59 @@ TAKE_DAMAGE = 0x116638
 PROCESS_DAMAGE = 0x110D30
 PLAYER_TAKE_DAMAGE = 0x1B5330
 PLAYER_PROCESS_DAMAGE = 0x1B2CC0
+PLAYER_RUN = 0x1A5030
+LIB = (0x3A5000, 0x3C0000)
+
+
+class Follow(set):
+    """A follow set that also runs the C library and software float range, as
+    difftest_player does; arena_pickSpawnPoint needs it (arena-player.md section 3)."""
+
+    def __contains__(self, target):
+        return set.__contains__(self, target) or LIB[0] <= target < LIB[1]
+
+
+def install_real_player(emu):
+    """Run the slot loop's replacement for real: the old player's slot-1 destructor,
+    pool_free / pool_new reuse of the same block, Player_ctor -> Creature_ctor ->
+    GameObject_ctor, game_resetTimers4f84a8 and arena_pickSpawnPoint. Resource lookups
+    answer with one authored part; the destructor's and constructor's other callees are
+    recording stubs. Each replacement appends (block, seed before the constructor) to
+    emu.replacements."""
+    emu.follow = Follow(emu.follow)
+    emu.follow.update({RA.PICK_SPAWN, RA.PLAYER_DTOR, RA.CTOR, RA.CREATURE_CTOR,
+                       RA.GAMEOBJECT_CTOR, RA.RESET_TIMERS, 0x166798})
+    part = emu.alloc(0x200)
+    emu.stub(RA.RES_FIND, ret=part)
+    emu.mem.write(D.PLAYERS + 0x20, b'\xff' * 4)
+    emu.freed = []
+
+    def pool_free(e):
+        e.freed.append(e.r[4] & 0xFFFFFFFF)
+
+    emu.stub(RA.POOL_FREE, function=pool_free)
+    for slot in range(4):
+        emu.mem.w32(RP.G_BTN_ATTACK + 4 * slot, DP.BTN['attack'])   # authored pad binding
+
+
+def lcg_steps(before, after, limit=64):
+    """How many documented shared draws turn ``before`` into ``after``."""
+    for steps in range(limit + 1):
+        if before == after:
+            return steps
+        before = RA.lcg(before)[0]
+    raise AssertionError('seed moved by more than %d draws' % limit)
+
+
+PICK_ATTACK_ANIM = 0x1BBA88
+
+
+def install_player_tick(emu):
+    """Player_run, the helpers its executed model covers, and Player_pickAttackAnim (one
+    shared draw per combo swing, player-tick.md 9.10 and 10) run for real. Player_move
+    stays a recording stub: its only shared draw is on entering water
+    (combat-movement.md 3), which this dry fixture never answers."""
+    emu.follow.update(set(DP.REAL_HELPERS.values()) | DP.REAL_OTHER | {PLAYER_RUN, PICK_ATTACK_ANIM})
 
 
 class ConstructorBoundary(Exception):
@@ -131,7 +189,13 @@ def install_factory_fixture(emu):
     def pool_new(e):
         size = e.r[4] & 0xFFFFFFFF
         if size == 0x590 and e._fresh_call.site == 0x306030:
-            return 0  # startWave's player replacement is outside this creature fixture
+            if not getattr(e, 'freed', None):
+                return 0  # without --real-player the replacement stays outside the fixture
+            block = e.freed.pop()
+            e.mem.write(block, bytes(0x590))       # pool_new zero-fills (object-system.md 2.1)
+            e.arena_player = block
+            e.replacements.append([block, e.mem.u32(RA.SEED)])
+            return block
         if size == B.SPELL_SIZE and pending['index'] is None:
             block = e.alloc(size)
             spells.append((block, e.mem.u32(B.G_RAND_SEED)))
@@ -198,10 +262,13 @@ def install_factory_fixture(emu):
     return created
 
 
-def build_wave(path, wave, seed):
+def build_wave(path, wave, seed, real_player=False):
     """Run the original wave builder through every spawn, with factory fixtures."""
     emu = setup(path, wave, seed)
     emu.follow = {D.STEP, D.SPAWN, 0x166630, 0x1666E0, 0x3B75D0, SCALE}
+    emu.replacements = []
+    if real_player:
+        install_real_player(emu)
     created = install_factory_fixture(emu)
     emu.call(D.START, 1)
     indices = [i for i, _obj in created]
@@ -212,7 +279,8 @@ def build_wave(path, wave, seed):
     return emu, created
 
 
-def run_match(path, seed, attacked, max_frames=2400, fighting=False):
+def run_match(path, seed, attacked, max_frames=2400, fighting=False,
+              real_player=False):
     """Run original arena_runTask and nextWave on an authored object fixture.
 
     The driver injects a lethal player hit after each intro. Original base
@@ -227,7 +295,13 @@ def run_match(path, seed, attacked, max_frames=2400, fighting=False):
     emu = setup(path, 0, seed)
     emu.follow = {D.TICK, D.NEXT, D.START, D.STEP, D.SPAWN, 0x3063FC,
                   0x166630, 0x1666E0, 0x3B75D0, SCALE}
+    emu.replacements = []
+    if real_player:
+        install_real_player(emu)
+        install_player_tick(emu)
     created = install_factory_fixture(emu)
+    emu.player_ticks = emu.player_draws = 0
+    emu.player_states = Counter()
     emu.mem.w32(D.PLAYERS + 0xAC, 0x41A00000)
     if fighting:
         emu.mem.w32(D.PLAYERS + 0xAC, 0x461C4000)  # 10,000 HP for three authored waves
@@ -299,6 +373,18 @@ def run_match(path, seed, attacked, max_frames=2400, fighting=False):
                     assert emu.mem.u16(obj + 0x232) == 0x14
                     hit_indices.append(index)
             killed_waves.add(wave)
+        if real_player:
+            pad = RP.G_PADS
+            press = DP.BTN['attack'] if fighting and frame % 30 == 0 else 0
+            emu.mem.w32(pad + 8, press)
+            emu.mem.w32(pad + 0xC, press)
+            player = emu.mem.u32(D.PLAYERS + 0x43D8)
+            assert player == emu.arena_player
+            emu.player_states[emu.mem.u32(player + 0x58C)] += 1
+            before = emu.mem.u32(RA.SEED)
+            emu.call(PLAYER_RUN, player)
+            emu.player_draws += lcg_steps(before, emu.mem.u32(RA.SEED))
+            emu.player_ticks += 1
         emu.call(D.RUN)
         wave = emu.mem.u16(D.WAVE)
         if wave != last_wave:
@@ -334,7 +420,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('elf')
     parser.add_argument('--seed', type=int, default=20973)
+    parser.add_argument('--real-player', action='store_true',
+                        help='real destructor, pool reuse, Player constructor chain, placement and Player_run')
     args = parser.parse_args()
+    if args.real_player:
+        return real_player_report(args.elf, args.seed)
     for wave in range(3):
         indices = dry_wave(args.elf, wave, args.seed)
         counts = Counter(indices)
@@ -358,6 +448,27 @@ def main():
     print('fighting fixture: %d frames; waves %s; Player_takeDamage calls %d; final player HP %.1f' %
           (frames, waves, emu.fighting_player_hits,
            emu.mem.f32(D.PLAYERS + 0xAC)))
+
+
+def real_player_report(path, seed):
+    """Recipe 0 (the first record), waves 0-2, idle and fighting, real Player."""
+    for wave in range(3):
+        emu, created = build_wave(path, wave, seed, real_player=True)
+        (block, before), = emu.replacements
+        print('wave %d builder: %d objects; player block %#x reused; ctor seed %#x -> spawn %s facing %#x'
+              % (wave, len(created), block, before,
+                 tuple('%#x' % emu.mem.u32(block + 0x3B4 + 4 * k) for k in range(3)),
+                 emu.mem.u16(block + 0x38)))
+    for label, attacked, fighting in (('idle', False, False), ('fighting', True, True)):
+        emu, waves, frames = run_match(path, seed, attacked, fighting=fighting, real_player=True)
+        print('%s: %d frames; waves %s; %d Player constructions, %d Player_run ticks (%d shared draws); '
+              'states %s; final seed %#x; record HP %.1f'
+              % (label, frames, waves, len(emu.replacements), emu.player_ticks, emu.player_draws,
+                 dict(sorted(emu.player_states.items())), emu.mem.u32(RA.SEED),
+                 emu.mem.f32(D.PLAYERS + 0xAC)))
+        if fighting:
+            print('    Player_takeDamage calls %d' % emu.fighting_player_hits)
+    return 0
 
 
 if __name__ == '__main__':
