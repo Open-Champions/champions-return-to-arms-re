@@ -86,7 +86,7 @@ def executed_bodies():
              'ref_combat_ctors2', 'ref_antqueen_run', 'ref_fire_touch', 'ref_phprop', 'ref_soul_run', 'ref_skeleton_run',
              'ref_combat_death', 'ref_weapon_holder', 'ref_sweep', 'ref_holder_slots',
              'ref_attach_matrix', 'ref_antwave', 'ref_phprop_run', 'ref_gold', 'ref_prop_dtors',
-             'ref_arrow_run', 'ref_prop_dtors')
+             'ref_arrow_run', 'ref_prop_dtors', 'ref_rigidbody', 'ref_arrow_hit', 'ref_staticfire')
     for name in names:
         try:
             mod = importlib.import_module(name)
@@ -185,9 +185,10 @@ SERVICES = {
     'players_anyWithinRadius', 'player_speedScale',
     'isNearCameraFocus480',             # camera only; its callers are particle/effect code
     'obj_delete',                       # the deferred delete (docs/spec/object-system.md)
-    # the physics prop's rigid body and its bookkeeping (docs/spec/gut-chunk.md 9): the body's
-    # one draw is the cosmetic seed, not the shared one
-    'rigidbody_init', 'quat_fromMat3', 'quat_normalize', 'rigidbody_updateDerived', 'obj_stopRunning',
+    # the physics prop's bookkeeping (docs/spec/gut-chunk.md 9).  Its rigid body (rigidbody_init,
+    # quat_fromMat3, quat_normalize, rigidbody_updateDerived) is executed since round 5 and runs
+    # for real (docs/spec/rigidbody-init.md): the body's one draw is the cosmetic seed
+    'obj_stopRunning',
     # resource and pose lookups (as res_find, model_getBounds, model_getAttachPoint): where a
     # bone prop starts (PhProp_ctor2) and the gold pile's clip (Gold_ctor2)
     'model_getMeshJoint', 'anim_getJointMatrix', 'resref_get',
@@ -207,6 +208,10 @@ SERVICES = {
     # docs/spec/phprop-run.md): the light's grid relink, impact puffs (the cosmetic seed
     # 0x404460 only), the ring burst, the camera shake, the water ripple
     'light_relink', 'fx_impactPuffNearCamera', 'fx_ringBurst', 'camera_shake', 'water_disturb',
+    # round 5 (docs/spec/rigidbody-init.md, staticfire-ctor.md): with the rigid body real a prop
+    # moves sideways, so PhProp_run asks the terrain sweep; the fire's constructor registers
+    # itself with the always-draw list, the path grid and the tagged heap
+    'terrain_sweepCircle', 'path_blockNodes', 'obj_addToAlwaysDraw', 'mem_allocTagged',
 }
 
 
@@ -371,7 +376,9 @@ class World(DCT.World):
         probe.pool_used += 1
         size = args[0] & M32
         probe.blocks[size] = probe.blocks.get(size, 0) + 1
-        return Res(self.emu.alloc(max(size, 0x10)))
+        block = self.emu.alloc(max(size, 0x10))
+        probe.life[block] = {'built': probe.tick, 'size': size, 'runs': 0, 'ended': None, 'how': None, 'cls': None}
+        return Res(block)
 
     def on_Creature_setStats(self, args, view, rng):
         c = args[0]
@@ -666,6 +673,7 @@ class Probe:
         self.events, self.first_seen, self.defaulted, self.clips = [], {}, {}, {}
         self.milestones, self.track = {}, []
         self.run_objects = False
+        self.life = {}                          # pool block -> built / runs / ended (the round-5 report)
         self.run_lists = {'frame': [], 15: [[] for _ in range(15)], 60: [[] for _ in range(60)]}
         self.cursor = {15: 0, 60: 0}
         self.where, self.delete_list, self.objects_run, self.destroyed = {}, [], {}, 0
@@ -697,6 +705,7 @@ class Probe:
             if addr in self.executed and name not in KEEP_AS_SERVICE:
                 emu.unhook(addr)
         emu.follow = self
+        self._round5_services()
         # the switch hooks
         run_key = {'antqueen': 'AntQueen_run', 'skeleton': 'Skeleton_run', 'soul': 'Soul_run'}[kind]
         self.run_key = run_key
@@ -709,6 +718,39 @@ class Probe:
         if clips is not None:
             self._load_clips()
         self.place(placement, serial)
+
+    def _round5_services(self):
+        """Services with a result the caller reads (AUTHORED, like the flat dry ground): the circle
+        sweep moves the whole step (fraction 1.0, no wall, no normal written), the tagged heap
+        hands out a block of the size asked, the path grid and the always-draw list answer nothing."""
+        emu, probe = self.rig.emu, self
+        one = RC.ONE
+
+        def sweep(e):
+            probe.note_stub('terrain_sweepCircle', 'service', ())
+            e.f[0] = one
+            return 0
+
+        def heap(e):
+            probe.note_stub('mem_allocTagged', 'service', ())
+            return emu.alloc((e.r[4] & M32) + 16)
+
+        def quiet(name):
+            def fn(e):
+                probe.note_stub(name, 'service', ())
+                return 0
+            return fn
+        def freed(e):
+            probe.note_stub('pool_free', 'service', ())
+            rec = probe.life.get(e.r[4] & M32)
+            if rec is not None and rec['ended'] is None:
+                rec['ended'], rec['how'] = probe.tick, 'destroyed itself'
+            return 0
+        emu.stub(0x150470, function=freed, name='pool_free')
+        emu.stub(0x185A40, function=sweep, name='terrain_sweepCircle')
+        emu.stub(0x14FF88, function=heap, name='mem_allocTagged')
+        emu.stub(0x18B6C0, function=quiet('path_blockNodes'), name='path_blockNodes')
+        emu.stub(0x14EDD8, function=quiet('obj_addToAlwaysDraw'), name='obj_addToAlwaysDraw')
 
     def _build_skills(self):
         """--skills: the game's own start-up initialiser builds the 101 Skill objects and
@@ -854,6 +896,13 @@ class Probe:
             return
         key = self.label(fn)
         self.objects_run[key] = self.objects_run.get(key, 0) + 1
+        rec = self.life.get(obj)
+        if rec is not None:
+            if slot == 4:
+                rec['runs'] += 1
+                rec['cls'] = key
+            elif slot == 1 and rec['ended'] is None:
+                rec['ended'], rec['how'] = self.tick, 'destroyed by the flush after obj_delete'
         self._call(fn, this, *args)
 
     def run_pool_objects(self, frame, lists):
@@ -1123,6 +1172,25 @@ def report(probe):
     if probe.objects_run:
         print('  pool objects run (slot: calls): %s; destroyed %d' % (
             ', '.join('%s x%d' % kv for kv in sorted(probe.objects_run.items())), probe.destroyed))
+    if probe.life:
+        mem = probe.rig.emu.mem
+        groups = {}
+        for block, rec in probe.life.items():
+            cls = rec['cls']
+            if cls is None:                     # never ran: name it by its table's slot 4
+                table = mem.u32(block + 0x48)
+                cls = (probe.label(mem.u32(table + 8 * 4 + 4)) + ' (never ran)') if table else 'no table (block %#x)' % rec['size']
+            groups.setdefault(cls, []).append(rec)
+        for cls, recs in sorted(groups.items()):
+            done = sorted(r['ended'] - r['built'] for r in recs if r['ended'] is not None)
+            how = {}
+            for r in recs:
+                how[r['how'] or 'still alive'] = how.get(r['how'] or 'still alive', 0) + 1
+            span = ''
+            if done:
+                span = '; lifetime %d..%d frames (median %d)' % (done[0], done[-1], done[len(done) // 2])
+            print('  pool lifecycle %-24s built %3d: %s%s' % (cls, len(recs), ', '.join(
+                '%s %d' % kv for kv in sorted(how.items())), span))
     if probe.blocks:
         print('  pool blocks handed out (size x count): %s' % ', '.join('%#x x%d' % kv for kv in sorted(probe.blocks.items())))
     if probe.defaulted:

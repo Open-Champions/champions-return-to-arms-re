@@ -23,7 +23,8 @@ F_120, F_FALLOFF = 0x42F00000, 0x3891A2B3   # 0x2c52fc; 0x2c5308 / 0x2c530c
 F_16, F_25000 = 0x41800000, 0x46C35000      # 0x2c5818; 0x2c5854 / 0x2c5858
 F_600, F_480, F_240 = 0x44160000, 0x43F00000, 0x43700000      # 0x2c5910, 0x2c5920, 0x2c5940
 F_PUSH_SCALE = 0x406EEEEE                   # 0x2c6af0 / 0x2c6af4 (about 3.7333)
-FIRE_CALLS = ()
+EXECUTED = {'StaticFire_ctor': STATICFIRE_CTOR, 'StaticFire_initCommon': STATICFIRE_INIT_COMMON,
+            'StaticFire_pushParticles': STATICFIRE_PUSH}
 
 
 class FireMixin:

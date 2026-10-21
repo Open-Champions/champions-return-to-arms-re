@@ -38,6 +38,9 @@ M32 = 0xFFFFFFFF
 
 NAMES = {'rigidbody_init': RIGIDBODY_INIT, 'rigidbody_updateDerived': RIGIDBODY_UPDATE_DERIVED,
          'quat_fromMat3': QUAT_FROM_MAT3, 'quat_normalize': QUAT_NORMALIZE}
+# bodies tools/difftest_rigidbody.py runs REAL and compares (name -> entry); tools/probe_full_placement.py reads this
+EXECUTED = dict(NAMES)
+
 # the matrix bodies under them (executed by tools/difftest_core.py; real in the composed run)
 UNDER = {'mat3_transpose': 0x166298, 'mat3_mul': 0x165710, 'mat3_mulVecTransposed': 0x165DA0}
 

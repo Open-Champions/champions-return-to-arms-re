@@ -17,6 +17,7 @@ CREATURE_SET_EFFECT_TIMER, LIGHT_EFFECT_CTOR = 0x118950, 0x201BD8
 VT_LIGHTEFFECT = 0x50E198              # lui 0x51 / addiu -0x1e68 at 0x201cc0 / 0x201cd0
 F_SIXTY = 0x42700000                   # lui 0x4270 at 0x201d80
 ZERO, ONE = 0, 0x3F800000              # 0x201c4c, 0x118 9ac (mtc1 $zero)
+EXECUTED = {'Creature_setEffectTimer': CREATURE_SET_EFFECT_TIMER, 'LightEffect_ctor': LIGHT_EFFECT_CTOR}
 HIT_CALLS = ('Creature_setEffectTimer', 'LightEffect_ctor')
 
 
