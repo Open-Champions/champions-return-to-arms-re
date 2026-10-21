@@ -69,7 +69,7 @@ def executed_bodies():
     names = ('ref_creature', 'ref_arena_monsters', 'ref_monsters_1', 'ref_combat_ctors',
              'ref_potion_ctors', 'ref_combat_round3', 'ref_combat_round4', 'ref_combat_round5',
              'ref_combat_round6', 'ref_skills_a', 'ref_skills_b', 'ref_skills_c',
-             'ref_combat_ctors2', 'ref_antqueen_run', 'ref_fire_touch', 'ref_phprop')
+             'ref_combat_ctors2', 'ref_antqueen_run', 'ref_fire_touch', 'ref_phprop', 'ref_soul_run')
     for name in names:
         try:
             mod = importlib.import_module(name)
@@ -118,6 +118,11 @@ RUN_STATES_EXECUTED = {
     'Skeleton_run': {0, 1},
     'Soul_run': set(),
 }
+try:                                    # every Soul arm: tools/difftest_soul_run.py
+    import ref_soul_run as _SR
+    RUN_STATES_EXECUTED['Soul_run'] = set(_SR.SOUL_RUN_STATES_EXECUTED)
+except ImportError:                     # pragma: no cover
+    pass
 
 # Call-outs the composed runtimes answer as services (ref_combat_runtime.Services and the
 # native World's fixtures): engine, presentation and bookkeeping, not game rules.
