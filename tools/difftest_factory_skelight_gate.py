@@ -22,6 +22,7 @@ def check_gate(path):
     # is supplied, once with each result. No resource bytes are retained.
     for name, resident, expected in (
         ('intro', 0, 0x1e5730),
+        ('INTRO', 0, 0x1e56b4),
         ('hub', 0, 0x1e56b4),
         ('hub', 1, 0x1e5708),
     ):
