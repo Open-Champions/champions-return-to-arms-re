@@ -72,6 +72,10 @@ is in `docs/spec/combat-monster-death.md` §3.3. `Goblin_run` on a corpse was
 entered with state 0x14 and reached `Creature_deadUpdate`, but this fixture
 does not model sinking or deletion.
 
+The existing `goblinDeath` model was rerun on seeds 20973 and 7 with
+`--quick -k goblinDeath`: 248 and 259 comparisons, zero mismatches; it
+refused 52 and 41 inputs outside its declared death-branch domain.
+
 The base take-damage slot is `Creature_takeDamage` `0x116638`, whose
 reference-model comparison passed on seeds 20973 and 7 in
 `tools/difftest_creature.py --quick`. This class has no damage override.
