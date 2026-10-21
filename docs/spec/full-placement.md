@@ -6,6 +6,8 @@ US `SLUS_209.73` v2.00. Prose of `tools/probe_full_placement.py` (tests:
 two takeDamage wrappers, six destructors and potion 1's fire entry
 (`docs/spec/combat-ctors-2.md`, `docs/spec/antqueen-run.md`, `docs/spec/fire-touch.md`).
 
+**Round 4 (2026-10-21, `t3/research-combat-ctors-4`): §7.** It supersedes §6.4 and §6.5.
+
 **Round 3 (2026-10-21, `t3/research-combat-ctors-3`): §6.** It supersedes §3.3 and §4.
 Every item of §4's list 1–8 is executed now. On this placement the three classes run the
 default Full fight to their deaths without meeting an unexecuted body.
@@ -268,3 +270,157 @@ Nothing on this placement stops the probe. Ranked by when the native could reach
 | 5 | `creature_getAttachMatrix0`, `model_getAttachMatrix` | `0x287940`, `0x1795f8` | a Soul held by its owner (Minion), state 0x1d |
 | 6 | `AntWave_ctor` and the AntWave object | `0x238654` | AntQueen state 0x19, which nothing requests |
 | 7 | The touch dispatch and the Frost Armor carrier's burn tick (§4 #10) | — | potion 1 on a player |
+
+## 7. Round 4: the next list executed; real clips; objects that run (2026-10-21)
+
+### 7.1 What was executed
+
+Every body below ran against a model on seeds 20973 and 7 with 0 mismatches. Each document
+lists every field read and written, every call with its seed draws and every constant with
+its address.
+
+| §6.5 # | Bodies | Figures (per seed) | Document |
+|---|---|---|---|
+| 1 | `GutChunk_run` `0x1edb18` (333/333), `PhProp_run` `0x155fcc` (888/890; two delay slots of likely branches), and under them `rigidbody_pointVelocity`, `rigidbody_applyCollisionImpulse`, `rigidbody_integrate`, `rigidbody_addForceAtPoint`, `model_getHullPoints`, `Prop_ctorNamed`, `Prop_ctorRes`, `ItemProp_ctor3` (all 100 %) | 3,000 single calls per entry; 180 lives (gut chunks, bones, props) built by the real constructors and stepped every frame (about 27,000 frames compared) | `phprop-run.md` |
+| 2 | `Gold_run` `0x157b58`, `Gold_onTouch` `0x157a9c`, the credit (`hud_addGoldFloater`, `hud_tickGold`, `hud_flushGold`), the item pickup (`itemprop_tryPickup`, `PhProp_interact`, `ItemProp_interact`, both prompts), `ItemProp_ctor2`, `Prop_run` (16 bodies, every instruction) | 49,000 cases; 1,000 pile sequences (real `Gold_ctor2`, N ticks, a touch, the credit ticks) | `gold-run.md` |
+| 3 | The Skeleton's four arrows chained from the real constructor with its arguments: `MissileWeapon` construction, run, touch, end, destructor; the element arrows' runs, hits and ends; their three destructors `0x3cde04`, `0x3cdf4c`, `0x3ce30c` | 600 arrows, 75,264 and 77,455 calls compared | `arrow-run.md` |
+| 4 | Holder slots 18–24 of Weapon1, WeaponShield and Weapon2 (24 bodies), `creature_drawHeldPart`, Weapon2 slots 8 and 16 | 6,000 calls; every block entered | `weapon-holder-slots.md` |
+| 5 | `creature_getAttachMatrix0` `0x287940` (22/22), `model_getAttachMatrix` `0x1795f8` (57/57), `model_getAttachWorldMatrix` `0x175330` (91/92), `anim_getJointMatrix` re-executed; and inside `Soul_run` state 0x1d (about 2,800 entries) | 3,000 cases per function | `attach-matrix.md` |
+| 6 | `AntWave_ctor` `0x238654` (inside AntQueen state 0x19), `AntWave_run`, `AntWave_draw`, `AntWave_dtor` (100 %) | about 80,000 calls; 151/155 waves, 63 run to their end (601 runs each) | `antwave.md` |
+| — | `PhProp_dtor`, `GutChunk_dtor`, `Prop_dtor`, `ItemProp_dtor`, `Gold_dtor`, `anim_advanceUnitSpeed` (the bodies the probe met next once the objects ran) | 3,000 cases per body; all instructions but each destructor's padding `nop` | `tools/ref_prop_dtors.py` |
+
+**Findings that matter for a port or for sync:**
+
+- **Gold** goes whole to the toucher's slot (`g_players[slot] + 0xe4`, capped at 99,999,999),
+  not split by `g_numPlayers` as the script's `givePlayerGold` is. It is credited 43 ticks
+  after the touch through one of 8 floaters, then paid (p + 7) >> 3 per tick. The pickup
+  path makes no shared draw. `gold-run.md` §9 compares this with `t3/research-items`: no
+  disagreement.
+- A resting prop (a gut chunk, a bone, a loot item) costs **one shared draw** when it comes
+  to rest and is rebuilt (`Prop_ctorNamed`, `Prop_ctorRes` or `ItemProp_ctor3`). Rest comes
+  on frame 181 at the earliest and on frame 402 at the latest (`phprop-run.md` §3.8).
+- A **monster's arrow never sticks** and never pierces (both need owner flag 0x40); no arrow
+  class has gravity. Every arrow costs one shared draw at construction; a plain arrow one
+  more per victim that passes the enemy test.
+- **Holder slot 21** stores nothing outside the stack and makes no shared draw. The load
+  slot 24 rebuilds the element: one shared draw per element of kind 1–6.
+- The **held Soul** in state 0x1d only places particles with the two matrices; its position
+  is set by `Minion_run`. No shared or cosmetic draw.
+- **AntQueen state 0x19**: no code requests it (258 set-state call sites and every store to
+  `+0x232` searched; *Observed*), so the AntWave stays *Inferred* unreachable.
+
+### 7.2 Animation for the probe: what the research documents, and the gap
+
+The task was to supply root motion and animation events from the animation research. What is
+documented:
+
+- **The mechanism**, executed: `anim_advance`, `Creature_stepAnim` and the track operations
+  (`animation.md` §5, §7; `tools/ref_anim.py`), event windows and root-motion extraction
+  (`t3/research-anim`, `creature-animation-dispatch.md` §4, `rendered-creature-animation.md`
+  §6).
+- **The Skeleton's events**, executed: its constructor's fifteen `anm_setEventSlots` on the
+  shared skelcom block (`combat-ctors.md` §4): bit 0 at 0.3 s on the swing rows, 0.3 and
+  0.9 s on rows 0x1d/0x1e, and on the bow rows 0x39–0x3b bit 1 at 0.2 s then bit 0 at
+  1.3 s. `t3/research-anim`'s per-class table has **no** Skeleton events (its `EVENTS` entry
+  is empty and its clip entries are unnamed), because its scan reads the class definition,
+  and the Skeleton's clips live in the skelcom block instead.
+
+What is **not** documented anywhere in the research: the clips' own data — each clip's length,
+the root track that gives the motion, the event slots' values before a constructor writes
+them. They are the contents of `skelcom.lmp`, `antqueen.lmp`, `soul.lmp` on the disc. That is
+the gap; no table of them is committed, and none may be (they are game data).
+
+So the probe does not fake them. **`--clips [PATH]`** reads them at run time from the user's
+own disc image (or a directory of its `.LMP` files): every `.anm` entry of the probed class's
+definitions and of the skelcom block, and the definitions' `.vif` models, copied in and
+relocated by the game's own `anm_relocate` / `model_relocate`; any `.anm`/`.vif` that
+`res_find` asks for later is loaded the same way. The animation bodies then run **for real**:
+`anim_init`, `anm_relocate` and the bodies `difftest_anim` executed (`ANIM_BODIES`), with the
+VU0 pose program run by `difftest_anim`'s own interpreter of its instruction words. The event
+bits are what the constructors install; the root motion is what `anim_advance` takes from the
+clip. Without `--clips` the probe keeps the 20-tick clip clock and says so.
+
+Verification of that path: `tools/difftest_anim.py` was rerun on exactly the 118 clips the
+probe loads (skelcom, AntQueen, Soul, skelnorm): **61 of 61 properties PASS on seed 20973 and
+on seed 7** (`--quick`; 2,659 and 2,743 steps with a root-motion delta). The probe's own
+`world_slideMove` service applies the delta on flat ground (§2.1).
+
+### 7.3 Other probe changes (AUTHORED, labelled in the code)
+
+- `--run-objects` (implies `--pool`): the probe keeps the run lists the `obj_runEvery*`
+  calls join and, each frame, calls slot 4 of every pool-built object in `runObjects` order
+  (`object-system.md` §5.4: the every-frame list, newest first, before the creature; then
+  this frame's 15- and 60-lists). `obj_delete`d objects get slot 1 (3) at the start of the
+  next frame; `handle_clear(+4)` leaves the list. A class whose run or destructor is not
+  executed is a stop. When the probed creature deletes itself, what it left keeps running.
+- `--skills`: the game's start-up initialiser builds the 101 Skill objects first, as
+  `difftest_skills_a` does (`0x16ac74 (1, 0xffff)`, `0x1ebca0`). The AntQueen's state-7 and
+  state-9 strikes read SkillPoisonWeapons (`g_skillTable[26]`); without it they read address
+  0, which real events now reach.
+- `--placement duel`: round5 without the other two classes' stand-ins (see 7.4).
+- **Two corrections of the world.** `world_collectObjectsInBox` now follows its executed
+  contract (`object-system.md` §4.3: radius and height overlap, cell order, at most limit − 1)
+  instead of a point test; with the point test an arrow at chest height never found the
+  player. The stand-ins' last move `+0x308`/`+0x30c` is 0 (idle): the difftest worlds left
+  random values there (99, −120 on the player), and the bow's lead point
+  (`Creature_leadTargetPoint`) aimed at a player who was not moving.
+- Holder slot 21 runs for real (`ref_holder_slots`); `RECORDED` keeps only `Creature_init`.
+- `jumpgate_getTravelState` (a getter, run real by every `difftest_natives` case) and the math
+  leaves of `difftest_core`'s table count as executed.
+- New services, each with its evidence in the code: `sound_playHit` (name, `res_find`,
+  `sound_playOnObject`; no seed), `light_link`, `light_unlink`, `light_relink`, `light_dtor`,
+  `trail_*`, `sound_playSample` (no call, no seed word), `fx_modelStatusEffects` (cosmetic
+  seed only, D37), `fx_impactPuffNearCamera`, `fx_ringBurst`, `camera_shake`,
+  `water_disturb`.
+
+### 7.4 Results
+
+`python3 -u tools/probe_full_placement.py --run-objects --clips --skills --ticks 3000 --class …
+[--type T] [--placement P] [--hit-every 25]`; the script is `local/probe/matrix-r4.sh` and
+the log `local/probe/full-placement-r4.txt` (untracked). **No row stops**: every body the
+fight reaches, the objects it leaves included, is executed or a service.
+
+| Class | Placement | Run | What happens (frames) |
+|---|---|---|---|
+| Skeleton (kind 1) | round5 | idle | 0:0, 121:1, 123:3; walks by root motion from (70, 140) to (−22.5, 116.9) toward the **Soul stand-in** (team 0, nearer than the player), 192:6; 19 swings land (`Creature_hitTargetAtReach` → `damage_apply`, first 210), 3/6 alternating to 3,000 |
+| Skeleton (kind 1) | duel | idle | 2:3; walks 104 units to (30.2, 48.0), 56.7 from the player; 66:6; **the swing lands on the player at 84** (`Player_takeDamage`), 20 swings in 3,000 frames |
+| SkeletonBow (kind 4) | duel | idle | 18:8; **the first arrow leaves at 96 and hits the player at 116**; 24 arrows, every one hits (the bow stands still: state 8 does not walk) |
+| SkeletonBow | round5 | idle | first release 234, 23 arrows, each hits its target (the Soul stand-in) |
+| Skeleton, both kinds, both placements | — | hit every 25 | 0x12 on hits, 299:0x14; the shatter's 17 bones run 402 frames each (6,834 `PhProp_run`) and come to rest at 701 as 17 `Prop`s (`Prop_ctorNamed`, one shared draw each; the bones' `PhProp_dtor` at the next flush); the props run `Prop_run` and destroy themselves through slot 1 from frame 1002 (`Prop_dtor`, 16 of them by frame 1300); a gold pile, when the loot makes one, runs `Gold_run` to the end |
+| AntQueen | round5 | idle | as round 3 (0, 1, 3, 8/9, 0x17, 0x18, 3/6); now with real clips her bites land (`Creature_hitTargetAtReach`, first 283, 23 in 3,000) on the Soul stand-in |
+| AntQueen | round5 | hit every 25 | flinches 24 and 124, 187:8, 277:9, **299:0x14**; 15 gut chunks (6,030 `GutChunk_run`; 15 destroyed or rested), 5 bones and items, 3 gold piles; every object runs to frame 3,000 or its end |
+| Soul | round5, native | idle / hit | 0/1 alternating; wanders by root motion up to about 310 from the player |
+
+Seed-relevant timing the clip clock could not give (all *Executed* in the probe, on the
+authored world): the melee Skeleton's swing event fires 18 frames after it enters state 6;
+the bow's release 78 frames after state 8 (bit 0 at 1.3 s); an arrow covers the 156 units
+to the player in 20 frames.
+
+### 7.5 Limits
+
+- **The player is a stand-in.** It does not run: `Player_takeDamage` gets the hits (the
+  amounts are 0 because `Creature_setStats` is a fixture that writes only hit points), but
+  the pending damage never reaches `+0x228`; and it never walks over a gold pile, so
+  `Gold_onTouch` and the credit, executed in `gold-run.md`, are not reached here. The
+  touch needs the player's own `obj_moveWithCollision` (`gold-run.md` §8).
+- On round5 the Skeleton and the AntQueen target the Soul stand-in, not the player; §3.1's
+  "first sighting of the player" was this. `duel` is the placement on which they reach the
+  player.
+- Clips the disc image has no entry for (`fx.lmp::game_swish_chest*.anm`, sound sequences)
+  keep the world's stand-in record; they are listed in the report.
+- The probe's grid has the creatures only (grid A); pool-built objects are not returned by
+  the box query, as grid-B props are not in the game either.
+- Element arrows are not on this placement (a Skeleton gets an element in under 10 % of
+  constructions). Their hit paths reach `Creature_setEffectTimer` `0x118950` (cold) and
+  `LightEffect_ctor` `0x201bd8` (exploding), not executed (`arrow-run.md`).
+
+### 7.6 What is still missing, ranked
+
+| # | Body | Address | Reached |
+|---|---|---|---|
+| 1 | The player's own tick on the stand-in: `Player_run`, the pending damage, `obj_moveWithCollision`'s touch dispatch (then the executed `Gold_onTouch`, credit and item pickup) | — | every frame of a real player |
+| 2 | `Creature_setEffectTimer`, `LightEffect_ctor` | `0x118950`, `0x201bd8` | a cold or exploding arrow's hit |
+| 3 | `StaticFire_ctor` and the fire | `0x2c5240` | burning debris (`+0x23a` = 1) from an exploding container |
+| 4 | `PhProp_ctor4` | `0x155bdc` | a deflected plain arrow with model words |
+| 5 | `Minion_run`'s placement of the held Soul | `0x286364`–`0x2863e0` | a Soul held by its owner |
+| 6 | `Gold_draw`, `Gold_ctor`, Weapon2 slots 1–7, 9–15, 17, `AntWave_clone` | — | drawing, a level's placed pile, two-hand holders |
