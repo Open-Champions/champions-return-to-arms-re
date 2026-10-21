@@ -47,7 +47,7 @@
 0014f120	obj_linkToGrid	first link; flag 0x2 objects go to the off-grid list; only caller the prediction-copy clone (0x13b58c) - GameObject_ctor links inline with the flags already zeroed
 0014f200	obj_delete	deferred delete: leaves the run list, joins the delete list 0x5db4e0; destroyed at the start of the next runObjects; 50 callers
 0014f248	obj_runEveryFrame	moves the run link (+4) to the active list 0x5db3a8; 155 callers
-0014f290	obj_stopRunning	removes the run link; 26 callers
+0014f290	obj_stopRunning	removes the run link; 26 callers (Prop_launch bit 0x80 unless +0x140 has 2; Soul_run 0x22 end); body not executed
 0014f2b8	obj_runEvery60	moves the run link to the next of the 60 slowest lists (round robin 0x4039fc); 76 callers
 0014f330	obj_runEvery15	moves the run link to the next of the 15 slow lists (round robin 0x403a00); 7 callers
 0014f3a8	world_flushDeleteList	destroys every object on the delete list (iterator with g_excludeMask); no caller and no stored pointer found - the flushes that run are inline copies in runObjects, world_loadRecords, world_deleteAllObjects
@@ -94,19 +94,19 @@
 00153ac0	Prop_ctorNamed	(obj, pos, lump, model, texture, partMask, propFlags, matrix): flags |= 0x1809; prop flag 2 -> runs every frame, 4 -> flag 0x1000
 00153c88	Prop_ctorRes	as Prop_ctorNamed with already-resolved resources; flags |= 0x5809
 00153de8	Prop_ctorLaunch	(obj, pos, launchFlags): GameObject_ctor then Prop_launch
-00153e54	Prop_ctorNamedLaunch	(obj, pos, lump, model, texture, partMask, launchFlags): random facing from GameObject_rand, bounds from the model, then Prop_launch
+00153e54	Prop_ctorNamedLaunch	(obj, pos, lump, model, texture, part mask, launch): GameObject_ctor (ONE SHARED DRAW), table 0x511d58, names copied, model/texture by res_find, ONE OWN DRAW facing, centre of the unhidden bounds; launch bit 4 moves by the centre; then Prop_launch. Executed: docs/spec/gut-chunk.md 5
 00154028	Prop_ctor6	another Prop constructor; body not read
-001541a0	Prop_launch	(obj, launchFlags): flags |= 0x1809 (moves to grid B), random velocity from GameObject_rand by flag bits, lifetime +0x10e, runs every frame
+001541a0	Prop_launch	(obj, launch): flags |= 0x1809, radius 4; velocity by launch bits 1/8/0x10/0x20/0x40 from own draws (later bits overwrite); life +0x10e 180 or 0x7fff; +0x140 bits; 0x80 stops it; option 0x44fe08 bit 0x100 damps. Executed: docs/spec/gut-chunk.md 6
 00154514	Prop_run	slot 4 of Prop, inherited by ItemProp; identified from the vtable, body not read
 001548bc	Prop_draw	slot 5 of Prop, inherited by ParticleProp; identified from the vtable, body not read
 001549e8	ParticleProp_ctor	body not read
 00154a4c	ParticleProp_run	slot 4 of ParticleProp; identified from the vtable, body not read
 00154d10	PhProp_interactPrompt	slot 13 of PhProp, inherited by GutChunk, LooseIceChunk, PhIce; identified from the vtable, body not read
 00155020	PhProp_interact	slot 14 of PhProp, inherited by GutChunk, LooseIceChunk, PhIce; identified from the vtable, body not read
-00155110	PhProp_initPhysics	(obj, launchFlags): builds the rigid body from the model bounds, random spin from three GameObject_rand calls; 17 callers
+00155110	PhProp_initPhysics	(obj, launch): rigidbody_init from the scaled bounds, velocities /60, spin from THREE OWN DRAWS (x2, x10 with launch 0x10 or 0x400), +0x22c = highest part bit, damping -0.1 (0x800) or -0.4. Executed: docs/spec/gut-chunk.md 7
 00155394	PhProp_ctor3	PhProp constructor variant; body not read
-001556c0	PhProp_ctor2	PhProp constructor variant used by GutChunk; body not read
-00155a0c	PhProp_ctor	(scale, obj, pos, lump, model, texture, partMask, launchFlags, itemRecord): with an item record it becomes an ItemPhProp (flag 0x100000, leaves grid B); 23 callers
+001556c0	PhProp_ctor2	(scale; obj, pos, facing, model, anim, lump, model name, texture; stack: 64-bit part bits, launch, item): the prop of one body part (Skeleton_shatter), placed by the joint matrix x rot(facing + 0x4000); one shared draw. Executed: docs/spec/gut-chunk.md 7a
+00155a0c	PhProp_ctor	(scale; obj, pos, lump, model, texture, part mask, launch, item record): Prop_ctorNamedLaunch, table 0x511ba8, empty item record at +0x148, flags |= 0x4000; an item makes it an item prop (+0x238 = 1, flags 0x100000, minus 0x800/0x4000); PhProp_initPhysics; item + launch & 0x19 -> one own draw and a swish sound. Executed: docs/spec/gut-chunk.md 4
 00155bdc	PhProp_ctor4	PhProp constructor variant; body not read
 00155dac	PhProp_ctorFromLevel	factory entry 'ItemPhProp' (0x248 bytes); body not read
 00155fcc	PhProp_run	slot 4 of PhProp, inherited by LooseIceChunk; identified from the vtable, body not read
@@ -118,7 +118,7 @@
 00157464	UserParamProp_interactPrompt	slot 13 of UserParamProp; identified from the vtable, body not read
 001574e8	UserParamProp_interact	slot 14 of UserParamProp; identified from the vtable, body not read
 00157530	UserParamProp_draw	slot 5 of UserParamProp; identified from the vtable, body not read
-00157668	Gold_ctor2	Gold constructor variant; 3 callers; body not read
+00157668	Gold_ctor2	(obj, pos, value): the gold pile: GameObject_ctor (ONE SHARED DRAW), table 0x511a88, +0x80 = value, flags |= 0x220c, clip resref 0x6e01b0 pushed with 0x204, runs every frame. Executed: docs/spec/gut-chunk.md 7b
 00157754	Gold_ctor	factory entry for class names starting with 'Gold' (0xc0 bytes)
 00157a6c	Gold_saveState	slot 9 of Gold; identified from the vtable, body not read
 00157a84	Gold_loadState	slot 8 of Gold; identified from the vtable, body not read

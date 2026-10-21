@@ -45,7 +45,7 @@
 00108844	item_parseAllSpecialTableEntries	parses every preset-table row and discards the result; no caller and no pointer to it
 00108924	item_sameIdentityFields	(a, b): b has a definition and a, b agree on definition, 64-bit flags and the word at +0x20 (prefix, suffix)
 00108968	item_getSpecialTableRowCount	returns 0x344 = rows of the preset table including its terminator, i.e. the distance in rows from 0x3ea550 to the base table; player_importCharacter uses it to rebase negative item indices; earlier draft name item_getConstant344
-00108970	world_countLivingNonplayerCreaturesInBox	(f halfSize, Vec3 *centre): world_collectObjectsInBox, counts objects with flags & 0x68 == 0x20
+00108970	world_countLivingNonplayerCreaturesInBox	(f halfSize, Vec3 *centre): world_collectObjectsInBox(0x80), counts objects with flags & 0x68 == 0x20. Executed: docs/spec/skeleton-run.md 4a
 00108a60	Creature_computeAvoidanceOffset	(f dist, Vec3 *out, creature, target): three forward rays (centre and both edges), keeps a side choice in creature +0x2f8 (0 none, 1, 2), returns a sideways offset of two radii
 00108fd8	Creature_probeThreeMovementRays	(creature, Vec3 *delta, hitOut): first blocked fraction among centre, left-edge and right-edge rays (0x18ad94); 1.0 when clear
 00109280	Creature_computeAvoidanceTarget	(Vec3 *out, creature, Vec3 *dest): pos + (dest - pos) x 1200 (1200 times the vector, not 1200 units) when clear, else along facing or facing +-0x2000 depending on side probes; only caller Creature_moveTo

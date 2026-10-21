@@ -79,7 +79,7 @@
 001d1bc0	stats_task	draw task "stats" (priority 50); only the unreferenced stats_open registers it
 001d1db8	stats_screen	stat/skill page drawn from itemList_draw; writes record +0xed/+0xee locally, sends stat-point messages, removes stats_task
 001d2eb8	stats_open	unreferenced; would set g_paused with no network test
-001d3150	player_giveExp	(slot, amount) level-ups add stat and skill points, refill hp and mana; called from simulation and from the hud_run cheat
+001d3150	player_giveExp	(slot, amount) level-ups add stat and skill points, refill hp and mana (only with hp > 0); HUD message on every machine, sound only for the local slot. Executed (tools/difftest_combat.py; docs/spec/combat-death.md)
 001d34ac	player_rebuildAbilities	recomputes max hp/mana and the ability records from skill ranks
 001d386c	quest_add	script addQuest: appends (title, text) to the quest lists of the players in slot order (record +0x41d0, count +0x43d0) and STOPS at the first player whose list is full (8) or already has the title - later players get nothing (0x1d38c4, 0x1d38e8; executed, FINDINGS N2). The earlier note said "every player's quest list"
 001d3968	quest_remove	script removeQuest: every matching entry is overwritten with a placeholder, but only the entries behind the last match move up and the count drops by one (executed, FINDINGS N3)

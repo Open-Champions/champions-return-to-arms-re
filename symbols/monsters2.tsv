@@ -93,8 +93,8 @@
 002a3de0	Orc_severPart	only caller Orc_setState case 0x14 (parts 1-5): hides a model part, creates a GutChunk at the bone; parts 6/7 (drop a hand part as PhProp) are never passed
 002a4240	Orc_hasShield	Returns true when weapon-holder slot 15 (model entry of hand 2) is in 0x0f..0x17. Callers: Orc slot 12 (0x2a2f88) and Orc_setState (0x2a36dc). "Shield" is Inferred (same use as MaleDarkElf_hasShield); provable part: hand2EntryIn0f_17. Not a SeaMonster function
 002a59f0	Scorpion_severPart	only caller Scorpion_setState 0x2a5908 (case 0x14): sets model-variant bit 1<<n and creates a GutChunk; sits in the Skeleton address range but is not a Skeleton function
-002a7da0	Skeleton_hasShield	true when the hand-2 part (holder offset 0x7c, hand 2) is 0x60 or 0x62; only caller Skeleton slot 12
-002a7ef0	Skeleton_shatter	(this, group) only caller Skeleton_setState case 0x14 with group 8: fills static mask list 0x8e44c0, creates one PhProp (0x1556c0) per mask present in +0x220 and clears those bits
+002a7da0	Skeleton_hasShield	holder slot 15 (hand 2) answering 0x60 or 0x62 -> 1; no holder -> 0; only caller Skeleton slot 12. Executed: docs/spec/skeleton-run.md 6
+002a7ef0	Skeleton_shatter	(this, group): groups 1-5 and 8 (6, 7 empty) fill the mask list 0x8e44c0; for each mask present in +0x220 a pool_new(0x248) and PhProp_ctor2 with the 64-bit part bits and launch 0x107 on the stack; the bits are cleared even without a block. Executed: docs/spec/combat-death.md
 002a815c	Skeleton_findLeader	UNREFERENCED (no call, no data pointer): links this skeleton (+0x3c8) to the nearest other Skeleton within 120 that has no follower (+0x3cc); name describes the body only
 002a8378	Skeleton_followLeader	UNREFERENCED (no call, no data pointer): moves toward a point 48 behind/beside the skeleton linked at +0x3c8 at speed 50 and copies its facing; name describes the body only
 002a873c	Skeleton_chainReaches	only caller the unreferenced 0x2a815c: walks the +0x3c8 chain from one skeleton, 1 when it reaches the given one or a null

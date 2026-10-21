@@ -615,10 +615,10 @@
 002a55ec	Scorpion_setState	vtable 0x50fe88 slot 27
 002a5af4	Skeleton_ctor	constructor; installs vtable 0x5175f8; object size 0x478; factory type names: WatSkel, Skeleton* (red*, blue* variants)
 002a67c4	Skeleton_draw	vtable 0x5175f8 slot 5
-002a6864	Skeleton_run	vtable 0x5175f8 slot 4
+002a6864	Skeleton_run	vtable 0x5175f8 slot 4; every state executed (docs/spec/skeleton-run.md 3); without a target state 8 requests 0 and still counts +0xf4 down that tick
 002a7508	Skeleton_saveState	vtable 0x5175f8 slot 9
 002a75d4	Skeleton_loadState	vtable 0x5175f8 slot 8
-002a7688	Skeleton_onNearbyEvent	vtable 0x5175f8 slot 12; purpose not established (was Skeleton_vslot12)
+002a7688	Skeleton_onNearbyEvent	vtable 0x5175f8 slot 12 (creature, code, position, other): on code 2, with a shield (Skeleton_hasShield), in state 3 or 5, other within +-9999 of the facing -> slot 27 (0x11, block); the position is copied and unused. Executed: docs/spec/skeleton-run.md 6
 002a774c	Skeleton_takeDamage	vtable 0x5175f8 slot 2
 002a7768	Skeleton_setState	vtable 0x5175f8 slot 27
 002a7e04	Skeleton_isEnemy	vtable 0x5175f8 slot 20 (this, other): Creature_isEnemy + 1 (2 or 5) when that is nonzero; else 1 for a live Skeleton on the opposite side (+0x3d4 2/1 or 1/2) while this +0x312 is 0; else 0 (docs/spec/combat-ctors-2.md)
@@ -630,7 +630,7 @@
 002a91b8	Skelight_setState	vtable 0x5174b0 slot 27
 002a9478	Soul_ctor	constructor; installs vtable 0x517740; object size 0x3e0; factory type names: Soul
 002a9678	Soul_draw	vtable 0x517740 slot 5
-002a9870	Soul_run	vtable 0x517740 slot 4
+002a9870	Soul_run	vtable 0x517740 slot 4; every state executed (docs/spec/soul-run.md)
 002aa908	Soul_takeDamage	vtable 0x517740 slot 2
 002aab60	Soul_trigger	vtable 0x517740 slot 3; purpose not established (was Soul_vslot3)
 002aab68	Soul_saveState	vtable 0x517740 slot 9

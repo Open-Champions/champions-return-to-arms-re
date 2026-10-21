@@ -265,12 +265,12 @@
 003c1b90	WeaponObject_slot23	only WeaponObject uses it (vtable 0x50d010 slot 23), 52 bytes; forwards the call to slot 23 of the object at this+4 when that pointer is set
 003c1bd8	WeaponObject_slot24	only WeaponObject uses it (vtable 0x50d010 slot 24), 52 bytes; forwards the call to slot 24 of the object at this+4 when that pointer is set
 003c1c20	Weapon1_typeinfo	type-info getter (vtable entry 0) for Weapon1, base WeaponInterface, WeaponCommon; descriptor at 0x908100
-003c1d08	Weapon1_setFireWeapons	only Weapon1 uses it (vtable 0x50cf40 slot 2), 44 bytes (was Weapon1_slot2)
-003c1d38	Weapon1_slot3	only Weapon1 uses it (vtable 0x50cf40 slot 3), 44 bytes
-003c1d68	Weapon1_slot4	only Weapon1 uses it (vtable 0x50cf40 slot 4), 44 bytes
-003c1d98	Weapon1_slot5	only Weapon1 uses it (vtable 0x50cf40 slot 5), 44 bytes
-003c1dc8	Weapon1_slot6	only Weapon1 uses it (vtable 0x50cf40 slot 6), 44 bytes
-003c1df8	Weapon1_slot7	only Weapon1 uses it (vtable 0x50cf40 slot 7), 44 bytes
+003c1d08	Weapon1_setFireWeapons	slot 2 (hand): element setter, creature_buildElementDamage kind 1 (id 0x15) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c1d38	Weapon1_slot3	slot 3 (hand): element setter, creature_buildElementDamage kind 6 (id 0x1f) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c1d68	Weapon1_slot4	slot 4 (hand): element setter, creature_buildElementDamage kind 2 (id 0x16) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c1d98	Weapon1_slot5	slot 5 (hand): element setter, creature_buildElementDamage kind 3 (id 0x17) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c1dc8	Weapon1_slot6	slot 6 (hand): element setter, creature_buildElementDamage kind 4 (id 0x18) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c1df8	Weapon1_slot7	slot 7 (hand): element setter, creature_buildElementDamage kind 5 (id 0x26) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
 003c1e28	Weapon2_typeinfo	type-info getter (vtable entry 0) for Weapon2, base Weapon1; descriptor at 0x908120; also initialises Weapon1 inline
 003c1fc8	Weapon2_setFireWeapons	only Weapon2 uses it (vtable 0x50ce70 slot 2), 100 bytes (was Weapon2_slot2)
 003c2030	Weapon2_slot3	only Weapon2 uses it (vtable 0x50ce70 slot 3), 100 bytes
@@ -280,17 +280,17 @@
 003c21d0	Weapon2_slot7	only Weapon2 uses it (vtable 0x50ce70 slot 7), 100 bytes
 003c2238	Weapon2_setElement	only Weapon2 uses it (vtable 0x50ce70 slot 8), 116 bytes (was Weapon2_slot8)
 003c22b0	WeaponShield_typeinfo	type-info getter (vtable entry 0) for WeaponShield, base Weapon1; descriptor at 0x9080f0; also initialises Weapon1 inline
-003c23e0	WeaponShield_slot2	only WeaponShield uses it (vtable 0x50cda0 slot 2), 44 bytes
-003c2410	WeaponShield_slot3	only WeaponShield uses it (vtable 0x50cda0 slot 3), 44 bytes
-003c2440	WeaponShield_slot4	only WeaponShield uses it (vtable 0x50cda0 slot 4), 44 bytes
-003c2470	WeaponShield_slot5	only WeaponShield uses it (vtable 0x50cda0 slot 5), 44 bytes
-003c24a0	WeaponShield_slot6	only WeaponShield uses it (vtable 0x50cda0 slot 6), 44 bytes
-003c24d0	WeaponShield_slot7	only WeaponShield uses it (vtable 0x50cda0 slot 7), 44 bytes
-003c2500	WeaponShield_slot8	only WeaponShield uses it (vtable 0x50cda0 slot 8), 48 bytes
-003c2530	WeaponShield_slot9	only WeaponShield uses it (vtable 0x50cda0 slot 9), 48 bytes
-003c2560	WeaponShield_slot10	only WeaponShield uses it (vtable 0x50cda0 slot 10), 48 bytes
-003c2590	WeaponShield_slot15	only WeaponShield uses it (vtable 0x50cda0 slot 15), 20 bytes
-003c25c0	WeaponShield_slot16	only WeaponShield uses it (vtable 0x50cda0 slot 16), 52 bytes
+003c23e0	WeaponShield_slot2	WeaponShield slot 2 (hand): element setter, creature_buildElementDamage kind 1 (id 0x15) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c2410	WeaponShield_slot3	WeaponShield slot 3 (hand): element setter, kind 6 (id 0x1f) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c2440	WeaponShield_slot4	WeaponShield slot 4 (hand): element setter, kind 2 (id 0x16) for hand 0 or 1; one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c2470	WeaponShield_slot5	slot 5 (hand): element setter kind 3 (id 0x17); one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c24a0	WeaponShield_slot6	slot 6 (hand): element setter kind 4 (id 0x18); one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c24d0	WeaponShield_slot7	slot 7 (hand): element setter kind 5 (id 0x26); one shared draw. Executed: docs/spec/weapon-holder.md 3.4
+003c2500	WeaponShield_slot8	slot 8 (hand, kind): as Weapon1 slot 8. Executed: docs/spec/weapon-holder.md 3.4
+003c2530	WeaponShield_slot9	slot 9: as Weapon1. Executed: docs/spec/weapon-holder.md 3.4
+003c2560	WeaponShield_slot10	slot 10: as Weapon1. Executed: docs/spec/weapon-holder.md 3.4
+003c2590	WeaponShield_slot15	slot 15 -> part: hand 2 -> +0x98, hand 1 -> +8, else 0. Executed: docs/spec/weapon-holder.md 3.4
+003c25c0	WeaponShield_slot16	slot 16 -> element: hand 1 -> damageDesc_getElement (linked call), else 0. Executed: docs/spec/weapon-holder.md 3.4
 003c2608	Creature_typeinfo	type-info getter (vtable entry 0) for Creature, base GameObject; descriptor at 0x908130
 003c2688	Creature_default_slot27	shared by 4 classes at slot 27, e.g. AntWave, CdEyeball, StrongStancePhantom; stores its 16-bit argument at this+0x232
 003c2700	Creature_default_slot33	shared by 76 classes at slot 33, e.g. Agony, Amphian, Ant; 8 bytes; returns the float at this+0x3c0
