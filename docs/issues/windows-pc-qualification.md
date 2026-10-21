@@ -1858,6 +1858,39 @@ durability, NPC/mission and full campaign completion, physical controllers,
 audio/vibration, WAN/NAT, public discovery, strict rendering equivalence,
 performance and the Godot bridge remain open.
 
+## Earned four-character Save
+
+A later private trial repeats the four-character battle and earned XP, then uses
+player two's ordinary Recall control to return the whole party to the hub.
+Only that player's Recall quantity falls, from two to one. The game rebuilds all
+four current actors before the party walks to the Savepoint. Player one opens
+Save and confirms overwriting the copied existing slot. The game and control
+client exit zero with 2,943 complete watched rows and no timeout.
+
+The new Save request clears Done, followed by a new Busy/Transfer transaction and
+Done. The game remains paused through the captured completion and then returns
+to normal play after an ordinary acknowledgement. The complete 310,392-byte
+game-built buffer equals the changed copied save file. Its four records contain
+XP 102/102/102/154 and Recall quantities 1/1/2/2. Ten full party anchors retain
+the declared canonical statistics, skills, quest data, 28 occupied items and 80
+equipment/auxiliary references, with the earned XP and consumed Recall reported
+explicitly. Saved current hub positions and the four blood1 return positions
+are checked separately against the actual actors and source-defined conversion.
+
+Two earlier automation attempts remain failed: the test admitted the hub before
+actor reconstruction, then applied an interaction-ready check during Recall's
+intentional input lockout. The corrections preserve the original input and
+execution limits. The completed run's outer wrapper also retains exit one:
+its metadata reader expected LF, while the Windows writer generated CRLF.
+Independent offline review checks that exact line ending and all original file
+ledger constraints; no game rerun or edited result replaces the original.
+
+This qualifies the bounded software-controlled combat, Recall, hub route and
+Save sequence. The new XP is present in the completed copied file; a fresh
+frontend Load of that checkpoint remains separate work. Original source saves
+and all installed programs retain their hashes. The candidate remains private
+and uninstalled, with strict default-off rendering equivalence still failed.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
