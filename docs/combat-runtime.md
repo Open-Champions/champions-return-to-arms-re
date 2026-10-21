@@ -574,7 +574,9 @@ remains:
   pool request from `damage_apply` (also `LightEffect` on a stun, gas, disease).
 - **Objects the defence path constructs**: GutChunk and the Strong Stance phantom are
   executed in section 16. Holy Shield's light and `Player_blockSparks` with silent != 0
-  are executed in section 17. `DefenceModel` still refuses a nonzero silent.
+  are executed in section 17. Section 18 executes the sample point inside that absorb
+  and the angle both block-spark cosines receive. `DefenceModel` still refuses a
+  nonzero silent.
 - **The rest of `Player_run`** inside the composed world: regeneration, instant abilities
   and the dead state run (ref_player, executed) but respawn, `game_checkAllDead` and
   `deathTask` are not composed; `Player_interact` with an interactable object in reach is
@@ -586,11 +588,15 @@ remains:
   attacker (Unknown).
 - **Spells**: three are composed (Holy Strike, Shock of Fire, Wave of Flame). DiseaseCloud
   is executed in section 16; attaching the disease effect is composed there, not a slice
-  of `damage_apply`. The other 98 skills, player state 5's aim / mana / recast inside the
-  composed world, and a creature destroyed with spells attached are still open.
+  of `damage_apply`. Section 18 executes Holy Shield's sample point and
+  `MultiFireProjectile_run`. The other skill runs named there, player state 5's aim /
+  mana / recast inside the composed world, and a creature destroyed with spells attached
+  are still open.
 - **Monster classes**: set-states and corpse phases of the classes not yet executed
-  anywhere (Goblin's death state is executed, its other states are not);
-  `loot_generateDrops` objects are not composed. Who calls 0x118b58 (Unknown).
+  anywhere (Goblin's death state is executed, its other states are not). Section 18
+  executes AntQueen's bank fade and spring, Skeleton's slot-25 forces, and Soul's
+  demon test; the other states of those runs are not. `loot_generateDrops` objects
+  are not composed. Who calls 0x118b58 (Unknown).
 - **Per-machine inputs**: `game_buildScreenEdgePlanes` 0x1e71b0 (camera frustum) stays a
   call-out of the screen clamp.
 - Water beyond the refusals, PvP modes, cutscenes, the prediction copy and two machines.
@@ -895,4 +901,53 @@ instructions of the silent == 0 arm stay the round-2 difftest.
 
 `python3 -m unittest tools.test_ref_combat_round4`: the fixtures only.
 `RangedModel.thrown_run` still refuses a potion.
+
+## 18. Round 5 (2026-10-20)
+
+`docs/spec/combat-round5.md` is the prose. `tools/ref_combat_round5.py` adds the
+bodies. Round 1 through round 4 modules, APIs and pinned vectors are unchanged.
+
+Executed against the original (`tools/difftest_combat_round5.py`, seeds 20973 and 7,
+0 mismatches):
+
+| Entry | Address | Instructions |
+|---|---|---|
+| hit-effect angle in `Creature_processDamage` | `0x110e60`, `0x110e80` | 168 of 1515 |
+| metal-spark angle in `Creature_processDamage` | `0x11110c`, `0x11111c` | 288 of 1515 |
+| gib angles in `Creature_processDamage` | `0x111b44`, `0x111ce4` | 304 of 1515 |
+| `Player_blockSparks` angle, silent 0 | `0x1b97dc`, `0x1b9800` | 198 of 408 |
+| `AntQueen_fadeBankTracks` | `0x2385dc` | 30 of 30 |
+| `AntQueen_updateBank` | `0x238448` | 101 of 101 (seed 7: 100) |
+| `AntQueen_run` states 0 and 1 | `0x236f78` | 101 of 607 |
+| `Skeleton_run` states 0 and 1 | `0x2a6864` | 143 of 809 |
+| `Soul_run` phase gate | `0x2a9870` | 126 of 1062 |
+| `Soul_isDemonNear` | `0x2ab2b4` | 58 of 58 |
+| `SpellHolyShield_absorb` sample point | `0x2e8534` | 206 of 206 |
+| `MultiFireProjectile_run` | `0x2da2bc` | 165 of 165 |
+
+The live session stops AntQueen on the call it names `aq_ground`, Skeleton on the
+slot-25 class check, and Soul on the call it names `demon` at tick 9. Those calls
+are the fade at `0x237028`, slot 25 with the forces below, and `Soul_isDemonNear`
+when `(g_simFrame XOR the byte at +0x230)` has a clear low nibble. The word at
+`+0x44` is the generator. `Creature_updateActive` returning 0 leaves Skeleton and
+Soul before that switch. AntQueen still reaches the fade.
+
+Slot 25 passes 0 for the queen and for a skeleton's first call. A skeleton whose
+kind word `+0x3d0` is 4 passes 1 on the second call when the first returned 0.
+The client's refusal fires for any class other than Gnaw before it reads that
+argument.
+
+The hit-effect angle is the sign-extended hit halfword `+0x2e0` plus `0x7fff`.
+The metal sparks and both block-spark cosines receive the sign-extended facing
+halfword `+0x38`. Each gib chunk's angle is that hit halfword plus a
+sign-extended sum of a bias and one own draw. The sine call receives the same
+register as the cosine.
+
+Holy Shield's 241 particles read the caster's pose through `model_getSamplePoint`
+at scale 1. A missing pose is not modelled. `MultiFireProjectile_run` is the
+MaleDarkElf volley, 165 of 165 instructions. Its `onHit` stays the description in
+`docs/spec/skills-35-68.md`.
+
+`python3 -m unittest tools.test_ref_combat_round5`: the fixtures only. 863 unit
+tests pass from `python3 -m unittest discover -s tools -p 'test_*.py'`.
 
