@@ -116,9 +116,24 @@ class WaterWorld:
         count = 0 if inside is False else rng.choice((0,) + (1,) * 3 + (2, 3, 4, 7))
         if inside:
             count = max(count, 1)
-        mem.w16(self.tree, count)
-        for j in range(count):
-            mem.w16(self.tree + 2 + 2 * j, 0 if inside and j == 0 else rng.randrange(n))
+        if not inside and count and rng.random() < 0.25:
+            # a split root (0x189288-0x189354): left leaf at +20, right leaf at +40
+            axis = rng.randrange(3)
+            centre = int((px, py, pz)[axis] / 4)
+            for off, value in ((2, centre + rng.randrange(-12, 13)), (6, centre + rng.randrange(-12, 13))):
+                value &= M32
+                mem.w16(self.tree + off, value & 0xFFFF)
+                mem.w16(self.tree + off + 2, value >> 16)
+            mem.w16(self.tree, 0xC000 | axis)
+            mem.w16(self.tree + 18, 11)
+            leaves = (self.tree + 20, self.tree + 40)
+        else:
+            leaves = (self.tree,)
+        for leaf in leaves:
+            k = count if len(leaves) == 1 else rng.randrange(0, 8)
+            mem.w16(leaf, k)
+            for j in range(k):
+                mem.w16(leaf + 2 + 2 * j, 0 if inside and j == 0 else rng.randrange(n))
         for g in self.grids:
             big = rng.random() < 0.2
             for c in range(1024):

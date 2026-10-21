@@ -235,6 +235,8 @@ splash and call `water_disturb`. Set: when level flag 0x1000 of word 0x44fe08 is
 16th frame call `damage_apply` on itself (0x1b4490); call `water_disturb` every frame while
 `s ≥ 0.01` and every 16th otherwise; clear the bit when it returns 0. [O]; what the level
 flag stands for is [U].
+The arguments, the depth band (enter at surface − feet in [−1, 60], stay in [−13, 48]) and
+the absence of any speed effect are executed in `docs/spec/player-wading.md`.
 
 **(g) Mode 0 only: animation rate, blend ramp, velocity.** (0x1b4794–0x1b4b88)
 
