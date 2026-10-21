@@ -304,6 +304,44 @@ f12 = 0 (Executed). A hit therefore consumes three seeds. Seed 324 with bounds
 0x4348b360, and the stored seed is 0xaa3e5b7d (Executed). The next seed, 325, is a
 miss: one step, no calls.
 
+`water_disturb` writes the velocity grid the step in section 5 reads. A nonzero byte
+at 0x44fcec returns 0 and writes nothing (Executed). Otherwise the chunk query
+(0x189240) returns up to 16 chunks. The box is x and y within the radius of the
+point, and z from one below the point to 60 above it. A chunk whose flag 0x80 is
+clear is left out (Executed: return 0, grid unchanged). A returned chunk with no
+simulation block is counted and not written (Executed: return 1).
+
+On a block, the width is maxX − minX. The origin is the signed integers at
+chunk+0x28 and chunk+0x2c, each multiplied by 0.25. The cell count is the
+truncation of `width × 0x3daaaaaa + 0.5`. The point's grid position is
+
+```
+inv = 1 / (float(count) × 12)
+gx = (x − originX) × 32 × inv + 16
+gy = (y − originY) × 32 × inv + 16
+```
+
+The radius goes through that same scale, and that grid radius is what the circle
+uses. A cell is skipped when that radius squared is less than
+`(float(row) − gx)² + (float(column) − gy)²`. The row is the world-x cell and the
+column is the world-y cell. The rows and columns which are visited at all use the
+world radius, not the grid radius: `trunc((g − radius) − 1)` through
+`trunc((g + radius) + 1)`, clamped to 0..31 (Executed, including a 24-wide tile,
+where that window cuts the circle, and an origin of 96 quarter-units).
+
+The amount added is the truncation of `strength − d² × (strength / gridRadius²)`.
+It is added to the signed sample. A sum above 32767 becomes 32767. A negative sum
+is stored in the low 16 bits (Executed: 32000 at the centre becomes 32767, a cell
+of −100 outside the circle stays −100, and strength −100 stores −100). A 120-wide
+tile centred on the origin, strength 1500 and radius 6, writes the 3×3 at rows and
+columns 15..17. The centre is 1500, the four edge neighbours are 914, and the four
+corners are 328 (Executed). Moving the point in world x moves those rows.
+
+One height step then adds velocity row r into height row r+1. The drawer uploads
+height rows 1..32 and kicks from the third upload, so this 3×3 is inside the kicked
+strips on the next frame. The same microcode the drawer runs produces those
+vertices, and they are not the vertices of a flat tile (Executed).
+
 Separately, the simulation itself splashes when the countdown at 0x44f200 is negative
 on entry (O 0x186e38). That path reads the strength 41 and the radius 10 from section
 2. A countdown that is zero or positive is decremented and the splash is skipped
@@ -322,7 +360,8 @@ executed.
    scale, is world z. The row index steps in world x and the column index in world y,
    from the floored minimum corner, by the step in section 3.
 5. Step the grid once a frame with section 5, then copy the two seams, and drop a
-   block that has not been drawn for 200 frames.
+   block that has not been drawn for 200 frames. A splash from section 6 is in the
+   velocity grid until that step, and the next frame's strips are what show it.
 
 ## 8. Open
 

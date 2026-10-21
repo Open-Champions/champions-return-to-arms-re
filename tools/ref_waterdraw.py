@@ -3,7 +3,8 @@
 
 Pure functions. tools/test_ref_waterdraw.py checks them on authored numbers.
 tools/difftest_waterdraw.py runs the same inputs through water_setup (0x1875d4),
-water_init (0x187374), world_drawWaterChunk (0x1876e0), the height step
+water_init (0x187374), water_disturb (0x189514), world_drawWaterChunk (0x1876e0),
+the height step
 (0x196088), the simulation (0x186e38) and the water VU1 entries. Nothing here
 reads a disc file.
 
@@ -58,6 +59,9 @@ KEEP_FRAMES = 200
 # water_init (0x187374). One ulp under 0.1. Ten of them stay strictly under 1.
 EDGE_WEIGHT = 0x3DCCCCCC
 CLAIM_ONE = 0x3F800000
+
+# water_disturb (0x189514). Width times this, plus one half, truncates to the cell count.
+DISTURB_WIDTH = 0x3DAAAAAA
 
 # Samples across one tile. Record 0 is the step's spare row. Records 1..32 are
 # uploaded. The first two uploads are not kicked, so 30 strips are drawn.
@@ -448,6 +452,56 @@ def splash_point(seed, bounds):
     unit = _unit(seed2)
     min_x, min_y, min_z, max_x, max_y, _max_z = (int(b) & 0xFFFFFFFF for b in bounds)
     return splash_seed(seed2)[0], (_along(min_x, max_x, unit), _along(min_y, max_y, unit), min_z)
+
+
+def _trunc(bits):
+    return ee_emu.s32(ee_emu.fp_to_int(bits))
+
+
+def disturb_cells(grid, strength, radius, origin, span, pos):
+    """One chunk's water_disturb writes. Returns a new 32×32 grid.
+
+    strength, radius, span (min x, max x) and pos (x, y) are raw float bits.
+    origin is the two signed integers at chunk +0x28 and +0x2c. The grid row is
+    the world-x cell and the column is the world-y cell. z is not read.
+    """
+    out = [list(row) for row in grid]
+    ox = _cpu_mul(ee_emu.fp_from_int(int(origin[0]), _CPU), _raw(0.25))
+    oy = _cpu_mul(ee_emu.fp_from_int(int(origin[1]), _CPU), _raw(0.25))
+    width = _cpu_sub(int(span[1]) & 0xFFFFFFFF, int(span[0]) & 0xFFFFFFFF)
+    count = _trunc(_cpu_add(_cpu_mul(width, DISTURB_WIDTH), _raw(0.5)))
+    inv = ee_emu.fp_div(CLAIM_ONE, _cpu_mul(ee_emu.fp_from_int(count, _CPU), _raw(12.0)), _CPU)
+    scale = _raw(32.0)
+    dx = _cpu_mul(_cpu_mul(_cpu_sub(int(pos[0]) & 0xFFFFFFFF, ox), scale), inv)
+    dy = _cpu_mul(_cpu_mul(_cpu_sub(int(pos[1]) & 0xFFFFFFFF, oy), scale), inv)
+    gx = _cpu_add(dx, _raw(16.0))
+    gy = _cpu_add(dy, _raw(16.0))
+    reach = _cpu_mul(_cpu_mul(int(radius) & 0xFFFFFFFF, scale), inv)
+    limit = _cpu_mul(reach, reach)
+    gain = ee_emu.fp_div(int(strength) & 0xFFFFFFFF, limit, _CPU)
+    radius_bits = int(radius) & 0xFFFFFFFF
+
+    def window(centre):
+        lo = _trunc(_cpu_sub(_cpu_sub(centre, radius_bits), CLAIM_ONE))
+        hi = _trunc(_cpu_add(_cpu_add(centre, radius_bits), CLAIM_ONE))
+        return max(0, lo), min(31, hi)
+
+    x0, x1 = window(gx)
+    y0, y1 = window(gy)
+    if x1 < x0 or y1 < y0:
+        return out
+    for row in range(x0, x1 + 1):
+        for col in range(y0, y1 + 1):
+            gap_x = _cpu_sub(ee_emu.fp_from_int(row, _CPU), gx)
+            gap_y = _cpu_sub(ee_emu.fp_from_int(col, _CPU), gy)
+            dist = _cpu_add(_cpu_mul(gap_x, gap_x), _cpu_mul(gap_y, gap_y))
+            if ee_emu.fp_cmp(limit, dist) < 0:
+                continue
+            amount = ee_emu.fp_to_int(_cpu_sub(int(strength) & 0xFFFFFFFF, _cpu_mul(dist, gain)))
+            total = (int(out[row][col]) + ee_emu.s32(amount)) & 0xFFFFFFFF
+            signed = ee_emu.s32(total)
+            out[row][col] = 32767 if signed > 32767 else _s16(total)
+    return out
 
 
 def second_particle_z(terrain, seed):

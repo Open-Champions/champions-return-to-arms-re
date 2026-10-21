@@ -160,6 +160,37 @@ class TestVertices(unittest.TestCase):
         self.assertEqual(missed, R.splash_seed(325)[0])
 
 
+class TestDisturb(unittest.TestCase):
+    def _splash(self, grid, strength=1500.0, radius=6.0, origin=(0, 0),
+                span=(-60.0, 60.0), pos=(0.0, 0.0)):
+        return R.disturb_cells(
+            grid, _raw(strength), _raw(radius), origin,
+            tuple(_raw(v) for v in span), tuple(_raw(v) for v in pos))
+
+    def test_a_centre_splash_is_a_three_by_three(self):
+        out = self._splash([[0] * 32 for _ in range(32)])
+        self.assertEqual([row[15:18] for row in out[15:18]], [
+            [328, 914, 328],
+            [914, 1500, 914],
+            [328, 914, 328],
+        ])
+        self.assertEqual(sum(sum(row) for row in out), 328 * 4 + 914 * 4 + 1500)
+        shifted = self._splash([[0] * 32 for _ in range(32)], pos=(30.0, 0.0))
+        rows = [r for r in range(32) if any(shifted[r])]
+        cols = [c for c in range(32) if any(shifted[r][c] for r in range(32))]
+        self.assertEqual((min(rows), max(rows), min(cols), max(cols)), (23, 25, 15, 17))
+
+    def test_only_a_sum_above_32767_is_clamped(self):
+        grid = [[-100] * 32 for _ in range(32)]
+        grid[16][16] = 32000
+        out = self._splash(grid)
+        self.assertEqual(out[16][16], 32767)
+        self.assertGreater(out[16][15], -100)
+        self.assertEqual(out[0][0], -100)
+        negative = self._splash([[0] * 32 for _ in range(32)], strength=-100.0)
+        self.assertEqual(negative[16][16], -100)
+
+
 class TestClaim(unittest.TestCase):
     def test_one_edge_is_truncated_against_one(self):
         ten = R._cpu_mul(R.ee_emu.fp_from_int(10, 'ps2'), R.EDGE_WEIGHT)

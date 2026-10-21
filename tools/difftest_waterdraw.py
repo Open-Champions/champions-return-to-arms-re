@@ -483,6 +483,109 @@ def check_splash(elf):
            'option 0x10, not frozen, and the generator hits 0 mod 300')
 
 
+def _raw_f(value):
+    return struct.unpack('<I', struct.pack('<f', float(value)))[0]
+
+
+def _cell_diff(got, expect):
+    bad = [(r, c, got[r][c], expect[r][c])
+           for r in range(32) for c in range(32) if got[r][c] != expect[r][c]]
+    return '%d cells differ, first %s' % (len(bad), bad[:3])
+
+
+def call_disturb(elf, grid, bounds, origin, pos, strength, radius, flags=0x80, linked=True, cut=0):
+    emu = new_emu(elf)
+    world = emu.alloc(0x80)
+    node = emu.alloc(16)
+    chunk = emu.alloc(0x40)
+    payload = emu.alloc(0x90)
+    block = emu.alloc(0x12B0)
+    emu.mem.w32(world + 4, node)
+    emu.mem.w32(world + 0x24, chunk)
+    emu.mem.w16(node, 1)
+    emu.mem.w16(node + 2, 0)
+    emu.mem.w32(chunk, payload)
+    emu.mem.w32(chunk + 0x24, flags)
+    emu.mem.w32(payload + 8, block if linked else 0)
+    for off, value in zip((8, 0x0C, 0x10, 0x14, 0x18, 0x1C), bounds):
+        emu.mem.w32(chunk + off, _raw_f(value))
+    for off, value in zip((0x28, 0x2C, 0x30), origin):
+        emu.mem.w32(chunk + off, int(value) & 0xFFFFFFFF)
+    write_grid(emu, block, [[0] * 32 for _ in range(33)], grid, [0] * 32)
+    emu.mem.w8(0x44FCEC, cut)
+    point = emu.alloc(12)
+    for i, value in enumerate(pos):
+        emu.mem.w32(point + 4 * i, _raw_f(value))
+    ret = emu.call(0x189514, world, point, fargs=(float(strength), float(radius))) & 0xFFFFFFFF
+    heights, disturb, gap = read_grid(emu, block)
+    return emu, world, block, payload, ret, heights, disturb, gap
+
+
+def check_disturb(elf):
+    blank = [[0] * 32 for _ in range(32)]
+    wide = (-60.0, -60.0, -60.0, 60.0, 60.0, 60.0)
+    emu, world, block, payload, ret, heights, disturb, gap = call_disturb(
+        elf, blank, wide, (0, 0, 32), (0.0, 0.0, 8.0), 1500.0, 6.0)
+    expect = R.disturb_cells(blank, _raw_f(1500), _raw_f(6), (0, 0),
+                             (_raw_f(-60), _raw_f(60)), (_raw_f(0), _raw_f(0)))
+    report('disturb-cells', ret == 1 and disturb == expect and heights == [[0] * 32 for _ in range(33)],
+           'centre 1500, rows and columns 15..17' if disturb == expect else _cell_diff(disturb, expect))
+
+    centre = expect
+    preset = [[-100] * 32 for _ in range(32)]
+    preset[16][16] = 32000
+    _emu, _w, _b, _p, ret, _h, disturb, _g = call_disturb(
+        elf, preset, wide, (0, 0, 0), (0.0, 0.0, 8.0), 1500.0, 6.0)
+    expect = R.disturb_cells(preset, _raw_f(1500), _raw_f(6), (0, 0),
+                             (_raw_f(-60), _raw_f(60)), (_raw_f(0), _raw_f(0)))
+    narrow_grid = blank
+    _emu, _w, _b, _p, nret, _h, narrow, _g = call_disturb(
+        elf, narrow_grid, (0.0, 0.0, -10.0, 24.0, 24.0, 10.0), (0, 0, 0),
+        (12.0, 12.0, 0.0), 1500.0, 6.0)
+    nexpect = R.disturb_cells(narrow_grid, _raw_f(1500), _raw_f(6), (0, 0),
+                              (_raw_f(0), _raw_f(24)), (_raw_f(12), _raw_f(12)))
+    offset = blank
+    _emu, _w, _b, _p, oret, _h, shifted, _g = call_disturb(
+        elf, offset, (0.0, 0.0, -10.0, 48.0, 48.0, 10.0), (96, 96, 0),
+        (20.0, 24.0, 0.0), 1500.0, 5.0)
+    oexpect = R.disturb_cells(offset, _raw_f(1500), _raw_f(5), (96, 96),
+                              (_raw_f(0), _raw_f(48)), (_raw_f(20), _raw_f(24)))
+    same = disturb == expect and narrow == nexpect and shifted == oexpect
+    report('disturb-places', same and ret == 1 and nret == 1 and oret == 1,
+           'clamp, a short tile, and an origin in quarter-units'
+           if same else _cell_diff(narrow, nexpect) + ' / ' + _cell_diff(shifted, oexpect))
+
+    _emu, _w, _b, _p, cret, _h, cut_grid, _g = call_disturb(
+        elf, blank, wide, (0, 0, 0), (0.0, 0.0, 8.0), 1500.0, 6.0, cut=1)
+    _emu, _w, _b, _p, fret, _h, flag_grid, _g = call_disturb(
+        elf, blank, wide, (0, 0, 0), (0.0, 0.0, 8.0), 1500.0, 6.0, flags=0)
+    _emu, _w, _b, _p, zret, _h, bare_grid, _g = call_disturb(
+        elf, blank, wide, (0, 0, 0), (0.0, 0.0, 8.0), 1500.0, 6.0, linked=False)
+    report('disturb-gates', cret == 0 and cut_grid == blank and fret == 0 and flag_grid == blank
+           and zret == 1 and bare_grid == blank,
+           'cut byte, flag 0x80 clear, or a missing simulation block')
+
+    mask = bytes([0xFF]) * 128
+    emu.mem.write(payload + 0x10, mask)
+    emu.call(0x196088, block + 0x50, block + 0xA90, payload + 0x10)
+    stepped, stepped_d, stepped_g = read_grid(emu, block)
+    exp_h, exp_d, exp_g = R.step_grid([[0] * 32 for _ in range(33)], centre, [0] * 32, mask)
+    report('disturb-step', (stepped, stepped_d, stepped_g) == (exp_h, exp_d, exp_g),
+           'velocity row r is height row r+1 on the next step')
+
+    ident = _bits(((0, 1, 0, 0), (0, 0, 1, 0), (1, 0, 0, 0), (0, 0, 0, 1)))
+    step = _raw_f(4.0)
+    rows = stepped[1:]
+    strips = R.project_strips(rows, ident, step)
+    gs = _vu(elf, rows, ident, step)
+    got = [(v.x, v.y, v.uv[0], v.uv[1], v.adc) for v in gs.vertices]
+    flat_strips = R.project_strips([[0] * 32 for _ in range(len(rows))], ident, step)
+    kicked = [vert for strip in strips for vert in strip]
+    flat = [vert for strip in flat_strips for vert in strip]
+    report('disturb-draw', got == kicked and got != flat,
+           '%d kicked vertices, different from a flat tile' % len(got))
+
+
 def check_splash_point(elf):
     bounds = [struct.unpack('<I', struct.pack('<f', v))[0]
               for v in (0.4, -1.2, 3.5, 120.6, 10.0, 40.0)]
@@ -567,6 +670,7 @@ def main(argv):
     check_claim(path)
     check_splash(path)
     check_splash_point(path)
+    check_disturb(path)
     print('%d failed' % FAILS)
     return 1 if FAILS else 0
 
