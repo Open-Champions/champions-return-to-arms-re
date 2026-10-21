@@ -475,15 +475,14 @@ every 25):
 | Class | Placement | Run | What happens (frames) |
 |---|---|---|---|
 | AntQueen | round5 | idle | as round 4: 0, 1, 3, 8/9, 0x17, 0x18, 3/6; 23 bites land from frame 283; ends at 3,000 |
-| AntQueen | round5 | hit every 25 | flinches 24 and 124, 8 at 187, 9 at 277, **0x14 (death) at 299**; the death makes **15 gut chunks, 5 loot items (`PhProp`) and 3 gold piles**. **Every gut chunk destroys itself on its first bounce, 56–65 frames after it is built** (913 `GutChunk_run` in all; in round 4, with an all-zero body, they never bounced and ran 402 frames each: 6,030). The 5 items rest after **259–403 frames** (4 on the 402nd, the unconditional rest; one early) and become 5 `ItemProp`s the pool keeps and the run lists do not (a loot item waits for a pickup); the gold runs to the end (8,100 `Gold_run`) |
+| AntQueen | round5 | hit every 25 | flinches 24 and 124, 8 at 187, 9 at 277, **0x14 (death) at 299**; the hits and the death together make **15 gut chunks, 5 loot items (`PhProp`) and 3 gold piles**. **Every gut chunk destroys itself on its first bounce, 56–65 frames after it is built** (913 `GutChunk_run` in all; in round 4, with an all-zero body, they never bounced and ran 402 frames each: 6,030). The 5 items rest after **259–403 frames** (median 403: most on the unconditional rest of the 402nd frame) and become 5 `ItemProp`s the pool keeps and the run lists do not (a loot item waits for a pickup); the gold runs to the end (8,100 `Gold_run`) |
 | Skeleton (kind 1) | round5 / duel | idle | as round 4: walks by root motion, swings from 210 (round5, 19 swings) or the player at 84 (duel) |
-| Skeleton, both kinds, both placements | — | hit every 25 | 0x12 on hits, 0x14 at 299; the shatter's **17 bones** (18 for the bow on duel, 2 items) rest after **193–403 frames** (median 403) and become 16 `Prop`s that run 301 frames and destroy themselves (`Prop_run` 4,816 runs) |
+| Skeleton, both kinds, both placements | — | hit every 25 | 0x12 on hits, 0x14 at 299; the shatter's **17 bones** (18 for the bow on duel) rest after **193–403 frames** (median 403); 16 become `Prop`s (the others `ItemProp`s, which wait for a pickup) that run 301 frames and destroy themselves (`Prop_run` 4,816 runs) |
 | SkeletonBow | round5 / duel | idle | arrows from 234 (round5, 23) or 96 (duel, 24; hits the player at 116); each lives 17–22 frames and destroys itself on its hit |
 | Soul | round5 / native | idle / hit | 0/1 alternating for 3,000 frames; wanders up to about 310 from the player. No Minion holds it here: the held placement is executed by `difftest_minion` alone |
 
 Seed-relevant timing, all *Executed* in the probe on the authored world: a loot item or bone prop
-rests on its 193rd–403rd frame; a gut chunk (bit 0, the only kind the probe's callers build)
-ends on its 56th–65th.
+rests on its 193rd–403rd frame; a gut chunk (these all had bit 0) ends on its 56th–65th.
 
 ### 8.3 What is still missing, ranked
 
