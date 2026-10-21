@@ -140,6 +140,23 @@ the actual card-transfer busy-to-idle transaction, idle card state and a valid l
 player before issuing further controls. Pause clearing alone occurs before the new
 player exists and is insufficient for this same-level load.
 
+**Ran in the actual rendered application on the diagnostic build:** a normal
+Shaman followed the dialogue/portal route, saved, loaded and killed the initial
+kobold with the starting spell. Its HP changed from 28.7678 to -2.2322, XP reached
+67, and the hero finished at 29.8317 HP with a combat minimum of 24.1691. The route
+used the same declared initialization-counter fixture and ordinary inputs. Fresh
+save/load transaction gates replaced fixed post-menu waits in the private test;
+the earlier fixed waits could leave the character exposed after the menu closed.
+No runtime timing fix or gameplay memory write was needed.
+
+A matched music-volume-zero run also passed. Each game-mixer capture contains
+4,985,780 stereo 16-bit frames at 48 kHz (103.8704 seconds). Watched HP, XP and mana
+match throughout the 362-frame combat segment, and both targets have the same death
+outcome. The music flag changes the PCM while other mixed output remains nonzero.
+Both recordings report zero samples at full scale; that counter does not establish
+audible quality, correct mixing or console fidelity. These WAVs are taken before
+the physical output device and remain private.
+
 **Ran with explicitly prepared level 25, pending-level state and points:** all seven classes spent points in the
 actual skill menus; each learned an active skill through the menu. No skill-rank or
 binding writes were used. A prepared low-health cleric's learned healing spell
