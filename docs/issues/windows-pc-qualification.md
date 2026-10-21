@@ -320,6 +320,18 @@ these app Loads; normal host initialization separately adds four default
 `BWNETCNF` network-configuration files to each private test card. No user card is
 used. These app checks do not requalify every older headless combat/save route.
 
+A further equipment test on the preserved headless native build equips the gloves
+already earned in play through the normal inventory menu. Actual armor rises
+from 27 to 40: the item has base armor five and a 175% armor bonus, contributing
+13 after the game's integer calculation. All occupied 72-byte item records stay
+unchanged; only equipped slot nine changes. The equip, normal Savepoint overwrite
+and separate fresh frontend Load all exit zero without timeouts or valid player-
+death rows; 343 independent audit checks pass. Fresh Load recomputes armor 40
+while preserving 1,713 XP, 57 gold, stats and all 32 skill entries. The failed
+first cursor attempt stops before confirmation and remains rejected. This proves
+the equipment change and its persistence; reduced incoming damage and rendered
+gloves appearance are separate tests.
+
 Earlier overwrite attempts pressed Cross while the overwrite screen required Square;
 they wrote no new checkpoint and correctly loaded the older zero-XP save. This was
 a test-input error, not an established persistence defect. Load readiness now witnesses
@@ -550,6 +562,22 @@ is applied. Correct rendered-format storage, blending, masks, dithering and
 format/view changes require further qualification. This uses authored packets
 and raw reference VRAM, without original game inputs, and does not establish the
 visual extent of the issue across campaign scenes.
+
+A private authored integer read/modify/write component then matches all 28,672
+packed pixels against the same independent software reference across seven cases:
+one opaque control and two, three or five overlapping sprites with repeated or
+increasing red values. Each case uses one instanced draw at 64x64 without AA.
+Six deliberately wrong controls retain eight-bit color through the batch and
+pack only afterward; every one of their 24,576 pixels differs, while the opaque
+control matches. The component packs after each ordered write instead. Its first
+shader-version failure occurs before draws and remains preserved separately.
+
+This is a component result on the tested NVIDIA driver, without production
+integration. It covers positive FIX=64 blending and alpha 128, using one R32UI
+texel per logical pixel. Signed-negative blending, masks, dithering, rejection,
+depth, packed-word aliasing, format changes, MSAA/scaling, portability and
+performance still need qualification. The production CT16 discrepancy above
+remains unfixed.
 
 Inspected captures show textured hub, ice, fire and stone-platform scenes. Forced
 offline entry into three PvP arenas instead leaves the player at Z=-100000; longer
