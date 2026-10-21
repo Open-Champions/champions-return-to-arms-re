@@ -1249,11 +1249,150 @@ CT16 write-precision gap remains open. Both new applications and their source
 overlays remain private, pending native-client handoff; this is an authored
 research update with no new implementation, game data or raw captures published.
 
+## Three-player frontend and four-player mission unlock
+
+The private opt-in multitap application `af99e292` now also completes the ordinary
+Three Players frontend and three character creations. The actual process exits
+zero with 5,289 consecutive watched rows and no timeout. Each compiled Windows
+software-controller adapter moves its intended actor while the other two remain
+stationary; all three retain 30 neutral rows without drift. The fourth input stays
+neutral and no fourth player actor is created. All three remain alive with their
+initial XP and gold. Inspected views show three HUDs.
+The virtual multitap still exposes four input slots; that capacity is distinct
+from the three selected players. This is software input, not physical-pad proof.
+
+A subsequent four-player test follows the ordinary frontend, character creation,
+and approach to Firiona, then advances her dialogue with normal player-one button
+edges. All four distinct live characters receive the first mission availability
+bit before the dialogue closes. Their HP, XP, gold, canonical items, equipment,
+skills and positions remain unchanged during the dialogue continuation. The
+camera returns to its normal shared view and all four HUDs return. The actual
+process exits zero with 7,745 consecutive watched rows and no timeout. This
+qualifies the observed party mission unlock, not portal entry, four-player combat
+or mission completion. An earlier approach-only diagnostic is retained separately;
+its mission flags correctly remain unset before dialogue completion.
+
+The party then gathers and walks north through normal Windows software-controller
+inputs. A first portal approach stops before interaction: its finite route leaves
+the trigger outside the player's source-backed interaction query, the prompt is
+inactive, and the game exits three on the position guard. No Square, mission-menu
+selection or level transfer occurs in that invocation. It remains a failed route.
+A separate retry preserves that executed prefix and adds eight northward input
+ticks for all four players, with the interaction and transition predicates intact.
+It completes the normal owner-zero menu selection and actually enters `blood1`.
+The process exits zero with 8,635 consecutive watched rows and no timeout. All four
+current distinct actors arrive alive with full HP/mana, zero XP, 500 gold, their
+mission availability, canonical items, equipment and skills retained. The final
+ready interval is unpaused and neutral, with settled world RGB and stable player
+positions. Inspected views show the usable portal and the actual four-player
+mission scene. This qualifies first mission entry; combat, campaign saving and
+mission completion remain separate four-player work.
+
+An installed-build campaign continuation uses one melee finisher after the
+previous ordinary spell setup, then retreats earlier. One Kobold kill awards
+25 XP, reaching 1,913 XP. All valid mission-player rows remain alive without a
+checkpoint reset; the minimum observed HP is 40.376095 and the paused endpoint
+has 40.469875 of 46 HP. Five living pursuers remain nearby, so this is a bounded
+survival improvement, not safe recovery, a cleared encounter or mission completion.
+The process exits zero with 2,607 consecutive watched rows and no timeout.
+The 1,913 XP remains unsaved: all four source/copied game-save/icon files retain
+their hashes and the emulated memory card records zero bytes written. The earlier
+failed survival attempt remains a failure. The installed application is unchanged.
+
+A further bounded retreat also ends alive at 1,913 XP and 35.926376 HP, but does
+not reach its intended waypoint. Most newly commanded movement occurs while the
+player remains in state 8; observed displacement begins after state 2 returns.
+The original state-machine code treats movement in state 8 as turning, with
+release-to-move gated by animation track conditions. That supports the partial-motion
+interpretation without proving the exact animation cause. The process exits zero
+with 2,675 watched rows, but the route goal is explicitly failed. All five watched
+living pursuers remain nearby, and no game save is written.
+
+A separate north-facing guard continuation retains a contiguous 120-row actual
+R1 hold. The recorded positions and facing place all five watched pursuers in the
+approximate forward half-plane for 118 rows after the initial turn. HP does not
+decrease during that held interval.
+The paused endpoints rise from 35.926376 to 36.757004 HP while retaining 1,913 XP.
+This is finite guarding and partial regeneration, not full healing, safe recovery,
+an escaped encounter or durable progress. The actual process exits zero with
+2,837 watched rows; no game save is written.
+
+## Connected CT16 write-path experiment
+
+A separate private renderer revision connects original GS write state through
+the actual GS decoder and frame list to an optional GPU write path. For each
+accepted raster triangle, it reads a separate destination snapshot, applies the
+integer blend, dither/clamp, 16-bit packing and framebuffer-mask merge, and writes
+the expanded packed result. This avoids sampling the active framebuffer and
+quantizing only after an entire batch.
+
+Six authored packet streams complete against an independent software GS reference.
+The original three authored canary packets are unchanged. The original CT16 canary retains its
+failure on both baseline and candidate-default, while the strict path corrects
+red 255 to 248. The earlier 1,024-pixel ROI is an analysis subset of the actual
+64x64 sprite; all 4,096 baseline pixels differ in red, with no alpha differences.
+Two-, three- and five-sprite overlap cases also
+separate the baseline from per-write packing. All six strict destination images
+match all 24,576 reference RGBA pixels. The CT32-render and CT16-upload controls
+continue to match. Baseline and candidate-default target bytes match on all 11
+observed targets; their command and draw counts also match for these six inputs.
+
+The actual decoder fixtures pass 960 checks across 48 cases. Their 24 fast/slow
+pairs match raw input and vertex words plus the recorded write-state metadata;
+they do not serialize every frame-list/resource field. The policy fixture passes
+37 checks. Four actual GPU preflight rejection
+controls issue no draws and allocate no target. An earlier private revision builds
+as C++ but fails GLSL compilation; its failed result is retained. The subsequent
+revision corrects the offending shader identifier.
+
+An expanded state matrix first stops on an authored packet error: a write intended
+for FBA instead targets the PABE register. The strict path rejects that unsupported
+state before the affected target is mutated. This invocation is invalid overall;
+its partial captures remain preserved and are not counted as a completed matrix.
+
+A corrected sibling changes only the authored PABE/FBA register setup, retaining
+all six original packet files and the same renderer sources and executables.
+Its 24 streams include those six, 15 additional CT16 write sequences and three
+additional upload controls. All 36 native/reference child invocations exit zero.
+The strict path matches 98,304 destination pixels and 81,920 rendered-source pixels
+against the independent software reference. All 180,224 observed default-target
+pixels remain byte-identical to baseline. Five cases split one additional GS
+command in default mode; actual GL draw counts remain equal to baseline in all
+24 cases. The sequences cover negative and overflow blend results, clamp/wrap, signed nonuniform dither, colour and alpha
+masks, FBA and destination-alpha history, source-alpha values and selectors,
+plus the second context with PRMODE and shifted XY coordinates. Recorded strict
+raster-triangle and snapshot counts agree at 86 each. These are 24 total streams,
+not 30 unique cases when combined with the earlier six-stream run.
+
+This path accepts only known fresh CT16-only target history, flat untextured
+geometry at one-to-one resolution and no multisampling. Alpha testing, destination
+alpha testing, depth writes, depth tests beyond always, PABE, fog and textures are
+excluded. It rejects unsupported or ambiguous history before target mutation.
+The 24 streams do not exhaust its permitted blend, dither and mask combinations.
+The successful cases do not qualify CT16S rendering, canonical wrapped storage,
+depth transfers, general game scenes, performance or console fidelity. Extra raw
+write-state comparisons can split other default-path batches, so the matched
+counts are not universal performance equivalence. These fixtures do not qualify
+the strict path in general game scenes or an installation.
+
+A separate private full-application build recompiles all 38 native C++ objects
+against the candidate headers and reuses 49 pinned generated EE objects plus the
+resource object. An original-object control matches the installed executable
+after excluding only its COFF timestamp. The candidate completes the same ordinary
+campaign Load and traversal in default mode: all 87,849 watched values and the
+captured image match the installed-build baseline exactly. Both RAM snapshots
+differ in 40 verified emulated memory-card timestamp bytes; the remaining bytes
+match. Character data, canonical inventory, equipment, skills and the four copied
+game-save/icon files remain unchanged, with zero card writes. This bounded
+compatibility run leaves the strict path disabled and does not exercise strict
+CT16 writes in gameplay. All eight installed programs remain unchanged. The
+broader production CT16 problem remains open, and the implementation stays private.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
 skill rank have not been completed. Rendering captures establish only the scenes
 actually observed; a destination request is not a normal mission transition.
-Cross-machine/WAN multiplayer, four-player missions, local physical multi-controller play, device disconnects
+Cross-machine/WAN multiplayer, four-player combat, campaign saving and mission completion, local physical multi-controller play, device disconnects
 during physical gameplay and hands-on audio/vibration quality remain separate work.
 The existing Godot bridge has not been qualified by these standalone-native tests.
