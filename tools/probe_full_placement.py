@@ -85,7 +85,8 @@ def executed_bodies():
              'ref_combat_round6', 'ref_skills_a', 'ref_skills_b', 'ref_skills_c',
              'ref_combat_ctors2', 'ref_antqueen_run', 'ref_fire_touch', 'ref_phprop', 'ref_soul_run', 'ref_skeleton_run',
              'ref_combat_death', 'ref_weapon_holder', 'ref_sweep', 'ref_holder_slots',
-             'ref_attach_matrix', 'ref_antwave')
+             'ref_attach_matrix', 'ref_antwave', 'ref_phprop_run', 'ref_gold', 'ref_prop_dtors',
+             'ref_arrow_run', 'ref_prop_dtors')
     for name in names:
         try:
             mod = importlib.import_module(name)
@@ -108,6 +109,13 @@ def executed_bodies():
         out.setdefault(addr, 'difftest_creature')
     for addr, where in EXECUTED_ELSEWHERE.items():
         out.setdefault(addr, where)
+    try:                                        # the math leaves tools/difftest_core.py compares
+        import difftest_core as DCO
+        for case in DCO.CASES:
+            if isinstance(case[1], int):
+                out.setdefault(case[1], 'difftest_core %s' % case[0])
+    except ImportError:                         # pragma: no cover
+        pass
     import ref_combat_runtime as T
     for addr in T.EMPTY_BODIES:                 # empty bodies (docs/combat-runtime.md 9)
         out.setdefault(addr, 'ref_combat_runtime.EMPTY_BODIES')
@@ -195,6 +203,10 @@ SERVICES = {
     # seed word in trail_create 0x190ff8, trail_addPoint 0x192550, trail_release 0x192800,
     # light_dtor 0x14a490 (Observed).  trail_create answers 0: no trail
     'trail_create', 'trail_addPoint', 'trail_release', 'light_dtor', 'sound_playSample',
+    # flying and exploding element arrows, settling props (docs/spec/arrow-run.md,
+    # docs/spec/phprop-run.md): the light's grid relink, impact puffs (the cosmetic seed
+    # 0x404460 only), the ring burst, the camera shake, the water ripple
+    'light_relink', 'fx_impactPuffNearCamera', 'fx_ringBurst', 'camera_shake', 'water_disturb',
 }
 
 
@@ -368,6 +380,20 @@ class World(DCT.World):
         return Res()
 
     def on_res_find(self, args, view, rng):
+        probe = self.probe
+        if probe.disc is not None:              # --clips: the disc's own .anm / .vif entry
+            def text(arg):                      # an address, or ('buf', text) a sprintf made
+                if isinstance(arg, tuple) and len(arg) == 2 and isinstance(arg[1], (bytes, bytearray)):
+                    return bytes(arg[1]).split(b'\0', 1)[0].decode('latin1')
+                if not isinstance(arg, int):
+                    return ''
+                out = bytearray()
+                while arg and view.load(arg + len(out), 1) and len(out) < 64:
+                    out.append(view.load(arg + len(out), 1))
+                return out.decode('latin1')
+            addr = probe.load_entry(text(args[0]), text(args[1]))
+            if addr is not None:
+                return Res(addr)
         return Res(self.common.get(args[1], self.model))
 
     def on_model_buildHideMask(self, args, view, rng):
@@ -553,7 +579,14 @@ ANIM_BODIES = {
     0x170D88: 'anim_findTrack (advance)', 0x171118: 'anim_releaseCaches (advance)',
     0x170E00: 'anim fade-in (advance)', 0x170EE8: 'anim fade-out (advance)',
     0x170FC8: 'anim_setTrackWeightRate (advance)',
+    # the pose: the VU0 microprogram 0x3e5c50 runs in difftest_anim's own interpreter of its
+    # instruction words (Vu0, install_cop2), installed here the same way
+    0x16ED40: 'anim_buildPose (pose)', 0x16F720: 'anim_getJointMatrix (pose)',
 }
+# The game's model loader: mesh offsets become pointers (docs/formats/model-texture.md,
+# Observed).  Not compared by any difftest; used only to set the world up, as the game's
+# lump loader would, so that a body reading a model (a prop's hull table) reads the model.
+MODEL_RELOCATE = 0x179130
 # The sound events of a step: presentation (they play a sample and draw the cosmetic seed
 # 0x404460, docs/spec/animation.md section 6).  difftest_anim stubs it too.
 ANIM_SERVICES = {'animsound_fireRange'}
@@ -623,6 +656,7 @@ class Probe:
         self.executed = executed if executed is not None else executed_bodies()
         self.disc = clips
         self.clip_names = {}                    # clip address -> entry name (--clips)
+        self.loaded_entries, self.clips_missing = {}, []
         if clips is not None:
             self.executed = dict(self.executed)
             for addr, prop in ANIM_BODIES.items():
@@ -700,6 +734,33 @@ class Probe:
             emu.follow, emu.record_calls = follow, record
             emu.reset_log()
 
+    def load_entry(self, lump, entry):
+        """An `.anm` or `.vif` entry of the user's disc, copied in and relocated by the
+        game's own anm_relocate / model_relocate; None for other kinds or when missing."""
+        relocate = {'.anm': ANM_RELOCATE, '.vif': MODEL_RELOCATE}.get(entry.lower()[-4:])
+        if relocate is None or self.disc is None:
+            return None
+        key = (lump.lower(), entry.lower())
+        if key not in self.loaded_entries:
+            data = self.disc.clip(lump, entry)
+            if data is None:
+                self.clips_missing.append('%s::%s' % key)
+                self.loaded_entries[key] = None
+            else:
+                emu = self.rig.emu
+                addr = emu.alloc(len(data) + 0x40)
+                emu.mem.write(addr, data)
+                # inside a stub's answer: the loader's own steps stay out of the probe's trace
+                saved = emu.r[29], emu.trace, emu.calls
+                emu.r[29], emu.trace, emu.calls = emu.stack_hi - 0x100, [], []
+                try:
+                    emu.call(relocate, addr, max_steps=MAX_STEPS)
+                finally:
+                    emu.r[29], emu.trace, emu.calls = saved
+                self.loaded_entries[key] = addr
+                self.clip_names[addr] = entry
+        return self.loaded_entries[key]
+
     def _load_clips(self):
         """--clips: the game's anim_init sets up the decoder slots and pose buffers; every
         `.anm` entry of the probed class's definitions and of the skelcom block is read from
@@ -715,6 +776,9 @@ class Probe:
         emu.stub(ANIMSOUND_FIRE_RANGE, function=fire_range, name='animsound_fireRange')
         emu.r[29] = emu.stack_hi - 0x100
         emu.call(ANIM_INIT, max_steps=MAX_STEPS)
+        import difftest_anim as DAN
+        self.vu = DAN.Vu0(emu)
+        DAN.install_cop2(emu, self.vu)
 
         def cstr(addr):
             out = bytearray()
@@ -722,26 +786,10 @@ class Probe:
                 out.append(mem.u8(addr + len(out)))
             return out.decode('latin1')
 
-        loaded, self.clips_missing = {}, []
+        loaded, self.clips_missing = self.loaded_entries, []
 
         def resolve(block, k):
-            lump, entry = cstr(mem.u32(block)), cstr(mem.u32(block + 8 * k))
-            if not entry.lower().endswith('.anm'):
-                return None
-            key = (lump.lower(), entry.lower())
-            if key not in loaded:
-                data = self.disc.clip(lump, entry)
-                if data is None:
-                    self.clips_missing.append('%s::%s' % key)
-                    loaded[key] = None
-                else:
-                    addr = emu.alloc(len(data) + 0x40)
-                    mem.write(addr, data)
-                    emu.r[29] = emu.stack_hi - 0x100
-                    emu.call(ANM_RELOCATE, addr, max_steps=MAX_STEPS)
-                    loaded[key] = addr
-                    self.clip_names[addr] = entry
-            return loaded[key]
+            return self.load_entry(cstr(mem.u32(block)), cstr(mem.u32(block + 8 * k)))
 
         blocks = [d for d, _first, _end in DCT.CLASSES[self.kind]['defs']]
         if self.kind == 'skeleton':
@@ -757,6 +805,12 @@ class Probe:
                         world.common[name_ptr] = addr
                 k += 1
         self.clips_loaded = sum(1 for a in loaded.values() if a)
+        # the definitions' model entry (+0xc) too
+        for block in blocks:
+            if block != CT.SKEL_COMMON:
+                addr = self.load_entry(cstr(mem.u32(block)), cstr(mem.u32(block + 8)))
+                if addr is not None:
+                    mem.w32(block + 0xC, addr)
 
     # ---- run lists (AUTHORED copy of runObjects 0x14b910, docs/spec/object-system.md 5.4)
     def link(self, obj, which):
