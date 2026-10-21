@@ -45,6 +45,16 @@ def publisher_logo_sprites():
             ("soe_splash.tex", 64, 50, 3, 0x80808080))
 
 
+# Resource IDs passed to lump lookup before sound_playOnObject. An attempted
+# cancel on the main menu has no transition and makes no sound in this fixture.
+MENU_SOUND_IDS = {
+    "move": "menu_main_toggle.anm",
+    "select": "menu_main_accept.anm",
+    "back": "menu_main_back.anm",
+    "main_cancel": None,
+}
+
+
 MUSIC_VOLUME_GATE_BITS = 0x3D4CCCCC  # comparison in music_playGlobal 0x2110e0
 
 

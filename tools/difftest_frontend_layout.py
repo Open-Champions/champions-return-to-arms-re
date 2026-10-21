@@ -11,8 +11,8 @@ import sys
 
 sys.path.append(os.path.dirname(__file__))
 from ee_emu import EE  # noqa: E402
-from ref_frontend_layout import (TABLES, first_theme_queues, list_geometry,  # noqa: E402
-                                 pause_geometry, publisher_logo_sprites)
+from ref_frontend_layout import (MENU_SOUND_IDS, TABLES, first_theme_queues,  # noqa: E402
+                                 list_geometry, pause_geometry, publisher_logo_sprites)
 
 SHA256 = "292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675"
 SEEDS = (20973, 7)
@@ -82,6 +82,22 @@ def logo_draw(path, seed):
     return sprites
 
 
+def menu_action(path, seed, state, table, mask):
+    e = emulator(path, seed)
+    e.follow = {0x1A01D0}
+    e.mem.w32(0x4F6B78, state)
+    e.mem.w32(0x4F6B7C, table)
+    for addr in (0x41BFE0, 0x41BFE4, 0x41BFE8):
+        e.mem.w32(addr, mask)
+    e.call(0x1E08F0, max_steps=100000)
+    ids = [e.mem.cstr(c.args[1] & 0xFFFFFFFF)
+           for c in e.calls if c.target == 0x17365C and
+           c.site in (0x1A03E8, 0x1E15A4, 0x1E1D6C)]
+    sound_calls = [c for c in e.calls if c.target == 0x214230 and
+                   0x1A0000 <= c.site < 0x1E2000]
+    return e.mem.u32(0x4F6B78), ids, len(sound_calls)
+
+
 def main():
     if len(sys.argv) != 2:
         raise SystemExit("usage: difftest_frontend_layout.py path/to/SLUS_209.73")
@@ -111,6 +127,16 @@ def main():
         checks += 4
         assert logo_draw(path, seed) == list(publisher_logo_sprites()), seed
         checks += 1
+        for kind, state, table, mask, next_state in (
+                ("move", 0, 0x4F6B88, 0x4000, 0),
+                ("select", 0, 0x4F6B88, 0x40, 1),
+                ("back", 1, 0x4F6BF8, 0x20, 0),
+                ("main_cancel", 0, 0x4F6B88, 0x20, 0)):
+            actual_state, ids, sounds = menu_action(path, seed, state, table, mask)
+            expected = [] if MENU_SOUND_IDS[kind] is None else [MENU_SOUND_IDS[kind]]
+            assert (actual_state, ids, sounds) == (next_state, expected, len(expected)), (
+                seed, kind, actual_state, ids, sounds)
+            checks += 1
     print("PASS frontend list layout and theme gate: %d checks; seeds 20973, 7" % checks)
 
 
