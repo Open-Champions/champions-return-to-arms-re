@@ -19,7 +19,8 @@ import scan_lookup_sites as scan                # noqa: E402
 
 KINDS = {"text_begin", "centered", "wide", "wrapped", "ascii", "ascii_centered",
          "wrapped_centered", "sprite", "frame", "rect", "clip", "colour", "key",
-         "msgbox", "lump"}
+         "msgbox", "lump", "class_name", "pad_glyph", "name_run", "name_draw",
+         "fade_step"}
 
 
 class ListGeometry(unittest.TestCase):

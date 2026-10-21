@@ -32,7 +32,15 @@ KIND = {
     0x181530: "wrapped_centered", 0x17FB68: "sprite", 0x17C118: "frame",
     0x17BD30: "rect", 0x1803E0: "clip", 0x1802E0: "colour",
     0x173C84: "key", 0x17365C: "lump", 0x1DF248: "msgbox",
+    # Helpers recorded by call site only (symbols/ui.tsv, symbols/audio-save.tsv).
+    0x1EB0F8: "class_name",      # text_getClassName
+    0x1EACB8: "pad_glyph",       # pad_buttonMaskToGlyph
+    0x22BE68: "name_run",        # nameEntry_run
+    0x22C920: "name_draw",       # nameEntry_draw
+    0x1DF5EC: "fade_step",       # hud_stepFade
 }
+SITE_ONLY = ("key", "msgbox", "lump", "class_name", "pad_glyph", "name_run",
+             "name_draw", "fade_step")
 
 
 # Font pointer words: 0x4f7100 is the medium font and 0x4f7104 the small one
@@ -61,9 +69,7 @@ def record(call):
         return (call.site, kind, *a[:7])
     if kind == "colour":
         return (call.site, kind, a[0])
-    if kind in ("key", "msgbox"):
-        return (call.site, kind)
-    if kind == "lump":
+    if kind in SITE_ONLY:
         return (call.site, kind)
     return (call.site, kind, *a[:6])
 

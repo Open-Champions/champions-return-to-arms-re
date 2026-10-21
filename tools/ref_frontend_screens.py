@@ -27,6 +27,7 @@ PLAYERSEL_PHASES = {
         (0x229CB4, 'centered', 320, 374),
     ),
     1: (
+        (0x2259D0, 'fade_step'),
         (0x2264C0, 'text_begin', 'small', 6, 0x0A316864),
         (0x2264CC, 'key'),
         (0x228430, 'wrapped', 41, 29),
@@ -64,6 +65,7 @@ PLAYERSEL_PHASES = {
         (0x228114, 'key'),
         (0x22812C, 'wide', 41, 106),
         (0x2281B8, 'centered', 0xffffffd9, 106),
+        (0x228230, 'pad_glyph'),
         (0x228284, 'centered', 0xffffffc7, 106),
         (0x22830C, 'colour', 0x08585E5D),
         (0x228114, 'key'),
@@ -84,6 +86,8 @@ PLAYERSEL_PHASES = {
         (0x229CB4, 'centered', 320, 404),
     ),
     4: (
+        (0x2284C0, 'name_run'),
+        (0x2286D4, 'name_draw'),
         (0x2297B8, 'frame', 21, 18, 0, 355, 6, 0x08000000, 1),
         (0x229B58, 'key'),
         (0x229C9C, 'text_begin', 'small', 6, 0x0A316864),
@@ -96,10 +100,13 @@ PLAYERSEL_PHASES = {
         (0x22894C, 'key'),
         (0x228978, 'msgbox'),
     ),
-    7: (),
+    7: (
+        (0x228AF0, 'fade_step'),
+    ),
     8: (
         (0x2290C8, 'text_begin', 'small', 6, 0x08585E5D),
         (0x2290DC, 'key'),
+        (0x229128, 'class_name'),
         (0x229154, 'wrapped_centered', 151, 46, 218, 0xffffff9c, 600),
         (0x229180, 'ascii', 172, 130),
         (0x2291B0, 'ascii', 172, 147),
@@ -133,18 +140,21 @@ PLAYERSEL_PHASES = {
         (0x229CB4, 'centered', 320, 404),
     ),
     9: (
+        (0x2294C0, 'fade_step'),
         (0x2297B8, 'frame', 21, 18, 0, 355, 6, 0x08000000, 1),
         (0x229BE4, 'key'),
         (0x229C9C, 'text_begin', 'small', 6, 0x0A316864),
         (0x229CB4, 'centered', 320, 404),
     ),
     10: (
+        (0x2294E0, 'fade_step'),
         (0x2297B8, 'frame', 21, 18, 0, 355, 6, 0x08000000, 1),
         (0x229BE4, 'key'),
         (0x229C9C, 'text_begin', 'small', 6, 0x0A316864),
         (0x229CB4, 'centered', 320, 404),
     ),
     11: (
+        (0x229610, 'fade_step'),
         (0x2297B8, 'frame', 21, 18, 0, 355, 6, 0x08000000, 1),
         (0x229BE4, 'key'),
         (0x229C9C, 'text_begin', 'small', 6, 0x0A316864),
@@ -152,6 +162,7 @@ PLAYERSEL_PHASES = {
     ),
     12: (),
     13: (
+        (0x228B5C, 'fade_step'),
         (0x2297B8, 'frame', 21, 18, 0, 355, 6, 0x08000000, 1),
         (0x229808, 'key'),
         (0x2298AC, 'text_begin', 'small', 6, 0x0A316864),
@@ -162,12 +173,14 @@ PLAYERSEL_PHASES = {
         (0x229CB4, 'centered', 320, 374),
     ),
     14: (
+        (0x228BE0, 'fade_step'),
         (0x2297B8, 'frame', 21, 18, 0, 355, 6, 0x08000000, 1),
         (0x229BE4, 'key'),
         (0x229C9C, 'text_begin', 'small', 6, 0x0A316864),
         (0x229CB4, 'centered', 320, 404),
     ),
     15: (
+        (0x228C70, 'fade_step'),
         (0x2297B8, 'frame', 21, 18, 0, 355, 6, 0x08000000, 1),
         (0x229808, 'key'),
         (0x2298AC, 'text_begin', 'small', 6, 0x0A316864),
@@ -621,6 +634,7 @@ IMPORT_STATES = {
         (0x220DE8, 'colour', 0x00323C3C),
         (0x220EA4, 'ascii', 119, 95),
         (0x220EC4, 'key'),
+        (0x220F20, 'class_name'),
         (0x220F4C, 'colour', 0x001E6464),
         (0x220F6C, 'wrapped_centered', 451, 230, 212, 0xffffff9c, 600),
         (0x220FDC, 'colour', 0x00323C3C),
@@ -704,6 +718,7 @@ IMPORT_STATES = {
     21: (),
     22: (),
     23: (
+        (0x220984, 'fade_step'),
         (0x220D0C, 'text_begin', 'small', 6, 0x00323C3C),
         (0x22158C, 'key'),
         (0x2215F4, 'msgbox'),
