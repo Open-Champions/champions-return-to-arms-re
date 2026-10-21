@@ -368,6 +368,34 @@ timeouts or valid player deaths; a separate 303-check audit passes. Mission and
 quest completion, full resource recovery and armor-related damage reduction remain
 separate claims.
 
+**Ran further natural combat, earned loot and durability on the preserved native build:**
+six additional Kobolds raise the checkpoint from 1,738 to 1,888 XP. The final
+survivor needs two short ordinary approach segments and a fresh melee press;
+one observed 25-damage hit takes its remaining 1.7678 HP negative. Dead state 20
+and the final 25 XP appear on the following tick. Earlier out-of-range attacks
+and an overlong approach remain preserved, without being counted as successful
+clears. A hero HP loss occurs in the accepted route; no armor comparison or
+exact hit-source attribution is inferred.
+
+Normal regeneration restores 46 HP and 36.6 mana in the cleared area. Ordinary
+movement and Square pickup collect a real leggings drop, expanding the armor
+bag from four to five records. Its canonical 72-byte record differs from the
+world drop only at the declared signed 16-bit bag-index field; the other 70 bytes
+match. All five previously occupied item records, equipment and allocations
+remain unchanged. This pickup does not equip the leggings; armor stays 40.
+The monster that originally spawned the drop is not traced.
+
+A normal Savepoint overwrite writes the full 310,392-byte RAM save buffer, and a
+separate fresh frontend Load preserves 1,888 XP, 68 gold, full resources, gloves,
+leggings and the full skill table. All 33 known saved defeated Kobolds match the
+fresh raw factory names, positions, variants and negative HP/maxHP fractions;
+eight saved WarWraith records remain. This is a known-record check, without a
+general active/free-object census. Six complete approach/combat/loot/save/Load
+processes exit zero without timeouts or valid Player deaths, and a separate
+454-check audit passes. The saved checkpoint remains in `blood1`; mission/quest
+completion and the transition to `strife` remain open. This is preserved-native
+evidence, separate from the installed application trials.
+
 **Ran that melee route in the installed sample/depth application (`d7c2258b...`):**
 all 196 original checks and 270 independent audit checks pass. The process exits
 zero without timeouts; all 313 valid Player rows remain alive, at armor 40, with
@@ -412,6 +440,78 @@ with host network-config creation recorded separately. These offscreen, unpaced,
 sound-disabled AA4 cases qualify this checkpoint's persistence and UI behavior.
 They do not establish physical input, audio, performance, exact glove-mesh or
 original-console image fidelity, reduced incoming damage or quest completion.
+
+**Ran the installed application through its normal visible, paced window path:**
+a fresh copied 1,738-XP card loads through the frontend. Ordinary movement,
+block/release, inventory and pause pass with no gameplay-state writes or RAM
+snapshot loads. All 1,206 valid Player rows remain alive, with inventory,
+allocations, 57 gold and armor 40 retained. The four copied game-save/icon files
+stay unchanged and emulated card writes stay zero; four private startup network
+configuration files are recorded separately.
+
+The first resize trial's original aggregate remains false at 258 of 259 checks:
+a deferred wide capture is followed immediately by a restore request and produces
+960x540. Source review supports a capture/resize ordering explanation, but that
+run lacks actual client measurements and does not qualify the width change.
+A separate trial drains each capture before resizing again. All 303 original
+checks and 319 independent audit checks pass. Verified owned-window measurements
+at 96 DPI and the four viewed PNGs agree: 960x720, 1280x720 and restored 960x720.
+The checkpoint, HUD and inventory are readable; a small black wedge at the wide
+scene's lower-left edge remains an observation without reference-fidelity judgment.
+
+The separate ten-second idle checkpoint interval reports 602 presents in
+10,018 ms, 59.987 FPS, a longest interval of 16.6 ms and zero pacing restarts.
+The earlier report printed by the reset includes boot stalls and is excluded
+from that baseline. Peak observed working set is 285,704,192 bytes; peak sampled
+private memory is 466,898,944 bytes. Active muted real-clock WASAPI renders
+41.57 seconds, with no device-request gap above 30 ms. These are bounded readings
+on this PC, without audible-quality, physical-feel, full-campaign, long-session,
+4K-performance or original-console fidelity qualification.
+
+A first installed 1,888-XP leggings equip/save attempt loads the new checkpoint
+but searches only the armor grid's first row. The cursor reaches its right edge
+while selecting the gloves, then the target-selection wait times out before any
+equip Cross or save request. The actual child exits three; the whole 167-check
+aggregate remains false. All 291 valid Player rows retain 46 HP and emulated
+card writes stay zero. That rejected attempt makes no equipment/save claim.
+
+A separate selection-only trial locates the extra leggings below the gloves,
+at columns seven/eight and rows two through four. All 189 original checks and a
+69-check raw/image review pass. The selected menu copy matches all 72 bytes of
+the canonical earned item and displays Quilted Leggings, armor 18, required level
+one and Equip. It changes no equipment or card data.
+
+**Ran normal equipped-leggings save and a separate fresh Load in the installed app:**
+one fresh Cross after the proven selection raises actual signed armor from 40
+to 54. All 374 original checks and 438 independent whole-trial checks pass.
+Only equipment slot 12 changes, from saved index 1002 to 1004; all six occupied
+72-byte items, stats, allocations, full 32-entry skill table, 1,888 XP and 68 gold
+remain unchanged. All 795 valid Player rows retain 46 HP. The actual Savepoint
+occupied-slot overwrite writes 310,392 bytes, exactly matching the entire saved
+RAM buffer. Source seeds stay unchanged; only this private copied slot changes.
+
+A separate fresh application process loads that installed-only equipped card
+with both initialization-counter overrides omitted. The normal virtual counter
+reads are logged, without given-value reads. All 297 original and 324 independent
+checks pass; all 604 valid Player rows retain 46 HP, armor 54, occupied items,
+equipment, skills, allocations, XP and gold. Across ten save-trial and seven
+fresh-Load snapshots, all 33 known saved defeated Kobolds match exact factory
+names, positions, variants and negative HP/maxHP fractions; eight saved
+WarWraith positions remain. Absolute recreated maxHP and object addresses need
+not equal the earlier process. The fresh copy's four game-save/icon files stay
+unchanged, with zero emulated card writes and four declared startup network
+configuration additions.
+
+Viewed fresh-Load images show the decorated new leggings covering the legs,
+with the readable 18-armor/required-level-one/Unequip tooltip. Selected item/equipment records and the raw appearance state match in snapshots
+bounding 180 ordinary paused menu frames. The earlier
+immediate post-equip capture shows exposed thighs; raw source/cache review finds
+an incomplete body hide mask and unpatched texture destination fields at that
+observation. The later fresh Load is not a same-process delayed-equip experiment,
+and the complete cause of the early frame remains unproven. These results qualify
+this equipment/persistence route and the later viewed appearance, without exact
+console-mesh fidelity, reduced incoming damage, physical feel, audible quality
+or mission/quest completion.
 
 Earlier overwrite attempts pressed Cross while the overwrite screen required Square;
 they wrote no new checkpoint and correctly loaded the older zero-XP save. This was
@@ -670,6 +770,46 @@ native/reference child exits zero and source/history pins stay unchanged. This
 qualifies those arithmetic vectors, without general blend-selector, RGB/alpha,
 mask, dithering or production-renderer qualification.
 
+A further private full-RGB component exercises all 81 valid A/B/C/D blend-selector
+combinations for each of six source/seed/FIX vectors, with two ordered overlapping
+writes per cell. All 31,104 packed candidate pixels across 486 cells match the
+independent software reference. An actual division-toward-zero control differs
+in 11 cells / 704 pixels; its other 475 cells match. A separate 5,184-coordinate
+ID calibration matches native output, raw reference VRAM and authored positions,
+including page crossings; reference padding stays unchanged. All seven child
+processes exit zero, and an independent raw/source/pin audit passes.
+
+This extends arithmetic coverage to those RGB/alpha vectors and selector choices
+on the tested NVIDIA driver. It does not qualify arbitrary inputs, masking,
+dithering, tests/depth, texture functions, packed-byte aliasing, format changes,
+MSAA/scaling, portability, performance or production integration. The original
+production CT16 discrepancy remains unfixed.
+
+An expanded private final-write component runs 156 dither, color-clamp, FBMSK and
+FBA cells at one- and two-write boundaries. All seven children exit zero and setup
+is valid, but the original strict comparison remains false: 1,366 packed pixels
+differ. All differences occur in 16 opaque, dither-enabled D cells at each
+boundary; the mask/FBA families and blended dither cells match. Calibration,
+padding, unchanged scissored pixels and A1 checks pass.
+
+An independent raw/source audit reproduces every difference. The pinned software
+reference selects a solid-rectangle shortcut for those opaque sprites; its source
+packs a constant color without DIMX, whereas its general scanline path applies
+dithering. The recorded outputs match those source-path calculations. This is a
+source-backed dispatch explanation without a per-call trace or a physical-PS2
+fidelity decision. A separate executed alternative changes only the authored opaque D rectangles
+to equivalent triangle pairs, preserving all state, seeds and native code. All
+31,104 full candidate pixels and 19,968 case words now match the pinned software
+reference. All 55 native raw outputs remain byte-identical to the first version;
+all four mask/FBA reference VRAM dumps remain exact. Each D reference dump changes
+only the original 683 differing halfwords. Eight actual controls separately
+produce 2,367 / 1,738 / 1,776 / 2,526 / 922 / 844 / 8,384 / 768 mismatches.
+Calibration, every dither phase, protected mask bits, FBA/A1, padding and scissored
+seeds pass an independent raw audit. This is bounded alternative-primitive-path
+component coverage. The original sprite discrepancy stays false, and neither
+physical-PS2 sprite behavior nor production rendering is corrected by this test.
+All candidate/reference inputs remain preserved, without vendor or production edits.
+
 Private CPU prerequisites also retain 12 raw write registers and effective PRIM
 per draw. Fourteen authored contract cases pass 82 checks. The baseline's 25
 contract failures consist of eleven missing raw-boundary requirements and
@@ -682,6 +822,24 @@ counters confirm the fast route actually ran. Copies, synthetic commands,
 primitive histories, the complete FrameList, GPU behavior and performance remain
 unqualified by these CPU fixtures. All such candidates stay private; the installed
 renderer and its CT16 precision discrepancy are unchanged.
+
+A further private ordered-event observer qualifies 24 authored CPU cases with
+706 owned events and 114 complete FrameList snapshot triples. Baseline slow,
+candidate capture-off and candidate forced-slow outputs match every explicitly
+serialized named field, including full vertex words, texture bytes/metadata,
+target announcements and retirement lists. A corrected 724-check audit and a separate corrected
+481-check root review pass. The original false evaluators remain preserved:
+their expectations misread authored DIR ordering, TEXFLUSH count, a zero-area
+transfer register and the constructor prefix's repeated PRMODECONT value.
+Corrections run offline only, without changing source/input/runtime outputs.
+
+This observes tested raw packets, original primitive queues, transfer fragments,
+MMIO and separately tagged synthetic canvas/host-fill commands. It is not a
+complete replay or a rendering correction. Host notes, direct public model/frame
+mutation, optimized/VIF/VU/world history and additional transfer/primitive cases
+remain unqualified. Attachment/lifetime proof covers the scoped fixture calls,
+without universal mutation or thread-safety enforcement. The source and all
+candidate/runtime evidence remain private; production is unchanged.
 
 Inspected captures show textured hub, ice, fire and stone-platform scenes. Forced
 offline entry into three PvP arenas instead leaves the player at Z=-100000; longer
