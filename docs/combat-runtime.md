@@ -951,3 +951,52 @@ MaleDarkElf volley, 165 of 165 instructions. Its `onHit` stays the description i
 `python3 -m unittest tools.test_ref_combat_round5`: the fixtures only. 863 unit
 tests pass from `python3 -m unittest discover -s tools -p 'test_*.py'`.
 
+## 19. Round 6 (2026-10-20)
+
+`docs/spec/combat-round6.md` is the prose. `tools/ref_combat_round6.py` adds the
+bodies. Round 1 through round 5 modules, APIs and pinned vectors are unchanged.
+The sentence above that leaves `MultiFireProjectile_onHit` to the skills
+description is the state at round 5. This round executes that hit.
+
+Skills 1–101 were already matched by `difftest_skills_a.py`, `difftest_skills_b.py`
+and `difftest_skills_c.py`. This round is the handlers those tests left as
+call-outs.
+
+Executed against the original (`tools/difftest_combat_round6.py`, seeds 20973 and
+7, 58 cases each, 0 mismatches):
+
+| Entry | Address | Instructions |
+|---|---|---|
+| `poisonGasSpell_run` | `0x1fd0f0` | 296 of 303 |
+| `DiseaseCorpse_run` | `0x2ce4a4` | 91 of 91 |
+| `MultiFireProjectile_onHit` | `0x2da610` | 198 of 198 |
+| `MultiFireProjectile_end` | `0x2da928` | 73 of 73 |
+| `SmokeGen_run` | `0x31c898` | 132 of 139 |
+| `Pustule_run` | `0x30bde0` | 435 of 435 |
+| `SpellArena_run` | `0x305bbc` | 184 of 184 |
+| `SpellHornOmenEffect_ctor` | `0x2fc574` | 39 of 39 |
+| `SpellHornOmenEffect_run` | `0x2fc684` | 514 of 514 |
+| `SpellPlanarSteelEffect_ctor` | `0x2fb728` | 127 of 127 |
+| `SpellPlanarSteelEffect_run` | `0x2fb9b4` | 638 of 638 |
+
+Gas damage flags are `0x01000040`. Smoke damage flags are `0x0100c040`. A
+multi-fire hit skips a player-flagged victim on mask `0x01000040`, and skips a
+creature (flag `0x20`) whose word `+0xa8` has bit `0x04000000`. The hit
+recomputes its range from skill slots 13 and 10. It does not read the cast-time
+minimum and maximum, and it has no already-ended test. Monster spread uses a
+fraction in `[0, 1)`, so a positive stat takes the `+0.5` side. The box capacity
+argument on these queries is `0x40`. Seven descriptor instructions in the gas
+cloud and seven in the smoke generator do not run: the later-slot search is dead
+because slot 0 is filled first.
+
+`DiseaseCloud_ctor` and `SmokeGen_stepParticles` stay stubs. `StaticFire_run`
+stays the FX difftest. Deflection inside this runtime, the bow release composed
+into it, further monster deaths, Skeleton past state 1, AntQueen past state 1,
+Soul's thrown hits, and a nonzero silent argument to `Player_blockSparks` stay
+open. Spell destructors other than the two the skills difftest already follows,
+and Hammer states 1 and 2, stay unmodelled. Haze kind 3 stays with the FX work.
+
+`python3 -m unittest tools.test_ref_combat_round6`: the fixtures only. 877 unit
+tests pass from `python3 -m unittest discover -s tools -p 'test_*.py'` once
+stdlib `dis` is loaded first.
+
