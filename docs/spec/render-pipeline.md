@@ -364,18 +364,19 @@ normals are a second normal block in the packet, found through the middle value 
 row 0), colour = the uploaded rgba for every vertex, one kick with the first tag. A final
 upload with 0 switches the mode off.
 
-### 4.8 Water: entries 0x36, 0x38 — O, not verified numerically
+### 4.8 Water: entries 0x36, 0x38 — Executed
 
 `world_drawWaterChunk` unpacks four matrix rows and a GIF tag to qwords 0–4 and calls 0x36
 (with `ITOP` as the clip flag). The tile's simulation block is itself VIF data: for each of
 33 rows, 32 signed 16-bit heights unpacked to one of three rotating buffers, then
-`MSCAL 0x38`. Each call makes the vertices of that row (height ÷ 16 along one matrix axis,
-column and row counters stepping by a constant along the other two), projects them, and
+`MSCAL 0x38`. Each call makes the vertices of that row (height ÷ 16 along world z,
+the column index along world y and the row index along world x), projects them, and
 emits a strip of 62 vertices joining the row to the previous one. The texture coordinate
-is `32 + 0.0499 × (height difference to the previous row, to the previous column)` texels:
-the water texture is looked up by surface slope, which is what makes ripples visible on a
-flat-coloured surface. There is no per-vertex colour (the tag's registers are texture
-coordinate and position; one `RGBAQ` is set for the whole tile).
+is `32 + 0.0499200001 × (height difference to the previous row, to the previous column)`
+texels: the water texture is looked up by surface slope, which is what makes ripples
+visible on a flat-coloured surface. There is no per-vertex colour (the tag's registers
+are texture coordinate and position; one `RGBAQ` is set for the whole tile). The two
+colours, the FIX alphas, the mask and the height step are `docs/formats/water-draw.md`.
 
 ### 4.9 Shadows: entries 0x2c, 0x2e, 0x30 — O for the microcode; the CPU side was only skimmed
 
@@ -523,8 +524,9 @@ Blend values are the raw `ALPHA` register; As is the source alpha with 0x80 = 1.
 | 0x68 + FIX | `dst + src × F` |
 
 `TEST` values: 0x587f4 = no alpha test, depth ≥, depth written. 0x582f5 = pass alpha <
-0x2f, depth ≥. 0x507f5 = pass alpha < 0x7f, depth ≥. 0x71001 = depth >, **no depth
-write**. 0x3001d = pass alpha > 1, depth always. 0x31001 = depth always, no depth write.
+0x2f, depth ≥. 0x507f5 = pass alpha < 0x7f, depth ≥. 0x71001 = alpha test never passes,
+so AFAIL writes colour and not depth. 0x3001d = pass alpha > 1, depth always.
+0x31001 = depth always, no depth write.
 0x5001d = pass alpha > 1, depth ≥.
 
 | Draw | Texture function | `ALPHA_1` | `TEST_1` | Notes |
@@ -534,7 +536,7 @@ write**. 0x3001d = pass alpha > 1, depth always. 0x31001 = depth always, no dept
 | Model | highlight 2, RGBA (D: model textures) | header +0x18: 1 or 9 mostly; a fade replaces it by 0x64 + (0x80 − fade) | 0x507f5 | O 0x175670 |
 | Model, two-pass | first pass context 2: environment texture; `ALPHA_2` = 0x64 + header +0x20 | | | O |
 | Weapon glow shell | **untextured** (`PRMODECONT` 0, `PRMODE` 0x48) | 0x48 (or 0x44) | 0x71001 | O 0x174e78 |
-| Water tile | modulate | 0x64 + F or 0x68 + F, F = a per-level constant; one colour for the tile | 0x71001 | O 0x187830–0x187948; bilinear |
+| Water tile | modulate | 0x64 + 102, or 0x64 + 98 when chunk flag 0x1000; one colour for the tile | 0x71001 | O 0x1876e0; bilinear. `docs/formats/water-draw.md` |
 | Shadow blobs | into the 128 × 128 surface | | `TEST_2` 0x31001 | O (frame pass) |
 | Floor decals | modulate | 0x44 | 0x5001d, depth writes masked with `ZBUF` | O 0x19f664 |
 | Particles | modulate | 0x44 or 0x48 by the definition's mode | 0x71001 | O 0x1949c4; point sampled |
@@ -616,9 +618,10 @@ main loop). O
 | 5 | automap, compass, some name sprites |
 | 6, 7 | interface and text |
 
-So translucency is ordered by kind, not by distance: opaque world and characters first
-with depth writes, then water, then the alpha-tested and blended scenery and all effects
-with depth test but **no depth write**.
+So translucency is ordered by kind, not by distance: opaque world and characters first,
+writing depth, then water, which writes colour and leaves depth
+(`docs/formats/water-draw.md`), then the flagged scenery and the effects. A draw whose
+`TEST` is 0x71001 writes colour and leaves depth too (section 6).
 
 ## 9. What a modern renderer has to do
 
@@ -664,8 +667,8 @@ Simplest correct order of implementation: (1) camera and projection with untextu
 chunk boxes; (2) level geometry with textures at base level, blend equation 2, alpha
 test; (3) rigid models with texture and the sun/ambient terms; (4) skinning; (5) layer
 order, depth-write rules, model blend values; (6) point lights on level and models;
-(7) environment passes; (8) water as a flat textured grid, then its slope-indexed
-texture; (9) particles, glows, trails, decals; (10) shadows; (11) interface and text;
+(7) environment passes; (8) water, as `docs/formats/water-draw.md`; (9) particles,
+glows, trails, decals; (10) shadows; (11) interface and text;
 (12) fades.
 
 ## 10. `tools/vu_dis.py`
@@ -691,10 +694,11 @@ independently of them only in code, not in source of knowledge.
   1/16-pixel coordinate by one unit.
 - **Shadows**: the CPU side of `model_drawShadow` (the projection, how the 128 × 128
   surface is put on the ground, its blend state) was skimmed only.
-- **Water, particles, trails, decals, shell mode**: read in the microcode, not run in the
+- **Water** is now executed: colour, FIX alpha, the height axis and the vertex program
+  are `docs/formats/water-draw.md`.
+- **Particles, trails, decals, shell mode**: read in the microcode, not run in the
   interpreter. The trail program at 0x79e and the particle line loop (VU 0x0a9) were not
-  read in detail. The water matrix (which axis is height) and the water constants at
-  0x44f074–0x44f080 were not traced.
+  read in detail.
 - **Entries 0x08 / 0x0a** (weighted pose upload): no caller found; either unused or
   reached through a computed `MSCAL`.
 - **`light_emitModelLightsVariant`** (0x149828) and the automap drawer 0x168cac.

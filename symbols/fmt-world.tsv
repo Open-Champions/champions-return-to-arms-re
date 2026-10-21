@@ -43,3 +43,29 @@
 004044ac	g_automapOriginY	
 0044fe18	g_levelTexName	base name used to open "<name>.tex" in world_fixup and worldtex_loadAlwaysPages
 0086aee8	g_levelBounds	min xyz, max xyz: union of all chunk bounds, built by game_loadLevel
+# ---- level texture streaming and block decoding (docs/formats/level-texture.md) ----		
+0017ca58	worldtex_workerThread	thread entry created by texcache_init: takes headers off the request ring, decodes their block streams (canonical Huffman, 269 symbols) into the scratchpad, permutes each block into an 8x8 PSMCT32 block and builds the upload chain stored at header +0x14; see docs/formats/level-texture.md
+0017a0c0	worldtex_buildBlockPermutation	fills g_texBlockPermutation: decoded texel x+16y for every byte of the 8x8 32-bit block (the GS 8-bit-in-32-bit swizzle); caller texcache_init
+0017c730	worldtex_flushChainPage	(tex, &writePtr, &prevLink, &head, last): moves 4 KB of upload chain from the scratchpad into a page of the chain pool and links it; caller worldtex_workerThread
+0017e2c8	worldtex_shutdown	stops the worker thread, frees the segment cache, resets slots and tables; caller game_clearLevel
+0017e4c8	worldtex_clearRequests	clears the upload request ring and the worker's state; callers inventory_pollResources and level code
+0017e6c0	worldtex_prepareIndirect	(tex): preparation of a flag-0x0001 header before its chain is built; no texture on the disc has the flag, body not read
+0017fe18	worldtex_addAlwaysPage	(cell): appends to g_texAlwaysPages; NO CALLER, so no cell is ever always-loaded
+0017fe08	worldtex_resetAlwaysPages	count at 0x7d35a0 = 0; caller 0x1826c8
+0041c1a0	g_texBackrefDeltas	5 signed bytes -1, -16, -17, -15, -2: texel offsets of symbols 0x100-0x104 of the level texture block code
+007d3040	g_texBlockPermutation	256 bytes built by worldtex_buildBlockPermutation
+007d3340	g_texUploadRing	64 x {header, cell id} wanted by world_drawChunk; head 0x7d3540, tail 0x7d3544
+007d3540	g_texUploadRingHead	
+007d3544	g_texUploadRingTail	
+007cfe48	g_texChainPoolBase	base of the 4 KB pages holding built upload chains
+007cfe50	g_texChainPoolPages	0x500 x {owner header, next page}; a chain is freed by tex_evict or by the worker after 3 unused frames
+007d2650	g_texCellBlockMaps	9 x 0x80 bytes: for each streaming slot, piece k of the cell -> block of the segment cache, 0xff past the end
+007d2ed0	g_texSegmentBlockUsed	one byte per 128 KB block of the segment cache (world +0x7c): 1 = in use
+00425e8c	g_texStreamState	worldtex_stream state 0 choose / 1 read pieces / 2 evict / 3 start
+00425e88	g_texWorkerBusy	header the worker is building a chain for, 0 when idle
+007d3548	g_texStreamSlot	slot being filled; 0x7d3549 piece-done flag, 0x7d354a (s16) cell id being read
+007d3550	g_texEvictSlots	slots to evict before the read, count at 0x41c1ac
+0041c1b0	g_texPiecesRead	128 KB pieces of the current cell read so far
+0041c180	g_texStreamPending	1 while a cell is wanted but not loaded; 0x41c1b4 = cell file is open
+0044f055	g_texAllChunksReady	cleared by world_drawChunk when a chunk's texture cell or chain is missing
+0086af54	g_domeLump	the lump found as dome.lmp by game_loadLevel (0x1e5d48); game_drawBackdrop draws its .vif models at the camera with scale 1e6

@@ -395,7 +395,7 @@ D (it matches the pixel format in +0x0c in all 3,236 files).
 
 | Bit | Meaning | Files | Status |
 |---|---|---|---|
-| 0x0001, 0x0100 | level-texture forms handled by `tex_relocate` / `tex_relocateInCell`; never set in a lump | 0 | O (code only) |
+| 0x0001, 0x0100 | level-texture forms handled by `tex_relocate` / `tex_relocateInCell`; never set in a lump. 0x0100 (with 0x0004 and 0x0008) is the form of every texture in `<LEVEL>.TEX`: `docs/formats/level-texture.md`. 0x0001 occurs in no file | 0 | O (code only) |
 | 0x0004 | 8-bit, 256-colour palette. The handler patches the image destination at packet +0x474 | 2,537 | O |
 | 0x2000 | 4-bit, 16-colour palette. Destination patched at packet +0xb4 | 537 | O |
 | 0x0020 | 32-bit, no palette | 160 | D |
@@ -568,10 +568,11 @@ Keep extracted files and exports outside the repository.
 - Texture wrap and filter modes: the model code that was read writes neither `CLAMP` nor
   `TEX1`, so both are inherited from state set elsewhere. (`docs/spec/render-pipeline.md`
   section 6 lists the GS state per kind of draw.)
-- Program 0x46 in a model (one file), and where its row registers are set for it. (Still
-  open, with one more fact: 0x175950, the function that would set that program up for a
-  model — entries 0x16 and 0x34 — has no caller. How the one sky dome that uses it is
-  drawn is Unknown; `docs/spec/render-pipeline.md` section 13.)
+- Program 0x46 in a model (one file), and where its row registers are set for it. Answered
+  in `docs/formats/model-row-registers.md`: no model-side code sets them; the uncalled
+  0x175950 would set them to zero; drawn through `model_draw` the packet would inherit the
+  last level chunk's translation. Whether anything loads `D_SWAMP.LMP` at all stays Unknown
+  (no reference to it was found in the executable or the swamp archives).
 - The mesh record's +8 count where it differs from the rebuilt triangle count.
 - `.etex` loading; the 2D sprite and font code (0x17a5a0–0x17c730) that draws the interface
   textures was not read.

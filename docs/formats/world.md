@@ -284,11 +284,12 @@ Data, 0x90 bytes — O 0x187374, 0x1875d4, 0x1876e0:
 
 | Offset | Type | Meaning |
 |---|---|---|
-| 0x00 | s16 × 4 | chunk indices of the four neighbouring water tiles, −1 for none; used to continue the surface across tiles |
+| 0x00 | s16 × 4 | chunk indices of the four neighbouring water tiles, −1 for none. Slots 0 and 2 are copied after each wave step. All four are read when a block is claimed, with the weights in `docs/formats/water-draw.md` |
 | 0x08 | u32 | 0; run time pointer to the tile's simulation block |
-| 0x10 | 128 bytes | a 32 × 32 bit mask; I: which cells of the tile are water. Bit order U |
+| 0x10 | 128 bytes | a 32 × 32 bit mask of which samples the wave may change. Halfword c is column c; bit 15 is the first row of a 16-row bank (bytes 64..127 are rows 16..31). A set bit is water. Executed, `docs/formats/water-draw.md` |
 
-The surface is a 32 × 32 grid generated at run time; nothing else is stored. The chunk
+The surface is a 32 × 32 grid generated at run time; nothing else is stored. Colour,
+the wave and the draw are `docs/formats/water-draw.md`. The chunk
 translation is the tile's centre (D, all 9,884 tiles) and the height it is drawn at.
 `water_test` returns the chunk's minimum z as the water height; that equals the drawn
 height in 9,035 tiles and is 5 lower or 13 higher in the rest (D). Tiles are 120 units
@@ -452,8 +453,12 @@ terrain element. Pieces nobody claimed lose their collision after the objects ar
   the largest texture coordinate of each of 1,942 chunks fits the size found here), u16
   flags at +8, and at +0x10 the offset of the pixel-data description **from the start of
   the cell** (0x179f28; in a `.tex` lump entry the same field is relative to the header).
-- The header fields and the pixel data are the texture format, described in
-  `docs/formats/model-texture.md`. Decoding cell textures to pixels was not tried here. U.
+- The header fields are the texture header of `docs/formats/model-texture.md`; the pixel
+  data is **not** a GS packet in the level file: every cell texture on the disc uses the
+  block-table form (flags 0x10c), now documented with the streaming, relocation and upload
+  path in `docs/formats/level-texture.md` (`tools/ref_leveltex.py` decodes it). The
+  "always loaded" cells above exist in code only: nothing calls the function that registers
+  one (0x17fe18), so every cell goes through the nine streaming slots.
 - A cell's data lies in 128 KB blocks of the texture heap (world +0x7c); a slot's block
   list is 128 bytes at 0x7d2650 + slot x 128, the slot's cell id at 0x7d2fd0 + slot x 4,
   the header table's address at 0x425df8 + slot x 4 (O 0x17d830). A header's +0x14 is 0
@@ -474,8 +479,9 @@ The world also refers to `waterenv.lmp` (water texture, loaded by name in `game_
   `automap_loadGrid` (0x168894) into a 216 × 216 run-time grid. A world position maps to
   cell (x0 + x / 120, y0 + y / 120) — O 0x168cac.
 - Cell: bits 12–15 are 0 in the file and hold the explored level at run time (O 0x16865c,
-  0x1686c4, `automap_revealAll`). Bits 5–7 take all eight values and bits 0–4 and 8–11 are
-  small indices (D); I: orientation and tile selection. Exact tile lookup: U.
+  0x1686c4, `automap_revealAll`). Bits 0–4 are the atlas column, bits 5–7 one of eight
+  orientations, bits 8–11 the atlas row. The quad uses the bottom-right cell's tile.
+  Executed from the drawer's VU1 microcode; `docs/formats/level-draw.md` section 4.
 
 ## Bit grid (header +0x3c … +0x4c)
 
@@ -529,7 +535,7 @@ For online play it matters which parts of the loaded world belong to the simulat
    the texture size. Needs the texture pixel format. Blending: honour the GS state blocks
    in the packet (alpha-tested and environment-mapped batches) and chunk flags 0x200/0x400.
 7. **Moving pieces** (needed for doors and lifts, hence for most levels' scripts), then
-   **water** (a flat animated quad per tile at the chunk's z is enough to start; `water_test`
+   **water** (the grid, the slope UVs and the blend are `docs/formats/water-draw.md`; `water_test`
    matters to gameplay, the ripples do not), **model chunks** (needs the model format),
    **lights** and **emitters** (cosmetic).
 8. **Automap** last.
@@ -544,10 +550,10 @@ appear to carry the baked light; the normals are there for the dynamic lights.
   section 4.6.)
 - The bit grid's layout and purpose; header +0x74; chunk flags 0x2, 0x4, 0x20000; chunk
   +0x3a; moving piece +0x1a; why some geometry chunks have texture cell 0.
-- The emitter description beyond its size; the automap cell and tile coding; the water
-  mask's bit order.
-- Whether cell textures and the automap tile texture decode with the rules of
-  `docs/formats/model-texture.md`; not tried.
+- The emitter description beyond its size. The automap cell
+  and tile coding is now `docs/formats/level-draw.md` section 4.
+- Whether the automap tile texture decodes with the rules of `docs/formats/model-texture.md`;
+  not tried. (Cell textures do not; they are decoded in `docs/formats/level-texture.md`.)
 - Which way the axes point relative to the screen and compass. (Answered for the screen in
   `docs/spec/render-pipeline.md` section 3: the world is right-handed with z up; camera
   space has x right, y down, z forward. The compass is still open.)
