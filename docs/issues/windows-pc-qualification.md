@@ -218,6 +218,22 @@ captures at the requested sizes. All five camera modes produced distinct capture
 the 1440p overhead and first-person hub captures were visually inspected.
 These are configured-render checks, not frame-rate benchmarks.
 
+**Ran functional controls on all five modes in the diagnostic build:** overhead,
+action, chase, shoulder and first-person each pass 14 checks (70 total). Posted
+keyboard movement and release, synthetic-pad movement, camera yaw/pitch or zoom,
+controls-API mouse look, attack routing and actual block-to-idle state transitions
+were observed in a normally created hub character with no setup writes.
+
+Three further chase/shoulder/first-person runs pass 27 checks. An 88-degree look
+turn occurs without walking; after another mouse turn, forward input travels
+45.7-46.5 units in the new look direction (normalized direction alignment 0.995-1.000),
+then stops with zero measured release drift. Shoulder and first-person modes align
+the character's facing to the look, while chase preserves idle facing. No health
+was lost. Mouse checks enter through the controls API; keyboard messages enter the
+compiled window handler. These are synthetic functional tests, and the empty-hub
+attack observations establish routing/animation rather than enemy damage.
+
+
 
 A 3840x2160 no-AA capture also completed and was inspected. Some hidden, unpaced
 4K trials showed 5,405-5,675 MB working sets and 8-24 second long pictures, taking
