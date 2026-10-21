@@ -277,6 +277,49 @@ The player takes one HP loss during casting whose exact attack attribution remai
 untraced. This kill trial writes no card; it does not establish saved-kill
 persistence, a new level transition or completion of the wider quest.
 
+A separate normal Savepoint overwrite and fresh-process frontend Load now qualify
+that earned progress on the preserved native build. Both complete processes exit
+zero without timeouts or valid player-death rows; 240 independent audit checks
+pass. The game writes a complete 310,392-byte test save using the ordinary occupied-
+slot Square confirmation. Fresh Load preserves 1,713 XP, 57 gold, level two, the
+earned allocations, all occupied 72-byte bag records and all equipped definitions.
+The fresh Player starts alive at the same northern checkpoint with 36.5461 HP and
+8.7090 mana, including normal regeneration after loading.
+
+The complete saved WarWraith records change from nine to eight: only the killed
+actor is removed, while every survivor's class, position, angle, properties and
+saved state remain unchanged. The primary save/recreation rules corroborate this
+result; a pool count alone is not the proof. String offsets and alignment padding
+are excluded from semantic record comparison. All 26 previously saved defeated
+Kobolds remain verified. Earlier seed cards and the new immutable 1,713-XP seed
+are preserved. This adds durable progress at the existing checkpoint, with the
+initial mission and quest still open.
+
+**Ran a fresh Load and short controls in the installed sample/depth application**
+(`d7c2258b...`) using a private copy of that genuine 1,713-XP seed. The graphical
+process exits zero without timeouts, and all 100 original automated checks plus
+135 independent audit checks pass. Seven raw snapshots preserve XP, gold, class,
+level, stats, all 32 skill-table entries, quest/decision flags, every occupied bag
+record and all equipped definitions. Ordinary scripted controls move the player
+15.3413 units, return to idle on release, enter block, return to idle again and
+pause. All 177 valid Player rows remain alive. A 1.0969-HP loss during movement
+has no traced attacker or environmental cause.
+
+The 960-by-720 offscreen captures wait for all three present-color channels to
+reach 128 and four further game frames. Viewed unpaused frames show lit textured
+terrain, the character, Savepoint and readable level-two HUD; the pause menu is
+also readable. This is bounded PC image inspection, without original-console
+comparison, physical controls, sound or performance qualification. The original
+first invocation is retained: its checker had six tuple-versus-list false
+negatives, and its initial scene capture was still dark during the load fade.
+The corrected second invocation waits for the observed fade state.
+
+The source seed and all four game-save/icon files in each private app test card
+remain byte-identical. Emulated game-card I/O reports zero bytes written during
+these app Loads; normal host initialization separately adds four default
+`BWNETCNF` network-configuration files to each private test card. No user card is
+used. These app checks do not requalify every older headless combat/save route.
+
 Earlier overwrite attempts pressed Cross while the overwrite screen required Square;
 they wrote no new checkpoint and correctly loaded the older zero-XP save. This was
 a test-input error, not an established persistence defect. Load readiness now witnesses
