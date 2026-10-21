@@ -17,8 +17,9 @@ import sys
 
 sys.path.append(os.path.dirname(__file__))
 from ee_emu import EE  # noqa: E402
+import scan_lookup_sites  # noqa: E402
 from ref_frontend_screens import (BROWSER_STATES, IMPORT_STATES,  # noqa: E402
-                                  MESSAGE_BOX_CALLS, PLAYERSEL_PHASES,
+                                  LOOKUP_SITES, MESSAGE_BOX_CALLS, PLAYERSEL_PHASES,
                                   SLOTLIST_STATES)
 
 SHA256 = "292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675"
@@ -126,6 +127,43 @@ def message_box(path, seed):
                  for c in e.calls)
 
 
+LOOKUP_RANGES = {
+    "frontend_run": (0x1E08F0, 0x1E1F34), "player_selection": (0x225478, 0x22A360),
+    "slot_list": (0x21C3A4, 0x21E5C8), "name_entry_run": (0x22BE68, 0x22C920),
+    "credits_load": (0x223C64, 0x223D3C), "credits_run": (0x223D3C, 0x2243F8),
+    "intro": (0x321788, 0x321870), "logo": (0x321640, 0x321700),
+    "card_import": (0x21FA2C, 0x221840), "browser": (0x219B90, 0x21C3A4),
+}
+
+# Player-selection menu sounds that execute with the lockstep pad words set to one
+# mask in every slot: (phase, mask) -> (res_find site, entry name, sound site).
+# Masks follow docs/netcode.md:138 (0x40 cross, 0x20 circle, 0x4000 down; the face
+# buttons are Inferred there). Lookup name and sound call are the executed pair.
+# (3, 0x20) shows why the static scan is only a candidate list: site 0x227D50 has a
+# constant entry name in its own lui/addiu pair, yet it executes with another
+# name because a branch reaches the call with a different register value.
+PLAYERSEL_SOUNDS = {
+    (1, 0x40): (0x226120, "menu_main_accept.anm", 0x226130),
+    (1, 0x20): (0x226178, "menu_main_back.anm", 0x22618C),
+    (3, 0x40): (0x227BA4, "menu_main_accept.anm", 0x227BC0),
+    (3, 0x20): (0x227D50, "menu_main_back.anm", 0x227D64),
+    (3, 0x4000): (0x227CA8, "menu_main_accept.anm", 0x227CBC),
+}
+
+
+def playersel_sound(path, seed, phase, mask):
+    e = emulator(path, seed)
+    playersel(e, phase)
+    for slot in range(4):
+        for offset in (0, 4, 8):  # held / pressed / repeat words, 0x58 per slot
+            e.mem.w32(0x41BFE0 + slot * 0x58 + offset, mask)
+    e.call(0x225478, max_steps=300000)
+    look = [c for c in e.calls if c.target == 0x17365C]
+    snd = [c for c in e.calls if c.target == 0x214230]
+    assert len(look) == len(snd) == 1, (phase, mask, len(look), len(snd))
+    return (look[0].site, e.mem.cstr(look[0].args[1] & 0xFFFFFFFF), snd[0].site)
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if len(args) != 1:
@@ -151,6 +189,14 @@ def main():
                 assert records == wanted[name][state], (seed, name, state, records)
                 checks += 1
         assert message_box(path, seed) == MESSAGE_BOX_CALLS, seed
+        checks += 1
+        for (phase, mask), wanted_sound in PLAYERSEL_SOUNDS.items():
+            assert playersel_sound(path, seed, phase, mask) == wanted_sound, (
+                seed, phase, mask)
+            checks += 1
+    probe = EE(path)
+    for name, (lo, hi) in LOOKUP_RANGES.items():
+        assert tuple(scan_lookup_sites.scan(probe, lo, hi)) == LOOKUP_SITES[name], name
         checks += 1
     print("PASS frontend screen state captures: %d checks; seeds 20973, 7" % checks)
 
