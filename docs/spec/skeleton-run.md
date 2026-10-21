@@ -207,6 +207,71 @@ outside its stack. No draws. Callees: `world_countLivingNonplayerCreaturesInBox`
 but the target; the count is of living non-player creatures around the target. The Skeleton
 uses it to wait (state 5) while some other body is between it and its target in a crowd.
 
+## 4a. The sweep's two callees (added 2026-10-21 by the parent run)
+
+`tools/ref_sweep.py`, compared by `tools/difftest_sweep.py`, synthetic tests
+`tools/test_ref_sweep.py`. The comparison is this document's whole run (§2) with the two
+bodies REAL inside the sweep. Between ticks it also enters both directly. The box count is
+taken on the creature's or another object's position, with half sizes 0–300. The arc test
+is made on every other object, placed at headings within and across the arc, with arcs 0,
+2000, 0x4000, 0x7fff, 0x8000 and 0xffff and ranges 0–600. Crowds of living creatures are
+planted so that the 3 / 4 thresholds are crossed.
+
+    python3 -u tools/difftest_sweep.py --seed 20973 -v
+    python3 -u tools/difftest_sweep.py --seed 7 -v
+    python3 -m unittest tools.test_ref_sweep
+
+| | Seed 20973 | Seed 7 |
+|---|---|---|
+| Calls compared in the whole run | 18,930 | 18,719 |
+| `world_countLivingNonplayerCreaturesInBox` entered directly | 1,445 | 1,472 |
+| `creature_objInArcRange` entered directly | 1,404 | 1,411 |
+| Mismatches (calls, stores, seed, result) | 0 | 0 |
+| `world_countLivingNonplayerCreaturesInBox` `0x108970` | 60 of 60 | 60 of 60 |
+| `creature_objInArcRange` `0x10c410` | 106 of 106 | 106 of 106 |
+
+With both callees real, `Skeleton_run` reached 790 of 809 instructions on each seed. The
+block not entered is `0x2a6bc0`–`0x2a6c04`, state 3's "something in the way" request. It
+needs all of these at once: a crowd of 4, the target inside the arc and range, a clear
+terrain ray, and a world ray that hits something else. Its arm is covered by §2's run, where
+the sweep's callees are scripted.
+
+Checks: each of these model changes was detected (`--quick`).
+
+- The living mask set to 0x60 instead of 0x68: 27 mismatches.
+- The ray origin at half the height instead of the full height: 10 mismatches.
+
+**world_countLivingNonplayerCreaturesInBox `0x108970` (centre; half size h)** (*Executed*).
+
+1. The centre is copied. The box is centre − h to centre + h on each axis (`sub.s`, then
+   `add.s`).
+2. `world_collectObjectsInBox(low, high, list, 0x80)` (capacity at `0x108974`).
+3. The result is the number of listed objects whose flags `+0xc & 0x68` are exactly `0x20`
+   (`0x108a38`, `0x108a10`): a creature that is neither a player (`0x40`) nor dead (`8`).
+   Other bits do not matter.
+
+Reads: the centre and each listed object's `+0xc`. No stores outside the stack, no draws.
+
+**creature_objInArcRange `0x10c410` (creature c, object o, arc; range r)** (*Executed*).
+Returns 0 or 1.
+
+1. An `o` of 0 gives 0.
+2. d = o − c on x and y. On z, d is the difference of the mid-heights, `z + height
+   +0x20 × 0.5` each (0.5 at `0x10c450`).
+3. The bearing is `s16(0x4000 − atan2_16(dx, dy))` (`math_atan2_16` with f12 = dx and
+   f13 = dy). Subtract the facing, read unsigned, and narrow to s16. Take the absolute value
+   (`negu`, so −0x8000 becomes 0x8000).
+4. That value must be below the arc, which is narrowed to s16 at `0x10c414`/`0x10c42c`, in a
+   signed compare. An arc of 0x8000 is therefore −0x8000 and nothing passes.
+5. Then `(c − o)²` on x and y, less o's radius `+0x1c`, must be below r² (strict,
+   `0x10c50c`).
+6. Then `terrain_raycast(g_world, c's position with z + height +0x20 (the full height),
+   d, 3; 1.1)` (`0x3f8ccccc` at `0x10c538`, mask 3 at `0x10c54c`). The result is 1 when the
+   ray misses (t < 0) or t > 1; anything else gives 0.
+
+Reads: c `+0x10`–`+0x20` and `+0x38`; o `+0x10`–`+0x20`. No stores outside the stack, no
+draws.
+
 ## 5. Creature_leadTargetPoint `0x11aaf8` (creature c, out or 0; speed)
 
 *Executed*, 54 of 54. No target handle, or a handle whose object is 0 → 0 and `out` is not
@@ -253,8 +318,8 @@ slot 15 is `0x3c2590`.
 
 Callees the run reaches whose bodies no difftest has run (recording stubs here):
 
-- `world_countLivingNonplayerCreaturesInBox` `0x108970` and `creature_objInArcRange`
-  `0x10c410` (inside the sweep: states 3 and 5 of a melee skeleton).
+- (`world_countLivingNonplayerCreaturesInBox` `0x108970` and `creature_objInArcRange`
+  `0x10c410` are now executed: §4a.)
 - WeaponShield slots 15 `0x3c2590` (slot 12 through `hasShield`), 16 `0x3c25c0` (state 8
   release, the element), 17 `0x11be20` (state 6, the hit descriptor), 1 `0x11bc18` (state 8,
   hand-2 part), 21 `0x11b2a8` (prologue).
