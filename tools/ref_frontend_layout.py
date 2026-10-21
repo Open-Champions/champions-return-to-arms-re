@@ -91,6 +91,25 @@ MENU_SOUND_IDS = {
 }
 
 
+# Direct call sites observed with a zeroed state and all callees stubbed.
+# These establish entry paths only; deeper art, text and sounds need fixtures.
+BOOT_CARD_CALLS = ((0x323974, 0x21755C), (0x323988, 0x3236BC))
+BOOT_STEP_CALLS = ((0x3238FC, 0x2189E0),)
+INTRO_CALLS = ((0x321790, 0x19DD48), (0x3217BC, 0x215C20),
+               (0x3217C8, 0x173558), (0x3217D0, 0x211C18),
+               (0x32180C, 0x320498))
+CARD_DRAW_DISPATCH = {
+    -1: (), 0: ((0x218A98, 0x219A88),),
+    1: ((0x218AA8, 0x219B14),),
+    3: ((0x218A48, 0x218AFC), (0x218A58, 0x13E4E8)),
+    4: ((0x218A68, 0x219360),),
+    5: ((0x218A78, 0x21F390),),
+    6: ((0x218A88, 0x21F6DC),),
+    9: ((0x218AB8, 0x21FA2C),),
+    10: ((0x218AC8, 0x222B40),),
+}
+
+
 MUSIC_VOLUME_GATE_BITS = 0x3D4CCCCC  # comparison in music_playGlobal 0x2110e0
 
 

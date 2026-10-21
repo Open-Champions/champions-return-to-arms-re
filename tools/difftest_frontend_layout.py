@@ -11,7 +11,9 @@ import sys
 
 sys.path.append(os.path.dirname(__file__))
 from ee_emu import EE  # noqa: E402
-from ref_frontend_layout import (FRONTEND_STATES, MENU_SOUND_IDS, TABLES,  # noqa: E402
+from ref_frontend_layout import (BOOT_CARD_CALLS, BOOT_STEP_CALLS,  # noqa: E402
+                                 CARD_DRAW_DISPATCH, FRONTEND_STATES,
+                                 INTRO_CALLS, MENU_SOUND_IDS, TABLES,
                                  first_theme_queues, list_frame_calls,
                                  list_geometry, pause_geometry, publisher_logo_sprites)
 
@@ -81,9 +83,14 @@ def name_entry_details(path, seed):
              for c in e.calls if c.target == 0x1800B8]
     text = [(c.site, c.args[0] & 0xFFFFFFFF, c.args[1] & 0xFFFFFFFF)
             for c in e.calls if c.target == 0x181CA0]
-    rects = [(c.site, *(v & 0xFFFFFFFF for v in c.args[:4]))
+    rects = [(c.site, *(v & 0xFFFFFFFF for v in c.args[:6]))
+             for c in e.calls if c.target == 0x17BD30]
+    clips = [(c.site, *(v & 0xFFFFFFFF for v in c.args[:4]))
              for c in e.calls if c.target == 0x1803E0]
-    return fonts, text, rects
+    detail_text = [(c.site, c.target, c.args[0] & 0xFFFFFFFF,
+                    c.args[1] & 0xFFFFFFFF)
+                   for c in e.calls if c.target in (0x181C10, 0x181280, 0x181AA0)]
+    return fonts, text, rects, clips, detail_text
 
 
 def credits_details(path, seed):
@@ -92,6 +99,35 @@ def credits_details(path, seed):
     e.call(0x223C64, max_steps=100000)
     e.reset_log()
     e.call(0x223D3C, max_steps=100000)
+    return [(c.site, c.args[1] & 0xFFFFFFFF, c.args[2] & 0xFFFFFFFF)
+            for c in e.calls if c.target == 0x1800B8]
+
+
+def shallow_screen_calls(path, seed, entry, card_state=None):
+    """Capture a direct entry path, with deeper callees explicitly stubbed."""
+    e = emulator(path, seed)
+    e.follow = set()
+    if card_state is not None:
+        e.mem.w32(0x88D3A0, card_state)
+    e.call(entry, max_steps=150000)
+    return [(c.site, c.target) for c in e.calls]
+
+
+def selection_path(path, seed):
+    e = emulator(path, seed)
+    e.follow = set()
+    e.call(0x2245B8, max_steps=150000)
+    start = [(c.site, c.target) for c in e.calls]
+    e.reset_log()
+    e.call(0x225478, max_steps=150000)
+    task = [(c.site, c.target) for c in e.calls]
+    return start, task
+
+
+def card_slot_font(path, seed):
+    e = emulator(path, seed)
+    e.follow = set()
+    e.call(0x21C3A4, max_steps=150000)
     return [(c.site, c.args[1] & 0xFFFFFFFF, c.args[2] & 0xFFFFFFFF)
             for c in e.calls if c.target == 0x1800B8]
 
@@ -203,14 +239,37 @@ def main():
             else:
                 assert extra_fonts == extra_text == [], (seed, state)
             checks += 4
-        fonts, text, rects = name_entry_details(path, seed)
+        fonts, text, rects, clips, detail_text = name_entry_details(path, seed)
         assert [(site, x, y) for site, x, y in text] == [
             (0x22CBA4, 163, 98), (0x22CCEC, 233, 98)], (seed, text)
-        assert (0x22D20C, 41, 0, 640, 480) in rects, (seed, rects)
-        assert fonts and fonts[0][:2] == (0x22C9C0, 6), (seed, fonts)
-        checks += 3
+        assert (0x22D084, 0, 0xFFFFFFF7, 0, 11, 6, 0x1E3053) in rects, (seed, rects)
+        assert (0x22D20C, 41, 0, 640, 480) in clips, (seed, clips)
+        assert fonts == [(0x22C9C0, 6, 0x585E5D),
+                         (0x22D0E4, 6, 0x316864),
+                         (0x22D198, 6, 0x585E5D)], (seed, fonts)
+        assert detail_text == [(0x22CE4C, 0x181C10, 81, 138),
+                               (0x22CEB0, 0x181C10, 81, 158),
+                               (0x22CF14, 0x181C10, 81, 178),
+                               (0x22D12C, 0x181280, 41, 38),
+                               (0x22D26C, 0x181AA0, 41, 72)], (seed, detail_text)
+        checks += 5
         assert credits_details(path, seed) == [(0x223E40, 7, 0x80000000)], seed
         checks += 1
+        assert shallow_screen_calls(path, seed, 0x32396C) == list(BOOT_CARD_CALLS)
+        assert shallow_screen_calls(path, seed, 0x3238F4) == list(BOOT_STEP_CALLS)
+        assert shallow_screen_calls(path, seed, 0x321788) == list(INTRO_CALLS)
+        checks += 3
+        for card_state, dispatch in CARD_DRAW_DISPATCH.items():
+            calls = shallow_screen_calls(path, seed, 0x2189E0, card_state)
+            assert calls == [(0x218A14, 0x223064), *dispatch], (seed, card_state, calls)
+            checks += 1
+        assert card_slot_font(path, seed) == [(0x21C404, 6, 0x001E6464)], seed
+        checks += 1
+        start, task = selection_path(path, seed)
+        assert (0x2247AC, 0x19E4A0) in start, (seed, start)
+        assert task == [(0x2256C0, 0x3A58C0), (0x2257AC, 0x22A968),
+                        (0x2258C8, 0x22A83C)], (seed, task)
+        checks += 2
         for state, (name, origin_y) in FRONTEND_STATES.items():
             table, count, value_rows = TABLES[name]
             origins, anchors, frames = frontend_draw(path, seed, state, table)
