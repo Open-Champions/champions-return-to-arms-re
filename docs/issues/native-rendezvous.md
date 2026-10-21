@@ -546,7 +546,13 @@ into a game. A player on such a network today cannot use the public service.
 **Read**, from the runs: (1) a VPN address in the room's local list is taken as a straight
 route across networks when both players share that VPN; harmless here (in step), but it
 is a route nobody asked for - the client could leave 100.64.0.0/10 out of `local`, or try
-public routes first. (2) Not tried: a router that changes ports (symmetric NAT; the punch
+public routes first. **Done 2026-10-21** (`net2/session_net.cpp`, the `local` line): an address of 100.64.0.0/10
+is no longer offered as one of the copy's own (unless the socket is bound to it with `net2-bind`); a VPN between the
+players is then used only if the service saw a copy at such an address. **Ran**: `check_client.py` 118 of 118; two
+copies of `rta_app_next` on this Mac (which has a Tailscale address 100.70.0.13 beside 192.168.151.19 and
+192.168.64.1), the service of the run wrapped to write every `local` line (`local/aim/r8/svcwrap.py`): both offered
+`192.168.64.1, 192.168.151.19` and nothing of 100.64.0.0/10; the room `vpn1` launched, routes direct, **2,833 ticks in
+step** hub > drunare (`n2party.py --external`). (2) Not tried: a router that changes ports (symmetric NAT; the punch
 would fail and the relay would carry it, which `relay1` shows works across networks), IPv6,
 more than two computers, a person at the controls on either side.
 

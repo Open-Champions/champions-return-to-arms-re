@@ -85,7 +85,7 @@ class RtaDrawer : public RefCounted {
     void set_output_size(const Vector2i& size);
     // The level's generated ceilings and skirts (rta_fill.cpp): the shader they are drawn with (project/shaders/fill.gdshader),
     // and what was done with them
-    void set_fill_shader(const Ref<Shader>& shader);
+    void set_fill_shader(const Ref<Shader>& shader, const Ref<Shader>& skirt_shader);
     Dictionary get_fill_info() const;
     // The character card (rta_card.cpp): the local player's character copied out of the scene into another scenario (the
     // portal's card: scene_view.gd makes the SubViewport); card_focus once a frame before submit (where the player stands,

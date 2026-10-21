@@ -1061,6 +1061,8 @@ func scenario_room5() -> void:
 	if OS.get_environment("RTA_SHOTS_COMBAT") == "souls":
 		if await combat_souls(p):
 			return
+	if OS.get_environment("RTA_SHOTS_AIM") == "look":
+		await aim_look(p)
 	if OS.has_environment("RTA_SHOTS_GAME"):
 		await game_kind(p, int(OS.get_environment("RTA_SHOTS_GAME")))
 	# the game: characters on its own screens, Start, launch, the hub
@@ -1121,6 +1123,30 @@ func game_kind(p: String, index: int) -> void:
 	await wait(0.4)
 	flow_says("game mode agreed: %s" % str(portal.session.room().get("options", {})))
 	await shot(p + "04e-game-mode")
+
+
+# room5 with RTA_SHOTS_AIM=look: the host picks "Aim: Where you look" on the room screen (aiming by looking, bit 0x4000 of
+# what a copy says of itself); the joiner's game library takes it up by itself; both wait until every copy says it has it
+func aim_look(p: String) -> void:
+	await until(func() -> bool: return bool(portal.gameflow.call("aim_available")), 300.0)
+	if portal.current_name() != "room":
+		portal.go("room")
+	await wait(0.8)
+	if role == "a":
+		await focus_key("aim")
+		await key(KEY_RIGHT)
+		flow_says("aim choice pressed")
+	await until(func() -> bool:
+		var all := room_members().size() >= 2
+		for m in room_members():
+			all = all and (int(m.get("fix_words", 0)) & 0x4000) != 0
+		return all, 120.0)
+	await wait(0.8)
+	var words := []
+	for m in room_members():
+		words.append("%s %08x/%d" % [String(m.get("name", "")), int(m.get("fix_set", 0)), int(m.get("fix_words", 0))])
+	flow_says("aim look agreed: " + ", ".join(PackedStringArray(words)))
+	await shot(p + "04f-aim-look")
 
 
 # room5 with RTA_SHOTS_COMBAT=souls: the host picks the souls-style combat mode on the room screen (the "combat" choice);

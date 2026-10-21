@@ -35,6 +35,17 @@
 #else
 #undef RTAG_HAVE_SOULS
 #endif
+// aiming by looking (tools/recomp/app/fpaim.h, docs/issues/native-first-person-aim.md): build.py defines RTAG_HAVE_AIM
+// when the snapshot has app/fpaim.cpp (it needs the controls: the look's pitch, set_aim)
+#if defined(RTAG_HAVE_AIM) && defined(RTAG_HAVE_CONTROLS)
+#include "fpaim.h"
+#ifdef RTAG_HAVE_NET2
+#include "../net/netdrv.h"
+#include "../net2/hooks.h"
+#endif
+#else
+#undef RTAG_HAVE_AIM
+#endif
 // the world for a camera inside it (tools/recomp/app/fpworld.h): build.py defines RTAG_HAVE_WORLD when the snapshot has
 // app/fpworld.cpp and the translation wraps its three functions
 #ifdef RTAG_HAVE_WORLD
@@ -52,7 +63,12 @@
 #include <dirent.h>
 #include <mutex>
 #include <string>
+#ifdef _WIN32
+#include <direct.h>                                     // _mkdir
+#include <windows.h>                                    // GetProcessTimes (the library for Windows: build_lib_win.py)
+#else
 #include <sys/resource.h>
+#endif
 #include <sys/stat.h>
 #include <thread>
 #include <vector>
@@ -71,12 +87,28 @@ static_assert(offsetof(rtag_vertex, s) == offsetof(render::Vertex, s) && offseto
 
 const uint32_t G_SIM_FRAME = 0x44FDCC;                  // symbols/engine.tsv: g_simFrame
 
+#ifdef _WIN32
+double cpu_ms() {
+    FILETIME created, ended, kernel, user;
+    if (!GetProcessTimes(GetCurrentProcess(), &created, &ended, &kernel, &user)) return 0;
+    auto ms = [](const FILETIME& t) { return (double)(((uint64_t)t.dwHighDateTime << 32) | t.dwLowDateTime) / 10000.0; };
+    return ms(kernel) + ms(user);
+}
+static int make_dir(const char* path) { return _mkdir(path); }
+#else
+static int make_dir(const char* path) { return mkdir(path, 0755); }
 double cpu_ms() {
     rusage u;
     getrusage(RUSAGE_SELF, &u);
     return (u.ru_utime.tv_sec + u.ru_stime.tv_sec) * 1000.0 + (u.ru_utime.tv_usec + u.ru_stime.tv_usec) / 1000.0;
 }
+#endif
+#ifdef _WIN32
+// the C library's stat() has a 32-bit size here and fails on a file over 2 GB (the disc image): the 64-bit one
+bool file_exists(const std::string& path) { struct _stat64 st; return _stat64(path.c_str(), &st) == 0; }
+#else
 bool file_exists(const std::string& path) { struct stat st; return stat(path.c_str(), &st) == 0; }
+#endif
 void say(const std::string& line) { fprintf(stderr, "rtag: %s\n", line.c_str()); fflush(stderr); }
 
 // ---- the gate: the game's thread stands at a blank until it is let go ----------------------
@@ -171,6 +203,9 @@ struct Pads : rta::PadSource {
             if (float pitch = fpcontrols::take_pitch(); pitch != 0) fpview::add_pitch(pitch);
 #ifdef RTAG_HAVE_SOULS
             soulscombat::blank(blank);          // the souls-style combat mode (soulscombat.h): off unless asked for; as app_main.cpp
+#endif
+#ifdef RTAG_HAVE_AIM
+            fpaim::blank(blank);                // aiming by looking (fpaim.h): off unless asked for; as app_main.cpp
 #endif
             const fpcontrols::Hud& h = fpcontrols::hud();
             rtag_controls o;
@@ -292,6 +327,10 @@ void view_drawn(const fpview::View& v, Ctx* c, void*) {
         static const bool replayed = apprt::replaying();
         int mode = fpcontrols::take_strafe_send();
         if (mode >= 0 && !replayed && g_m->pads.controls_on) apprt::call_game(c, fpcontrols::STRAFE_SENDER, (uint32_t)mode);
+#ifdef RTAG_HAVE_AIM
+        // aiming by looking: this machine's aim, by game message 4 (fpaim.h), as app_main.cpp
+        if (!replayed) fpaim::drawn(c, v.mode, g_m->pads.controls_on && v.active && !v.fallback && v.shown == v.mode, v.look_pitch);
+#endif
     }
 #else
     (void)c;
@@ -362,6 +401,11 @@ void app_command(const std::string& text, uint64_t frame) {
 #ifdef RTAG_HAVE_SOULS
     } else if (w[0] == "souls") {                       // app souls info | on | off | lock | set NAME VALUE (soulscombat.h), as the native application's
         printf("[frame %llu] %s\n", (unsigned long long)frame, soulscombat::command(w.size() >= 2 ? text.substr(text.find(w[1])) : std::string()).c_str());
+        fflush(stdout);
+#endif
+#ifdef RTAG_HAVE_AIM
+    } else if (w[0] == "aim") {                         // app aim info | on | off (fpaim.h), as the native application's
+        printf("[frame %llu] %s\n", (unsigned long long)frame, fpaim::command(w.size() >= 2 ? text.substr(text.find(w[1])) : std::string()).c_str());
         fflush(stdout);
 #endif
 #ifdef RTAG_HAVE_WORLD
@@ -644,6 +688,13 @@ int rtag_has(const char* feature) {
         return 0;
 #endif
     }
+    if (f == "aim") {                                   // aiming by looking (combat.aim, app aim ...)
+#ifdef RTAG_HAVE_AIM
+        return 1;
+#else
+        return 0;
+#endif
+    }
     if (f == "souls") {                                 // the souls-style combat mode (combat.mode, app souls ...)
 #ifdef RTAG_HAVE_SOULS
         return 1;
@@ -682,7 +733,7 @@ int rtag_start(const rtag_config* config) {
     if (m->scene3d) m->renderer.gs.name_textures = true;    // a host may draw an art pack's pictures (rtag_texture_names)
     m->sound = config->sound;
     m->gain = config->gain;
-    mkdir(m->data.c_str(), 0755);
+    make_dir(m->data.c_str());
     std::string mode = "boot";
     std::vector<std::string> pass;
     for (int k = 0; k < config->argc; k++) pass.push_back(config->argv[k]);
@@ -853,6 +904,13 @@ int rtag_set_option(const char* key, const char* value) {
 #ifdef RTAG_HAVE_CONTROLS
     if (k.compare(0, 9, "controls.") == 0) return fpcontrols::setting(key, value) ? 1 : 0;
 #endif
+    if (k == "combat.aim") {                            // "combat.aim" = look | off (fpaim.h)
+#ifdef RTAG_HAVE_AIM
+        return fpaim::setting(key, value) ? 1 : 0;
+#else
+        return 0;
+#endif
+    }
     if (k.compare(0, 7, "combat.") == 0) {             // "combat.mode" = souls | off, "combat.<number>" (soulscombat.h)
 #ifdef RTAG_HAVE_SOULS
         return soulscombat::setting(key, value) ? 1 : 0;
@@ -975,24 +1033,35 @@ const char* rtag_info(void) {
              (unsigned long long)m.renderer.gs.stats.textures_made, (unsigned long long)m.renderer.gs.stats.textures_held,
              (unsigned long long)m.renderer.gs.stats.texture_missing, (int)m.ended.load(), apprt::sound_figures().c_str());
     m.info = text;
+    char said[96];
 #ifdef RTAG_HAVE_SOULS
-    // the souls mode: wanted (this copy's setting) / active (the running game's); and what this copy says of itself in a
-    // room (net2_set "copy"), as tools/recomp/net2/launch.cpp souls_describe makes it: the portal says it again when it changes
-    char souls[96];
-    snprintf(souls, sizeof souls, " souls_want=%d souls_on=%d", soulscombat::wanted() ? 1 : 0, soulscombat::active() ? 1 : 0);
-    m.info += souls;
-#ifdef RTAG_HAVE_NET2
+    // the souls mode: wanted (this copy's setting) / active (the running game's)
+    snprintf(said, sizeof said, " souls_want=%d souls_on=%d", soulscombat::wanted() ? 1 : 0, soulscombat::active() ? 1 : 0);
+    m.info += said;
+#endif
+#ifdef RTAG_HAVE_AIM
+    // aiming by looking, the same way
+    snprintf(said, sizeof said, " aim_want=%d aim_on=%d", fpaim::wanted() ? 1 : 0, fpaim::active() ? 1 : 0);
+    m.info += said;
+#endif
+#if (defined(RTAG_HAVE_SOULS) || defined(RTAG_HAVE_AIM)) && defined(RTAG_HAVE_NET2)
+    // what this copy says of itself in a room (net2_set "copy"), as tools/recomp/net2/launch.cpp souls_describe makes it
+    // (souls bit 0x8000, aim bit 0x4000, each folding its figure in): the portal says it again when it changes
     {
         const rtanet::Info& net = rtanet::info();
         uint32_t set = net.patch_set;
-        unsigned words = net.patch_words & 0x7fff;
+        unsigned words = net.patch_words & 0x3fff;
+#ifdef RTAG_HAVE_SOULS
         if (soulscombat::wanted()) { words |= 0x8000; if (net2hook::souls_figure) set ^= net2hook::souls_figure(); }
+#endif
+#ifdef RTAG_HAVE_AIM
+        if (fpaim::wanted()) { words |= 0x4000; if (net2hook::aim_figure) set ^= net2hook::aim_figure(); }
+#endif
         if (net.patch_set != 0 || net.patch_words != 0) {
-            snprintf(souls, sizeof souls, " copy=fix=%08x,words=%u", set, words);
-            m.info += souls;
+            snprintf(said, sizeof said, " copy=fix=%08x,words=%u", set, words);
+            m.info += said;
         }
     }
-#endif
 #endif
     return m.info.c_str();
 }

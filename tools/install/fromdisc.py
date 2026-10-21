@@ -27,9 +27,9 @@ translated here, from the executable on the player's own disc.
   4. writes local/install.txt (where the disc image is and which program to start) and a
      launcher on the desktop;
   5. (--godot) the game library of the Godot application (tools/godot/build.py snapshot + lib, macOS;
-     tools/godot/build_lib_linux.py on Linux) from the same translation, put where the Godot
+     tools/godot/build_lib_linux.py on Linux; tools/godot/build_lib_win.py on Windows) from the same translation, put where the Godot
      application looks for it (tools/godot/project/gamelib.gd): macOS ~/Library/Application Support/
-     Open Champions/RTA Godot/, Linux ~/.local/share/open-champions/rta-godot/.  The Godot application
+     Open Champions/RTA Godot/, Linux ~/.local/share/open-champions/rta-godot/, Windows %APPDATA%/Open Champions/RTA Godot/.  The Godot application
      itself holds only our code; this library is the game, made here, and stays on this computer.
 
 Everything made from the game (the executable, the translation, objects, programs, the
@@ -303,6 +303,10 @@ def godot_library(target, jobs):
         arch = {'x86_64': 'x86_64', 'amd64': 'x86_64', 'aarch64': 'arm64', 'arm64': 'arm64'}.get(platform.machine().lower(), platform.machine())
         steps = [[py, os.path.join(ROOT, 'tools', 'godot', 'build_lib_linux.py'), '--here', '--arch', arch]]
         made, name = None, 'librta_game.so'
+    elif target == 'windows' and os.path.exists(os.path.join(ROOT, 'tools', 'godot', 'build_lib_win.py')):
+        # the same translation and toolchain as build_win.py (llvm-mingw or MinGW-w64): tools/godot/build_lib_win.py
+        steps = [[py, os.path.join(ROOT, 'tools', 'godot', 'build_lib_win.py'), '--jobs', str(min(jobs, 8))]]
+        made, name = os.path.join(out, 'windows', 'librta_game.dll'), 'librta_game.dll'
     else:
         say('the Godot application\'s game library is not made for %s yet (docs/issues/native-godot.md); the native program is' % target)
         return None

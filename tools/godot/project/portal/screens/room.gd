@@ -98,7 +98,9 @@ func build() -> void:
 	# the souls-style combat mode (tools/recomp/app/soulscombat.h): a room option of the game library's - the host's
 	# choice, taken up by every copy that has it; a copy without it makes the room refuse to start (the warning above)
 	var combat := gameflow_active() and bool(portal.gameflow.call("combat_available"))
-	var columns := (3 if combat else 2) + 1
+	# aiming by looking (tools/recomp/app/fpaim.h): a room option the same way (bit 0x4000 of the copy's word count)
+	var aim := gameflow_active() and bool(portal.gameflow.call("aim_available"))
+	var columns := 2 + (1 if combat else 0) + (1 if aim else 0) + 1
 	var cw := (left_w - UI.px(14) * (columns - 1)) / columns
 	# the game's own four (net2_options.difficulty 1..4; 0 means the first).
 	# ... and only those the game's own menu would offer this host (net2_game_status().difficulty_unlocked: 1 on a new card)
@@ -136,6 +138,16 @@ func build() -> void:
 		mode.narrow = columns > 3
 		put(mode, Rect2((cw + UI.px(14)) * column, choices_y, cw, choices_h))
 		mode.changed.connect(func(index: int) -> void: portal.gameflow.call("set_combat", index == 1))
+		column += 1
+	if aim:
+		var look := _aim_of(mine) if i_host else _aim_of(host_member)
+		var aiming := W.Choice.new("Aim", PackedStringArray(["The game's", "Where you look"]), 1 if look else 0,
+			"Bows and spells follow the look" if look else "")
+		aiming.key = "aim"
+		aiming.locked = not can_choose
+		aiming.narrow = columns > 3
+		put(aiming, Rect2((cw + UI.px(14)) * column, choices_y, cw, choices_h))
+		aiming.changed.connect(func(index: int) -> void: portal.gameflow.call("set_aim", index == 1))
 		column += 1
 	var open_to := W.Choice.new("Who can join", PackedStringArray(["Code only", "Friends too"]), clampi(int(options.get("open_to", 0)), 0, 1))
 	open_to.key = "open_to"
@@ -313,6 +325,10 @@ static func _souls_of(m: Dictionary) -> bool:
 	return (int(m.get("fix_words", 0)) & 0x8000) != 0
 
 
+static func _aim_of(m: Dictionary) -> bool:
+	return (int(m.get("fix_words", 0)) & 0x4000) != 0
+
+
 func _mismatch_text(members: Array, mine: Dictionary, host_member: Dictionary) -> String:
 	# the combat mode first, whether or not the service calls the room mismatched (a copy that says nothing of itself is
 	# left out of its checks, but net2_start refuses a room whose copies differ in the souls mode all the same): every
@@ -325,6 +341,15 @@ func _mismatch_text(members: Array, mine: Dictionary, host_member: Dictionary) -
 		if _souls_of(host_member):
 			return "The host plays with souls-style combat and %s does not have it (yet) - every copy must, or the host picks Classic." % " and ".join(PackedStringArray(without))
 		return "Souls-style combat is on for %s and off for the host - every copy must play the same." % " and ".join(PackedStringArray(without))
+	# aiming by looking, the same way
+	without = []
+	for m in members:
+		if _aim_of(m) != _aim_of(host_member) and not bool(m.host):
+			without.append("you" if bool(m.me) else String(m.name))
+	if not without.is_empty():
+		if _aim_of(host_member):
+			return "The host aims where they look and %s does not have it (yet) - every copy must, or the host picks the game's aim." % " and ".join(PackedStringArray(without))
+		return "Aiming by looking is on for %s and off for the host - every copy must play the same." % " and ".join(PackedStringArray(without))
 	if not bool(room.get("mismatch", false)):
 		return ""
 	var odd := []

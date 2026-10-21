@@ -43,6 +43,8 @@ extends Node
 #   --no-game-hud       the game's own HUD layer is left out (for a HUD drawn by Godot)
 #   --combat souls|off  the souls-style combat mode (tools/recomp/app/soulscombat.h: stamina, dodge, light / heavy attacks,
 #                       blocking with stamina, poise, lock-on); offline this copy's own, in a room the host's (portal room screen)
+#   --aim look|off      aiming by looking (tools/recomp/app/fpaim.h: bows and spell bolts leave along the look, heading and
+#                       pitch); offline this copy's own, in a room the host's (portal room screen)
 #   --light, --shadow, --pull-back F, --orbit DEG     scene mode: see scene_view.gd
 #   --look K=V[,K=V...] scene mode: the look (sky, fog, sun, shadows, bloom, anti-aliasing ...): see scene_view.gd
 #   --look-presets FILE scene mode: one more file of per-level look presets over the project's (scene_view.gd, presets.py)
@@ -114,7 +116,7 @@ var opt := {
 	"no_sound": false, "test": "", "stop_after": 0, "figures": "", "args": PackedStringArray(),
 	"view": "", "game_hud": true, "light": false, "shadow": false, "pull_back": 1.0, "orbit": 0.0,
 	"look": "", "hud": true, "speed_log": 0, "net2_flow": "", "art_pack": "", "mipmaps": true,
-	"combat": "", "look_presets": "",
+	"combat": "", "aim": "", "look_presets": "",
 }
 var speed := {"usec": 0, "cpu": 0.0, "blanks": 0, "last": 0, "late": 0, "worst": 0}
 signal session_over(why: String)
@@ -244,6 +246,7 @@ func _parse_arguments() -> void:
 			"--view": opt.view = value; k += 1
 			"--no-game-hud": opt.game_hud = false
 			"--combat": opt.combat = value; k += 1
+			"--aim": opt.aim = value; k += 1
 			"--light": opt.light = true
 			"--shadow": opt.shadow = true
 			"--pull-back": opt.pull_back = value.to_float(); k += 1
@@ -408,6 +411,8 @@ func _start() -> void:
 		machine.set_option("game_hud", "off")
 	if String(opt.combat) != "" and not machine.set_option("combat.mode", String(opt.combat)):
 		print("rta_godot: this game library has no souls-style combat mode (--combat %s ignored)" % opt.combat)
+	if String(opt.aim) != "" and not machine.set_option("combat.aim", String(opt.aim)):
+		print("rta_godot: this game library has no aiming by looking (--aim %s ignored)" % opt.aim)
 	if own_picture:
 		picture_texture = ImageTexture.new()
 	else:

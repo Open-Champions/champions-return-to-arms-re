@@ -17,7 +17,18 @@ Nothing derived from the game is in the repository. The generated game code
 (`local/recomp-out/gen-app`), the objects and the programs are under `local/recomp-out/`;
 a Windows build is made by the builder from the builder's own disc.
 
-STATE (2026-10-20, 17:05): the tester's folder and the installer were run in a Windows 11 ARM
+STATE (2026-10-21): **aiming by looking** (`docs/issues/native-first-person-aim.md`) is in `win_main.cpp` where
+`app_main.cpp` has it (`fpaim::blank` after the controls, `fpaim::drawn` in `fpview::on_drawn`, `--aim look|off`, the
+`combat.aim` setting, `app aim ...`, the figures line), and `build_win.py` compiles `app/fpaim.cpp`. **Ran on Windows
+(VM)**: a Mac `rta_app_next` host (`--aim look --view first`, a Ranger) and the VM's `rta_app.exe` joiner (`--offscreen
+--plain --view first`, Mesa llvmpipe, a Wizard; it took the host's choice: "the host plays with aiming by looking on: so
+does this copy now") in one room through a rendezvous service on this Mac: **2,254 ticks in step** hub > drunare, no
+shared column differs (the aim block's columns included); 7 arrows at 7 pitches (-54.7 to +65.0 degrees) from the Mac,
+4 Shock of Frost at 4 pitches (-17.4 to +16.3) from the Windows copy, which sent its own 34 aim messages (`local/aim/r8/win/w1`).
+The Godot version for Windows now has its game library (`tools/godot/build_lib_win.py`, `docs/issues/native-godot.md`
+round 8): its export ran in the VM.
+
+Earlier STATE (2026-10-20, 17:05): the tester's folder and the installer were run in a Windows 11 ARM
 virtual machine: floating-point table, boot check, a headless play run and the PNG check give
 the Mac's figures; the window program draws (with a software OpenGL); a Windows copy and the
 Mac's `rta_app` played in one room through a rendezvous service on this Mac, in step through a

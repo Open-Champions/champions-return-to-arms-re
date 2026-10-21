@@ -624,6 +624,7 @@ def main():
              (os.path.join(HERE, 'fpview.cpp'), rt_flags + ['-I', HERE], 'a_'),  # the view modes (the Mac's file; NOT RUN on Windows)
              (os.path.join(HERE, 'fpworld.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),  # the world for a camera inside it (the same)
              (os.path.join(HERE, 'soulscombat.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),  # the souls-style combat mode (the same)
+             (os.path.join(HERE, 'fpaim.cpp'), rt_flags + ['-I', HERE], 'a_'),  # aiming by looking (fpaim.h; the same)
              (os.path.join(HERE, 'gamestate.cpp'), app_flags, 'a_'),           # the player's own boss music (bossmusic.h): the state reader
              (os.path.join(HERE, 'bossmusic.cpp'), app_flags, 'a_'),           # and the director, the decoders, the mixer (the Mac's files)
              (os.path.join(WINSRC, 'wgl.cpp'), app_flags, 'a_')], objdir, search)

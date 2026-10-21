@@ -88,6 +88,7 @@
 #include "pad_host.h"
 #include "fpcontrols.h"
 #include "soulscombat.h"
+#include "fpaim.h"                  // aiming by looking (docs/issues/native-first-person-aim.md)
 #include "bossmusic.h"
 #include "fpview.h"
 #include "fpworld.h"
@@ -363,6 +364,7 @@ struct Pads : rta::PadSource {
             if (float pitch = fpcontrols::take_pitch(); pitch != 0) fpview::add_pitch(pitch);
             soulscombat::blank(blank);          // the souls-style combat mode (soulscombat.h): off unless asked for
             bossmusic::blank(blank);            // the player's own boss music (bossmusic.h): reads the game's state, plays nothing without files
+            fpaim::blank(blank);                // aiming by looking (fpaim.h): off unless asked for; as app_main.cpp
         }
         last_buttons = state.buttons;
         last_sticks = state.lx | state.ly << 8 | state.rx << 16 | (uint32_t)state.ry << 24;
@@ -999,6 +1001,7 @@ static void final_report() {                            // on the game's thread,
     apprt::films_report();
     printf("rta_app: %s\n", fpcontrols::figures().c_str());
     if (soulscombat::wanted() || soulscombat::active()) printf("rta_app: %s\n", soulscombat::figures().c_str());
+    if (fpaim::wanted() || fpaim::active()) printf("rta_app: %s\n", fpaim::figures().c_str());
     printf("rta_app: %s\n", bossmusic::figures().c_str());
     fflush(stdout);
 }
@@ -1047,6 +1050,9 @@ static void app_command(const std::string& text, uint64_t frame) {
         // app music info | on | off | volume V | dir PATH | rescan | engage on|off|auto  (bossmusic.h)
         printf("[frame %llu] %s\n", (unsigned long long)frame, bossmusic::command(w.size() >= 2 ? text.substr(text.find(w[1])) : std::string()).c_str());
         fflush(stdout);
+    } else if (w[0] == "aim") {
+        // app aim info | on | off  (fpaim.h)
+        printf("[frame %llu] %s\n", (unsigned long long)frame, fpaim::command(w.size() >= 2 ? text.substr(text.find(w[1])) : std::string()).c_str());
     } else if (w[0] == "souls") {
         // app souls info | on | off | lock | set NAME VALUE  (soulscombat.h)
         printf("[frame %llu] %s\n", (unsigned long long)frame, soulscombat::command(w.size() >= 2 ? text.substr(text.find(w[1])) : std::string()).c_str());
@@ -1180,7 +1186,7 @@ static const char* HELP =
     "        [--aspect auto|4:3|16:9|16:10|21:9|W:H] [--resolution window|WxH|Nx] [--antialiasing off|2|4|8] [--anisotropy 1..16]\n"
     "        [--mipmaps yes|no] [--art-pack FOLDER] [--art-memory MB] [--frame-cap 60|30|0] [--plain] [--settings FILE] [--no-settings]\n"
     "        [--pacing ahead|queued]   (queued: the pacing of the first builds - try it when the picture stutters, and say so)\n"
-    "        [--view overhead|action|chase|shoulder|first] [--view-set view.<mode>.<name>=VALUE] [--combat souls|off]   (V switches while the game runs)\n"
+    "        [--view overhead|action|chase|shoulder|first] [--view-set view.<mode>.<name>=VALUE] [--combat souls|off] [--aim look|off]   (V switches while the game runs)\n"
 #ifdef RTA_NET
     "online: [--server ADDRESS] (or the first line of server.txt beside the program) [--online | --host [CODE] | --join CODE]\n"
     "        [--choose-character] [--player N] [--server-public ADDRESS] [--name NAME]\n"
@@ -1217,6 +1223,7 @@ int main(int argc, char** argv) {
         else if (a == "--data") opt.data = next();
         else if (a == "--elf") opt.elf = next();
         else if (a == "--combat") overrides.push_back({"combat.mode", next()});        // souls | off (soulscombat.h)
+        else if (a == "--aim") overrides.push_back({"combat.aim", next()});           // look | off (fpaim.h)
         else if (a == "--window") overrides.push_back({"window", next()});
         else if (a == "--size") overrides.push_back({"resolution", next()});
         else if (a == "--scale") overrides.push_back({"resolution", next() + "x"});
@@ -1298,7 +1305,7 @@ int main(int argc, char** argv) {
         opt.unpaced = opt.set.frame_cap <= 0;
         for (auto& kv : opt.set.view)
             if (!fpview::setting(kv.first.c_str(), kv.second.c_str()) && !fpcontrols::setting(kv.first.c_str(), kv.second.c_str()) && !fpworld::setting(kv.first.c_str(), kv.second.c_str()) &&
-                !soulscombat::setting(kv.first.c_str(), kv.second.c_str()) &&
+                !fpaim::setting(kv.first.c_str(), kv.second.c_str()) && !soulscombat::setting(kv.first.c_str(), kv.second.c_str()) &&
                 !bossmusic::setting(kv.first.c_str(), kv.second.c_str()))
                 log_line("settings: not a view, controls or world setting: " + kv.first + " = " + kv.second);
         opt.set.view.clear();
@@ -1447,6 +1454,7 @@ int main(int argc, char** argv) {
         }
         int mode = fpcontrols::take_strafe_send();
         if (mode >= 0 && !replayed) apprt::call_game(c, fpcontrols::STRAFE_SENDER, (uint32_t)mode);
+        if (!replayed) fpaim::drawn(c, v.mode, v.active && !v.fallback && v.shown == v.mode, v.look_pitch);   // aiming by looking: this machine's aim, by game message 4
     });
     fpworld::install();     // the world for a camera inside it (the Mac's file; NOT RUN on Windows); after the controls' call-out
     if (getenv("RTA_GS_LOG")) renderer.gs.log_display = true;

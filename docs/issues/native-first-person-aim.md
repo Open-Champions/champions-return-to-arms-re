@@ -11,7 +11,11 @@ repository.
 
 ## STATE (rewritten at every step; read this first after a stop)
 
-**2026-10-20 - built, run offline and with two copies in one room; mode off byte-identical on the rig. Not committed.**
+**2026-10-21 - in every version: Mac, Windows, Linux, the Godot library and its portal (3.5).** Ran: a Linux + Mac room
+(4,381 ticks in step), a Windows (VM) + Mac room (2,254), two Godot portals (2,333); every pair equal in every shared
+column, the aim block's own included. Still not: the emulator application (no pnach section).
+
+**2026-10-20 - built, run offline and with two copies in one room; mode off byte-identical on the rig.**
 
 - Program: `local/recomp-out/bin/rta_aim2` (the fix-set game with the mode), `rta_aim2_orig` (the game as on
   the disc with the mode's code linked in, for the rig). `rta_aim1` was the first build (same tick code; the
@@ -24,9 +28,8 @@ repository.
   launches through a level change, a fight, deaths and a reload: 5,499, 6,100 and 6,096 ticks in step, every
   column equal including the mode's own (3.2). A room whose copies differ in the mode is not started (3.2).
   The rig comparison with the mode off is byte for byte the reference in overhead and first person (3.3).
-- **Not done**: Windows and Linux programs, the Godot library and portal (none links `fpaim.cpp`; such a copy
-  says nothing of the mode, so a room with it cannot start with the mode on); the emulator application; homing
-  bolts and the arrow skills, thrown weapons and Shock of Fire were not exercised (4); nobody has played it.
+- **Not done**: the emulator application; homing bolts and the arrow skills, thrown weapons and Shock of Fire were
+  not exercised (4); nobody has played it. (Windows, Linux and Godot: done 2026-10-21, 3.5.)
 
 ---
 
@@ -180,6 +183,27 @@ rig's log, controller rows replayed, the original game's translation **with this
 
 The arrow itself is small: at 640 x 448 it is not seen against the sky in shoulder view.
 
+### 3.5 Windows, Linux, Godot (2026-10-21, Ran)
+
+What `app_main.cpp` does, the others now do in the same places: `fpaim::blank` after the controls' `translate`,
+`fpaim::drawn` in `fpview::on_drawn` (not while rows are replayed), `--aim look|off`, `combat.aim`, `app aim ...`, the
+figures line. Files: `app/win_main.cpp`, `app/linux/linux_main.cpp`, `build_win.py` (the Windows program's list),
+`build_linux.py`; Godot: `tools/godot/build.py` and `build_lib_linux.py` / `build_lib_win.py` compile `app/fpaim.cpp`
+(`-DRTAG_HAVE_AIM`); `lib/rtag.cpp` calls `fpaim::blank` and `fpaim::drawn` as `app_main.cpp` (the sender only while the
+library's controls are on), takes `rtag_set_option("combat.aim", ...)`, answers `rtag_has("aim")`, runs `app aim ...`,
+and says `aim_want=`, `aim_on=` and, in `copy=`, the word count with bit 0x4000 and the figure folded in (as
+`net2/launch.cpp` `souls_describe`); `main.gd --aim look|off`; the portal: `gameflow.gd` (`aim_available`, `set_aim`),
+the room screen's choice **"Aim: The game's / Where you look"** (host only; a joiner's library follows the host by
+itself), and the warning "The host aims where they look and NAME does not have it (yet)" for a copy without it.
+
+| Run | Copies | Result |
+|---|---|---|
+| `lin1` | host the Linux `rta_app` (aarch64, container, `--aim look --view first`, Ranger), joiner the Mac `rta_app_next` (Wizard, no option: it took the host's choice) | **4,381 ticks in step** hub > drunare, a death; no shared column differs; 121 messages; 19 arrows at 17 pitches (-10.3 to +59.5), 6 Shock of Frost at 6 pitches (-33.4 to -6.0) |
+| `win/w1` | host the Mac `rta_app_next` (`--aim look`, Ranger), joiner the VM's `rta_app.exe` (`--offscreen --plain`, Mesa llvmpipe, Wizard) | **2,254 ticks in step** hub > drunare; no shared column differs; 75 messages (34 from the Windows copy); 7 arrows at 7 pitches (-54.7 to +65.0), 4 casts at 4 pitches (-17.4 to +16.3) |
+| `groom3` | two Godot portals in scene mode (`local/aim/r8/room8.py`: room6.py with n2aim.py's looks and classes, `app view first` once in the game, `RTA_SHOTS_AIM=look`): the host picks "Where you look" on the room screen, both copies then say `fix_words` 16573 (bit 0x4000 + 189) | "aiming by looking: on for this game" on both; **2,333 ticks in step** hub > drunare; no shared column differs; 76 messages (38 from each); 24 arrows at 19 pitches (-52.6 to -1.6), 2 Shock of Frost at +28.9 and +29.6. (`groom2` before it: in step too, 2,332 ticks, but the portal kept the overhead view - `--view` is not taken in the portal - so nothing was sent: the sender wants a look view) |
+
+Logs under `local/aim/r8/`. The Windows run is short for the reason `native-windows.md` gives (llvmpipe under emulation).
+
 ## 4. Not done, and what to know
 
 - **Not exercised**: thrown weapons (`playerProjectile`: they also fall by 9 a tick, so a throw will need a little
@@ -194,8 +218,8 @@ The arrow itself is small: at 640 x 448 it is not seen against the sky in should
 - During a view transition the pitch sent is that of the picture being blended (`look_pitch` of the shown
   view): `w1`'s sixth cast left at -2.5 degrees with the shoulder view at 30 still easing in.
 - A bow next to a monster swings instead of shooting (1): melee is not aimed.
-- Windows, Linux, Godot and the emulator application do not have the mode; a room with any of them cannot
-  start with it on.
+- The emulator application does not have the mode; a room with it cannot start with it on. (Windows, Linux and
+  Godot have it since 2026-10-21: 3.5.)
 
 ## 5. How to repeat
 

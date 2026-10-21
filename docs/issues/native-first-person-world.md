@@ -808,8 +808,15 @@ walk of 8.6. Their pictures were looked at and the flagged places probed with sw
    (water-kind chunks). So it hung over the lava nearer to the eye, hid what was drawn behind it later, and
    where its alpha was low the clear colour showed. **Fix:** a skirt is drawn at the farthest depth and writes
    none. It is a background, seen only where nothing of the level is drawn (`fb-skirt3.png`: the lava is
-   there). The OpenGL program only: the Godot drawer takes the meshes itself (not looked at, `tools/godot` is
-   another work).
+   there). The OpenGL program only: the Godot drawer takes the meshes itself. **Godot, 2026-10-21 (Ran)**: the same
+   in scene mode - `firbonus` at its start, first person, heading 6 of the probe above: a pale band over the lava at
+   the right edge with the fill on, gone with `app look fill off` (1.45 % of the lower picture differs). The drawer
+   draws the skirt in the transparent pass right before the first piece of the level, depth tested and **written**
+   (`fill.gdshader`, `depth_draw_always`). Fixed the same way: skirts have their own shader, `fill_skirt.gdshader`
+   (`depth_draw_never`, the body shared in `fill.gdshaderinc`; `RtaDrawer.set_fill_shader(shader, skirt_shader)`).
+   Drawn before the level and writing no depth, the skirt is covered by whatever of the level lies behind it - the
+   same as the farthest depth. After: fill on and off give the same lower picture at both headings (0 % differs);
+   the lava is there (`local/aim/r8/skirt/compare.png`). Ceilings are unchanged.
 4. **Beyond the rim, the level's own** (`fire5`, `storm2`; also `torment2`, `fay2` and `pvpfire2` in the full
    walk). **Ran:** looking over the edge of floating ground into the chasm or the void below
    (`c-storm2.png`, `c-fire5.png`, `all2-rest.png`). The game's overhead view shows the same void beside the

@@ -13,6 +13,20 @@ Nothing derived from the game is in the repository: the translation
 (`local/recomp-out/linux/gen-app`, `gen-orig`), objects, programs, logs and the tester's
 folders are under `local/recomp-out/linux/`.
 
+## STATE (2026-10-21): aiming by looking
+
+`linux_main.cpp` calls aiming by looking (`app/fpaim.h`, `docs/issues/native-first-person-aim.md`) where `app_main.cpp`
+does: `fpaim::blank` after the controls' `translate`, `fpaim::drawn` in `fpview::on_drawn`, `--aim look|off`, the
+`combat.aim` setting, `app aim ...`, the figures line; `build_linux.py` compiles `app/fpaim.cpp`. **Ran** (aarch64,
+`build_linux.py --docker arm64 --no-game`: 16 of 91 files): a room hosted by the Linux `rta_app` in the container
+(`--aim look --view first`, a Ranger, Xvfb) and joined by the Mac's `rta_app_next` (`--view first`, a Wizard, no
+option: "the host plays with aiming by looking on: so does this copy now"), our own `rendezvous.py` on 127.0.0.1:41981
+(container through 192.168.5.2), `local/aim/net/n2aim.py --external` with `local/aim/r8/as-linux-aim.py` (`lin1`):
+**4,381 ticks in step** hub > drunare, one death, `compare.py ticks`: no shared column differs (the aim block's columns
+included); mode on in every tick on both; 19 arrows at 17 pitches (-10.3 to +59.5 degrees) and 6 Shock of Frost at 6
+pitches (-33.4 to -6.0); routes direct both ways (16 ms). The Godot library for Linux has the mode too
+(`build_lib_linux.py`, built and dlopen-tested, 66 exports).
+
 ## STATE (2026-10-20, morning): the combat mode, the world work, the installer
 
 **What changed.** `linux_main.cpp` (and `win_main.cpp`) now call the souls-style combat mode

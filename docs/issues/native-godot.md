@@ -9,6 +9,38 @@ Nothing derived from the game is in the repository. `tools/godot/` holds glue, b
 scripts, the Godot project's scripts and shaders. The translated code, the libraries, the
 staged project, exported applications, pictures and logs are under `local/godot-spike/`.
 
+## EIGHTH ROUND (2026-10-21): aiming by looking, the Windows game library, the skirt's depth
+
+Built into `local/godot-r8/` (`RTA_GODOT_OUT=local/godot-r8`; snapshot of `tools/recomp` taken this round; after `build.py
+all` the staged project needs `run.py import` once, or the extension is not registered and `main.gd` does not parse).
+
+| Asked | State | Shown |
+|---|---|---|
+| aiming by looking in the library and the portal | **done, Ran**: `fpaim.cpp` compiled (`-DRTAG_HAVE_AIM`), `rtag.cpp` as `app_main.cpp`, `main.gd --aim`, the room screen's "Aim" choice; two Godot portals in one room with it: 2,333 ticks in step, 24 arrows at 19 pitches, 2 casts (`docs/issues/native-first-person-aim.md` 3.5) | `local/aim/r8/groom3/` |
+| a Godot game library for Windows | **done, Ran in the VM**: `tools/godot/build_lib_win.py` (the existing MinGW-w64 toolchain of `build_win.py`, its objects of the game when current), `librta_game.dll` 28.5 MB, 66 functions exported, only Windows' own DLLs; `fromdisc.py --godot` builds it on Windows (`install-windows.ps1 -Godot`) | `local/aim/r8/wgodot/` |
+| the skirt hid the level (as the OpenGL program's 8.8 cause 3) | **found and fixed, Ran**: `fill_skirt.gdshader` writes no depth | `local/aim/r8/skirt/compare.png` |
+
+**The Windows library.** New: `build_lib_win.py`; `lib/gl_offscreen_win.cpp` (a hidden window and `app/win/wgl.cpp`'s
+core context); the Windows half of `lib/host_godot.cpp` (host_win32.cpp's threads, disc reads and sleep; quit tells the
+library instead of ending); in `rtag.cpp` `cpu_ms` by `GetProcessTimes`, `_mkdir`, and `file_exists` by `_stat64` (the
+C library's `stat` has a 32-bit size under MinGW and said "no disc image at that path" for the 4 GB image - found in the
+VM); `png_write.h` without zlib there (`RTA_PNG_NO_ZLIB`: stored deflate blocks, its own CRC and Adler sums); the
+one-step online's `net/online_win.cpp` linked (its window questions are never attached). **Ran** in the Windows 11 ARM VM
+(no graphics chip; `native-windows.md`): the round-8 export (`build.py extension --release --platform windows`, `export
+--platform windows`: `RtaGodot.exe`, `.pck`, the extension DLL, 94.2 MB) with `librta_game.dll` beside it.
+`--rendering-driver opengl3` with Mesa's `opengl32.dll` beside the program: "Failed to create an OpenGL window" (Godot
+does not take the OpenGL of a DLL beside it, Inferred). `--rendering-driver opengl3_angle` (ANGLE over Direct3D 11 on
+Microsoft's Basic Render Driver) works: **picture mode** (the library's own renderer: "OpenGL 4.6 Mesa 26.2.4 on llvmpipe
+(no window)", Mesa's DLL found beside the program, `GALLIUM_DRIVER=llvmpipe`, `GALLIUM_OVERRIDE_CPU_CAPS=sse4.1`) booted to
+the hub, 2,621 blanks at 54.6 pictures a second, the hub's picture as on the Mac (`wgodot/hub-picture.png`); **scene mode**
+(Godot's Compatibility renderer through ANGLE) the same route at 20.2 pictures a second (`wgodot/hub-scene.png`). Not
+run on Windows: a room, the portal, sound (no device in the VM), a real GPU.
+
+**The skirt.** `firbonus` in scene mode, first person at its start, headings 5 and 6 of the OpenGL program's probe
+(`local/aim/r8/skirt/mkfb.py`, `fb.sh`): before (round 7's build) heading 6 has a pale band over the lava at the right edge
+that `app look fill off` removes (1.45 % of the lower picture differs); after, fill on and off give the same lower
+picture at both headings (0 %). Cause and fix in `native-first-person-world.md` 8.8, cause 3.
+
 ## SEVENTH ROUND (2026-10-20, afternoon): cleaner models, the game's own screens, an export without the game, room modes
 
 **Read this first.**  Built into `local/godot-r7/` (`RTA_GODOT_OUT=local/godot-r7`; the sixth round's snapshot of
@@ -115,6 +147,7 @@ ground is under the feet again.  `pvpinn` and the hub: never shown (`levels/aren
   in a room on a local service** (`tools/rendezvous/rendezvous.py` on 127.0.0.1; `room7.py export1` with `ROOM_EXPORT`):
   friends, invitation, room, the game's character screens, Start, both in the hub, 250 ticks compared, "no shared
   column differs on any tick" (`test/export1/sheet.jpg`).
+- **Windows (2026-10-21, round 8)**: the library now exists (`build_lib_win.py`) and the export ran in the VM: above.
 - **Ran, Linux arm64** in the container (Xvfb, Godot's OpenGL renderer on llvmpipe): the clean export with the Linux
   library in the per-user place: title, hub (`linux-test/sheet.jpg`), 9 pictures a second in software.
 - **Windows: built, not run** (no Windows here).
@@ -386,7 +419,7 @@ object-space vertices and joints (needs `TapFrame` sources and joints through `r
 - The level's fill comes from `rtag_fill_get` (`RtaMachine.fill()` / `get_fill_info()`): one Godot mesh and instance per
   128-unit block, made again when the serial changes.  Drawn in the list's order right before the level's first
   depth-writing draw (after the sky, the dome and the clearing rectangle; skirt before ceiling), depth tested and
-  written, in the transparent pass (which casts no shadow).  A ceiling block only while the eye is under its top, and a
+  written (a skirt since round 8 not written: `fill_skirt.gdshader`), in the transparent pass (which casts no shadow).  A ceiling block only while the eye is under its top, and a
   ceiling seen from below only (as `Gs::draw_fill`).  The library's own plain fill in the list (the world work draws
   it through the GS too) is recognised and left out while Godot draws it (figure "the library's own fill draws left out").
 - **Material: a swatch of the level's own texture.**  While the level is drawn, a level chunk near the eye whose wall

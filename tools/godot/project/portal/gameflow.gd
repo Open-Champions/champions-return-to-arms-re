@@ -50,6 +50,8 @@ var copy_said := ""                 # what this copy last said of itself in the 
 var copy_clock := 0.0
 var combat_has := false             # the game library has the souls-style combat mode (rtag_has "souls")
 var combat_want := false            # ... and this copy is set to play with it (its own setting; a joiner follows the host)
+var aim_has := false                # the game library has aiming by looking (rtag_has "aim"; tools/recomp/app/fpaim.h)
+var aim_want := false               # ... and this copy is set to play with it (the same way: bit 0x4000)
 
 
 func attach() -> void:
@@ -134,6 +136,8 @@ func _say_copy(game: Node) -> void:
 	var info := String(machine.call("info"))
 	var at := info.find(" copy=")
 	combat_want = info.find("souls_want=1") >= 0
+	aim_has = bool(machine.call("has", "aim"))
+	aim_want = info.find("aim_want=1") >= 0
 	if at < 0:
 		return
 	var text := info.substr(at + 6).get_slice(" ", 0).replace(",", " ")
@@ -154,6 +158,20 @@ func set_combat(souls: bool) -> bool:
 	var ok := bool(game.get("machine").call("set_option", "combat.mode", "souls" if souls else "off"))
 	copy_clock = 0.0                # said again at once
 	print("portal: souls-style combat %s for this copy (%s)" % ["wanted" if souls else "not wanted", "taken" if ok else "refused"])
+	return ok
+
+
+func aim_available() -> bool:
+	return active and aim_has
+
+
+func set_aim(look: bool) -> bool:
+	var game: Node = portal.handover.game
+	if game == null or game.get("machine") == null or not bool(game.get("started")):
+		return false
+	var ok := bool(game.get("machine").call("set_option", "combat.aim", "look" if look else "off"))
+	copy_clock = 0.0                # said again at once
+	print("portal: aiming by looking %s for this copy (%s)" % ["wanted" if look else "not wanted", "taken" if ok else "refused"])
 	return ok
 
 

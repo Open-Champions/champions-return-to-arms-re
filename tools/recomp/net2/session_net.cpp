@@ -714,8 +714,13 @@ struct Net : Backend {
                     std::string list;
                     int count = 0;
                     uint16_t local_port = carrier_.local().port;
+                    uint32_t bound_ip = carrier_.local().ip;
                     for (uint32_t ip : own) {
                         if ((ip >> 24) == 127 || (ip >> 16) == 0xA9FE || count >= 3) continue;      // not loop-back, not link-local
+                        // not the shared address space 100.64.0.0/10 (carrier-grade NAT, and the address range of VPNs such as
+                        // Tailscale): two players on one VPN would otherwise take it as a straight route nobody asked for
+                        // (docs/issues/native-rendezvous.md, "Two networks"); kept only when the socket is bound to it
+                        if ((ip >> 22) == 0x191 && ip != bound_ip) continue;
                         n2::Endpoint e;
                         e.ip = ip;
                         e.port = local_port;

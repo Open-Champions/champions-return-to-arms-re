@@ -738,7 +738,7 @@ void RtaDrawer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_sky_info"), &RtaDrawer::get_sky_info);
     ClassDB::bind_method(D_METHOD("sky_reset"), &RtaDrawer::sky_reset);
     ClassDB::bind_method(D_METHOD("set_output_size", "size"), &RtaDrawer::set_output_size);
-    ClassDB::bind_method(D_METHOD("set_fill_shader", "shader"), &RtaDrawer::set_fill_shader);
+    ClassDB::bind_method(D_METHOD("set_fill_shader", "shader", "skirt_shader"), &RtaDrawer::set_fill_shader, DEFVAL(Ref<Shader>()));
     ClassDB::bind_method(D_METHOD("get_fill_info"), &RtaDrawer::get_fill_info);
     ClassDB::bind_method(D_METHOD("set_card_scenario", "scenario"), &RtaDrawer::set_card_scenario);
     ClassDB::bind_method(D_METHOD("card_focus", "feet", "capture"), &RtaDrawer::card_focus);

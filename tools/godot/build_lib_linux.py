@@ -183,6 +183,9 @@ def build(args):
         if os.path.exists(os.path.join(app, 'soulscombat.cpp')):
             sources.append((os.path.join(app, 'soulscombat.cpp'), rt_flags + ['-I', app, '-I', render], 'a_'))
             lib_flags.append('-DRTAG_HAVE_SOULS')
+        if os.path.exists(os.path.join(app, 'fpaim.cpp')):         # aiming by looking (fpaim.h): needs the controls too
+            sources.append((os.path.join(app, 'fpaim.cpp'), rt_flags + ['-I', app], 'a_'))
+            lib_flags.append('-DRTAG_HAVE_AIM')
     else:
         lib_flags.append('-DRTAG_NO_CONTROLS')
     # the films' entries are left to app/film.cpp when the translation was made with them (build_linux.py's rule)

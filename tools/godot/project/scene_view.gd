@@ -202,7 +202,7 @@ func _ready() -> void:
 	sky_mesh.rings = 24
 	sky_material = ShaderMaterial.new()
 	sky_material.shader = load("res://shaders/sky.gdshader")
-	drawer.call("set_fill_shader", load("res://shaders/fill.gdshader"))
+	drawer.call("set_fill_shader", load("res://shaders/fill.gdshader"), load("res://shaders/fill_skirt.gdshader"))
 	card = Node.new()
 	card.set_script(load("res://card.gd"))
 	card.set("main", main)

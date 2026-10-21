@@ -290,6 +290,10 @@ def build_lib(args):
         if os.path.exists(os.path.join(app, 'soulscombat.cpp')):
             jobs.append((os.path.join(app, 'soulscombat.cpp'), rt_flags + ['-I', app, '-I', render], 'a_'))
             lib_flags.append('-DRTAG_HAVE_SOULS')
+        # aiming by looking (fpaim.h, docs/issues/native-first-person-aim.md): it needs the controls (set_aim)
+        if os.path.exists(os.path.join(app, 'fpaim.cpp')):
+            jobs.append((os.path.join(app, 'fpaim.cpp'), rt_flags + ['-I', app], 'a_'))
+            lib_flags.append('-DRTAG_HAVE_AIM')
     else:
         lib_flags.append('-DRTAG_NO_CONTROLS')
     if not args.original:

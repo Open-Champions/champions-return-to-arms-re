@@ -11,9 +11,10 @@
 # Nothing of the game comes with this repository and nothing of yours leaves this PC: the program is built
 # here, into this folder's local\ (never share that folder).
 # Options (PowerShell):  -Disc FILE  -Desktop DIR  -Yes  -LlvmMingwTag 20xxxxxx (a release of your choice)
+#                        -Godot (also the game library of the Godot version: tools\godot\build_lib_win.py)
 # The program is x86-64; on Windows on ARM it runs under Windows' own x86-64 emulation (the aarch64 build of
 # llvm-mingw is fetched there and asked for x86-64 code).
-param([string]$Disc = "", [string]$Desktop = "", [switch]$Yes, [string]$LlvmMingwTag = "")
+param([string]$Disc = "", [string]$Desktop = "", [switch]$Yes, [string]$LlvmMingwTag = "", [switch]$Godot)
 $ErrorActionPreference = "Stop"
 $Work = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $Work
@@ -100,6 +101,7 @@ if (-not (Test-Path -LiteralPath $Disc -PathType Leaf)) { Fail "Not a file: $Dis
 Say "Building (10 to 40 minutes)"
 $a = @("-B", "tools\install\fromdisc.py", "--platform", "windows", "--disc", $Disc)
 if ($Desktop) { $a += @("--desktop", $Desktop) }
+if ($Godot) { $a += @("--godot") }
 & $PyExe @PyArgs @a
 if ($LASTEXITCODE -ne 0) { Fail "The build did not finish; the lines above say why." }
 Say "Done. Start the game with 'Champions RTA Native' on your desktop, or play.bat in local\recomp-out\win\rta-windows\ (the log: rta-data\rta_app-log.txt there)."

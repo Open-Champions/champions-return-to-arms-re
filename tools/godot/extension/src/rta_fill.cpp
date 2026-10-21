@@ -18,7 +18,9 @@
 //              it); a skirt is lit like the ground.  Neither throws a shadow (they are drawn in the transparent pass
 //              with the list's draws, which does not cast).
 //   order      in the list's order, right before the first piece of the level (after the game's sky, its dome and the
-//              clearing rectangle; a skirt before a ceiling), depth tested and written like the level.
+//              clearing rectangle; a skirt before a ceiling), depth tested; a ceiling writes its depth like the level, a
+//              skirt none (shaders/fill_skirt.gdshader): it is a background that whatever of the level lies behind it
+//              covers - as render/gs.cpp's Gs::draw_fill since docs/issues/native-first-person-world.md 8.8, cause 3.
 //   visibility as the OpenGL program has it (render/gs.cpp, Gs::draw_fill): a ceiling block only when the eye is under
 //              its top, and a ceiling seen from below only - a camera that has got above a lid looks through it.
 //
@@ -84,6 +86,7 @@ struct RtaDrawer::Fill {
     double light = 0.36, scale = 1.0;
     bool params_dirty = true;
     Ref<Shader> shader;
+    Ref<Shader> skirt_shader;           // the skirts' (no depth written: shaders/fill_skirt.gdshader); none: `shader`
     // figures
     uint64_t frames = 0, blocks_drawn = 0, tried = 0, cut = 0, builds = 0, library_dropped = 0;
 
@@ -94,9 +97,10 @@ struct RtaDrawer::Fill {
     }
 };
 
-void RtaDrawer::set_fill_shader(const Ref<Shader>& shader) {
+void RtaDrawer::set_fill_shader(const Ref<Shader>& shader, const Ref<Shader>& skirt_shader) {
     if (!fill) fill = new Fill;
     fill->shader = shader;
+    fill->skirt_shader = skirt_shader;
 }
 
 Dictionary RtaDrawer::get_fill_info() const {
@@ -138,7 +142,9 @@ void RtaDrawer::fill_release() {
 RID RtaDrawer::fill_material(Fill& fl, uint8_t kind, RID texture) {
     RenderingServer* s = rs();
     RID m = s->material_create();
-    s->material_set_shader(m, fl.shader->get_rid());
+    // a skirt is a background (docs/issues/native-first-person-world.md 8.8, cause 3): its own shader writes no depth
+    const Ref<Shader>& shader = kind == RTAG_FILL_SKIRT && fl.skirt_shader.is_valid() ? fl.skirt_shader : fl.shader;
+    s->material_set_shader(m, shader->get_rid());
     s->material_set_param(m, "kind", (int)kind);
     s->material_set_param(m, "has_swatch", texture.is_valid() ? 1 : 0);
     if (texture.is_valid()) s->material_set_param(m, "swatch", texture);
