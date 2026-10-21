@@ -81,12 +81,12 @@
 00150900	mem_usedBytes	
 00150948	mem_printLumps	prints used blocks whose tag ends in .lmp
 00150e48	Projectile_ctor	(obj, Vec3 *pos, owner, classDef): flags |= 0x4081, radius 12, owner handle at +0x4c; 28 callers
-00150ee4	MissileWeapon_ctor	19 callers; body not read
-00151454	MissileWeapon_dtor	slot 1 of MissileWeapon; identified from the vtable, body not read
-0015153c	MissileWeapon_run	slot 4 of MissileWeapon; identified from the vtable, body not read
+00150ee4	MissileWeapon_ctor	(obj, kind, modelA, modelB, pos*, vel*, facing, owner; stack: launch, impact, dmin, dmax, wrating, iflags, attack, dflags, item); 19 callers; executed (difftest_combat_ranged, docs/spec/combat-projectiles.md 3)
+00151454	MissileWeapon_dtor	slot 1 of MissileWeapon: trail, light, handles +0x128, +0x124, +0xbc..+0x5c, +0x4c, then GameObject_dtor; executed (difftest_combat_ranged)
+0015153c	MissileWeapon_run	slot 4 of MissileWeapon: stuck follow, self-destroy on hit state +0xcc, obj_moveAndCollide, expiry +0xec; executed for kinds 0 and 3 (difftest_combat_ranged)
 0015253c	MissileWeapon_draw	slot 5 of MissileWeapon; identified from the vtable, body not read
-00152a18	MissileWeapon_onTouch	slot 6 of MissileWeapon, inherited by playerProjectile; identified from the vtable, body not read
-00153314	MissileWeapon_slot17	slot 17 of MissileWeapon, inherited by LavaBomb, beetleProjectile, playerProjectile; identified from the vtable, body not read
+00152a18	MissileWeapon_onTouch	slot 6 of MissileWeapon, inherited by playerProjectile: hit state +0xcc (one victim per frame), owner enemy test, Penetrating Arrows (2 g_randSeed draws, victim list +0x124), stick (player owner only), deflection (1 draw), damage_apply with owner or self; executed (difftest_combat_ranged)
+00153314	MissileWeapon_nearestSamplePoint	slot 17 of MissileWeapon (this, creature), inherited by LavaBomb, beetleProjectile, playerProjectile: nearest sample point among those with weight >= 0.75 of the largest, 0 = none; executed (difftest_combat_ranged); was MissileWeapon_slot17
 00153514	AnimatedMissile_ctor	body not read
 001536e8	AnimatedMissile_run	slot 4 of AnimatedMissile; identified from the vtable, body not read
 00153900	AnimatedMissile_onTouch	slot 6 of AnimatedMissile; identified from the vtable, body not read
