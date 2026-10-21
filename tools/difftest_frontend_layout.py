@@ -11,7 +11,8 @@ import sys
 
 sys.path.append(os.path.dirname(__file__))
 from ee_emu import EE  # noqa: E402
-from ref_frontend_layout import (MENU_SOUND_IDS, TABLES, first_theme_queues,  # noqa: E402
+from ref_frontend_layout import (FRONTEND_STATES, MENU_SOUND_IDS, TABLES,  # noqa: E402
+                                 first_theme_queues,
                                  list_geometry, pause_geometry, publisher_logo_sprites)
 
 SHA256 = "292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675"
@@ -34,6 +35,20 @@ def draw_list(path, seed, table):
     frames = [tuple(x & 0xFFFFFFFF for x in c.args[:6])
               for c in e.calls if c.target == 0x17FBB8]
     return anchors, frames
+
+
+def frontend_draw(path, seed, state, table):
+    e = emulator(path, seed)
+    e.follow = {0x1A07C4}
+    e.mem.w32(0x4F6B78, state)
+    e.mem.w32(0x4F6B7C, table)
+    e.call(0x1E08F0, max_steps=100000)
+    list_calls = [c for c in e.calls if c.target == 0x1A07C4]
+    anchors = [(c.args[0] & 0xFFFFFFFF, c.args[1] & 0xFFFFFFFF)
+               for c in e.calls if c.site == 0x1A0E5C and c.target == 0x181CA0]
+    frames = [tuple(v & 0xFFFFFFFF for v in c.args[:6])
+              for c in e.calls if c.site == 0x1A11BC and c.target == 0x17FBB8]
+    return [c.args[1] & 0xFFFFFFFF for c in list_calls], anchors, frames
 
 
 def theme_queue(path, seed, volume):
@@ -117,6 +132,15 @@ def main():
         for volume in (0, 0x3D4CCCCC - 1, 0x3D4CCCCC, 0x3F000000):
             queued = theme_queue(path, seed, volume)
             assert queued == int(first_theme_queues(volume)), (seed, volume, queued)
+            checks += 1
+        for state, (name, origin_y) in FRONTEND_STATES.items():
+            table, count, value_rows = TABLES[name]
+            origins, anchors, frames = frontend_draw(path, seed, state, table)
+            wanted_anchors, wanted_frame = list_geometry(
+                count, value_rows, origin=(320, origin_y))
+            assert (origins, anchors, frames) == (
+                [origin_y], wanted_anchors, [wanted_frame]), (
+                    seed, state, origins, anchors, frames)
             checks += 1
         flags, anchors, frames, colors = pause_draw(path, seed)
         want_anchors, want_frame = pause_geometry()

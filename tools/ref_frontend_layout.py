@@ -20,6 +20,15 @@ TABLES = {
     "player_options": (0x4F6FC8, 4, ()),
 }
 
+FRONTEND_STATES = {
+    0: ("main", 309),
+    1: ("game_type", 309),
+    2: ("players", 309),
+    3: ("difficulty", 309),
+    4: ("mode_two", 309),
+    11: ("options", 238),
+}
+
 
 def list_geometry(count, value_rows=(), origin=(320, 309)):
     """Return centred-text anchors and the minimum frame call for one list."""
