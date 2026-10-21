@@ -150,7 +150,25 @@ an occupied-slot overwrite, positive card-write and transfer gates completed, an
 normal pause-menu Load restored 737 XP, 251 gold and a live Player with full health
 and mana. The saved file is 310,392 bytes. This later receipt tests save/Load within
 one process; it does not extend the separate-process claim above to 737 XP.
-The character remains level one and the first mission is still in progress.
+At that checkpoint the character was level one; the first mission remains in progress.
+
+A further natural continuation kills a stronger enemy for 339 XP, saves/loads 1,076 XP,
+then earns another 67 XP to cross the 1,100-XP first-level threshold. At 1,143 XP the
+Cleric reaches level two and receives three stat points plus one skill point. Actual
+menu inputs spend them on Strength 46 to 49 and Holy Strike rank one to two. No
+health, mana, XP, level, point or rank writes are used; the declared initialization
+counter inputs remain the only fixture.
+
+Normal pause-menu Exit Mission, with Left/Cross choosing Yes, returns the live
+character to the hub. The automatically opened mission menu is closed with Circle
+before walking to its Savepoint. An actual 310,392-byte write, transaction-gated
+pause-menu Load, and a separate fresh-process frontend Load preserve 1,143 XP,
+level/acknowledged level two, Strength 49, Holy Strike rank two, zero unspent points,
+258 gold, 46 HP and 36.6 mana, with a live Player. This is on the preserved input-fixed
+native executable (`27869a855f1d83c64d085443d181f39c3b8f9b640291411a3e72b38106b40cea`).
+The accepted routes observe no valid live-player death frames. Rejected retreat
+and menu-input attempts remain excluded; the first quest and good exit to `strife`
+are still unfinished.
 
 Earlier overwrite attempts pressed Cross while the overwrite screen required Square;
 they wrote no new checkpoint and correctly loaded the older zero-XP save. This was
