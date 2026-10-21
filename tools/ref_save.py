@@ -424,11 +424,14 @@ def _store_level(buf, name, inputs):
     if inputs.game_complete:
         reserved = COMPLETE_LEVEL_SIZE
     else:
-        # strncmp(name, "hub", 3) == 0. A shorter name does not match.
+        # strncmp(name, "hub", 3) == 0 selects row 0 and does not search. A shorter name does not match.
         if len(name) >= 3 and name[:3] == 'hub':
-            return
-        index = level_index(name, inputs.act, inputs.acts)
-        if index < 0:
+            index = 0
+        else:
+            index = level_index(name, inputs.act, inputs.acts)
+            if index < 0:
+                return
+        if inputs.act < 0 or inputs.act >= len(inputs.acts) or index >= len(inputs.acts[inputs.act]):
             return
         reserved = inputs.acts[inputs.act][index][1] & 0xFFFF
     prior = 0

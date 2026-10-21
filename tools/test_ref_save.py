@@ -1,12 +1,17 @@
 """Synthetic slot images for tools/ref_save.py. No game file and no real save."""
 
 import os
-import struct
 import sys
-import unittest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import ref_save as S
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path[:] = [entry for entry in sys.path if os.path.abspath(entry or '.') != _HERE]
+import dis  # noqa: E402,F401
+sys.path.insert(0, _HERE)
+
+import struct  # noqa: E402
+import unittest  # noqa: E402
+
+import ref_save as S  # noqa: E402
 
 
 def _record(name=b'Aria', gold=777, xp=5000, level=4, ack=3, define=3, count=1,
@@ -189,12 +194,20 @@ class SlotTest(unittest.TestCase):
                                  0x4D8AF0 + S.RECORD_SIZE, facing=9, position=(4.0, 5.0, 6.0))
         first = _inputs().players[0]
         image = S.build_slot(_inputs(num_players=2, one_player=True, players=(first, second),
-                                      level_name='hub', acts=((('hub', 0x1000),),)))
+                                      memcard_state=4))
         slot = S.parse_slot(image)
         self.assertEqual(slot.listed_count, 1)
         self.assertEqual(slot.player_count, 2)
         self.assertEqual([c.name for c in slot.characters], ['Aria', 'Bram'])
         self.assertEqual(slot.levels, ())
+
+    def test_hub_uses_the_first_row_size(self):
+        image = S.build_slot(_inputs(level_name='hub', subname='west',
+                                      acts=((('town', 0x1800), ('hub', 0x1000)),)))
+        slot = S.parse_slot(image)
+        self.assertEqual(slot.level_name, 'hub')
+        self.assertEqual(slot.subname, 'west')
+        self.assertEqual([(level.name, level.size) for level in slot.levels], [('hub_west', 0x1800)])
 
     def test_missing_act_leaves_the_buffer_alone(self):
         previous = bytes([0x5A]) * S.FILE_SIZE
@@ -227,8 +240,8 @@ class SlotTest(unittest.TestCase):
         other = S.LiveCharacter(_record(name=b'Bram', live_base=0x4D8AF0 + S.RECORD_SIZE,
                                          object_addr=0x01100200),
                                 0x4D8AF0 + S.RECORD_SIZE, facing=0x2222, position=(8.0, 7.0, 6.0))
-        image = S.build_slot(_inputs(level_name='hub', acts=((('hub', 0x1000),),),
-                                      num_players=2, players=(bare, other), alive_first=-1))
+        image = S.build_slot(_inputs(memcard_state=4, num_players=2, players=(bare, other),
+                                      alive_first=-1))
         hero = S.import_character(image, 0)
         self.assertEqual(hero.name, 'Aria')
         self.assertEqual(hero.facing, 0x2222)
@@ -255,7 +268,7 @@ class SlotTest(unittest.TestCase):
 
     def test_set_player_count_writes_both_fields(self):
         image = S.set_player_count(S.build_slot(_inputs(num_players=2, one_player=True,
-                                                         level_name='hub', acts=((('hub', 0x1000),),),
+                                                         memcard_state=4,
                                                          players=_inputs().players * 2)), 1)
         slot = S.parse_slot(image)
         self.assertEqual(slot.listed_count, 1)
