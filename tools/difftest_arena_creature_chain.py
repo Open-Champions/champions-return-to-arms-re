@@ -37,6 +37,7 @@ EXPECTED_SHA256 = '292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd
 FACTORY_POINTER, OBJECT_FACTORY, WORLD_CREATE = 0x5F76F4, 0x159C94, 0x14F6C8
 ARENA_PROPS, ARENA_PROP_TEXT, ARENA_PROP_SOURCE = 0x8E7230, 0x8E7238, 0x551E80
 RAND = 0x1509D0
+INDICES = (R.GOBLIN, R.MUMMY, R.SCORPION, R.ORC2, R.SNOBADGE)
 LEVEL_STEP, LEVEL_BASE = 0x3F2BC579, 0x40A00000     # docs/arena-modes.md 3.1: wave x step + 5
 
 
@@ -170,7 +171,7 @@ def chain_cases(path, seed, entry, tables):
     rng = random.Random(seed)
     count, found, two = 0, 0, 0
     for wave in range(3):
-        for index in (R.GOBLIN, R.MUMMY, R.SCORPION):
+        for index in INDICES:
             e = new_world(path, seed + 1000 * wave + index, arena_level(wave), entry)
             for _repeat in range(2):
                 n, (hit, double) = construct(e, index, rng, tables)
@@ -317,6 +318,123 @@ def init_cases(path, seed):
     return count
 
 
+# ---- world_findFreeSpot on authored terrain and box answers ----------------------------
+def free_spot_cases(path, seed):
+    rng = random.Random(seed ^ 0xF5)
+    count = 0
+    for case in range(120):
+        e = EE(path)
+        e.follow = Follow({R.FREE_SPOT})
+        start = rng.getrandbits(32)
+        e.mem.w32(R.SEED, start)
+        center = (C.f32(rng.uniform(-500, 500)), C.f32(rng.uniform(-500, 500)), C.f32(rng.choice((0, 0, 12.5, -3))))
+        cptr = e.alloc(16)
+        for k in range(3):
+            e.mem.w32(cptr + 4 * k, center[k])
+        rng_range, radius = rng.choice((36, 96, 72, 48, 0, 5)), rng.choice((24, 12, 0, 30))
+        any_height = rng.choice((0, 0, 1))
+        ok_ptr = e.alloc(8)
+        e.mem.w8(ok_ptr, 0xEE)
+        out = e.alloc(16)
+        cut = C.f32(rng.uniform(-400, 400))
+        mode = rng.choice(('open', 'open', 'wall', 'steps', 'crowd', 'full'))
+        objects = []
+        if mode in ('crowd', 'full'):
+            for _ in range(rng.randint(1, 6) if mode == 'crowd' else 1):
+                ox = C.add(center[0], C.f32(rng.uniform(-60, 60)))
+                oy = C.add(center[1], C.f32(rng.uniform(-60, 60)))
+                orad = C.f32(rng.choice((0, 12, 18, 30, 400 if mode == 'full' else 20)))
+                objects.append((ox, oy, orad, rng.choice((0x20, 0x20, 0x21))))
+            if mode == 'full':
+                objects[0] = (center[0], center[1], C.f32(10000.0), 0x20)
+
+        def blocked(point):
+            return C.ONE if mode == 'wall' and C.lt(point[0], cut) else 0
+
+        def height(point):
+            if mode == 'steps':
+                return C.f32(7.0) if C.lt(cut, point[1]) else C.f32(3.0)
+            return center[2]
+        blocks = []
+        for ox, oy, orad, oflags in objects:
+            b = e.alloc(0x40)
+            e.mem.w32(b + 0xC, oflags)
+            e.mem.w32(b + 0x10, ox)
+            e.mem.w32(b + 0x14, oy)
+            e.mem.w32(b + 0x1C, orad)
+            blocks.append(b)
+        asked = []
+
+        def svc_blocked(x):
+            pt = tuple(x.mem.u32((x.r[5] & 0xFFFFFFFF) + 4 * k) for k in range(3))
+            x.f[0] = blocked(pt)
+            return 0
+
+        def svc_height(x):
+            pt = tuple(x.mem.u32((x.r[5] & 0xFFFFFFFF) + 4 * k) for k in range(3))
+            x.f[0] = height(pt)
+            return 0
+
+        def svc_box(x):
+            lo = tuple(x.mem.u32((x.r[4] & 0xFFFFFFFF) + 4 * k) for k in range(3))
+            hi = tuple(x.mem.u32((x.r[5] & 0xFFFFFFFF) + 4 * k) for k in range(3))
+            asked.append((lo, hi))
+            dst = x.r[6] & 0xFFFFFFFF
+            assert x.r[7] & 0xFFFFFFFF == 0x80
+            for k, b in enumerate(blocks):
+                x.mem.w32(dst + 4 * k, b)
+            x.mem.w32(dst + 4 * len(blocks), 0)
+            return len(blocks)
+        e.stub(0x183B48, function=svc_blocked)
+        e.stub(0x183820, function=svc_height)
+        e.stub(0x14A928, function=svc_box)
+        e.call(R.FREE_SPOT, out, cptr, rng_range, radius, ok_ptr, any_height)
+        want = R.free_spot(start, center, rng_range, radius, any_height, blocked, height,
+                           lambda lo, hi: objects)
+        new_seed, spot, ok, tries, draws, boxes = want
+        tag = (seed, case, mode)
+        assert e.mem.u32(R.SEED) == new_seed, (tag, 'seed')
+        assert tuple(e.mem.u32(out + 4 * k) for k in range(3)) == spot, (tag, 'spot')
+        assert e.mem.u8(ok_ptr) == ok, (tag, 'ok')
+        assert asked == boxes, (tag, 'boxes')
+        assert e.mem.u32(R.SEED) == R.lcg_n(start, draws), tag
+        count += 4
+    return count
+
+
+# ---- OniBall_ctor on authored creatures ----------------------------------------------
+def oniball_cases(path, seed):
+    rng = random.Random(seed ^ 0x0B)
+    count = 0
+    for case in range(40):
+        e = EE(path)
+        build_skills(e)
+        e.follow = Follow({R.ONIBALL_CTOR, R.PROJECTILE_CTOR, 0x14CB10, RAND, 0x14C880})
+        start = rng.getrandbits(32)
+        e.mem.w32(R.SEED, start)
+        frame = rng.getrandbits(20)
+        e.mem.w32(R.G_SIM_FRAME, frame)
+        c = e.alloc(0x600)
+        max_hp = C.f32(rng.uniform(1, 5000))
+        e.mem.w32(c + 0x22C, max_hp)
+        pos = tuple(C.f32(rng.uniform(-400, 400)) for _ in range(3))
+        p = e.alloc(16)
+        for k in range(3):
+            e.mem.w32(p + 4 * k, pos[k])
+        block = e.alloc(R.ONIBALL_SIZE)
+        e.call(R.ONIBALL_CTOR, block, p, rng.getrandbits(16), c, 0)
+        shared, own, fields, creature = R.oniball_ctor(start, pos, frame, max_hp)
+        assert e.mem.u32(R.SEED) == shared, (seed, case)
+        for off, (width, value) in fields.items():
+            assert e.mem.load(block + off, width) == value, (seed, case, hex(off), hex(e.mem.load(block + off, width)), hex(value))
+        for off, (width, value) in creature.items():
+            assert e.mem.load(c + off, width) == value, (seed, case, 'creature', hex(off))
+        services = [t.target for t in e.calls if t.stubbed]
+        assert services == [R.HANDLE_LINK, R.OBJ_RUN_EVERY_FRAME], [hex(t) for t in services]
+        count += 1 + len(fields) + len(creature)
+    return count
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('elf')
@@ -328,13 +446,17 @@ def main():
     tables = RC.Tables.load(args.elf)
     print('balance_lookup, authored tables: %d comparisons matched (seed %d)' % (balance_cases(args.elf, args.seed), args.seed))
     print('Creature_init, authored objects: %d comparisons matched (seed %d)' % (init_cases(args.elf, args.seed), args.seed))
+    print('world_findFreeSpot, authored terrain and boxes: %d comparisons matched (seed %d)'
+          % (free_spot_cases(args.elf, args.seed), args.seed))
+    print('OniBall_ctor, authored creatures: %d comparisons matched (seed %d)' % (oniball_cases(args.elf, args.seed), args.seed))
     count, _found, two = chain_cases(args.elf, args.seed, None, tables)
-    print('creature chain, empty balance table: %d comparisons matched over 18 constructions, '
-          '%d with two shared draws (seed %d)' % (count, two, args.seed))
+    print('creature chain, empty balance table: %d comparisons matched over %d constructions, '
+          '%d with two shared draws (seed %d)' % (count, 6 * len(INDICES), two, args.seed))
     if args.disc:
         count, found, two = chain_cases(args.elf, args.seed, balance_entry(args.disc), tables)
-        print('creature chain, the disc\'s balance table: %d comparisons matched over 18 constructions, '
-              '%d with two shared draws; the type name was found in %d of 18 (seed %d)' % (count, two, found, args.seed))
+        print('creature chain, the disc\'s balance table: %d comparisons matched over %d constructions, '
+              '%d with two shared draws; the type name was found in %d of %d (seed %d)'
+              % (count, 6 * len(INDICES), two, found, 6 * len(INDICES), args.seed))
 
 
 if __name__ == '__main__':

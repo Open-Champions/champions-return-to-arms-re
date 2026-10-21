@@ -121,5 +121,51 @@ class ChainPieces(unittest.TestCase):
         self.fail('no rare seed found in the search range')
 
 
+class FreeSpotTests(unittest.TestCase):
+    CENTER = (C.f32(10.0), C.f32(-20.0), 0)
+
+    def test_open_ground_takes_the_first_sample_inside_the_ball(self):
+        seed = 12345
+        after, p, draws = R.unit_ball_sample(seed)
+        self.assertEqual(draws % 3, 0)
+        self.assertEqual(after, R.lcg_n(seed, draws))
+        got = R.free_spot(seed, self.CENTER, 36, 24, 0, lambda q: 0, lambda q: 0, lambda lo, hi: [])
+        new_seed, spot, ok, tries, n, boxes = got
+        self.assertEqual((new_seed, ok, tries, n), (after, 1, 1, draws))
+        self.assertEqual(spot[0], C.add(C.mul(p[0], C.from_int(36)), self.CENTER[0]))
+        self.assertEqual(len(boxes), 1)
+
+    def test_blocked_everywhere_gives_up_after_fifty_tries(self):
+        got = R.free_spot(7, self.CENTER, 36, 24, 0, lambda q: C.ONE, lambda q: 0, lambda lo, hi: [])
+        self.assertEqual((got[1], got[2], got[3], got[5]), (self.CENTER, 0, 50, []))
+        self.assertEqual(got[4] % 3, 0)
+
+    def test_height_step_and_any_height(self):
+        high = lambda q: C.f32(6.0)
+        self.assertEqual(R.free_spot(7, self.CENTER, 36, 24, 0, lambda q: 0, high, lambda lo, hi: [])[2], 0)
+        self.assertEqual(R.free_spot(7, self.CENTER, 36, 24, 1, lambda q: 0, high, lambda lo, hi: [])[2], 1)
+
+    def test_blocker_rule_and_flag_one(self):
+        def box(lo, hi):
+            x = C.add(lo[0], C.f32(24.0))
+            y = C.add(lo[1], C.f32(24.0))
+            return [(x, y, C.f32(1.0), 0x21), (C.add(x, C.f32(24.0)), y, 0, 0x20)]
+        # the flag-1 object is skipped; the other stands at exactly sqrt(radius^2): blocked
+        got = R.free_spot(99, self.CENTER, 36, 24, 0, lambda q: 0, lambda q: 0, box)
+        self.assertEqual((got[2], got[3]), (0, 50))
+
+
+class OniBallTests(unittest.TestCase):
+    def test_one_shared_and_five_own_draws(self):
+        shared, own, fields, creature = R.oniball_ctor(20973, (0, 0, 0), 100, C.f32(200.0))
+        first, own0 = R.lcg(20973)
+        self.assertEqual(shared, first)
+        self.assertEqual(own, R.lcg_n(own0, 5))
+        self.assertEqual(fields[0x58], (4, 9))      # 200 x 0x3d4ccccc = 9.9999995, truncated
+        self.assertEqual(fields[0x54], (4, 700))
+        self.assertEqual(creature[0xF0], (4, 100))
+        self.assertEqual(fields[0x18], (4, R.F_36))
+
+
 if __name__ == '__main__':
     unittest.main()

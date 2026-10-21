@@ -33,7 +33,7 @@ import ref_weapon_holder as WH
 SEED = 0x404464
 G_SIM_FRAME = M1.G_SIM_FRAME
 CLASSES = 0x5037F0
-GOBLIN, MUMMY, SCORPION = 3, 1, 0
+GOBLIN, MUMMY, SCORPION, ORC2, SNOBADGE = 3, 1, 0, 4, 25
 KIND = {GOBLIN: AC.GOBLIN, MUMMY: AC.MUMMY}
 
 # ---- services (bodies the chain difftest keeps as call boundaries) ------------------
@@ -64,10 +64,16 @@ REAL = {
 }
 LIBRARY = (0x3A5000, 0x3C0200)   # C library and software float, as the other probes follow
 
-CONSTRUCTOR = {GOBLIN: 0x26A624, MUMMY: 0x298418, SCORPION: 0x2A4D68}
-DEFINITION = {GOBLIN: 0x500298, MUMMY: 0x501838, SCORPION: M1.DEF_SCORPION}
-VTABLE = {GOBLIN: 0x510260, MUMMY: 0x516E48, SCORPION: M1.VT_SCORPION}
-SIZE = {GOBLIN: 0x498, MUMMY: 0x480, SCORPION: 0x3D0}
+CONSTRUCTOR = {GOBLIN: 0x26A624, MUMMY: 0x298418, SCORPION: 0x2A4D68, ORC2: 0x2A0954, SNOBADGE: 0x244018}
+# Orc2: the factory's model-set flag is 1 for names starting Orc2, giving class block
+# 0x501df8 and weapon list 0x502090 (docs/monsters-2.md, Orc).  SnoBadge is Badger
+# variant 1 (docs/monsters-2.md, Badger): definition 0x4fecf8 + 0xa0.
+ORC2_WEAPON_LIST = 0x502090
+DEFINITION = {GOBLIN: 0x500298, MUMMY: 0x501838, SCORPION: M1.DEF_SCORPION, ORC2: 0x501DF8,
+              SNOBADGE: M1.DEF_BADGER + M1.DEF_BADGER_STEP}
+VTABLE = {GOBLIN: 0x510260, MUMMY: 0x516E48, SCORPION: M1.VT_SCORPION, ORC2: 0x50FFD0,
+          SNOBADGE: M1.VT_BADGER}
+SIZE = {GOBLIN: 0x498, MUMMY: 0x480, SCORPION: 0x3D0, ORC2: 0x488, SNOBADGE: 0x3D0}
 G_LUMP_GENERATION = SA.G_LUMP_GENERATION    # docs/spec/object-system.md 2.2
 
 # ---- 1. balance_lookup 0x223a4c ------------------------------------------------------
@@ -301,7 +307,7 @@ def chain(index, seed, u32, u8, tables, bounds=(0, 100), model=1):
     shared, draw = lcg(seed)
     own, own_draws = draw, 0
     services = [POOL_NEW]
-    if index == GOBLIN:
+    if index in (GOBLIN, ORC2):
         own_draws += 1                     # the pre-base draw on the zeroed block's 0
     services += gameobject_services(u32, definition)
     # Creature_ctor with a type name: setStats rolls hit points with one own draw
@@ -345,6 +351,33 @@ def chain(index, seed, u32, u8, tables, bounds=(0, 100), model=1):
                 shared, element = element_damage(u32, kind, shared)
                 for off, value in element.items():
                     fields[MUMMY_HOLDER + 0x50 + off] = (2, value)
+    elif index == ORC2:
+        # Orc_ctor, the plain 'orc2' recruit (variant 0: no prefix matches), read at
+        # 0x2a0d50-0x2a0e74, Orc_pickHandParts 0x2a14f8 and 0x2a11cc: own draw r picks one
+        # model-variant bit; when r & 0x32 one more draw (even: a shield in hand 2);
+        # pickHandParts' one draw; the idle clip's draw (% 3).  Resource lookups of the
+        # weapon list block come after the base constructor.
+        own, r = lcg(own)
+        own_draws += 1
+        if r & 1:
+            bit = 0x1 if r & 2 else 0x2
+        else:
+            bit = 0x100 if r & 2 else (0x200 if r & 4 else 0x400)
+        if r & 0x32:
+            own, _ = lcg(own)
+            own_draws += 1
+        own, _ = lcg(own)                  # Orc_pickHandParts
+        own, _ = lcg(own)                  # the idle clip, % 3
+        own_draws += 2
+        fields.update({0x28: (1, 0x28), 0xB8: (4, 0x42A00000), 0xB0: (4, M1.F_1_2),
+                       0x1C: (4, 0x41900000), 0x47C: (4, 0), 0x478: (4, 0), 0xE8: (4, bit),
+                       0x480: (4, ORC2_WEAPON_LIST)})
+        services += entry_lookups(u32, ORC2_WEAPON_LIST) + [HIDE_MASK, ANIM_CLEAR, ANIM_PUSH]
+    elif index == SNOBADGE:                # ref_monsters_1.Model.badger_ctor, variant 1; no own draw
+        fields.update({0x1C: (4, M1.F_25), 0x28: (1, 0x28), 0xB8: (4, 0), 0xB0: (4, C.ONE),
+                       0xB4: (1, 3), 0x3CC: (1, 1), 0x60: (4, C.ONE), 0x5C: (4, 0xBE999999),
+                       0xDC: (4, M1.F_0_8), 0xE0: (4, 0xC1200000), 0xE8: (4, 0)})
+        services += [HIDE_MASK, ANIM_CLEAR, ANIM_PUSH]
     else:                                  # Scorpion, ref_monsters_1.Model.scorpion_ctor
         own, d1 = lcg(own)
         own, d2 = lcg(own)
@@ -365,3 +398,115 @@ def chain(index, seed, u32, u8, tables, bounds=(0, 100), model=1):
     fields[0x44] = (4, own)
     return dict(shared=shared, own=own, own_draws=own_draws, services=services, fields=fields,
                 found=found, factors=pct, stats=stats)
+
+
+# ---- 4. world_findFreeSpot 0x14acf8 ---------------------------------------------------
+FREE_SPOT = 0x14ACF8
+FREE_SPOT_TRIES = 50              # 0x14b0e0 slti 0x32
+HEIGHT_STEP = 0x40C00000          # 6.0, 0x14af44
+BOX_DEPTH = 0x47C35000            # 100000.0, 0x14adbc
+
+
+def unit_ball_sample(seed):
+    """Three shared draws d1..d3 per sample, p_k = (f(d) x 2^-16 + itself) - 1.0; samples
+    repeat while 1.0 < (px^2 + py^2) + pz^2 (0x14ade8-0x14ae5c).  Returns (seed, p, draws)."""
+    draws = 0
+    while True:
+        p = []
+        for _ in range(3):
+            seed, d = lcg(seed)
+            draws += 1
+            t = C.mul(C.from_int(d), C.TWO_M16)
+            p.append(C.sub(C.add(t, t), C.ONE))
+        if not C.lt(C.ONE, C.add(C.add(C.mul(p[0], p[0]), C.mul(p[1], p[1])), C.mul(p[2], p[2]))):
+            return seed, p, draws
+
+
+def free_spot(seed, center, rng_range, radius, any_height, blocked, height, box):
+    """world_findFreeSpot(out, center, range, radius, ok out, anyHeight), read from
+    0x14acf8-0x14b167.  ``blocked(point)`` and ``height(point)`` answer terrain_testFlag1 /
+    terrain_height (float patterns, radius = float(radius)); ``box(min, max)`` answers
+    world_collectObjectsInBox with [(x, y, object radius, object flags)].
+
+    Per try (at most 50): a unit-ball sample; candidate (cx + px x range, cy + py x range)
+    at the centre's z.  Rejected when terrain_testFlag1 is not 0.0, or when
+    height - cz >= 6.0 and anyHeight is 0.  Otherwise the spot becomes (x, y, height) and
+    the box (x -/+ radius, y -/+ radius, height -/+ 100000) is asked; the try fails when an
+    object without object flag 1 has dx^2 + dy^2 <= float(radius^2) + r^2.  The seed is
+    stored once per try, after its sample.  Returns (seed, spot, ok, tries, draws, boxes).
+    """
+    frange, frad = C.from_int(C.s32(rng_range)), C.from_int(C.s32(radius))
+    spot = tuple(center)
+    tries, draws, boxes = 0, 0, []
+    while tries < FREE_SPOT_TRIES:
+        seed, p, n = unit_ball_sample(seed)
+        draws += n
+        x = C.add(C.mul(p[0], frange), center[0])
+        y = C.add(C.mul(p[1], frange), center[1])
+        point = (x, y, center[2])
+        if blocked(point) != 0:
+            tries += 1
+            continue
+        h = height(point)
+        if not C.lt(C.sub(h, center[2]), HEIGHT_STEP) and not any_height:
+            tries += 1
+            continue
+        spot = (x, y, h)
+        lo = (C.sub(x, frad), C.sub(y, frad), C.sub(h, BOX_DEPTH))
+        hi = (C.add(x, frad), C.add(y, frad), C.add(h, BOX_DEPTH))
+        boxes.append((lo, hi))
+        limit = C.from_int(C.s32(radius * radius))
+        hit = False
+        for ox, oy, orad, oflags in box(lo, hi):
+            if oflags & 1:
+                continue
+            dx, dy = C.sub(ox, x), C.sub(oy, y)
+            if C.le(C.add(C.mul(dx, dx), C.mul(dy, dy)), C.add(limit, C.mul(orad, orad))):
+                hit = True
+                break
+        if not hit:
+            return seed, spot, 1, tries + 1, draws, boxes
+        tries += 1
+    return seed, spot, 0, tries, draws, boxes
+
+
+def lcg_n(seed, n):
+    for _ in range(n):
+        seed = lcg(seed)[0]
+    return seed
+
+
+# ---- 5. OniBall_ctor 0x294014 (the Life Tap orb a kill can drop) ---------------------
+ONIBALL_CTOR, ONIBALL_SIZE, ONIBALL_SITE = 0x294014, 0xB8, 0x111F94   # creature-tick.md 4 step 9
+VT_ONIBALL = 0x50E878             # 0x294068-0x294074
+PROJECTILE_CTOR = 0x150E48
+OBJ_RUN_EVERY_FRAME = 0x14F248
+F_36, F_50, F_0_05 = 0x42100000, 0x42480000, 0x3D4CCCCC   # 0x294114, 0x294120, 0x2940fc
+
+
+def oniball_ctor(seed, pos, frame, creature_max_hp):
+    """OniBall_ctor(block, position, facing (unused), creature, 0), read from
+    0x294014-0x2941e3.  Projectile_ctor(block, position copy, 0, 0) (ref_skills_a: ONE
+    SHARED DRAW in GameObject_ctor, the object's own seed = that draw); then vtable
+    0x50e878, bytes +0x80/+0x81 = 0, radius +0x1c = 0, and five OWN draws:
+    facing +0x38 = d1; +0x54 = frame + 600; flags |= 0x4000; d2 % 65536 < 0x7333 gives
+    byte +0x74 = 0 and creature +0x38c = 30, else +0x74 = 1 and creature +0x394 = 30;
+    +0x58 = trunc(creature max hp x 0.05); creature +0xf0 = frame; obj_runEveryFrame;
+    z += 36; +0x68 = (x - 50) + float(d3 % 100); +0x6c = (y - 50) + float(d4 % 100);
+    +0x70 = (z + float(d5 % 2000)) + 36 with the raised z.
+    Returns (shared seed, own seed, block fields, creature fields)."""
+    shared, own = lcg(seed)
+    own, d1 = lcg(own)
+    own, d2 = lcg(own)
+    own, d3 = lcg(own)
+    own, d4 = lcg(own)
+    own, d5 = lcg(own)
+    z = C.add(pos[2], F_36)
+    fields = {0x48: (4, VT_ONIBALL), 0x80: (1, 0), 0x81: (1, 0), 0x1C: (4, 0), 0x38: (2, d1),
+              0x54: (4, (frame + 600) & 0xFFFFFFFF), 0x74: (1, 0 if (d2 & 0xFFFF) < 0x7333 else 1),
+              0x58: (4, C.to_int(C.mul(creature_max_hp, F_0_05)) & 0xFFFFFFFF), 0x18: (4, z),
+              0x68: (4, C.add(C.sub(pos[0], F_50), C.from_int(d3 % 100))),
+              0x6C: (4, C.add(C.sub(pos[1], F_50), C.from_int(d4 % 100))),
+              0x70: (4, C.add(C.add(z, C.from_int(d5 % 2000)), F_36)), 0x44: (4, own)}
+    creature = {0xF0: (4, frame), (0x38C if (d2 & 0xFFFF) < 0x7333 else 0x394): (4, 30)}
+    return shared, own, fields, creature
