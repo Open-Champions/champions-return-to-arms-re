@@ -139,6 +139,15 @@ in a separate process. Both the loaded hub and resumed `blood1` snapshots retain
 268 XP, a valid live Player and 34 HP / 31.5 mana. This remains level-one progress;
 it does not establish a completed mission or a fully earned first level.
 
+Further normal combat on the preserved input-fixed native build reached eleven
+kobold kills and 737 XP. A real chest and nearby drop raised the remaining gold
+from 72 to 251; ordinary regeneration restored 34 HP / 31.5 mana. Square confirmed
+an occupied-slot overwrite, positive card-write and transfer gates completed, and
+normal pause-menu Load restored 737 XP, 251 gold and a live Player with full health
+and mana. The saved file is 310,392 bytes. This later receipt tests save/Load within
+one process; it does not extend the separate-process claim above to 737 XP.
+The character remains level one and the first mission is still in progress.
+
 Earlier overwrite attempts pressed Cross while the overwrite screen required Square;
 they wrote no new checkpoint and correctly loaded the older zero-XP save. This was
 a test-input error, not an established persistence defect. Load readiness now witnesses
@@ -284,7 +293,7 @@ Both scripts completed, the driver exited zero and all owned test processes stop
 The clients had fresh separate cards; this continuation used no gameplay memory
 writes, direct calls, teleports or level/inventory fixtures. Body-collision-aware
 walking paths and read-only frame/coordinate conditions drove ordinary pad inputs.
-This establishes local mission entry and recall; co-op checkpoint persistence,
+This establishes local mission entry and recall; shared checkpoint recovery,
 revival, mission completion, disconnect/rejoin and cross-machine play remain unqualified.
 
 **Ran natural co-op combat on the input-fixed build:** one kobold died, the two
@@ -312,8 +321,29 @@ completion markers are present; individual child exit-code values were not
 persisted and are not invented. This is observed gameplay plus corrected offline
 evaluation, not a claim that the original driver invocation passed. A further
 waypoint probe timed out before combat and remains excluded from successful runs.
-No gameplay state writes were used in either combat route. Co-op checkpoint
-save/load, revival, four players, WAN and full mission completion remain unqualified.
+No gameplay state writes were used in either combat route. Shared checkpoint
+recovery, revival, four players, WAN and full mission completion remain unqualified.
+
+**Ran owner-card persistence on the current diagnostic build:** two fresh,
+distinctly named level-one characters each saved through the actual hub Savepoint
+UI. The original driver and both recorded child exits are zero, both scripts
+complete, and all 33 shared columns match across 1,274 confirmed ticks with zero
+out-of-sync or dropped-player flags. Each owner's card transaction positively
+observes busy/transfer state followed by clean idle. The screen-done pulse is not
+claimed observed; it can be consumed before confirmed-frame sampling.
+
+Each computer writes its own character into a separate 310,392-byte, one-player
+save. In particular, the joining computer saves its slot-one character, rather
+than the host's slot-zero character. Two fresh offline frontend Loads of copied
+cards exit zero and preserve each owner's distinct name, class, level, XP, gold
+and tested starting item stacks. Both characters are fresh level-one Shamans with
+zero XP and 500 gold; this does not establish persistence of earned co-op combat
+progress. The original cards remain unchanged during verification.
+
+Network pause-menu Load is deliberately disabled by the existing game code.
+These offline loads verify the owner-card files; shared party-wipe recovery and
+Savepoint resurrection are separate tests. A first resurrection probe times out
+on a movement waypoint; it remains excluded from successful revival coverage.
 
 This uses the existing native rendezvous direct-launch integration: it prepares
 frontend/launch globals and calls the existing player-select and game-launch paths.
