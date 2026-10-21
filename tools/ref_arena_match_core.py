@@ -13,6 +13,8 @@ SAVE_WAVE_VISIT = 0x306A28
 SHUTDOWN = 0x304FB0
 LIVE_COUNT = 0x8E733E
 SAVED_COUNT = 0x8E7340
+PLAYER_RECORD_BASE = 0x4D8AF0
+PLAYER_RECORD_SIZE = 0x4C30
 
 
 def s16(value):
@@ -82,3 +84,10 @@ def shutdown(found, spawn_ptr, monster_ptr):
         writes = {0x503888: 0, 0x50388C: 0, 0x503890: 0,
                   0x41B500: 0, 0x41B4FC: 0}
     return calls, writes
+
+
+def restore_saved_player_record(saved):
+    """Confirm path: copy the complete saved 0x4c30-byte record to its slot."""
+    if len(saved) != PLAYER_RECORD_SIZE:
+        raise ValueError('saved player record must be one full slot')
+    return bytes(saved)

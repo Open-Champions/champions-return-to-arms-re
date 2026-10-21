@@ -9,6 +9,8 @@ import random
 
 from ee_emu import EE, float_to_raw
 import ref_arena_match_core as R
+import difftest_arena_modes as D
+from ref_core import ONE, ZERO
 
 M32 = 0xFFFFFFFF
 FIELDS = (0xE4, 0x228, 0x22C, 0xD0, 0xD2, 0xD4, 0xD8)
@@ -143,6 +145,42 @@ def test_shutdown(path):
     return checked
 
 
+def test_player_record(path, rng):
+    """Exercise the confirm branch with four independent saved player records."""
+    emu = D.boot(path)
+    D.modes(emu, mode_b=1, players=4)
+    for address, value in ((D.INTRO, 0xFFFF), (D.INTER, 0), (D.ENDF, 1),
+                           (D.FADE_W, ONE), (D.FRAME, 1), (D.PAUSED, 0),
+                           (D.CONFIRM, 0x100), (D.CANCEL, 0),
+                           (D.PAD0 + 0xC, 0x100)):
+        (emu.mem.w16 if address in (D.INTRO, D.INTER) else emu.mem.w32)(address, value)
+    saved = []
+    for slot in range(4):
+        record = R.PLAYER_RECORD_BASE + slot * R.PLAYER_RECORD_SIZE
+        emu.mem.write(record, rng.randbytes(R.PLAYER_RECORD_SIZE))
+        emu.mem.w32(record + 0xAC, ZERO)
+        D.put_slot(emu, slot, 0, 0xFFFF, 0, ZERO)
+        emu.mem.w16(D.COUNTDOWN + 2 * slot, 0)
+        block = emu.alloc(R.PLAYER_RECORD_SIZE)
+        data = rng.randbytes(R.PLAYER_RECORD_SIZE)
+        emu.mem.write(block, data)
+        saved.append((block, data))
+    emu.follow = set()
+    emu.default_ret = 0
+    emu.stub(D.ACTIVE, ret=1)
+    emu.stub(0x21837C, function=lambda e: saved[e.r[4]][0])
+    emu.stub(R.SHUTDOWN, ret=0)
+    emu.stub(D.PICKER, ret=0x503798)
+    emu.stub(D.STRCPY, ret=0)
+    emu.call(D.RUN)
+    slots = [call.args[0] & M32 for call in emu.calls if call.target == 0x21837C]
+    assert slots == list(range(4)), slots
+    for slot, (_block, data) in enumerate(saved):
+        record = R.PLAYER_RECORD_BASE + slot * R.PLAYER_RECORD_SIZE
+        assert emu.mem.read(record, R.PLAYER_RECORD_SIZE) == R.restore_saved_player_record(data)
+    return 4
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('elf')
@@ -155,6 +193,7 @@ def main():
                      ('empty-wave visit', lambda: test_empty_visit(args.elf)),
                      ('nextWave', lambda: test_next(args.elf)),
                      ('saved pointer record', lambda: test_saved_record(args.elf)),
+                     ('saved player record', lambda: test_player_record(args.elf, rng)),
                      ('shutdown', lambda: test_shutdown(args.elf))):
         print('%s: %d matched' % (name, fn()))
 

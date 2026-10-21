@@ -3,7 +3,8 @@
 US `SLUS_209.73` v2.00. **Executed** in `tools/ee_emu.py` against
 `tools/ref_arena_match_core.py` with `tools/difftest_arena_match_core.py`,
 seeds 20973 and 7: 100 stat scales, 108 empty-wave visits, four next-wave
-calls, 32 saved-pointer visits and four shutdowns per seed; no mismatches. The tests construct state and
+calls, 32 saved-pointer visits, four saved player records and four shutdowns
+per seed; no mismatches. The tests construct state and
 stub outside services. They do not establish a live match.
 
 ## `Creature_scaleStats` 0x1185d8
@@ -57,6 +58,17 @@ comparison. The callback's original body was executed for 32 combinations of
 flags, state and count per seed. Array bounds at a negative or excessive count
 are not established. The saved count at `0x8e7340` then controls the next
 `arena_startWave` reuse path.
+
+### Saved player record at match end
+
+The confirmed end-prompt branch asks `save_playerCopy` `0x21837c` once per active
+slot and copies the entire `0x4c30`-byte saved player record to
+`g_players[slot]` (`0x4d8af0 + slot × 0x4c30`). Four distinct generated
+records matched byte for byte, including the final 0x10 bytes. The test runs
+the original `arena_runTask` `0x306b78` while its UI, lookup, shutdown and
+string-copy callees are stubs. The saved record is the ordinary player-record
+layout in `docs/player.md` and `docs/audio-save.md`, not a small arena-specific
+struct. No seed draw occurs in this copy branch.
 
 ## `arena_shutdown` 0x304fb0
 
