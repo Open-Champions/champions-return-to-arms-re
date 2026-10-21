@@ -176,6 +176,17 @@ class Gs {
     struct Rect { uint32_t psm, bw; int x, y, w, h; size_t offset, bytes; uint32_t bw_raw; };
     struct UploadSet { std::vector<Rect> rects; std::vector<uint8_t> data; uint64_t hash = 0, serial = 0; bool used = false; };
     std::map<uint32_t, UploadSet> sets;                 // by destination base pointer
+    // Eligibility is separate from normal upload/cache state.
+    std::unordered_map<uint32_t, uint64_t> uniform_palette_eligible;
+    std::unordered_map<uint32_t, uint32_t> uniform_texture_palettes;
+    uint32_t uniform_clut_cbp = 0x4000;
+    uint64_t uniform_clut_serial = 0;
+    void note_uniform_clut_load(uint32_t address, uint64_t value);
+    uint64_t uniform_renewals = 0, uniform_invalidated[4] = {0, 0, 0, 0};
+    void invalidate_uniform_palette(uint32_t cbp, unsigned reason);
+    void invalidate_uniform_palette_blocks(uint32_t base, const std::vector<uint32_t>& blocks, unsigned reason);
+    void invalidate_uniform_palette_pages(uint32_t base, uint32_t bw, uint32_t psm, int x, int y, int w, int h, unsigned reason);
+
     uint8_t set_at[0x4000] = {0};                       // 1 where `sets` has an entry (start_transfer asks it block by block)
     std::map<std::pair<uint64_t, uint64_t>, std::vector<uint32_t>> written_blocks;     // start_transfer: the blocks a kind of rectangle writes, sorted
     uint64_t serial = 1;

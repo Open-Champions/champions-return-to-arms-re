@@ -26,6 +26,10 @@ release or a completed campaign.
   `7ddfb8ec522741f9dc3b37e87912e3768c09659466e2ab2f39e76932b46ad3d0`.
   Its arithmetic/PNG/boot/62-input receipt also passes. The paired terminal-row
   trial is recorded separately below; earlier gameplay receipts retain their identities.
+- Guarded uniform-palette build, window executable SHA-256:
+  `830bd77800ad284e4c3244612f37deaf0d9fd82923cb9c6121355031ff8ad07c`.
+  It repeats the full arithmetic/PNG/boot/62-input receipt and the matched affected-map
+  smoke below. Other gameplay receipts retain their explicitly stated earlier builds.
 - Generated game code, original data, executable binaries, saves, screenshots and
   raw logs remain private. Only authored changes and summarized receipts are contributed.
 
@@ -79,7 +83,9 @@ are recorded and checked again after execution. Raw output must remain local.
 | Rebuilt application's software inputs | 62 cases passed, held state and neutral release |
 | Raw XInput conversion, separate production harness | 39 cases passed under FE_TOWARDZERO |
 | GS transfer diagnostics and pending-upload order | 54 authored checks, zero failures |
-| Recorded renderer replay | 3,011 completed frames with identical draw/texture/resource checksums |
+| Uniform-palette load/alias/continuation behavior | 95 authored public-GIF checks, zero failures |
+| OpenGL alpha/depth canary | 16 checks, zero failures; 1,024 pixels per colour/depth check |
+| Counter-only renderer replay | 3,011 completed frames with identical draw/texture/resource checksums |
 | Earlier visible baseline session | 461.219 seconds, 59.8 pictures/s at 1280x960, clean exit |
 | Earlier visible sound-device session | WASAPI, 460.43 seconds taken, no request gaps above 30 ms |
 
@@ -128,7 +134,7 @@ They pinned the CPU-counter reads at `0x3229f0` and `0x322a00` to repeat the ini
 random seed; they did not write health, mana, position, XP, levels, point pools,
 skill ranks, enemy HP or inventory. This is headless automated combat evidence,
 not physical controller or rendered/audio proof. Each character remained level one;
-a fully natural earned first level and later mission completion remain unqualified.
+the later earned-level follow-up is recorded separately below. Mission completion remains unqualified.
 
 **Ran a normal earned-XP persistence follow-up:** a Cleric killed the initial
 kobold, earned 67 XP, saved at the checkpoint, confirmed overwrite with Square and
@@ -235,13 +241,13 @@ rebuilt-app `fire4` smoke also completes: 4,843 surface copies, zero skipped tra
 zero unimplemented VU1 instructions/unknown registers, and an inspected 960x720 image.
 This is a diagnostic correction, not a heat-haze or console-image fidelity fix.
 
-Missing-texture fidelity remains unresolved: the original `fire4`, `torment0` and
+General retained-texture fidelity remains open: the original `fire4`, `torment0` and
 `tormenta` runs reported 72, 261 and 219 draws without a texture, respectively, against
 69 accumulated during boot. The new trace isolates Torment's settled issue to 1x1
 indexed strips with a palette upload but no uploaded image at the sampled address.
 The current renderer does not retain general GS video memory across image sets.
-No palette/index fallback is integrated into the published build. These state
-counters are not missing-pixel counts; independent reference evidence follows.
+A guarded constant-texture correction now handles the supported uniform-palette
+case below. These state counters are not missing-pixel counts.
 
 An independent reference now interprets the private native-produced GIF/MMIO history
 with PCSX2 GS software renderer commit `5b6e6e23eba403b589495c1abf8266eb1309a5b1`.
@@ -254,8 +260,8 @@ For all 297 actual 1x1 Torment draw attempts, the active 256-entry palette is
 uniform RGBA `0x8000ffff`. Texture alpha is 128; HIGHLIGHT2 with TCC enabled uses
 that alpha. TEST enables LESS 127 with KEEP on failure, so the reference rejects
 both colour and depth writes before queueing. Larger-texture draws at the same
-addresses provide a positive queue control. The current native missing-image path
-instead disables texturing and tests vertex alpha 0, allowing these draws through.
+addresses provide a positive queue control. The baseline native missing-image path
+disables texturing and tests vertex alpha 0, allowing these draws through.
 These are draw-state observations, rather than missing-pixel counts.
 
 The reference consumes native-produced packets, so it independently checks their
@@ -265,8 +271,36 @@ a specific alpha rejection defect; it does not establish complete scene fidelity
 general retained-VRAM support. The portable reference, original-data intermediate,
 probe output and screenshots remain local.
 
-A conservative uniform-palette correction remains private while alias-write and
-actual TEX0-load ordering fixtures are reviewed. It assumes no arbitrary index.
+The decoder now resolves a completely absent 1x1 PSMT8 image when every one of its
+256 palette entries is the same colour. It requires one complete 16x16 CT32/BW1
+palette upload, CSM1/CSA0/CPSM32, and an actual supported CLD2 TEX0 write tied to
+that upload serial. Unknown image indices are irrelevant in this uniform case.
+Overlapping uploads, local copies and possible colour/depth writes revoke eligibility;
+ambiguous formats/strides/wrapping fail closed. Both TEX2 contexts and unrelated
+TEX0 loads discard the load proof. Same-value reload and XYZ-only draw continuation
+fixtures protect cache/load ordering. Other missing/incomplete cases keep their
+existing behavior; general retained-VRAM support is not implemented.
+
+Both public fixtures pass against the integrated source: 54 existing transfer checks
+and 95 new GIF-interface checks. The baseline fails 25 of the new checks. A private
+production-OpenGL canary passes all 16 checks, versus six baseline failures: alpha
+127/128 fails LESS 127 without colour or depth writes, while alpha 126 and TCC-off
+controls still draw. Each colour/depth check reads all 1,024 pixels of its target.
+
+CPU replay of the same 4,220,552 raw events across 3,011 completed fields reduces
+missing states from 666 to 72 and adds exactly two constant textures; nonempty copies
+remain 4,537. After normalizing the expected material/UV changes, normal texture IDs
+by content, and excluding the two added constant resource lifecycles, every remaining
+modeled frame digest matches. Raw field numbers are compared; pending unfinished EOF
+work is excluded. This is a modeled GS regression receipt, not original-scene pixel proof.
+
+The rebuilt application also completes the matched `fire4`/`torment0`/`tormenta`
+smoke with fresh test data: missing-texture states 660 to 72, copies unchanged at
+4,537, and zero unsupported transfers, unknown GS registers or unimplemented VU1
+instructions. Both runs keep 2,899 frames / 3,012 fields / 143,983,790 units. All
+three inspected 960x720 capture files are byte-identical. The alpha/depth correction
+is demonstrated by the authored GPU canary; broader scene fidelity and performance
+remain unqualified. These destination requests are separate from normal campaign play.
 
 Inspected captures show textured hub, ice, fire and stone-platform scenes. Forced
 offline entry into three PvP arenas instead leaves the player at Z=-100000; longer
@@ -352,7 +386,7 @@ At the last shared tick the peers agree on player HP 31.4261 / 32.8, with no
 desync or dropped-player flags. Later independent log tails are not compared as
 if they were the same simulation tick.
 
-**Observed kill and post-combat recall on the current diagnostic build:** both
+**Observed kill and post-combat recall on the diagnostic build identified above:** both
 players reached the hub alive and retained their exact per-slot 55/37 XP. At the
 last shared tick (3,752), both peers agree on HP 32.8 / 12.7904, valid Player
 vtables and live state. The original invocation remains a failed receipt (driver
@@ -373,7 +407,7 @@ No gameplay state writes were used in either combat route. Their scope excludes
 automatic checkpoint recovery, tested separately below. Survivor revival, four
 players, WAN and full mission completion remain unqualified.
 
-**Ran owner-card persistence on the current diagnostic build:** two fresh,
+**Ran owner-card persistence on the diagnostic build identified above:** two fresh,
 distinctly named level-one characters each saved through the actual hub Savepoint
 UI. The original driver and both recorded child exits are zero, both scripts
 complete, and all 33 shared columns match across 1,274 confirmed ticks with zero

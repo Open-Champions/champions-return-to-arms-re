@@ -228,6 +228,7 @@ void Gs::free_unused_textures() {
             frame.dead_textures.push_back(it->second.id);
             stats.texture_bytes -= (uint64_t)it->second.width * it->second.height * 4;
             stats.textures_freed++;
+            uniform_texture_palettes.erase(it->second.id);
             it = textures.erase(it);
         } else ++it;
     }
@@ -245,6 +246,7 @@ void Gs::free_unused_textures() {
             frame.dead_textures.push_back(it->second.id);
             stats.texture_bytes -= (uint64_t)it->second.width * it->second.height * 4;
             stats.textures_freed++;
+            uniform_texture_palettes.erase(it->second.id);
             textures.erase(it);
         }
     }
@@ -790,6 +792,8 @@ void Gs::reglist(uint32_t d, uint64_t value) {
 
 void Gs::write(uint32_t address, uint64_t value) {
     stats.reg_writes++;
+    if (address == 0x06 || address == 0x07 || address == 0x16 || address == 0x17)
+        note_uniform_clut_load(address, value);
     switch (address) {
     case 0x00:
         prim = (uint32_t)value & 0x7FF;
@@ -830,6 +834,8 @@ void Gs::write(uint32_t address, uint64_t value) {
             uint64_t bb = reg[0x50], pos = reg[0x51], size = reg[0x52];
             uint32_t sbp = (uint32_t)bb & 0x3FFF, dbp = (uint32_t)(bb >> 32) & 0x3FFF;
             int w = (int)(size & 0xFFF), h = (int)((size >> 32) & 0xFFF);
+            if (w && h) invalidate_uniform_palette_pages(dbp, uint32_t(bb >> 48) & 63, uint32_t(bb >> 56) & 63,
+                int((pos >> 32) & 0x7ff), int((pos >> 48) & 0x7ff), w, h, 1);
             if (!canvases.empty()) flush_uploads();
             auto src = targets.find(sbp);
             if (src != targets.end() && sbp != dbp && w && h) {
@@ -874,6 +880,87 @@ static inline size_t bits_per_pixel(uint32_t psm) {
     }
 }
 
+// CLD2 permits loading on TEX0 write, not on every state rebuild. Bind a
+// supported load to the completed eligible upload it could read. Other TEX0/TEX2
+// writes discard this proof, including writes from the other GS context.
+void Gs::note_uniform_clut_load(uint32_t address, uint64_t value) {
+    uint32_t prior_cbp = uniform_clut_cbp;
+    uint64_t prior_serial = uniform_clut_serial;
+    uniform_clut_cbp = 0x4000;
+    uniform_clut_serial = 0;
+    uint32_t psm = uint32_t(value >> 20) & 63, cbp = uint32_t(value >> 37) & 0x3fff;
+    if ((address == 0x06 || address == 0x07) && psm == PSMT8
+        && ((value >> 51) & 15) == PSMCT32 && !((value >> 55) & 1)
+        && !((value >> 56) & 31) && ((value >> 61) & 7) == 2) {
+        auto eligible = uniform_palette_eligible.find(cbp);
+        auto palette = sets.find(cbp);
+        if (eligible != uniform_palette_eligible.end() && palette != sets.end()
+            && eligible->second == palette->second.serial) {
+            uniform_clut_cbp = cbp;
+            uniform_clut_serial = eligible->second;
+        }
+    }
+    if (have_cmd && (prior_cbp != uniform_clut_cbp || prior_serial != uniform_clut_serial)
+        && (uniform_texture_palettes.find(cur.texture) != uniform_texture_palettes.end()
+            || (cur.tex_missing && uniform_clut_serial)))
+        state_dirty = true;
+}
+
+// Eligibility is separate from normal upload/cache state. A supported complete
+// palette occupies four consecutive 256-byte GS blocks. Revoke before overlapping
+// writes, including wrapped destinations and paths not modelled as texture uploads.
+void Gs::invalidate_uniform_palette(uint32_t cbp, unsigned reason) {
+    if (!uniform_palette_eligible.erase(cbp)) return;
+    uniform_invalidated[reason]++;
+    auto active = uniform_texture_palettes.find(cur.texture);
+    if (have_cmd && active != uniform_texture_palettes.end() && active->second == cbp)
+        state_dirty = true; // next vertices cannot retain a cached fallback across the write
+}
+void Gs::invalidate_uniform_palette_blocks(uint32_t base, const std::vector<uint32_t>& blocks, unsigned reason) {
+    if (uniform_palette_eligible.empty() || blocks.empty()) return;
+    uint64_t touched[256] = {};
+    for (uint32_t block : blocks) {
+        uint32_t at = (base + block) & 0x3fff;
+        touched[at >> 6] |= 1ull << (at & 63);
+    }
+    for (auto it = uniform_palette_eligible.begin(); it != uniform_palette_eligible.end();) {
+        uint32_t cbp = (it++)->first;
+        for (unsigned b = 0; b < 4; ++b) {
+            uint32_t at = (cbp + b) & 0x3fff;
+            if (touched[at >> 6] & (1ull << (at & 63))) { invalidate_uniform_palette(cbp, reason); break; }
+        }
+    }
+}
+void Gs::invalidate_uniform_palette_pages(uint32_t base, uint32_t bw, uint32_t psm, int x, int y, int w, int h, unsigned reason) {
+    if (uniform_palette_eligible.empty() || w <= 0 || h <= 0) return;
+    unsigned pw = 64, ph = 32, stride = bw;
+    bool known = true;
+    switch (psm) {
+    case PSMCT32: case PSMCT24: case PSMT8H: case PSMT4HL: case PSMT4HH:
+    case 0x30: case 0x31: break;
+    case PSMCT16: case PSMCT16S: case 0x32: case 0x3a: ph = 64; break;
+    case PSMT8: pw = 128; ph = 64; stride = bw >> 1; break;
+    case PSMT4: pw = 128; ph = 128; stride = bw >> 1; break;
+    default: known = false; break;
+    }
+    // Whole-page rejection may discard safe candidates, never admit stale ones.
+    // Ambiguous strides, coordinate wrapping or unknown formats discard all.
+    if (!known || !stride || (psm >= 0x30 && (base & 31)) || x < 0 || y < 0 || x > 2048 - w || y > 2048 - h) {
+        while (!uniform_palette_eligible.empty()) invalidate_uniform_palette(uniform_palette_eligible.begin()->first, reason);
+        return;
+    }
+    uint32_t first = uint32_t(y / ph) * stride + uint32_t(x / pw);
+    uint32_t last = uint32_t((y + h - 1) / ph) * stride + uint32_t((x + w - 1) / pw);
+    uint32_t span = last - first + 1;
+    for (auto it = uniform_palette_eligible.begin(); it != uniform_palette_eligible.end();) {
+        uint32_t cbp = (it++)->first;
+        for (unsigned b = 0; b < 4; ++b) {
+            uint32_t page = (((cbp + b - base) & 0x3fff) >> 5);
+            if (span >= 512 || ((page - first) & 511) < span) { invalidate_uniform_palette(cbp, reason); break; }
+        }
+    }
+}
+
 void Gs::start_transfer() {
     RTA_PROF_SCOPE(prof::P_GS_UPLOAD);
     uint64_t bb = reg[0x50], pos = reg[0x51], size = reg[0x52];
@@ -897,7 +984,10 @@ void Gs::start_transfer() {
         auto surface = targets.find(dbp);
         xfer.to_surface = surface != targets.end() && surface->second.width >= 512 && r.bw * 64 >= 512
                           && (r.psm == PSMCT32 || r.psm == PSMCT24 || r.psm == PSMCT16 || r.psm == PSMCT16S);
-        if (xfer.to_surface) return;
+        if (xfer.to_surface) {
+            invalidate_uniform_palette_pages(dbp, r.bw_raw, r.psm, r.x, r.y, r.w, r.h, 0);
+            return;
+        }
     }
     // a texture that starts inside the blocks this one takes is gone (the game's ring of
     // sixteen resident textures hands the same blocks to one texture after another)
@@ -925,6 +1015,10 @@ void Gs::start_transfer() {
             }
         std::sort(written.begin(), written.end());
     }
+    if (!r.bw_raw || ((r.psm == PSMT8 || r.psm == PSMT4) && r.bw_raw < 2) || r.x + r.w > 2048 || r.y + r.h > 2048 || r.psm == PSMCT16S
+        || (r.psm != PSMCT32 && r.psm != PSMCT24 && r.psm != PSMCT16 && r.psm != PSMT8 && r.psm != PSMT4 && r.psm != PSMT8H))
+        invalidate_uniform_palette_pages(dbp, r.bw_raw, r.psm, r.x, r.y, r.w, r.h, 0);
+    else invalidate_uniform_palette_blocks(dbp, written, 0);
     if (written.empty()) return;
     // (Every set that starts behind this one in a block the rectangle writes.  Asked of a
     // table of the blocks sets start at: walking the map over the rectangle's span and
@@ -965,6 +1059,29 @@ void Gs::image_data(const uint8_t* bytes, size_t count) {
                             (uint64_t)r.w | (uint64_t)r.h << 32};
         set.hash = mix64(mix64(set.hash, head[0]), mix64(head[1], hash_bytes(set.data.data() + r.offset, want, set.rects.size())));
         set.serial = serial++;
+        // Renew at exact full-upload completion, never lazily from an old upload.
+        if (xfer.dbp <= 0x3ffc && set.rects.size() == 1 && r.psm == PSMCT32 && r.bw == 1 && r.bw_raw == 1
+            && r.x == 0 && r.y == 0 && r.w == 16 && r.h == 16 && r.bytes == 1024
+            && r.offset <= set.data.size() && set.data.size() - r.offset >= r.bytes) {
+            uniform_palette_eligible[xfer.dbp] = set.serial;
+            uniform_renewals++;
+            // Existing draw state can resume with only XYZ writes after this upload.
+            // Revoke against its possible write footprint immediately; relying only
+            // on rebuild_state would miss that continuation. This may overinvalidate
+            // even if no subsequent primitive is drawn, without changing normal paths.
+            if (have_cmd) {
+                uint32_t attr = (reg[0x1a] & 1) ? prim : ((prim & 7) | (uint32_t(reg[0x1b]) & 0x7f8));
+                unsigned ctxt = (attr >> 9) & 1;
+                uint64_t fb = reg[0x4c + ctxt], zb = reg[0x4e + ctxt], sc = reg[0x40 + ctxt];
+                int x = int(sc & 0x7ff), y = int((sc >> 32) & 0x7ff);
+                int w = int((sc >> 16) & 0x7ff) + 1 - x, h = int((sc >> 48) & 0x7ff) + 1 - y;
+                uint32_t bw = uint32_t(fb >> 16) & 63;
+                if (uint32_t(fb >> 32) != 0xffffffff)
+                    invalidate_uniform_palette_pages((uint32_t(fb) & 0x1ff) << 5, bw, uint32_t(fb >> 24) & 63, x, y, w, h, 2);
+                if (!((zb >> 32) & 1))
+                    invalidate_uniform_palette_pages((uint32_t(zb) & 0x1ff) << 5, bw, 0x30 | (uint32_t(zb >> 24) & 15), x, y, w, h, 3);
+            }
+        }
         xfer.active = false;
     }
 }
@@ -1079,7 +1196,48 @@ Gs::Texture* Gs::texture_for(uint64_t tex0, uint64_t texa) {
     uint32_t tw = (uint32_t)(tex0 >> 26) & 15, th = (uint32_t)(tex0 >> 30) & 15;
     uint32_t cbp = (uint32_t)(tex0 >> 37) & 0x3FFF, cpsm = (uint32_t)(tex0 >> 51) & 15, csa = (uint32_t)(tex0 >> 56) & 31;
     auto image = sets.find(tbp);
-    if (image == sets.end() || image->second.rects.empty() || !image->second.rects.back().bytes) return nullptr;
+    if (image == sets.end() || image->second.rects.empty() || !image->second.rects.back().bytes) {
+        // A complete uniform 256-entry palette makes the unknown
+        // retained 8-bit index irrelevant. Every other missing/incomplete case remains missing.
+        if (image != sets.end() || psm != PSMT8 || tw || th || cpsm != PSMCT32 || csa ||
+            ((tex0 >> 55) & 1) || ((tex0 >> 61) & 7) != 2) return nullptr;
+        auto p = sets.find(cbp);
+        if (p == sets.end() || p->second.rects.size() != 1) return nullptr;
+        UploadSet& palette_set = p->second;
+        auto eligible = uniform_palette_eligible.find(cbp);
+        if (eligible == uniform_palette_eligible.end() || eligible->second != palette_set.serial
+            || uniform_clut_cbp != cbp || uniform_clut_serial != palette_set.serial) return nullptr;
+        const Rect& r = palette_set.rects[0];
+        if (r.psm != PSMCT32 || r.bw != 1 || r.bw_raw != 1 || r.x || r.y ||
+            r.w != 16 || r.h != 16 || r.bytes != 1024 ||
+            r.offset > palette_set.data.size() || r.bytes > palette_set.data.size() - r.offset) return nullptr;
+        uint32_t colors[256];
+        if (!palette_of(palette_set, PSMCT32, colors, 256)) return nullptr;
+        for (unsigned k = 1; k < 256; k++) if (colors[k] != colors[0]) return nullptr;
+        uint64_t uniform_key = mix64(0x31464e554c415050ull, palette_set.hash);
+        uniform_key = mix64(uniform_key, tex0);
+        uniform_key = mix64(uniform_key, colors[0]);
+        auto known = textures.find(uniform_key);
+        palette_set.used = true;
+        if (known != textures.end()) {
+            stats.texture_hits++;
+            known->second.last_used = frames_ended;
+            uniform_texture_palettes[known->second.id] = cbp;
+            return &known->second;
+        }
+        TextureData data;
+        data.id = next_texture++;
+        data.width = data.height = 1;
+        data.rgba.resize(4);
+        memcpy(data.rgba.data(), &colors[0], 4);
+        Texture value = {data.id, 1, 1, 1, true, frames_ended};
+        stats.texture_bytes += 4;
+        stats.textures_held = textures.size() + 1;
+        stats.textures_made++;
+        frame.textures.push_back(std::move(data));
+        uniform_texture_palettes[value.id] = cbp;
+        return &textures.emplace(uniform_key, value).first->second;
+    }
     bool paletted = psm == PSMT8 || psm == PSMT4 || psm == PSMT8H || psm == PSMT4HL || psm == PSMT4HH;
     const UploadSet* pal = nullptr;
     if (paletted) {
@@ -1265,6 +1423,16 @@ void Gs::rebuild_state() {
         c.alpha_test = true; c.atst = (uint8_t)atst; c.afail = (uint8_t)afail;
     }
     if (c.ztst == 0) g_skip_draw = true;
+    // Conservative fallback-only write tracking uses original GS scissor/stride,
+    // before host layout or backend fragment rejection.
+    if (!g_skip_draw) {
+        int sx = c.scissor[0], sy = c.scissor[1], sw = c.scissor[2] - sx, sh = c.scissor[3] - sy;
+        uint32_t bw = uint32_t(frame_reg >> 16) & 63;
+        if (!c.mask_rgb || !c.mask_a)
+            invalidate_uniform_palette_pages(frame_block, bw, uint32_t(frame_reg >> 24) & 63, sx, sy, sw, sh, 2);
+        if (c.depth_write)
+            invalidate_uniform_palette_pages((uint32_t(zbuf) & 0x1ff) << 5, bw, 0x30 | zpsm, sx, sy, sw, sh, 3);
+    }
     // a wide picture: the scissor of 2-D things (a text box) moves with them
     cur_wide = buffer_width == 1280;
     // the game's own HUD layer switched off: what its draw functions put into the 3-D buffer without a depth test

@@ -1,4 +1,4 @@
-"""Run authored GS transfer regression fixtures against production sources.
+"""Run authored GS transfer and palette fixtures against production sources.
 
 Example (from the repository root):
   python tools/recomp/render/tests/run.py --cxx <C++17 compiler> --out <private output>
@@ -29,29 +29,30 @@ def main():
             parser.error("--out inside the repository must be under ignored local/")
     out.mkdir(parents=True, exist_ok=True)
     source = here.parent
-    program = out / ("gs_transfer_test.exe" if sys.platform == "win32" else "gs_transfer_test")
     flags = ["-std=c++17", "-O2", "-fno-strict-aliasing", "-ffp-contract=off",
              "-frounding-math", "-I", str(source)]
     if sys.platform == "win32":
         flags += ["-DNOMINMAX", "-static"]
-    command = [args.cxx] + flags + [str(source / "gs.cpp"),
-               str(source / "worldfill.cpp"), str(here / "gs_transfer_test.cpp")]
-    command += ["-o", str(program)]
-    if sys.platform == "win32":
-        command += ["-lpthread"]
     records = []
-    for label, argv, timeout in [("compile", command, 120),
-                                 ("test", [str(program)], 15)]:
-        completed = subprocess.run(argv, cwd=repo, text=True, capture_output=True,
-                                   timeout=timeout)
-        record = {"phase": label, "argv": argv, "exit": completed.returncode,
-                  "stdout": completed.stdout, "stderr": completed.stderr}
-        records.append(record)
-        (out / "results.json").write_text(json.dumps(records, indent=2), encoding="utf-8")
-        print(completed.stdout, end="")
-        print(completed.stderr, end="", file=sys.stderr)
-        if completed.returncode:
-            return completed.returncode
+    for test_name in ("gs_transfer_test", "uniform_palette_gif_test"):
+        program = out / (test_name + (".exe" if sys.platform == "win32" else ""))
+        command = [args.cxx] + flags + [str(source / "gs.cpp"),
+                   str(source / "worldfill.cpp"), str(here / (test_name + ".cpp"))]
+        command += ["-o", str(program)]
+        if sys.platform == "win32":
+            command += ["-lpthread"]
+        for label, argv, timeout in [("compile", command, 120),
+                                     ("test", [str(program)], 15)]:
+            completed = subprocess.run(argv, cwd=repo, text=True, capture_output=True,
+                                       timeout=timeout)
+            record = {"phase": label, "fixture": test_name, "argv": argv, "exit": completed.returncode,
+                      "stdout": completed.stdout, "stderr": completed.stderr}
+            records.append(record)
+            (out / "results.json").write_text(json.dumps(records, indent=2), encoding="utf-8")
+            print(completed.stdout, end="")
+            print(completed.stderr, end="", file=sys.stderr)
+            if completed.returncode:
+                return completed.returncode
     return 0
 
 
