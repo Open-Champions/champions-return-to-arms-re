@@ -26,10 +26,10 @@ def emulator(path, seed):
     return e
 
 
-def draw_list(path, seed, table):
+def draw_list(path, seed, table, origin_y=309):
     e = emulator(path, seed)
     e.follow = {0x17FBB8}
-    e.call(0x1A07C4, 320, 309, table, 0x80446B6A, max_steps=100000)
+    e.call(0x1A07C4, 320, origin_y, table, 0x80446B6A, max_steps=100000)
     anchors = [(c.args[0] & 0xFFFFFFFF, c.args[1] & 0xFFFFFFFF)
                for c in e.calls if c.target == 0x181CA0]
     frames = [tuple(x & 0xFFFFFFFF for x in c.args[:6])
@@ -73,7 +73,7 @@ def theme_queue(path, seed, volume):
 
 def pause_draw(path, seed):
     e = emulator(path, seed)
-    e.follow = {0x1A07C4, 0x3B8534, 0x3B96A8}
+    e.follow = {0x1A07C4, 0x3B8534, 0x3B96A8, 0x17FBB8}
     e.call(0x18E334, 0, max_steps=100000)  # open normal offline table
     e.stub(0x217550, ret=-1)  # card is idle; do not close the menu
     e.reset_log()
@@ -85,7 +85,9 @@ def pause_draw(path, seed):
               for c in e.calls if c.site == 0x1A11BC and c.target == 0x17FBB8]
     colors = [(c.args[1] & 0xFFFFFFFF, c.args[2] & 0xFFFFFFFF)
               for c in e.calls if c.site == 0x18D5E8 and c.target == 0x1800B8]
-    return flags, anchors, frames, colors
+    assembled = [tuple(x & 0xFFFFFFFF for x in c.args[:7])
+                 for c in e.calls if c.target == 0x17C118]
+    return flags, anchors, frames, colors, assembled
 
 
 def logo_draw(path, seed):
@@ -146,13 +148,15 @@ def main():
                 [origin_y], wanted_anchors, [wanted_frame]), (
                     seed, state, origins, anchors, frames)
             checks += 1
-        flags, anchors, frames, colors = pause_draw(path, seed)
+        flags, anchors, frames, colors, assembled = pause_draw(path, seed)
         want_anchors, want_frame = pause_geometry()
         assert flags == (0, 0, 0, 1, 1, 0, 1, 1, 0), (seed, flags)
         assert anchors == want_anchors, (seed, anchors)
         assert frames == [want_frame], (seed, frames)
         assert colors == [(7, 0x80464646)], (seed, colors)
-        checks += 4
+        assert assembled == list_frame_calls(5, origin=(320, 240)), (
+            seed, assembled)
+        checks += 5
         assert logo_draw(path, seed) == list(publisher_logo_sprites()), seed
         checks += 1
         for kind, state, table, mask, next_state in (
