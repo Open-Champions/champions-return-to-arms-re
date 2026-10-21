@@ -263,12 +263,16 @@ outside the rectangle the drawers sample. The status upload is the swizzled
 catalogue `page` was the 4-bit upload for the bars and the button, and
 160×48 for the status frames. Field rows were already half the used height.
 The bar and status used sizes in the table above already matched these
-headers. `bar_green` is not one of the 34 and was not remeasured.
+headers. `bar_green` is not one of the 34; it was measured separately,
+11 of 11 files, 100×6 used with a 104×8 upload (docs/spec/hud-xp.md).
 
-The marked block in `tools/godot/project/gameart/catalogue.gd` sets `page`
-and `rect` to the used crop for `bar_blue`, `bar_red`, `button`, `statusbar`
-and `statusbar_glow`. `name` and `pack` still name the older art-pack files
-and were not regenerated. Frames 00–09 are the same sizes as frame 10; this
+In `tools/godot/project/gameart/catalogue.gd`, `page` is unchanged: it is the
+decoded size, which `gameart.gd` requires of every picture (bars 104×8, button
+88×40, status frames 160×48). The used crop is `rect` (`bar_blue`, `bar_red`
+100×8; `bar_green` 100×6; `button` 83×38; `statusbar`, `statusbar_glow`
+160×46), and `VERSION` is 2 so that caches built with the old crops are rebuilt.
+`name` and `pack` still name the older art-pack files and were not regenerated.
+Frames 00–09 are the same sizes as frame 10; this
 catalogue names frame 10.
 
 ## Validation
