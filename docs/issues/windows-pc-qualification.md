@@ -332,6 +332,87 @@ first cursor attempt stops before confirmation and remains rejected. This proves
 the equipment change and its persistence; reduced incoming damage and rendered
 gloves appearance are separate tests.
 
+A separate installed-application inventory inspection loads that equipped seed,
+opens the armor page and selects the gloves. The viewed menu displays armor 13
+and the normal Unequip action, with readable item art and character preview.
+All 168 other original automated checks pass, but the original 169-check aggregate
+remains false: its selected-item check incorrectly requires the menu pointer to
+equal the canonical equipped pointer. The primary grid builder makes a local
+72-byte item copy. Those two full records are byte-identical; a separate 229-check
+audit verifies the intended selection, armor 40 and preserved character state.
+The original checker/result remain unchanged. Three viewed 960x720 captures show
+the settled scene, inventory and return to play; exact glove-mesh fidelity is not
+established. A recorded HP decrease coincides with a last-source link to a Kobold,
+without an exact damage-call or matched armor comparison.
+
+**Ran further normal melee and durable progression on the preserved native build:**
+a fresh attack edge after actual guard release enters melee. Two observed hits
+remove 25 and 23 HP from the adjacent Kobold; its last attacker resolves to the
+real Player, and death awards 25 XP, reaching 1,738. No hero HP decrease occurs in
+this corrected fight. The fixed ten-pulse input budget continues after the kill,
+including normal attack root motion, before a real paused endpoint at tick 278.
+The earlier script's lone attack edge occurred during guard, then remained held
+while walking; it times out without damage and has no paused tail. That failed
+invocation is retained, rather than counted as a successful controls test.
+
+Normal return to the existing Savepoint, occupied-slot overwrite and a separate
+fresh frontend Load preserve 1,738 XP, 57 gold, armor 40, equipped gloves,
+allocations and every occupied item record. The new 310,392-byte save equals the
+entire saved RAM buffer. All 27 known saved defeated Kobolds match fresh typed
+memory records at their saved positions, with matching negative HP/maxHP
+fractions; this is not
+a general active/free object census. Eight saved WarWraith records remain.
+The fresh Player is alive with 39.6543 HP / 11.8455 mana near the same checkpoint.
+The three accepted whole combat/save/fresh-Load processes exit zero without
+timeouts or valid player deaths; a separate 303-check audit passes. Mission and
+quest completion, full resource recovery and armor-related damage reduction remain
+separate claims.
+
+**Ran that melee route in the installed sample/depth application (`d7c2258b...`):**
+all 196 original checks and 270 independent audit checks pass. The process exits
+zero without timeouts; all 313 valid Player rows remain alive, at armor 40, with
+a minimum 36.7069 HP. Ten fresh Cross presses produce the observed 25/23 damage;
+target HP becomes negative at tick 79; dead state 20 and 1,738 XP appear
+at tick 80. All 22 shared
+logged fields match the native run literally over 1,618 rows: 35,596 formatted
+values, zero differences. Twelve additional app rows are the declared paused tail.
+This equality is bounded to those fields, rather than whole RAM or pixels.
+
+Viewed unpaused captures show the settled encounter, a readable 25-damage number
+and the final attack/corpse scene. All occupied items, equipment, full skill table,
+allocations and 57 gold remain unchanged. The original four copied save/icon files
+stay at 1,713 XP and emulated card writes stay zero; host initialization adds the
+four declared private network-config files. This combat-only case is offscreen,
+unpaced, AA4 and sound-disabled. Its lack of card writes is separate from the
+installed persistence trials below; native durability retains its build identity.
+
+**Ran ordinary save and a separate fresh Load in the installed application:**
+the same melee/return route reaches the normal occupied-slot overwrite prompt.
+All 337 original save checks and 306 independent audit checks pass. The actual
+310,392-byte written card matches the entire saved RAM buffer and is byte-identical
+to the separately qualified native 1,738-XP card. Only this private copied game
+slot changes; its three other game files and all source seeds stay unchanged.
+The four normal host network-config additions are recorded separately.
+
+A separate fresh application process loads an installed-only copy of that card,
+retaining 1,738 XP, 57 gold, armor 40, equipped gloves, allocations, all occupied
+item records and the full skill table. It exits zero without timeouts or hero
+HP losses. Its original aggregate remains false, with 180 of 185 checks passing:
+five enemy checks compare saved factory names with a helper's vtable-catalogue
+label. The actual raw object names remain exact, including the two tough Kobolds;
+this is a checker namespace error, without a game type rename. A separate
+439-check raw-memory/image review matches all 27 known saved defeated Kobolds by
+exact factory name, position, variant and negative HP/maxHP fraction in each of
+five snapshots. The original runner and false result remain unchanged.
+
+Three viewed fresh-Load captures show the settled checkpoint, the equipped
+13-armor gloves with Unequip action and return to play. The copied four game
+save/icon files remain unchanged during Load; emulated card writes stay zero,
+with host network-config creation recorded separately. These offscreen, unpaced,
+sound-disabled AA4 cases qualify this checkpoint's persistence and UI behavior.
+They do not establish physical input, audio, performance, exact glove-mesh or
+original-console image fidelity, reduced incoming damage or quest completion.
+
 Earlier overwrite attempts pressed Cross while the overwrite screen required Square;
 they wrote no new checkpoint and correctly loaded the older zero-XP save. This was
 a test-input error, not an established persistence defect. Load readiness now witnesses
@@ -574,10 +655,33 @@ shader-version failure occurs before draws and remains preserved separately.
 
 This is a component result on the tested NVIDIA driver, without production
 integration. It covers positive FIX=64 blending and alpha 128, using one R32UI
-texel per logical pixel. Signed-negative blending, masks, dithering, rejection,
+texel per logical pixel. Full blend-selector coverage, masks, dithering, rejection,
 depth, packed-word aliasing, format changes, MSAA/scaling, portability and
 performance still need qualification. The production CT16 discrepancy above
 remains unfixed.
+
+A further private signed-rounding component compares 13 seeded red-channel
+vectors and the seven unchanged positive regressions with the pinned software
+reference. All 81,920 packed candidate pixels match across 20 cases. Nine ordinary
+integer-division controls differ on 36,864 pixels; eleven controls match. One
+observed boundary uses destination red 16, source red 15 and FIX 64: per-write
+floor rounding stores red 8, while division toward zero stores red 16. Every
+native/reference child exits zero and source/history pins stay unchanged. This
+qualifies those arithmetic vectors, without general blend-selector, RGB/alpha,
+mask, dithering or production-renderer qualification.
+
+Private CPU prerequisites also retain 12 raw write registers and effective PRIM
+per draw. Fourteen authored contract cases pass 82 checks. The baseline's 25
+contract failures consist of eleven missing raw-boundary requirements and
+fourteen checks for the proposed API's absence; this is not 25 rendered bugs.
+Some conservative boundaries can already have equivalent or baked vertex data.
+A further 48-case, 960-check matrix verifies the candidate's exported state and
+vertex words across triangle lists/strips/fans, GIF paths 0 and 2, both
+PRMODECONT choices and fast/slow decoding. All 24 equivalent fast/slow pairs match; private
+counters confirm the fast route actually ran. Copies, synthetic commands,
+primitive histories, the complete FrameList, GPU behavior and performance remain
+unqualified by these CPU fixtures. All such candidates stay private; the installed
+renderer and its CT16 precision discrepancy are unchanged.
 
 Inspected captures show textured hub, ice, fire and stone-platform scenes. Forced
 offline entry into three PvP arenas instead leaves the player at Z=-100000; longer
