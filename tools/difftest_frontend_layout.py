@@ -14,7 +14,7 @@ from ee_emu import EE  # noqa: E402
 from ref_frontend_layout import (BOOT_CARD_CALLS, BOOT_STEP_CALLS,  # noqa: E402
                                  CARD_DRAW_DISPATCH, FRONTEND_STATES,
                                  INTRO_CALLS, MENU_SOUND_IDS, TABLES,
-                                 first_theme_queues, list_frame_calls,
+                                 credits_one_line_geometry, first_theme_queues, list_frame_calls,
                                  list_geometry, pause_geometry, publisher_logo_sprites)
 
 SHA256 = "292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675"
@@ -101,6 +101,24 @@ def credits_details(path, seed):
     e.call(0x223D3C, max_steps=100000)
     return [(c.site, c.args[1] & 0xFFFFFFFF, c.args[2] & 0xFFFFFFFF)
             for c in e.calls if c.target == 0x1800B8]
+
+
+def credits_authored_line(path, seed, scroll_y):
+    """Supply one original-code wide-string pointer using authored test data."""
+    e = emulator(path, seed)
+    e.follow = set()
+    line = e.alloc(32)
+    e.mem.write(line, b"A\x00\x00\x00")
+    e.call(0x223C64, max_steps=100000)
+    e.mem.w32(0x4FB5E8, line)
+    e.mem.w32(0x4FB5D8, scroll_y)
+    e.reset_log()
+    e.call(0x223D3C, max_steps=100000)
+    positions = [(c.site, c.args[0] & 0xFFFFFFFF, c.args[1] & 0xFFFFFFFF)
+                 for c in e.calls if c.target == 0x181CA0]
+    colours = [(c.site, c.args[0] & 0xFFFFFFFF) for c in e.calls
+               if c.target == 0x1802E0]
+    return positions, colours, e.mem.u32(0x4FB5D8)
 
 
 def shallow_screen_calls(path, seed, entry, card_state=None):
@@ -255,6 +273,16 @@ def main():
         checks += 5
         assert credits_details(path, seed) == [(0x223E40, 7, 0x80000000)], seed
         checks += 1
+        for scroll_y, wanted_colours in (
+                (448, [(0x224004, 0), (0x22402C, 0x00405E5E)]),
+                (400, [(0x224004, 0x07000000), (0x22402C, 0x14405E5E)]),
+                (224, [(0x224004, 0x20000000), (0x22402C, 0x5E405E5E)])):
+            positions, colours, next_y = credits_authored_line(path, seed, scroll_y)
+            assert positions == list(credits_one_line_geometry(scroll_y)), (
+                seed, scroll_y, positions)
+            assert colours == wanted_colours, (seed, scroll_y, colours)
+            assert next_y == scroll_y - 1, (seed, scroll_y, next_y)
+            checks += 3
         assert shallow_screen_calls(path, seed, 0x32396C) == list(BOOT_CARD_CALLS)
         assert shallow_screen_calls(path, seed, 0x3238F4) == list(BOOT_STEP_CALLS)
         assert shallow_screen_calls(path, seed, 0x321788) == list(INTRO_CALLS)

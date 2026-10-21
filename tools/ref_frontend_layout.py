@@ -110,6 +110,16 @@ CARD_DRAW_DISPATCH = {
 }
 
 
+def credits_one_line_geometry(scroll_y):
+    """Two centered submissions for one authored wide-string pointer.
+
+    The first is the offset/shadow pass and the second is the main pass.
+    This fixture does not establish the real credits resource layout.
+    """
+    return ((0x22401C, 322, scroll_y + 2),
+            (0x224044, 320, scroll_y))
+
+
 MUSIC_VOLUME_GATE_BITS = 0x3D4CCCCC  # comparison in music_playGlobal 0x2110e0
 
 
