@@ -1781,6 +1781,47 @@ promoted. The strict graphics gap remains open, as do full campaigns, physical
 controllers, WAN/NAT, public discovery operation, latency, general performance,
 console fidelity and qualification of the Godot bridge.
 
+## Bounded live-input campaign combat
+
+A separate private trial uses the opt-in controller interface for one ordinary
+Poison Bolt attempt after the established four-player campaign route. The game
+and client both exit zero with 2,001 complete watched rows and no timeout. Its
+entire 1,899-row, 338-column route prefix matches exactly: 641,862 values without
+shifting or normalization. Fresh state snapshots revalidate the current party,
+enemy allocation, handles, grid links, health, facing and range before input.
+
+One Circle request produces seven actual held guest fields. The other three
+players retain continuous R1 input through aiming, casting and release. Player
+one enters the casting state, spends the source-defined eight mana alongside
+regeneration, and starts a cooldown whose first watched value is 30. The same
+living Kobold loses 23 HP
+with a contemporary damage stamp and a current source handle resolving player
+one. Two later one-HP reductions are recorded separately. No projectile was
+observed in the sampled snapshots, so its flight and impact path remain unobserved.
+The original plan explicitly permits that observation gap; the first independent
+evaluator incorrectly made it mandatory and remains preserved with a separate
+classification correction. No game or trace rerun replaces that result.
+
+All four raw and decoded controllers become fully neutral and remain so for 63
+recorded fields through the closing observation period. Player one then takes
+damage during that period: HP falls from 32.800 to 26.667 and finishes at 26.734,
+above the predeclared runtime floor of 25. The other three retain their HP.
+The enemy survives and XP stays 51/51/51/77; neither a kill nor an XP award is
+qualified. Seven full party anchors retain canonical items, equipment and
+auxiliary references, skills, statistics, allocations, quests and saved return
+metadata. The final anchor precedes the later player hit; final HP is established
+by the continuing watched and atomic state records.
+
+Two earlier automation attempts stop before Circle and remain failed. This
+revision changes driver scheduling, preserving the same native freshness and
+safety deadlines. Game-card traffic is 311,272 bytes read and zero written;
+original and copied party files and all eight installed programs retain their
+hashes. This accepts only the bounded software-input cast and attributed damage
+case. The candidate remains private and uninstalled. Strict default-off graphics
+equivalence remains failed, and wider combat, mission and campaign completion,
+physical multi-controller play, audio/vibration, WAN/NAT, public discovery,
+general performance, console fidelity and the Godot bridge remain open.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
