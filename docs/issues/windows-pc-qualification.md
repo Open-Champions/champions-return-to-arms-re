@@ -24,8 +24,8 @@ release or a completed campaign.
   gameplay and network observations retain the input-fixed build identity above.
 - Subsequent normal-finish tick-log correction, window executable SHA-256:
   `7ddfb8ec522741f9dc3b37e87912e3768c09659466e2ab2f39e76932b46ad3d0`.
-  Its paired terminal-row trial is recorded separately below; earlier gameplay
-  receipts retain their stated executable identities.
+  Its arithmetic/PNG/boot/62-input receipt also passes. The paired terminal-row
+  trial is recorded separately below; earlier gameplay receipts retain their identities.
 - Generated game code, original data, executable binaries, saves, screenshots and
   raw logs remain private. Only authored changes and summarized receipts are contributed.
 
@@ -240,8 +240,33 @@ Missing-texture fidelity remains unresolved: the original `fire4`, `torment0` an
 69 accumulated during boot. The new trace isolates Torment's settled issue to 1x1
 indexed strips with a palette upload but no uploaded image at the sampled address.
 The current renderer does not retain general GS video memory across image sets.
-No assumed palette/index fallback was added; the expected retained texel still needs
-reference evidence. These state counters are not missing-pixel counts.
+No palette/index fallback is integrated into the published build. These state
+counters are not missing-pixel counts; independent reference evidence follows.
+
+An independent reference now interprets the private native-produced GIF/MMIO history
+with PCSX2 GS software renderer commit `5b6e6e23eba403b589495c1abf8266eb1309a5b1`.
+It replays 4,220,552 events across 3,011 fields. Authored fragmented-upload,
+local-copy, CSM1/CLD2, software-draw and freeze/load controls pass. Read-only probes
+are built outside the unmodified vendor checkout; their final 4 MiB GS-memory hash
+matches the uninstrumented replay.
+
+For all 297 actual 1x1 Torment draw attempts, the active 256-entry palette is
+uniform RGBA `0x8000ffff`. Texture alpha is 128; HIGHLIGHT2 with TCC enabled uses
+that alpha. TEST enables LESS 127 with KEEP on failure, so the reference rejects
+both colour and depth writes before queueing. Larger-texture draws at the same
+addresses provide a positive queue control. The current native missing-image path
+instead disables texturing and tests vertex alpha 0, allowing these draws through.
+These are draw-state observations, rather than missing-pixel counts.
+
+The reference consumes native-produced packets, so it independently checks their
+GS interpretation, not the game's EE/VIF/VU execution or the original PS2 display.
+Normal GS display presentation and cache aging are not exercised. This establishes
+a specific alpha rejection defect; it does not establish complete scene fidelity or
+general retained-VRAM support. The portable reference, original-data intermediate,
+probe output and screenshots remain local.
+
+A conservative uniform-palette correction remains private while alias-write and
+actual TEX0-load ordering fixtures are reviewed. It assumes no arbitrary index.
 
 Inspected captures show textured hub, ice, fire and stone-platform scenes. Forced
 offline entry into three PvP arenas instead leaves the player at Z=-100000; longer
@@ -315,8 +340,9 @@ Both scripts completed, the driver exited zero and all owned test processes stop
 The clients had fresh separate cards; this continuation used no gameplay memory
 writes, direct calls, teleports or level/inventory fixtures. Body-collision-aware
 walking paths and read-only frame/coordinate conditions drove ordinary pad inputs.
-This establishes local mission entry and recall; shared checkpoint recovery,
-revival, mission completion, disconnect/rejoin and cross-machine play remain unqualified.
+This trial establishes local mission entry and recall. Revival, mission completion,
+disconnect/rejoin and cross-machine play remain unqualified; the later automatic
+party-wipe recovery trial is recorded below.
 
 **Ran natural co-op combat on the input-fixed build:** one kobold died, the two
 player slots earned 37/55 XP, normal health/mana potions were consumed, and both
@@ -343,8 +369,9 @@ completion markers are present; individual child exit-code values were not
 persisted and are not invented. This is observed gameplay plus corrected offline
 evaluation, not a claim that the original driver invocation passed. A further
 waypoint probe timed out before combat and remains excluded from successful runs.
-No gameplay state writes were used in either combat route. Shared checkpoint
-recovery, revival, four players, WAN and full mission completion remain unqualified.
+No gameplay state writes were used in either combat route. Their scope excludes
+automatic checkpoint recovery, tested separately below. Survivor revival, four
+players, WAN and full mission completion remain unqualified.
 
 **Ran owner-card persistence on the current diagnostic build:** two fresh,
 distinctly named level-one characters each saved through the actual hub Savepoint
@@ -373,6 +400,32 @@ Character-menu selection and subsequent play are controller-scripted; there are 
 rig `poke`/`call` commands or level/stat/inventory fixtures in these trials.
 It does not test the original online menu flow, internet connectivity, different
 PCs or long-session stability.
+
+**Ran automatic two-player checkpoint recovery on the normal-finish build:** both
+fresh level-one Shamans walk to the actual `blood1` Savepoint, establish its in-RAM
+checkpoint and die through normal enemy damage. The confirmed logs witness both
+dead, null actors with the load flag set, and both recreated alive. The original
+driver and actual child exits are zero; both scripts complete. All 39 tested shared
+columns match over 4,326 confirmed ticks, with zero out-of-sync/dropped-player flags.
+
+The restored interval spans ticks 3,896 through 4,326: 431 matching live rows with
+network mode one and two active players. Ordinary host and joiner movement is held
+across confirmed tick changes after restoration; by tick 3,936 they have moved
+43.63 and 62.04 units respectively, with identical positions on both peers. Both
+remain alive at the last shared tick, at 32.8 / 11.4289 HP and zero XP.
+
+Raw actor flags also differ in two source-backed local bits: `0x200000` identifies
+the local real player, and `0x100` is a hit flash transferred to its prediction copy
+and cleared by drawing ([object flag research](../objects.md#gameobject-layout-0x4c-bytes)). Exact
+supported-ELF instruction words independently verify that transfer and clear. A
+separate audit excludes only those bits and finds every remaining flag bit equal;
+the original single-bit audit remains preserved as false, with no row changes.
+
+This qualifies automatic recovery from the in-RAM checkpoint and both players'
+subsequent controls on two local clients. It does not test a memory-card Load,
+earned co-op XP persistence, survivor-at-Savepoint resurrection, four players or WAN.
+Earlier raw-field movement attempts could occur before confirmed simulation resumed;
+those trials remain excluded from the bidirectional input result.
 
 ## Windows tick-log completion
 
