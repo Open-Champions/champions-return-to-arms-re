@@ -693,10 +693,11 @@ harmless for sync: the copy is per-machine state already.
 6. What statistic indices 1–3 mean for the skills not read by hand (the describeRank
    functions format them and would settle each one).
 7. Slot 14's second argument (1, 2, 10, 20): dead in this build, purpose unknown.
-8. `SpellArena` and the arena wave logic (0x305bbc, 0x305ed4, 0x3065fc, 0x306b78) were only
-   skimmed. `Boat` / `SkulBoat` slots 28–29 and everything from 0x31d2a0 up (`SmokeGen`,
-   listed here in the earlier version, is now read: `docs/issues/rescan.md` R2)
-   were not read.
+8. Arena waves, scoring, the overlay and `SpellArena`'s flag and tint are in
+   `docs/arena-modes.md`. The monster build at 0x3065fc was seen only as the call
+   `arena_startWave` makes. `Boat` / `SkulBoat` slots 28–29 and everything from 0x31d2a0
+   up (`SmokeGen`, listed here in the earlier version, is now read: `docs/issues/rescan.md`
+   R2) were not read.
 9. Not read at all: most projectile run functions (ShockProjectile, HolyStrike,
    HammerOfWrath, FrostShard, ShockOfFrost, PusStorm, Pustule, PoisonBolt,
    LightningStrikeSpell, DarknessProjectile, DiseaseTrail, DiseaseCloud), SpellWizardBeam_run
