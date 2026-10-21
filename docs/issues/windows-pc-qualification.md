@@ -34,6 +34,10 @@ release or a completed campaign.
   `5223bc3dbd42ad5b9e8f208a3bf5adc960350b7046b55d80f4df593c514afcd3`.
   Its full arithmetic/PNG/boot/62-input receipt and matched three-scene diagnostic
   smoke pass. Earlier gameplay and multiplayer receipts retain their build identities.
+- Subsequent sample-lifecycle/depth-preservation build, window executable SHA-256:
+  `d7c2258b9fa65ea1dd5616b0d64e29e8491aef7e567ecab3431f3cb97b07eb93`.
+  It repeats arithmetic/PNG/boot/62-input qualification. Authored mode-transition
+  checks pass; strict selected-image equality remains false as documented below.
 - Generated game code, original data, executable binaries, saves, screenshots and
   raw logs remain private. Only authored changes and summarized receipts are contributed.
 
@@ -66,6 +70,7 @@ Build with the existing installer from your own supported disc. Then, on Windows
 ```powershell
 python tools/recomp/app/win/tests/run.py --cxx C:/toolchains/bin/x86_64-w64-mingw32-clang++.exe
 python tools/recomp/render/tests/run.py --cxx C:/toolchains/bin/x86_64-w64-mingw32-clang++.exe
+python tools/recomp/render/tests/run_gl.py --cxx C:/toolchains/bin/x86_64-w64-mingw32-clang++.exe
 python tools/recomp/app/win/qualify.py --disc C:/private/return-to-arms.iso
 python -m unittest discover -s tools -p "test_*.py"
 ```
@@ -91,6 +96,7 @@ are recorded and checked again after execution. Raw output must remain local.
 | OpenGL alpha/depth canary | 16 checks, zero failures; 1,024 pixels per colour/depth check |
 | Historic-display extent/stride transitions | 33 authored public-interface checks, zero failures |
 | OpenGL historic-extent canary | 31 core checks, zero failures; repeat-edge fidelity remains open |
+| OpenGL requested-sample/color/depth reuse | 157 checks per mode, zero failures in normal and simulated sample-rounding modes |
 | Counter-only renderer replay | 3,011 completed frames with identical draw/texture/resource checksums |
 | Earlier visible baseline session | 461.219 seconds, 59.8 pictures/s at 1280x960, clean exit |
 | Earlier visible sound-device session | WASAPI, 460.43 seconds taken, no request gaps above 30 ms |
@@ -227,6 +233,24 @@ raw-verified death state and positions; this is not a completeness claim about t
 entire object pool. The fresh-load endpoint is paused and bounded, with living
 enemies nearby. Longer unpaused survival, the good exit to `strife`, completion of
 the initial Plane of War level and the wider quest remain unqualified.
+
+Three further ordinary kills add 75 XP, reaching 1,571 XP and 57 gold on the same
+preserved native build. A same-Savepoint overwrite/Load and an independent frontend
+Load preserve those values and all five occupied item records across all three
+bags. All six accepted trials exit zero without timeouts or valid live-player
+death rows. An independent raw-card audit verifies all 26 saved defeated Kobold
+records against both Loads, including their saved positions and variants. The
+fresh live Player has 9.2476 HP and 8.4048 mana; this is a low-health checkpoint,
+with no consumables remaining, rather than a survival or mission-completion pass.
+
+A separate ordinary Exit Mission, hub regeneration and free hub Recall route
+restores full 46 HP / 36.6 mana while retaining 1,571 XP, 57 gold, the earned
+allocations and every occupied 72-byte item record. All 5,898 valid live-player
+rows stay alive and the process exits zero without timeouts or a card write.
+Recall returns to its older stored position, not the northern Savepoint; that
+location is verified against the actual returned actor. The original northern
+card retains its low saved resources. The endpoint is immediately paused and
+does not establish a new full-health card, an extended encounter or level completion.
 
 Earlier overwrite attempts pressed Cross while the overwrite screen required Square;
 they wrote no new checkpoint and correctly loaded the older zero-XP save. This was
@@ -401,6 +425,50 @@ console fidelity. Seven unsupported read-only information no-ops
 were removed from both comparison scripts; destination writes are explicit test
 setup rather than normal campaign transitions. The three remaining states belong
 to one retained fire-scene texture case; general retained-VRAM support remains open.
+
+A subsequent backend correction includes the requested sample mode in same-size
+framebuffer reuse. A narrow-to-wide logical transition can now request multisampling
+without requiring a physical resize; the reverse transition releases that mode.
+The backend remembers the attempted request separately from its effective fallback,
+so an unsupported multisampled allocation is not retried on every announcement.
+Same-physical-size reallocations preserve color and depth before deleting the old
+attachments. Existing physical-resize depth behavior is unchanged.
+
+An initial private cache-only candidate passed color checks but lost retained
+depth. It was rejected before installation. The final authored fixture detects
+13 allocation failures on the original backend, four depth-occlusion failures on
+that rejected candidate and zero failures on the corrected backend. Its 157 checks
+cover requested-mode transitions, same-mode reuse, retained RGBA pixels, retained
+depth occlusion, disabled AA and an injected unsupported-framebuffer fallback.
+Color comparisons cover all 691,200 pixels of each physical target. The fixture
+queries an independent same-format framebuffer for the driver's actual sample
+count, respecting permitted upward rounding in
+[OpenGL 4.1 section 4.4.2](https://registry.khronos.org/OpenGL/specs/gl/glspec41.core.pdf).
+Both normal and simulated two-to-four rounding modes pass all 157 checks. The
+rounding/fallback injections do not qualify a second physical driver or Qt/macOS.
+The rebuilt application repeats the full arithmetic/PNG/boot/62-input receipt,
+and the final repository Python suite passes all 675 tests.
+
+Fresh baseline/candidate/baseline application smokes finish cleanly with unchanged
+CPU receipts and three remaining missing states. Selected `fire4`/`torment0`/
+`tormenta` comparisons differ in 1 / 55 / 0 pixels, at most two channel levels;
+the two unchanged-baseline fire views also differ in two pixels. Strict image
+equality remains false. A separate fixed-input replay brackets the corrected
+backend with two runs of the exact same baseline executable. All 3,011 complete
+decoded render-field records and all three normalized GL ledgers are byte-identical; each
+ledger contains 6,875,434 records. This captures forwarded arguments, vertex and
+texture payload hashes, resource identities and sample/target state. Yet the
+unchanged baseline readbacks differ in 40 / 0 / 18 pixels, at most two channel
+levels, with alpha unchanged. Small variation therefore occurs without the
+candidate; its cause remains unattributed and is not relabeled harmless.
+
+That fixed stream exercises no same-size requested-mode transition or depth blit;
+the new path is qualified by the authored GPU fixture. Unqueried/default driver
+and WGL state remain outside the ledger, and that replay does not poll GL errors
+per field. These are bounded lifecycle/compatibility results, not original-console
+pixel fidelity or a repair of the three retained-texture states. The failed
+strict-equality receipts, rejected depth candidate and all baseline controls remain
+preserved privately.
 
 Inspected captures show textured hub, ice, fire and stone-platform scenes. Forced
 offline entry into three PvP arenas instead leaves the player at Z=-100000; longer
