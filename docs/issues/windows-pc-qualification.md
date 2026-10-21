@@ -1522,11 +1522,65 @@ mission views were inspected; raw-state reviews establish the damage and XP.
 This qualifies one scripted fresh-profile four-player battle. Wider combat,
 campaign saving, mission completion, physical four-pad play and WAN remain open.
 
+## Four-player party Save and fresh Load
+
+The private four-controller Windows candidate `af99e292` completes one ordinary
+battle, a single player's Recall and a hub Savepoint save. Its child exits zero
+with 10,920 watched rows and no timeout. The complete earlier battle prefix,
+10,077 rows across 301 columns, matches exactly. All four characters remain alive
+and retain earned XP of 51, 51, 51 and 77. Only the initiating player's Recall
+stack falls from two to one; the other three stay at two.
+
+One normal offline transaction writes a 310,392-byte file containing all four
+characters. The file exactly matches the completed RAM save buffer. Each complete
+19,504-byte serialized character record also matches its game-built RAM snapshot.
+After decoding the original serialization conversions, all 28 occupied 72-byte
+item records, each character's 17 equipment and three auxiliary references,
+48 skill pairs, statistics, allocated points and quest data match the live save
+state. This establishes the serialized snapshot and canonical comparisons;
+ordinary return metadata, mana regeneration and transient live fields change
+during the route. The immediate hub image still shows loading artwork; later
+images show the lit town, four avatars/HUDs and the card overlay closed.
+
+A first fresh-load attempt remains a failed strict case. It stops at a guard
+requiring the loaded-from-save flag after card transfer has finished; its controls
+and RAM/image captures are never reached. The original game sets that temporary
+flag during restoration, then consumes it during level setup and selects start
+rank 3. The flag is already clear before the late guard starts. The corrected
+test observes the positive flag during the read, then requires it cleared after
+setup, retaining the other card, actor, ownership and visual barriers. Game code
+is unchanged. The first 1,050 rows across 331 shared columns match the failed
+attempt exactly, without normalization.
+
+The corrected fresh process loads a separate copy of the four game-card files,
+exits zero with 1,323 watched rows and no timeout, and records 311,272 card bytes
+read with zero written. Both settled RAM captures restore the four names/classes,
+earned XP, gold, Recall quantities and source-decoded items, references, skills,
+statistics, allocated points and quests from the actual file. Fresh actor slots,
+local-player lists, pad mappings and connections agree for all four owners. The
+rendered town is inspected after RGB readiness and 30 neutral fields.
+
+Each logical owner supplies eight movement-input rows alone, then releases for
+30 fields. All four directly commanded actors move, and all four XYZ values are
+stable in the last eight rows of each release interval. During slot 1's leg,
+neutral slots 0 and 2 also move while recorded party contact is present. Their
+inputs remain neutral. That motion is compatible with the original collision
+path, but the full solver and its sole cause are not proven; zero non-owner
+motion and whole-party stability for all 30 release rows are not claimed.
+
+Original and copied party files, the earlier 1,888-XP checkpoint and installed
+programs retain their hashes. The private candidate is not installed. These cases
+qualify one scripted four-player return, party Save, fresh Load and movement/release
+path on one PC. Later mission return, persisted mission kills, wider campaign
+progression/completion, physical multi-pad play, WAN, reference fidelity and
+performance remain open.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
 skill rank have not been completed. Rendering captures establish only the scenes
 actually observed; a destination request is not a normal mission transition.
-Cross-machine/WAN multiplayer, wider four-player combat, campaign saving and mission completion, local physical multi-controller play, device disconnects
+Cross-machine/WAN multiplayer, wider four-player combat and campaign save/load,
+mission progression/completion, local physical multi-controller play, device disconnects
 during physical gameplay and hands-on audio/vibration quality remain separate work.
 The existing Godot bridge has not been qualified by these standalone-native tests.
