@@ -108,8 +108,8 @@ trigger-byte boundaries. The old binary failed the newly named alias cases and t
 first-alias-release cases; the rebuilt binary passed. Native scan-code tests cover
 the physical identity cases which posted messages do not exercise.
 
-An XInput controller was detected, but the observation period contained no physical
-button or axis movement. Hardware switches, physical vibration and audible quality
+During the earlier software-qualification observation, an XInput controller was
+detected but no physical button or axis movement was recorded. Hardware switches, physical vibration and audible quality
 are not qualified by software injection or device counters. A script decimal
 `0.30` rounds below the compiled `0.30f` threshold under FE_TOWARDZERO; raw trigger
 bytes 76 (off) and 77 (on) mapped correctly. That script precision issue is separate
@@ -916,7 +916,7 @@ trial. In the second, every counted game packet uses the relay. One joining clie
 reports 18 carrier strays; their packet-level cause was not captured and remains
 open. Shared simulation still matches. These are four independent local network
 windows with the existing native launch adapter. Four-player missions, WAN and
-single-window multi-controller play remain unqualified.
+single-window physical multi-controller play remain unqualified.
 
 **Ran a further natural two-player mission round trip:** both characters walked
 from the hub spawn; ordinary dialogue unlocked the mission for both. The host's
@@ -1132,11 +1132,51 @@ This corrects evidence loss at normal completion. It does not itself establish
 party-wipe recovery or a rendering/gameplay correction. Earlier local recovery
 observations whose confirmed logs end before restoration remain incomplete.
 
+## Player-hosted multiplayer and couch-input qualification
+
+The installed Windows build and the new discovery candidate have separate evidence. The installed application remains SHA-256 `d7c2258b9fa65ea1dd5616b0d64e29e8491aef7e567ecab3431f3cb97b07eb93`. The private discovery application is `e9010c9cf6090a7122ed6233cb526bba77703cad6766ea29d111c8559eabbf9e`, its native browser CLI is `d80e8afd965329b3aa94e2bb3aa6b5305717eef9f6963e9d7fa5a2fc7bab5e9e`, and the private directory/relay service is `2fa3decf3505fd1356ab821ead10337cf60efc671d6e5279e52d997c66326b39`. The discovery, launcher and controller changes are not installed or published here; their implementation remains private pending review and handoff to the native-client repository. This is a research and qualification update.
+
+The latest installed-build network baseline passed an independent 184-check audit. Four separate game processes on one PC matched all 37 shared columns across 1,072 common confirmed ticks with direct loopback transport and 1,087 with forced local relay. Every pair also matched over its available common interval. Both strict drivers returned zero; their pinned completion contract requires all eight game children to finish successfully with exit zero. The per-child numeric exits were not separately serialized in this baseline. Recorded owned processes were absent after completion. These are network-client tests; they do not establish couch co-op in one game process.
+
+The private service adds explicitly public rooms while retaining the existing private/friends settings. Authenticated browsing returns a bounded, correlated snapshot of sanitized room metadata. Private, full, started, stale and blocked rooms are excluded; listings do not disclose peer addresses, account identifiers, character data or chat. Its in-memory service fixture passed 67 checks. The actual native parser/CLI fixture passed 181 checks covering snapshot completion, request correlation, malformed/truncated responses, limits, disconnect/timeout behavior and JSON output. CPU fixtures alone do not establish live interoperability.
+
+Three subsequent bounded integration checks used the private discovery application:
+
+| Check | Actual route | Confirmed shared result |
+| --- | --- | --- |
+| Direct discovery | Public host, authenticated native browse, mapped Tk Find Games callback, join using the discovered code, ordinary character/control inputs | 1,393 common ticks; 21 shared columns; zero mismatches |
+| TLS and forced relay | Local TLS directory/control listener with an explicit private CA override, discovered-code join and forced UDP relay | 1,381 common ticks; 21 shared columns; zero mismatches |
+| Manual launcher flow | Two mapped launchers invoke the real Host Public, Find Games, Join Selected and Start Match button callbacks; automatic start disabled | 1,129 common ticks; 21 shared columns; zero mismatches |
+
+All three intervals remained in the hub, with positive player HP and no observed out-of-sync or dropped-player flags. They establish basic discovery, joining and shared movement, not campaign completion. The existing native session bridge initializes the game before normal character/control inputs; the retired official login/lobby screens were not qualified by these checks.
+
+The TLS run recorded four successful server handshakes and no failed handshakes. It also recorded 15 relay drops whose individual causes were not traced. That counter is distinct from the zero dropped-player flags and matching simulation data; a lossless-datagram claim is not supported. TLS was configured for directory/control TCP, with no packet-capture claim or encryption claim for the separate UDP gameplay payload. Public-CA deployment, WAN operation and NAT/router combinations remain untested.
+
+The complete launcher flow recorded two launcher exits zero and two game exits zero. The owned local service was intentionally terminated and recorded Windows exit one; that exit is retained. Independent review required a positive matching interval, actual exits and absence of all recorded owned processes rather than relying on the original weaker aggregate flag. The host's Start callback ran once after the real room reported two ready, compatible players. Nine serialized Find Games callbacks reused one persisted browser identity; a copied service-database audit found exactly that browser account plus the two game accounts. Per-refresh login packets were not captured. Button invocation exercised actual Tk callbacks, not human mouse clicks or physical-controller input. Both captured game views had legible two-player HUDs; no console visual-fidelity claim follows.
+
+A separate physical-controller session on the installed build provides partial evidence. During 48.62 seconds, read-only XInput sampling observed one connected controller, full left-stick travel, A/B/X/Y, right shoulder/trigger, Start and Back actuation. Overlapping game records show movement and cast/block/menu state changes. The user reported, “Finished—controls respond correctly.” However, physical input also merged during scripted setup: the Load transaction occurred before a later guard expected it, and the game exited three on that guard's timeout before READY. The planned 300-second session was not reached. This is retained as partial physical coverage and user feedback, not a whole-session pass, an event-level latency measurement, every-button coverage or physical rumble proof.
+
+A normal visible, paced installed-build couch trial now completes the ordinary offline frontend, sequential creation of two characters, and independent movement in one shared hub/camera. The process exits zero with all 3,915 consecutive watched rows retained. Player one moves 30.4263 world units while player two remains stationary; player two then moves 30.0955 while player one remains stationary. Each leg records 12 effective axis rows, neutral opposite-port axes, and 30 final neutral rows with both positions stable. Both distinct player actors remain alive. The two captured views show a lit scene, readable two-player HUDs and changed player positions. These are two scripted PS2 input ports in one process, not two physical controllers, multiplayer combat or campaign acceptance.
+
+An earlier private two-port candidate passed 254 CPU checks and linked as `370b5295aa12393a884ae4adac0bcae7e7abc7397434c2c0a8b2dc906d1f4662`, but remains rejected and uninstalled. Its fixtures missed the case where both pads detach and only the former second pad reconnects, allowing promotion to player one. A separate red control runs the new 70-check fixture against that preserved v1 source: all original 49 checks still pass, while 14 added ownership/reservation checks fail. The corrected v2 result is separate below. Physical two-controller play and three/four-player virtual multitap remain unqualified.
+
+The separate private v2 controller revision resolves former-slot ownership before filling vacant ports and prevents generic assignment from stealing another port's reserved XInput index. Its CPU fixtures passed 275 checks: the prior 129 input, 22 rumble, 39 mapping and 15 Windows merge checks, plus 70 two-port checks. The latter include 21 additional checks for both pads detached, reverse/forward/simultaneous reconnection, replacement slots and an arrival between probes. These use fake callbacks and establish the tested software behavior; they do not establish actual hardware hotplug identity or felt vibration.
+
+The combined v2 application is SHA-256 `bef3bd53eb91bff48f8aaf98ecf291a82805f87076e433dcf465735e33ed5a4c`. Independent offline review found its control relink identical to the tested `e9010c9c` discovery build after normalizing only the PE/COFF timestamp, and only the two intended Windows controller/application objects replaced in the candidate link. Its private package passed the existing arithmetic, PNG, deterministic native-boot and 62 software-input qualification, with driver exit zero. Raw logs contain the expected arithmetic and PNG checksums, native boot counters and all 62 held/released input pairs. Arithmetic, PNG and native boot use unchanged companion programs; the `bef3bd53` application receives the software-input cases through its port-one test adapter in offscreen/unpaced mode. This is not a two-port physical test or a new discovery/network session on that binary. All audited inputs and the installed `d7c2258b` application stayed hash-identical.
+
+Earlier failed runs remain unchanged. One qualification wrapper stopped before launching any child because TEMP/TMP shared a directory and creation was not idempotent. Offline couch runs retained exit three for an incorrect menu selection-word predicate, a transient character-handoff page predicate, a menu-fade-zero predicate, and an assumed actor-state value. Raw records and original-code review distinguish these test mistakes from a production defect: the handoff page had already completed; the normal New Game finalizer can leave the inactive menu-fade accumulator at 128 while world RGB settles normally; and the watched actor word remained two during actual movement. The accepted run uses persistent frontend conditions, actual world RGB, and measured per-player displacement and neutral stability. None of the earlier failed whole invocations is relabeled as passed.
+
+The private `bef3bd53` candidate also completes the same normal visible/paced two-character couch route, with software input supplied through the compiled Windows host-controller adapters. Both scripted sticks remain neutral during its movement legs. Port one moves 30.4263 world units with port two stationary; port two moves 30.0955 with port one stationary. Both legs retain 30 final neutral rows with stationary positions. The actual process exits zero, all 3,915 consecutive watched rows remain, and held/released application pad diagnostics agree with the effective port axes. Viewed images show the two-player shared scene. This closes the bounded second-port software-to-game movement path; real two-pad input, physical reconnect behavior, all-button gameplay and vibration remain separate checks. This application remains a private candidate, with no new network session or installation claim on that binary.
+
+A separate mapped-launcher check invokes Start local directory, Find games against that actual loopback listener, then the normal close callback. It receives a complete empty list, the native browser exits zero, and the owned service is deliberately terminated with Windows exit one. Both children are terminal before outer cleanup. Two convenience launcher copies with separate profiles expose the previously tested manual host/search/join/start route; their local paths, game inputs and private identities stay outside this report. They contain no automatic character or match-start scripts. No Internet directory is deployed by this work.
+
+The proposed online path uses player-hosted game rooms, configurable replacement directory/rendezvous infrastructure, direct peer UDP where available, and relay fallback. Discovery still requires a directory; this is not fully decentralized server-free Internet discovery. The local tests did not contact retired official services or establish a public Internet deployment. No proprietary game files, generated game code, executable binaries, saves, certificates, credentials or raw game-state captures accompany this public prose. Existing failed and partial receipts remain retained privately.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
 skill rank have not been completed. Rendering captures establish only the scenes
 actually observed; a destination request is not a normal mission transition.
-Cross-machine/WAN multiplayer, four-player missions, local multi-controller play, device disconnects
+Cross-machine/WAN multiplayer, four-player missions, local physical multi-controller play, device disconnects
 during physical gameplay and hands-on audio/vibration quality remain separate work.
 The existing Godot bridge has not been qualified by these standalone-native tests.
