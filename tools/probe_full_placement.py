@@ -993,16 +993,18 @@ class Probe:
         self.stopped = self.ctor_error
         if self.stopped:
             return self
+        gone = False
         for tick in range(ticks):
             self.tick = tick
             mem.w32(RC.G_SIM_FRAME, tick)
             try:
-                if hit_every and tick % hit_every == hit_every - 1:
+                if hit_every and tick % hit_every == hit_every - 1 and not gone:
                     self.hit(hit_amount)
                 if self.run_objects:                # objects linked after the creature run first
                     self.flush_deletes()
                     self.run_pool_objects(tick, ('frame',))
-                self._call(self.run_entry, c)
+                if not gone:
+                    self._call(self.run_entry, c)
                 if self.run_objects:
                     self.run_pool_objects(tick, (15, 60))
             except Stop as exc:
@@ -1011,9 +1013,12 @@ class Probe:
             except EmuError as exc:
                 self.stopped = 'emulator: %s' % exc
                 break
-            if mem.u32(c + 0xC) & 0x4000:
+            if not gone and mem.u32(c + 0xC) & 0x4000:
                 self.events.append((tick, 'deleted'))
-                break
+                self.deleted_at = tick
+                gone = True
+                if not self.run_objects:    # with --run-objects what it left keeps running
+                    break
         return self
 
 
@@ -1046,6 +1051,9 @@ def report(probe):
             print('  %-10s %-40s first at frame %d (ready tick %d)' % (cls, name, tick, tick + 1))
     services = sorted(n for n, (_t, c) in probe.first_seen.items() if c == 'service')
     print('  services answered: %s' % ', '.join(services))
+    if getattr(probe, 'deleted_at', None) is not None:
+        print('  the creature deleted itself at frame %d%s' % (
+            probe.deleted_at, '; the objects it left ran on' if probe.run_objects else ''))
     if probe.objects_run:
         print('  pool objects run (slot: calls): %s; destroyed %d' % (
             ', '.join('%s x%d' % kv for kv in sorted(probe.objects_run.items())), probe.destroyed))
