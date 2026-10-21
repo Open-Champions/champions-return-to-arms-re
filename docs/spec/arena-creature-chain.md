@@ -6,8 +6,10 @@ difftest `tools/difftest_arena_creature_chain.py`, unit tests
 
 Round 5 left the recipe classes as constructor fixtures (`arena-match-probe.md`). This
 document covers the whole chain under one arena `world_createObject` call for arena
-indices 3 (Goblin), 1 (Mummy) and 0 (Scorpion). Those are the classes of the first
-recipe's waves 0–2.
+indices 3 (Goblin), 1 (Mummy) and 0 (Scorpion), which are the classes of the first
+recipe's waves 0–2. It also covers the two most common later indices, 4 (Orc2) and 25
+(SnoBadge). Section 7 adds the free-spot search every spawn uses, and the Life Tap orb a
+kill can drop. The probe composes them in `arena-match-probe.md` (round 6 section).
 
 ## 1. What executes
 
@@ -98,21 +100,75 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_arena_creature_chain.py local/S
 PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_arena_creature_chain.py local/SLUS_209.73 --seed 7 --disc <disc>/BG/DATA
 ```
 
-| Seed | balance_lookup | Creature_init | Chain, empty table | Chain, disc table | Two-draw constructions |
-|---:|---:|---:|---:|---:|---:|
-| 20973 | 360 | 448 | 1,080 | 1,080 | 0 |
-| 7 | 360 | 438 | 1,094 | 1,094 | 2 |
+| Seed | balance_lookup | Creature_init | world_findFreeSpot | OniBall_ctor | Chain, empty table | Chain, disc table | Two-draw constructions |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 20973 | 360 | 448 | 480 | 640 | 1,854 | 1,854 | 0 |
+| 7 | 360 | 438 | 480 | 640 | 1,868 | 1,868 | 2 |
 
-Each chain run makes 18 constructions: 3 classes × waves 0–2 (the monster level
-`arena_startWave` stores), each built twice in one state. The comparisons cover the
+Each chain run makes 30 constructions: 5 classes (indices 3, 1, 0, 4, 25) × waves 0–2
+(the monster level `arena_startWave` stores), each built twice in one state. The comparisons cover the
 shared and own seeds, the own-draw count, the ordered service calls, pool size,
 position, home, facing, stats (hit points, maximum, armour, damage range, attack,
 experience value), class fields and `Creature_init`'s height. With `--disc`, the
 `monsters.bal` entry of the user's `balance.lmp` is copied into the emulator at run
-time, where `balance_load` would put it. All 18 type names were found there. No values
+time, where `balance_load` would put it. All 30 type names were found there. No values
 are recorded here. There were no mismatches.
 
-## 6. Limits
+## 6. Orc2 and SnoBadge (indices 4 and 25)
+
+- **Orc2.** The factory passes model-set flag 1 for `Orc2` names: class block 0x501df8
+  and weapon list 0x502090 (`docs/monsters-2.md`, Orc). The plain type name `orc2`
+  matches no variant prefix, so it is the recruit (variant 0). Own draws, read at
+  0x2a09c8 and 0x2a0d50–0x2a0e74, `Orc_pickHandParts` 0x2a14f8 and 0x2a11cc:
+  1. the pre-base `rand % 14 + 4`, then the hit-point roll;
+  2. `r`, which picks the model-variant bit (`r & 1`: 0x1 if `r & 2` else 0x2;
+     otherwise 0x100 if `r & 2`, 0x200 if `r & 4`, else 0x400);
+  3. one more draw when `r & 0x32` (even: a shield in hand 2);
+  4. `Orc_pickHandParts`' one draw (hand-1 part 1, 7 or 5);
+  5. the idle clip's `% 3`.
+
+  The weapon list block is resolved under the generation test. One shared draw.
+  Compared: own seed and draw count, stats, `+0xe8`, speed 80, turn rate 1.2, radius 18,
+  `+0x478`/`+0x47c`/`+0x480`. The creature flags set by `Orc_applyVariantFlags` are not
+  compared.
+- **SnoBadge.** `Badger_ctor` variant 1 (`ref_monsters_1`, the exact factory name). No
+  own draw beyond the hit-point roll; one shared draw.
+
+## 7. `world_findFreeSpot` 0x14acf8 and `OniBall_ctor` 0x294014 (new, Executed)
+
+**`world_findFreeSpot(out, centre, range, radius, ok, anyHeight)`**, read from
+0x14acf8–0x14b167:
+
+- **Sampling.** Each sample takes three shared draws (the R5900 three-operand `mult`
+  makes the generator step). Each coordinate is `(f(d) × 2⁻¹⁶ doubled) − 1.0`. A sample
+  repeats while `1.0 < (px² + py²) + pz²`. The seed is stored once per try.
+- **Candidate.** `(cx + px × range, cy + py × range)` at the centre's z.
+  `terrain_testFlag1` must answer 0.0. Then `height − cz < 6.0` (0x40c00000), unless
+  `anyHeight` is set.
+- **Box.** The spot becomes `(x, y, height)`, and the box is `x ∓ r`, `y ∓ r`,
+  `height ∓ 100000`. An object without object flag 1 blocks when
+  `dx² + dy² ≤ float(radius²) + its radius²`.
+- **Result.** At most 50 tries; `ok = tries ≠ 50`. The out spot is the last accepted
+  candidate, or the centre.
+
+It was checked on 120 authored cases per seed: open, walled, stepped, crowded and fully
+blocked ground, ranges 0–96 and radii 0–30. In the probe it is checked on every call
+against the real box query's answers.
+
+**`OniBall_ctor(block, position, facing (unused), creature, 0)`** is the Life Tap orb of
+`creature-tick.md` §4 step 9. Read from 0x294014–0x2941e3:
+
+- `Projectile_ctor` makes one shared draw. Then vtable 0x50e878, and five own draws:
+  - facing `+0x38`;
+  - a roll `< 0x7333` choosing byte `+0x74` and which of creature `+0x38c`/`+0x394`
+    gets 30;
+  - offsets `(x − 50) + d % 100`, `(y − 50) + d % 100` and `(z + 36) + d % 2000 + 36`.
+- `+0x54 = frame + 600`, `+0x58 = trunc(max hp × 0x3d4ccccc)`, creature `+0xf0 = frame`,
+  then `obj_runEveryFrame`.
+
+It was checked on 40 authored creatures per seed.
+
+## 8. Limits
 
 - `res_find` answers one authored part. The definitions' real models and clips are not
   loaded, so the hide mask, the clips the constructors push and `Creature_init`'s

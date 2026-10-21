@@ -13,8 +13,11 @@ game bytes are saved.
 import argparse
 from collections import Counter
 
+import difftest_arena_creature_chain as DCH
 import difftest_arena_modes as D
 import difftest_player as DP
+import ref_arena_creature_chain as CH
+import ref_arena_match_core as MC
 import ref_arena_player as RA
 import ref_monster_build as B
 import ref_player as RP
@@ -41,7 +44,9 @@ PROCESS_DAMAGE = 0x110D30
 PLAYER_TAKE_DAMAGE = 0x1B5330
 PLAYER_PROCESS_DAMAGE = 0x1B2CC0
 PLAYER_RUN = 0x1A5030
-LIB = (0x3A5000, 0x3C0000)
+LIB = CH.LIBRARY            # C library and software float (through libc_mbtowc_r)
+HANDLE_INIT_POOL, HANDLE_LINK, HANDLE_CLEAR, HANDLE_REMOVE = 0x1A17D0, 0x1A1738, 0x1A1698, 0x1A1868
+HOME_RANGE_SLOT = 0x3C2708  # vtable slot 34 of these classes (arena-monsters.md 2.3)
 
 
 class Follow(set):
@@ -63,6 +68,7 @@ def install_real_player(emu):
     emu.follow.update({RA.PICK_SPAWN, RA.PLAYER_DTOR, RA.CTOR, RA.CREATURE_CTOR,
                        RA.GAMEOBJECT_CTOR, RA.RESET_TIMERS, 0x166798})
     part = emu.alloc(0x200)
+    emu.player_part = part
     emu.stub(RA.RES_FIND, ret=part)
     emu.mem.write(D.PLAYERS + 0x20, b'\xff' * 4)
     emu.freed = []
@@ -95,14 +101,40 @@ def install_player_tick(emu):
     emu.follow.update(set(DP.REAL_HELPERS.values()) | DP.REAL_OTHER | {PLAYER_RUN, PICK_ATTACK_ANIM})
 
 
+def seed_ledger(emu, start):
+    """Every store to the shared seed since ``start``, in order, as (function entry, pc,
+    draws): the function holding the storing pc (ghidra_funcs.tsv) and the number of
+    documented generator steps the store advanced the seed by."""
+    import bisect
+    import probe_full_placement as PF
+    starts = getattr(seed_ledger, 'starts', None) or PF.function_starts()
+    seed_ledger.starts = starts
+    out, before = [], start
+    for pc, address, _size, value in emu.writes:
+        if address != B.G_RAND_SEED:
+            continue
+        entry = starts[bisect.bisect_right(starts, pc) - 1]
+        out.append((entry, pc, lcg_steps(before, value, limit=4000)))
+        before = value
+    return out
+
+
 class ConstructorBoundary(Exception):
     def __init__(self, index):
         super().__init__('class-table index %s at world_createObject' % index)
         self.index = index
 
 
-def setup(path, wave, seed):
+def setup(path, wave, seed, real_creatures=False):
     emu = D.boot(path)
+    emu.elf_path = path
+    if real_creatures:
+        # boot-time state the real constructors read: the 101 Skill objects (built first,
+        # they move the seed), the handle node pool, and arena_init's property list
+        DCH.build_skills(emu)
+        emu.call(HANDLE_INIT_POOL)
+        DCH.arena_props(emu)
+        emu.record_calls = True
     D.modes(emu, mode_a=0, mode_b=1, network=0, seed=seed, players=1)
     player = emu.alloc(0x590)
     emu.mem.w32(player + 0xC, 0x40)
@@ -164,7 +196,7 @@ def first_constructor_boundary(path, seed):
     raise AssertionError('first spawn did not reach world_createObject')
 
 
-def install_factory_fixture(emu):
+def install_factory_fixture(emu, real=False):
     """Follow original world_createObject/factory with constructor fixtures.
 
     The constructor fixture retains the original class vtable and gives scaling
@@ -175,6 +207,7 @@ def install_factory_fixture(emu):
     created = []
     spells = []
     pending = {'index': None, 'block': None}
+    emu.creature_part = emu.alloc(0x400)
 
     def find_spot(e):
         out, point, _range, _radius, ok = [e.r[k] & 0xFFFFFFFF for k in range(4, 9)]
@@ -197,14 +230,38 @@ def install_factory_fixture(emu):
             e.replacements.append([block, e.mem.u32(RA.SEED)])
             return block
         if size == B.SPELL_SIZE and pending['index'] is None:
+            if getattr(e, 'spell_block_check', None):
+                e.spell_block_check(e)
             block = e.alloc(size)
             spells.append((block, e.mem.u32(B.G_RAND_SEED)))
+            return block
+        if real and size == GUT_CHUNK_SIZE and (PROCESS_DAMAGE <= e._fresh_call.site < PROCESS_DAMAGE_END or
+                                                0x2A59F0 <= e._fresh_call.site < SEVER_PART_END):
+            block = e.alloc(size)       # a gib chunk (creature-tick.md 3.4; gut-chunk.md)
+            e.chunks.append(block)
+            return block
+        if real and size in LOOT_POOL and 0x100974 <= e._fresh_call.site < 0x101900:
+            block = e.alloc(size)       # loot_spawnGold / loot_generateDrops objects
+            e.loot.append((size, block))
+            return block
+        if real and size == CH.ONIBALL_SIZE and e._fresh_call.site == CH.ONIBALL_SITE:
+            block = e.alloc(size)       # the Life Tap orb of a kill (creature-tick.md 4 step 9)
+            e.orbs.append(block)
+            return block
+        if real and pending['index'] is None:
+            block = e.alloc(size)       # any other block, zero-filled as pool_new hands it out
+            e.other_blocks.append((e._fresh_call.site, size, block))
             return block
         if pending['index'] is None:
             raise ValueError('unexpected pool_new size 0x%x at 0x%x outside factory' %
                              (size, e._fresh_call.site))
         assert size == SIZES[pending['index']], (pending['index'], size)
         pending['block'] = e.alloc(size)
+        if real:
+            # the original constructor builds the object in this zero-filled block
+            assert 0x159C94 <= e._fresh_call.site < 0x15D9C8, hex(e._fresh_call.site)   # the factory body
+            created.append((pending['index'], pending['block']))
+            pending['index'] = None
         return pending['block']
 
     def construct(e):
@@ -241,6 +298,8 @@ def install_factory_fixture(emu):
     emu.stub(0x14ACF8, function=find_spot)
     emu.hook(WORLD_CREATE, entering_world_create)
     emu.stub(POOL_NEW, function=pool_new)
+    if real:
+        return install_real_creatures(emu, created, spells)
     for constructor in CONSTRUCTORS.values():
         emu.stub(constructor, function=construct)
     def add_spell(e):
@@ -262,14 +321,213 @@ def install_factory_fixture(emu):
     return created
 
 
-def build_wave(path, wave, seed, real_player=False):
-    """Run the original wave builder through every spawn, with factory fixtures."""
-    emu = setup(path, wave, seed)
+MODEL_BOUNDS_Z = (0, 100)    # authored answer of the model_getBounds service (Creature_init)
+
+
+def check_spell_record(e, spells, creature, spell):
+    """The SpellArena record arena_spawnMonster built (docs/script-items.md 5.2 step 5)."""
+    assert spells and spell == spells[-1][0], (creature, spell, spells)
+    block, old_seed = spells[-1]
+    new_seed = (old_seed * 0x19660D + 0x3C6EF35F) & 0xFFFFFFFF
+    assert e.mem.u32(B.G_RAND_SEED) == new_seed
+    assert all(e.mem.u32(block + offset) == 0 for offset in (0, 4, 8))
+    assert e.mem.u32(block + 0xC) == creature
+    assert e.mem.u32(block + 0x10) == new_seed >> 16
+    assert e.mem.u32(block + 0x14) == B.VT_SPELL_ARENA
+
+
+FREE_SPOT, TERRAIN_BLOCKED, TERRAIN_HEIGHT, BOX_QUERY = 0x14ACF8, 0x183B48, 0x183820, 0x14A928
+PROCESS_DAMAGE_END = 0x112948          # Creature_processDamage's body ends where Creature_run starts
+GUT_CHUNK_SIZE = 0x268
+SEVER_PART_END = 0x2A5AF4   # Scorpion_severPart body end (ghidra_funcs.tsv)
+# GutChunk_ctor, PhProp_ctor, Prop_ctorNamedLaunch, Prop_launch, PhProp_initPhysics: executed
+# with tools/ref_phprop.py (docs/spec/gut-chunk.md), one shared draw per chunk
+GUT_CHUNK_CHAIN = {0x201958, 0x155A0C, 0x153E54, 0x1541A0, 0x155110}
+
+
+def install_real_free_spot(emu):
+    """world_findFreeSpot 0x14acf8 runs for real (docs/spec/arena-creature-chain.md): its
+    unit-ball sampling makes three shared draws per sample.  The terrain is AUTHORED flat
+    open ground: terrain_testFlag1 answers 0.0 (not blocked) and terrain_height 0.0.  The
+    box query world_collectObjectsInBox runs over the real grid the constructors link."""
+    emu.unhook(FREE_SPOT)
+    emu.follow.update({FREE_SPOT, BOX_QUERY})
+    emu.free_spot_calls = []
+
+    def flat(e):
+        e.f[0] = 0
+        return 0
+    emu.stub(TERRAIN_BLOCKED, function=flat)
+    emu.stub(TERRAIN_HEIGHT, function=flat)
+
+    def entering(e):
+        center = tuple(e.mem.u32((e.r[5] & 0xFFFFFFFF) + 4 * k) for k in range(3))
+        e.free_spot_calls.append(dict(seed=e.mem.u32(B.G_RAND_SEED), center=center,
+                                      range=e.r[6] & 0xFFFFFFFF, radius=e.r[7] & 0xFFFFFFFF,
+                                      ok_ptr=e.r[8] & 0xFFFFFFFF, any=e.r[9] & 0xFFFFFFFF, boxes=[]))
+
+    def box_answer(e):              # 0x14b038: the box query has filled the list at sp + 0x80
+        out, listed = e.r[29] + 0x80, []
+        while e.mem.u32(out + 4 * len(listed)):
+            obj = e.mem.u32(out + 4 * len(listed))
+            listed.append((e.mem.u32(obj + 0x10), e.mem.u32(obj + 0x14), e.mem.u32(obj + 0x1C),
+                           e.mem.u32(obj + 0xC)))
+        e.free_spot_calls[-1]['boxes'].append(listed)
+
+    def leaving(e):                 # 0x14b100: ok stored, the spot still at sp + 0x10
+        call = e.free_spot_calls[-1]
+        answers = iter(call['boxes'])
+        want = CH.free_spot(call['seed'], call['center'], call['range'], call['radius'], call['any'],
+                            lambda point: 0, lambda point: 0, lambda lo, hi: next(answers))
+        got_spot = tuple(e.mem.u32(e.r[29] + 0x10 + 4 * k) for k in range(3))
+        assert e.mem.u32(B.G_RAND_SEED) == want[0], ('free spot seed', call)
+        assert got_spot == want[1], ('free spot', got_spot, want[1])
+        assert not call['ok_ptr'] or e.mem.u8(call['ok_ptr']) == want[2]
+        call.update(draws=want[4], tries=want[3], ok=want[2])
+    emu.hook(FREE_SPOT, entering)
+    emu.hook(0x14B038, box_answer)
+    emu.hook(0x14B100, leaving)
+
+
+# Decision-making callees on the fighting path that have executed contracts (each named
+# in symbols/ with its spec): every type-info getter (rtti answers inside damage_apply and
+# the spell searches), player_getSkillRank and the Life Tap fraction (the orb roll of a
+# kill), Creature_onDeath (slot 28) with obj_delete, arena_addKill and the boss music stop.
+DEATH_PATH = {0x1BF330, 0x2F8E78, 0x10BEB8, 0x14F200, 0x3056CC, 0x1192F8}
+# The loot chain (docs/issues/kill-loot-xp.md; loot_generateDrops executed in
+# tools/difftest_items.py, Creature_dropLoot in tools/difftest_combat_monsters.py,
+# loot_spawnGold and Gold_ctor2 in tools/difftest_phprop.py).
+LOOT_PATH = {0x10F2C8, 0x100D54, 0x100974, 0x157668,
+             0x3C85FC, 0x3C88DC,             # Skill_default_slot10 / slot14 (ref_skills_a)
+             0x1EBF20, 0x1EBF70,             # the monster-level factors the generators read
+             0x104CA4, 0x10DBE0,             # item_generateWithAffixes, creature_bossMusicName
+             0x104C04, 0x104C48, 0x1083F8, 0x108590,   # item_classifyCategory0/1, item_getResourceIndex,
+                                                       # item_generateConsumable (ref_items)
+             0x2A59F0}                       # Scorpion_severPart (ref_monsters_1): a gib chunk
+LOOT_POOL = {0xC0: 'gold pile', 0x248: 'item prop'}
+
+
+# Services kept as boundaries even though some difftest executed them: animation, sound and
+# presentation, the terrain and ray queries (the world is AUTHORED flat open ground), and
+# the camera/net/dialog checks.  Everything else that some difftest of this tree executed
+# (probe_full_placement.executed_bodies(): 853 bodies) runs for real in --real-creatures.
+KEPT_SERVICES = {
+    'anim_clear', 'anim_push', 'anim_pushChained', 'anim_start', 'anim_startBlendInOut',
+    'anim_pushWithWeights', 'anim_advance', 'anim_releaseCaches', 'anim_snapTopToEnd',
+    'anim_jumpTopToEnd', 'anim_syncToSimFrame', 'anim_setTrackWeightRate', 'anim_findTrack',
+    'anim_findTrackByFlag', 'anim_randomizeTopTime', 'Creature_stepAnim', 'Player_animStep',
+    'res_find', 'model_buildHideMask', 'model_getBounds', 'model_getAttachPoint',
+    'model_getSamplePointCount', 'model_getSamplePoint',
+    'terrain_heightBelow', 'terrain_height', 'terrain_raycast', 'world_raycast', 'terrain_testFlag1',
+    'world_slideMove', 'water_test', 'water_disturb', 'fx_spawn', 'particle_spawn',
+    'sound_playOnObject', 'sound_playAtPos', 'sound_playHit', 'decal_add', 'fx_burnModel',
+    'fx_shockModel', 'player_voice', 'glow_add', 'light_link', 'light_unlink', 'light_relink',
+    'light_dtor', 'Player_weaponTrails', 'Camera_reset', 'dialog_isOpen', 'net_getCamFlag',
+    'task_isRunning', 'game_isFrozen', 'dbg_printf', 'obj_updateActive', 'Creature_updateActive',
+    'rigidbody_init', 'quat_fromMat3', 'quat_normalize', 'rigidbody_updateDerived',
+    'mainloop_startFadeWait', 'arena_openEndPrompt', 'decal_reset', 'libc_sprintf'}
+
+
+def executed_follow():
+    import probe_full_placement as PF
+    names = PF.symbol_names()
+    # the player keeps round 5's configuration (install_player_tick): its own bodies are not
+    # switched on by this rule
+    return {a for a in PF.executed_bodies() if names.get(a) not in KEPT_SERVICES and
+            not (names.get(a) or '').lower().startswith('player_')}
+
+
+def typeinfo_getters():
+    import probe_full_placement as PF
+    return {a for a, n in PF.symbol_names().items() if n.endswith('_typeinfo')}
+
+
+def install_chain_check(emu, created):
+    """Each construction against ref_arena_creature_chain.chain, evaluated on the memory
+    at world_createObject's entry and compared when arena_spawnMonster asks for the
+    SpellArena block (nothing between them draws; the wave 0-2 scale is 1.0)."""
+    import ref_combat as RC
+    tables = RC.Tables.load(emu.elf_path)
+    emu.chain_checks = []
+
+    def entering(e):
+        index = class_index(e.mem, e.r[4] & 0xFFFFFFFF)
+        if index in CH.CONSTRUCTOR:
+            seed = e.mem.u32(B.G_RAND_SEED)
+            e.chain_pending = (seed, CH.chain(index, seed, e.mem.u32, e.mem.u8, tables, MODEL_BOUNDS_Z))
+    emu.hook(WORLD_CREATE + 4, entering)    # after entering_world_create's hook at the entry
+
+    def spell_block(e):
+        if getattr(e, 'chain_pending', None) is None:
+            return
+        seed, want = e.chain_pending
+        index, obj = created[-1]
+        assert e.mem.u32(B.G_RAND_SEED) == want['shared'], ('chain shared seed', index)
+        # arena_spawnMonster then scaled the stats (ref_monster_build.arena_scale,
+        # ref_arena_match_core.scale_stats: truncations even at a scale of 1.0)
+        scale = B.arena_scale(B.arena_cycle(e.mem.u16(B.G_WAVE), e.mem.u16(B.G_RECIPE_COUNT)), index)
+        fields = dict(want['fields'])
+        stats = {off: fields[off][1] for off in (0xE4, 0x228, 0x22C, 0xD0, 0xD2, 0xD4, 0xD8)}
+        for off, value in MC.scale_stats(stats, (scale,) * 5).items():
+            fields[off] = (fields[off][0], value)
+        for off, (width, value) in fields.items():
+            got = e.mem.load(obj + off, width)
+            assert got == value, ('chain field', index, hex(off), hex(got), hex(value))
+        e.chain_checks.append((index, len(want['fields']) + 1, want['shared'] != CH.lcg(seed)[0]))
+        e.chain_pending = None
+    emu.spell_block_check = spell_block
+
+
+def install_real_creatures(emu, created, spells):
+    """--real-creatures: the class constructors and their whole chain run for real
+    (ref_arena_creature_chain.REAL; docs/spec/arena-creature-chain.md), and so do
+    creature_addSpell with handle_link (SpellArena is linked into +0x364), slot 34
+    (home range) and slot 27 (the class set-state with state 0).  Services: res_find
+    answers one authored part for creature entries, model_getBounds authored z bounds,
+    the model and animation calls stay recording stubs."""
+    emu.orbs, emu.chunks, emu.loot, emu.other_blocks = [], [], [], []
+    emu.follow.update(DEATH_PATH | LOOT_PATH | typeinfo_getters() | executed_follow())
+    emu.follow.update({CH.ONIBALL_CTOR, CH.PROJECTILE_CTOR, CH.OBJ_RUN_EVERY_FRAME} | GUT_CHUNK_CHAIN)
+    emu.follow.update(set(CH.REAL) | set(CONSTRUCTORS.values()) | set(SET_STATES.values()) |
+                      {ADD_SPELL, HANDLE_LINK, HANDLE_CLEAR, HANDLE_REMOVE, HOME_RANGE_SLOT,
+                       0x10A9C0, 0x1195E0, 0x1195F0, 0x119608, 0x11A6D0, 0x11A710,
+                       emu.mem.u32(B.VT_SPELL_ARENA + 4)})   # SpellArena's type-info getter (slot 0)
+    player_part = getattr(emu, 'player_part', emu.creature_part)
+
+    def res_find(e):
+        site = e._fresh_call.site if e._fresh_call is not None else 0
+        return player_part if RA.CTOR <= site < 0x1A24B8 else e.creature_part
+    emu.stub(RA.RES_FIND, function=res_find)
+
+    def bounds(e):
+        outs = [e.r[k] & 0xFFFFFFFF for k in range(6, 12)]
+        for out, value in zip(outs, (0, 0, MODEL_BOUNDS_Z[0], 10, 10, MODEL_BOUNDS_Z[1])):
+            e.mem.w32(out, value & 0xFFFFFFFF)
+        return 0
+    emu.stub(CH.MODEL_BOUNDS, function=bounds)
+
+    def entering_add_spell(e):
+        check_spell_record(e, spells, e.r[4] & 0xFFFFFFFF, e.r[5] & 0xFFFFFFFF)
+    emu.hook(ADD_SPELL, entering_add_spell)
+    install_real_free_spot(emu)
+    install_chain_check(emu, created)
+    for index, table in VTABLES.items():
+        if index in SET_STATES:
+            assert emu.mem.u32(table + 8 * 27 + 4) == SET_STATES[index]
+            assert emu.mem.u32(table + 8 * 34 + 4) == HOME_RANGE_SLOT
+    return created
+
+
+def build_wave(path, wave, seed, real_player=False, real_creatures=False):
+    """Run the original wave builder through every spawn, with factory fixtures
+    (or, with real_creatures, the original constructors)."""
+    real_player = real_player or real_creatures
+    emu = setup(path, wave, seed, real_creatures)
     emu.follow = {D.STEP, D.SPAWN, 0x166630, 0x1666E0, 0x3B75D0, SCALE}
     emu.replacements = []
     if real_player:
         install_real_player(emu)
-    created = install_factory_fixture(emu)
+    created = install_factory_fixture(emu, real_creatures)
     emu.call(D.START, 1)
     indices = [i for i, _obj in created]
     assert indices == dry_wave(path, wave, seed), (wave, indices)
@@ -280,7 +538,7 @@ def build_wave(path, wave, seed, real_player=False):
 
 
 def run_match(path, seed, attacked, max_frames=2400, fighting=False,
-              real_player=False):
+              real_player=False, real_creatures=False):
     """Run original arena_runTask and nextWave on an authored object fixture.
 
     The driver injects a lethal player hit after each intro. Original base
@@ -292,14 +550,15 @@ def run_match(path, seed, attacked, max_frames=2400, fighting=False,
     establishes the arena flow's next boundary, not combat or a live match.
     """
     assert not fighting or attacked
-    emu = setup(path, 0, seed)
+    real_player = real_player or real_creatures
+    emu = setup(path, 0, seed, real_creatures)
     emu.follow = {D.TICK, D.NEXT, D.START, D.STEP, D.SPAWN, 0x3063FC,
                   0x166630, 0x1666E0, 0x3B75D0, SCALE}
     emu.replacements = []
     if real_player:
         install_real_player(emu)
         install_player_tick(emu)
-    created = install_factory_fixture(emu)
+    created = install_factory_fixture(emu, real_creatures)
     emu.player_ticks = emu.player_draws = 0
     emu.player_states = Counter()
     emu.mem.w32(D.PLAYERS + 0xAC, 0x41A00000)
@@ -333,7 +592,8 @@ def run_match(path, seed, attacked, max_frames=2400, fighting=False,
                           {TAKE_DAMAGE, PROCESS_DAMAGE, 0x10A9C0,
                            0x1195E0, 0x1195F0, 0x119608})
         emu.mem.w32(D.WORD890, 0)
-    emu.call(D.START, 1)
+    steps = 400_000_000 if real_creatures else 5_000_000
+    emu.call(D.START, 1, max_steps=steps)
     waves = [(0, len(created))]
     killed_waves = set()
     combat_frames = {}
@@ -358,9 +618,9 @@ def run_match(path, seed, attacked, max_frames=2400, fighting=False,
                     for axis in range(3):
                         emu.mem.w32(player + 0x10 + 4 * axis,
                                     emu.mem.u32(obj + 0x10 + 4 * axis))
-                    emu.call(RUN_STATES[index], obj)
+                    emu.call(RUN_STATES[index], obj, max_steps=steps)
                 if phase == 1:
-                    emu.call(PLAYER_PROCESS_DAMAGE, player)
+                    emu.call(PLAYER_PROCESS_DAMAGE, player, max_steps=steps)
                 combat_frames[wave] = phase + 1
         if attacked and wave not in killed_waves and emu.mem.u16(D.INTRO) == 0xFFFF and \
                 (not fighting or combat_frames.get(wave, 0) >= 2):
@@ -368,8 +628,8 @@ def run_match(path, seed, attacked, max_frames=2400, fighting=False,
             D.bind_player(emu, 0, player)
             for index, obj in created:
                 if (emu.mem.u32(obj + 0xC) & 0x68) == 0x20:
-                    emu.call(TAKE_DAMAGE, obj, player, 1, fargs=(1000.0,))
-                    emu.call(PROCESS_DAMAGE, obj, 0)
+                    emu.call(TAKE_DAMAGE, obj, player, 1, fargs=(1000.0,), max_steps=steps)
+                    emu.call(PROCESS_DAMAGE, obj, 0, max_steps=steps)   # a kill runs the loot chain
                     assert emu.mem.u16(obj + 0x232) == 0x14
                     hit_indices.append(index)
             killed_waves.add(wave)
@@ -382,10 +642,10 @@ def run_match(path, seed, attacked, max_frames=2400, fighting=False,
             assert player == emu.arena_player
             emu.player_states[emu.mem.u32(player + 0x58C)] += 1
             before = emu.mem.u32(RA.SEED)
-            emu.call(PLAYER_RUN, player)
+            emu.call(PLAYER_RUN, player, max_steps=steps)
             emu.player_draws += lcg_steps(before, emu.mem.u32(RA.SEED))
             emu.player_ticks += 1
-        emu.call(D.RUN)
+        emu.call(D.RUN, max_steps=steps)
         wave = emu.mem.u16(D.WAVE)
         if wave != last_wave:
             waves.append((wave, len(created)))
@@ -406,11 +666,18 @@ def run_match(path, seed, attacked, max_frames=2400, fighting=False,
         assert Counter(hit_indices) == {0: 1, 1: 2, 3: 6}, hit_indices
         if fighting:
             emu.fighting_player_hits = len(D.calls(emu, PLAYER_TAKE_DAMAGE))
-            assert emu.fighting_player_hits == 9, emu.fighting_player_hits
-            # docs/gameplay.md §2.5 steps 9–10: each of nine zero-armour hits
-            # rolls within the authored 10..20 range. Exact HP is seed-specific.
             hp = emu.mem.f32(D.PLAYERS + 0xAC)
-            assert 10000.0 - 20.0 * 9 <= hp <= 10000.0 - 10.0 * 9, hp
+            if real_creatures:
+                # real stats and more real AI: the number of accepted hits is a result; each
+                # loss is at most the largest damage high of the constructed creatures
+                high = max(emu.mem.s16(obj + 0xD2) for _index, obj in created)
+                assert 1 <= emu.fighting_player_hits <= 9, emu.fighting_player_hits
+                assert 10000.0 - high * emu.fighting_player_hits <= hp < 10000.0, (hp, high)
+            else:
+                assert emu.fighting_player_hits == 9, emu.fighting_player_hits
+                # docs/gameplay.md §2.5 steps 9–10: each of nine zero-armour hits
+                # rolls within the authored 10..20 range. Exact HP is seed-specific.
+                assert 10000.0 - 20.0 * 9 <= hp <= 10000.0 - 10.0 * 9, hp
     else:
         assert waves == [(0, 2)], waves
     return emu, waves, frame + 1
@@ -422,7 +689,12 @@ def main():
     parser.add_argument('--seed', type=int, default=20973)
     parser.add_argument('--real-player', action='store_true',
                         help='real destructor, pool reuse, Player constructor chain, placement and Player_run')
+    parser.add_argument('--real-creatures', action='store_true',
+                        help='also the real creature constructor chain, SpellArena attachment, free-spot '
+                             'search and every executed body on the path (implies --real-player)')
     args = parser.parse_args()
+    if args.real_creatures:
+        return real_creatures_report(args.elf, args.seed)
     if args.real_player:
         return real_player_report(args.elf, args.seed)
     for wave in range(3):
@@ -468,6 +740,67 @@ def real_player_report(path, seed):
                  emu.mem.f32(D.PLAYERS + 0xAC)))
         if fighting:
             print('    Player_takeDamage calls %d' % emu.fighting_player_hits)
+    return 0
+
+
+
+TRIPLE_DRAW_SITES = {FREE_SPOT, 0x100974}   # three draws per sample: world_findFreeSpot, loot_spawnGold
+
+
+def check_ledger(emu, start):
+    """Every value stored to the shared seed lies on the documented generator's orbit
+    (lcg_steps raises otherwise) and advances it by at least one draw; the two unit-ball /
+    scatter samplers advance it by a multiple of three.  Some bodies draw more than once
+    before one store (loot_generateDrops' equipment budget: two).  Returns
+    ({function entry: draws}, number of stores of more than one draw)."""
+    out, multi = Counter(), 0
+    for entry, pc, n in seed_ledger(emu, start):
+        assert n >= 1, (hex(pc), n)
+        if entry in TRIPLE_DRAW_SITES:
+            assert n % 3 == 0, (hex(pc), n)
+        elif n > 1:
+            multi += 1
+        out[entry] += n
+    return out, multi
+
+
+def census(emu):
+    """Stubbed callees that are neither kept services nor the authored arena hooks."""
+    import probe_full_placement as PF
+    names = PF.symbol_names()
+    st = Counter(names.get(c.target, hex(c.target)) for c in emu.calls if c.stubbed)
+    return {k: v for k, v in st.items() if k not in KEPT_SERVICES}
+
+
+def real_creatures_report(path, seed):
+    """Recipe 0 (the first record), waves 0-2, with the real creature chain."""
+    import probe_full_placement as PF
+    names = PF.symbol_names()
+    for wave in range(3):
+        emu, created = build_wave(path, wave, seed, real_creatures=True)
+        spots = emu.free_spot_calls
+        print('wave %d builder: %d objects %s; chain model matched for %d (%d comparisons, %d with two '
+              'shared draws); %d free-spot calls matched the model (%d draws, %d tries)'
+              % (wave, len(created), [i for i, _o in created], len(emu.chain_checks),
+                 sum(n for _i, n, _t in emu.chain_checks), sum(1 for c in emu.chain_checks if c[2]),
+                 len(spots), sum(c['draws'] for c in spots), sum(c['tries'] for c in spots)))
+    for label, attacked, fighting, frames in (('idle', False, False, 3700), ('fighting', True, True, 2400)):
+        emu, waves, ran = run_match(path, seed, attacked, max_frames=frames, fighting=fighting,
+                                    real_creatures=True)
+        ledger, multi = check_ledger(emu, seed)
+        print('%s: %d frames; waves %s; %d Player constructions, %d Player_run ticks (%d shared draws); '
+              'states %s; final seed %#x; %d creature constructions matched the chain model'
+              % (label, ran, waves, len(emu.replacements), emu.player_ticks, emu.player_draws,
+                 dict(sorted(emu.player_states.items())), emu.mem.u32(RA.SEED), len(emu.chain_checks)))
+        print('    shared draws by function (every store checked; %d stores of several draws): %s; total %d'
+              % (multi, ', '.join('%s %d' % (names.get(k, hex(k)), v) for k, v in
+                                  sorted(ledger.items(), key=lambda kv: -kv[1])), sum(ledger.values())))
+        print('    free-spot calls %d matched the model; orbs %d, gib chunks %d, loot blocks %d, other blocks %d'
+              % (len(emu.free_spot_calls), len(emu.orbs), len(emu.chunks), len(emu.loot), len(emu.other_blocks)))
+        if fighting:
+            print('    Player_takeDamage calls %d; record HP %.1f' % (emu.fighting_player_hits,
+                                                                     emu.mem.f32(D.PLAYERS + 0xAC)))
+        print('    stubs that are not kept services: %s' % dict(sorted(census(emu).items())))
     return 0
 
 

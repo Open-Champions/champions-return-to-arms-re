@@ -1,5 +1,10 @@
 # Offline arena match probe, recipe 0
 
+**Round 6 (2026-10-21):** `--real-creatures` replaces the constructor fixtures described
+below with the original chain, executes `world_findFreeSpot` and the kill/loot path, and
+corrects round 5's placement claim. See the section "Real creature chain" at the end;
+the earlier sections describe the fixture modes, which are unchanged.
+
 US `SLUS_209.73` v2.00, 2026-10-21. **Executed** in `tools/ee_emu.py` by
 `tools/probe_arena_match.py` on the owner's disc executable, copied into this
 worktree's ignored `local/` folder. Seeds 20973 and 7 produced the same wave
@@ -175,3 +180,121 @@ fixtures. The fighting fixture executes nine enemy hits and Player damage ticks;
 69 class comparisons per seed cover Orc2 neutral states and four-class melee.
 Native order and proof limits are ranked above. The canonical coordination log
 is the coordination log in the open-champions repo.
+
+## Real creature chain (`--real-creatures`, round 6, 2026-10-21)
+
+`--real-creatures` implies `--real-player`. Recipe 0 is the first recipe record (the
+task's "recipe 1"). Its waves 0–2 run in one emulator state with the following original
+bodies executing instead of fixtures:
+
+- **Constructors.** The whole factory chain for each requested class
+  (`docs/spec/arena-creature-chain.md`): class constructor, `Creature_ctor`,
+  `GameObject_ctor`, `balance_lookup`, `Creature_setStats` and `Creature_init`.
+- **Spawn services.** Slot 34 (home range) and slot 27 (the class set-state with state
+  0). The 101 Skill objects and the handle node pool are built first by the game's own
+  initialisers. The property list is `arena_init`'s.
+- **SpellArena.** `creature_addSpell` and `handle_link` link the record into `+0x364`.
+  The record's owner, vtable and draw are still checked at entry.
+- **Placement.** `world_findFreeSpot` (0x14acf8), for every creature spawn and for the
+  player's spawn point. Its three shared draws per unit-ball sample were previously
+  stubbed.
+- **Kill path.** In fighting, `Creature_processDamage`'s death branch with gib chunks, the
+  Life Tap orb roll, `Creature_onDeath`, `arena_addKill`, `Creature_dropLoot` and the
+  whole loot chain, plus every type-info getter.
+- **Executed bodies.** Every other body that some difftest of this tree executed
+  (`probe_full_placement.executed_bodies()`, 853 bodies). The exceptions are the
+  services in `KEPT_SERVICES` (animation, sound, presentation, terrain/ray queries,
+  camera/net/dialog checks) and `Player_*`/`player_*` bodies. The player keeps round 5's
+  configuration.
+
+Checks made during the runs:
+
+- **Chain model at every spawn.** `ref_arena_creature_chain.chain` is evaluated at each
+  spawn's `world_createObject` entry, then compared with the object when SpellArena's
+  block is requested. It covers the shared seed, the own seed, and 26–27 fields after
+  `Creature_scaleStats` (`ref_arena_match_core.scale_stats`).
+- **Free-spot model.** Each `world_findFreeSpot` call is compared with
+  `ref_arena_creature_chain.free_spot` on the box query's actual answers: seed, spot and
+  `ok`.
+- **Seed ledger.** Every value stored to the shared seed lies on the documented
+  generator's sequence and is attributed to the function holding the store. The two
+  samplers (`world_findFreeSpot`, `loot_spawnGold`) advance in multiples of three.
+
+| Scenario, seed | Frames | Waves (cumulative objects) | Shared draws | Largest consumers | Final seed |
+|---|---:|---|---:|---|---|
+| idle, 20973 | 3,700 | 0 (2) | 16 | free spot 9, `GameObject_ctor` 3, SpellArena 2, ring step 1, idle voice 1 | `0xee0d357d` |
+| fighting, 20973 | 1,688 | 0, 1, 2 (2, 5, 9) | 637 | `item_generateWithAffixes` 299, loot 89, `damage_apply` 64, free spot 57, gold 39, swings 36, `GameObject_ctor` 32 | `0xead31674` |
+| idle, 7 | 3,700 | 0 (2) | 34 | free spot 27 (rejection sampling), `GameObject_ctor` 3, SpellArena 2, ring step 1, idle voice 1 | `0x9f20eef1` |
+| fighting, 7 | 1,688 | 0, 1, 2 (2, 5, 9) | 1,014 | `item_randomizeVariant` 371, `item_generateWithAffixes` 311, loot 85, `damage_apply` 63, free spot 60, gold 42, swings 36 | `0xd05bbc05` |
+
+In fighting, the chain model matched all 9 constructions on both seeds, and every
+free-spot call (12 per run) matched its model. On seed 20973 one Mummy took the rare
+element branch, which costs one more shared draw. The kills built 3 and 1 gib chunks,
+11 and 9 loot objects, and no Life Tap orb. That orb roll is real now: round 5's float
+stub had left a stray `f0`. Enemy hits accepted: 9 and 9, with record HP 9,862 and 9,897.
+The probe now asserts only 1–9 hits and a loss bounded by the creatures' own damage
+high, since the stats are the real ones. The idle run reaches 3,700 frames, so
+`Player_run`'s idle-voice draw at 3,600 happens. That is round 5's fourth missing draw.
+
+**Correction to round 5's placement claim.** Round 5 placed the player at exactly
+x = 36.0, because the free-spot service returned the requested point. The original
+`world_findFreeSpot` scatters it within range 36: (26.2, 7.8, 0) on seed 20973 and
+(32.5, 3.4, 0) on seed 7, with the facing following the moved point. Placement is now
+the original code's, on authored flat open ground (`terrain_testFlag1` 0.0,
+`terrain_height` 0.0) and the real grid.
+
+**What still keeps the match's seed from being the real game's:**
+
+1. **Authored world.** The ground is flat and open. In fighting, sight
+   (`Creature_canSeeTargetIn`), activity and animation events are scripted. The player
+   is moved onto each creature and the kills are the driver's 1,000-damage hits.
+2. **Animation.** Every animation call is a service. Player swings never finish (state 1
+   persists), and idle fidgets, which need four real tracks, never happen. Creature
+   attack timing is scripted. `res_find` answers one authored part, so no clip or model
+   from the disc is loaded.
+3. **Creature ticks.** Creatures are not ticked every frame: never in idle, and two
+   scripted ticks per wave in fighting. Objects made during the match (gold piles, item
+   props, gib chunks) are never ticked.
+4. **Unexecuted bodies reached in fighting.** `Goblin_onNearbyEvent` (40 calls: each kill
+   notifies nearby Goblins through `world_notifyObjectsNear`), `Goblin_hasShieldUp`,
+   `Mummy_updateSpells`, `Creature_setEffectTimer`, `fx_modelStatusEffects` and
+   `Player_onTouch`. Also round 5's player stubs: `Player_move` (dry world: its only
+   draw cannot occur), `Player_recalcDamage`, `Player_interact`, `Player_slot37`,
+   `player_giveExp`, `player_recalcStats` and `player_resetIdleAnim`.
+
+```text
+PYTHONDONTWRITEBYTECODE=1 python3 tools/probe_arena_match.py local/SLUS_209.73 --seed 20973 --real-creatures
+PYTHONDONTWRITEBYTECODE=1 python3 tools/probe_arena_match.py local/SLUS_209.73 --seed 7 --real-creatures
+```
+
+### Native ranking for `native-arena-match` (final, round 6)
+
+Ranked by first dependency in the first recipe's waves 0–2, then by shared-seed weight:
+
+1. **Creature construction chain** for arena indices 3, 1 and 0, then 4 and 25.
+   The steps, each with its contract in `ref_arena_creature_chain`:
+   - `GameObject_ctor`: one shared draw; `+0x44` is the draw.
+   - `Creature_setStats` with the `monsters.bal` row: read the user's `balance.lmp` at
+     run time, then one own draw.
+   - `Creature_scaleStats`, which truncates hit points and experience even at 1.0.
+   - `Creature_init`'s height floor of 84.
+   - The class's own draws, the Goblin family block, and the rare Mummy's weapon element
+     (a second shared draw).
+2. **`world_findFreeSpot`.** Three shared draws per unit-ball sample, the 6.0 height
+   step, the blocker rule `d² ≤ radius² + r²`, and 50 tries. Every creature spawn and
+   every player spawn calls it, so placement and the seed cannot match without it.
+3. **SpellArena** record, its attachment at `+0x364`, slot 34 (home range 5000) and
+   slot 27 (state 0, with the class's own draws).
+4. **The kill path.** In fighting it is the largest seed consumer:
+   - the gib burst (one shared draw per `GutChunk`);
+   - the Life Tap orb roll (an own draw; `OniBall_ctor` makes one shared draw when it
+     succeeds);
+   - `Creature_onDeath` / `arena_addKill`;
+   - `Creature_dropLoot` → `loot_generateDrops` with the item generators. These are the
+     bulk of the 637 and 1,014 draws.
+5. `damage_apply` and Player damage processing (already contracted), the Player tick, and
+   the idle-voice draw at 3,600 frames.
+6. Then the open items above: real animation stepping on clips read from the user's disc
+   at run time, per-frame creature AI with real world queries, the unexecuted bodies in
+   item 4 of the list above, and runs of dropped objects. Without these, native runs can
+   match the probe but not a live match.
