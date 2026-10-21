@@ -236,6 +236,8 @@ FUNCTION_ADDR = {name: start for name, (start, _end) in list(SB.FUNCTIONS.items(
 
 
 class Rig(DSB.Rig):
+    model_class = A.Model                       # difftest_staticfire.py puts its own model here
+
     def __init__(self, elf, seed):
         self.rng = random.Random(seed)
         emu = self.emu = EE(elf, fpu_model=OPTIONS['fpu'])
@@ -299,7 +301,7 @@ class Rig(DSB.Rig):
         call_seed = OPTIONS['seed'] * 1000003 + self.serial
         seed_before = mem.u32(RC.G_RAND_SEED)
         mview = DSB.ModelView(mem)
-        model = A.Model(mview, Rig.Callbacks(self, mview, random.Random(call_seed)))
+        model = self.model_class(mview, Rig.Callbacks(self, mview, random.Random(call_seed)))
         model.addr_names = self.addr_names
         model_error = None
         try:
