@@ -524,7 +524,8 @@ class Composer:
         definition has variants), into the handler's stack record (self.scratch)."""
         rng = I.Rng(self.seed)
         item = I.parse_descriptor(self.tables, text, -1, use_presets, rng)
-        self.mem.store(G_RAND_SEED, 4, rng.seed)
+        if rng.draws:
+            self.mem.store(G_RAND_SEED, 4, rng.seed)
         data = item.pack(bytes(self.mem.load(self.scratch + k, 1) for k in range(ITEM_SIZE)))
         for k, b in enumerate(data):
             self.mem.store(self.scratch + k, 1, b)

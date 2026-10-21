@@ -64,7 +64,8 @@ STUBS = {
 SCR_GET_ADDR, SCR_GET_STRING = 0x1414A8, 0x141650
 REAL = set(R.HANDLERS.values()) | {COUNT, FIND, PASSIVE, RANK, WEIGHT, GET_WEIGHT, RECALC_LOAD,
                                    0x1C1CB0, 0x1C1868, 0x1069B8, 0x1046E0, 0x108924}
-SCRATCH = 0x01FF0000            # the reference's stand-in for the handler's stack record
+SCRATCH = 0x01FF0000
+LIBC_SDIDINIT = 0x50C530        # newlib's reentrancy flag that libc_sinit 0x3b3d00 sets on first use            # the reference's stand-in for the handler's stack record
 
 
 def report(name, ok, detail=''):
@@ -154,6 +155,7 @@ class World:
         for k, slot in enumerate(alive):
             w(R.G_ALIVE_LIST + 4 * k, 4, slot)
         w(0x4F719C, 4, rng.choice([1, 1, 2, 3, 4, 5]))                 # difficulty (first recall hint)
+        w(LIBC_SDIDINIT, 4, 1)          # stdio was set up at boot; sscanf must not do it again
         w(0x402791, 1, rng.choice([0, 0, 1]))                          # network mode
         for slot in range(4):
             mark = len(self.planted)
@@ -336,6 +338,32 @@ def masked_records(data):
                 at = slot * R.REC_SIZE + R.P_BAGS + bag * R.BAG_SIZE + i * R.ITEM_SIZE
                 out[at:at + R.ITEM_SIZE] = mask_item(bytes(out[at:at + R.ITEM_SIZE]))
     return bytes(out)
+
+
+def _outside_records(addr):
+    lo, hi = R.G_PLAYERS, R.G_PLAYERS + 4 * R.REC_SIZE
+    if lo <= addr < hi or EE.STACK_LO <= addr < EE.STACK_HI or SCRATCH <= addr < SCRATCH + 0x100:
+        return False
+    return True
+
+
+def written_outside(pair, mark):
+    """Bytes written outside the four records, the stack and the scratch record must be the
+    same set on both sides, with the same final values."""
+    emu_set = set()
+    for _pc, addr, size, _value in pair.emu.writes:
+        emu_set.update(a for a in range(addr, addr + size) if _outside_records(a))
+    ref_set = set()
+    for addr, size in pair.ref.writes[mark:]:
+        ref_set.update(a for a in range(addr, addr + size) if _outside_records(a))
+    if emu_set != ref_set:
+        only_e, only_r = sorted(emu_set - ref_set), sorted(ref_set - emu_set)
+        return 'writes outside the records differ: emu only %s, ref only %s' % (
+            [hex(a) for a in only_e[:4]], [hex(a) for a in only_r[:4]])
+    for a in emu_set:
+        if pair.emu.mem.u8(a) != pair.ref.load(a, 1):
+            return 'byte 0x%x: emu %02x ref %02x' % (a, pair.emu.mem.u8(a), pair.ref.load(a, 1))
+    return None
 
 
 def first_diff(a, b):
@@ -544,6 +572,7 @@ def suite_handlers(elf, base, tables):
             comp = R.Composer(pair.ref, tables, host, SCRATCH)
             seed_before = pair.ref.load(R.G_RAND_SEED, 4)
             before = records(lambda addr, n: pair.ref.read(addr, n))
+            mark = len(pair.ref.writes)
             ref_fault = emu_fault = None
             try:
                 want = getattr(comp, name)(*values)
@@ -585,6 +614,9 @@ def suite_handlers(elf, base, tables):
             extra = bad_calls(pair.emu)
             if extra:
                 problems.append('unexpected calls %s' % sorted(hex(x) for x in extra))
+            outside = written_outside(pair, mark)
+            if outside:
+                problems.append(outside)
             if problems:
                 bad.append((case, '%r: %s' % (values, '; '.join(problems))))
         per[name] = (cases, skipped, bad, seen)

@@ -228,3 +228,4 @@
 0020fa64	paths_joinSegments	level setup: merges same-named path pieces whose ends are within 96 units
 0020fd04	stub_empty_20fd04	empty; last call of drawWorld
 0020ffdc	pathFollower_init	zeroes a 0x38-byte follower and stores two arguments at +0 and +0x14
+004f7110	g_cm1Index	s32 cached by game_set4f7110; game_scanCm1Vars(0) returns it; -1 in the executable image; the net launch message carries the host value at +0xf4

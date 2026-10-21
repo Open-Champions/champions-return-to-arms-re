@@ -109,3 +109,4 @@
 0041ba10	g_btnPotionA	u32[4] pad mask per slot: Player_usePotion kind 0, the health potion (Ran: default mask 0x2 = R2, docs/issues/live-rig.md 4c)
 0041ba20	g_btnPotionB	u32[4] pad mask per slot: Player_usePotion kind 1, the mana potion (Ran: default mask 0x1 = L2, docs/issues/live-rig.md 4c)
 0041ba30	g_btnWeaponSwap	u32[4] pad mask per slot: swap weapon set; with block held starts state 0xb
+004d8ae8	g_loadLimitBonus	s32 read only by player_recalcStats (0x1b69e0): non-zero adds 5000 to every load limit before the 9999 cap; no writer found by an immediate-offset scan, 0 in the executable image
