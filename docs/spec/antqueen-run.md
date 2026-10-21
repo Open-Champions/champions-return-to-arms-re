@@ -203,7 +203,7 @@ Bodies executed elsewhere (each a recording stub here, answered by the scripted 
 (`tools/ref_skills_a.py`); `pool_new` `0x14fdb8`; the anim calls of set-state
 (research-anim).
 
-Not executed anywhere: `AntWave_ctor` `0x238654` and the AntWave object (run `0x238938`,
-draw `0x2387d0`, destructor `0x238750`), reached only from state 0x19, which nothing
-requests. *Unknown*: how `Creature_hitTargetOrPlayerInArc` treats a poison entry 0x17
+`AntWave_ctor` `0x238654` and the AntWave object (run `0x238938`, draw `0x2387d0`,
+destructor `0x238750`), reached only from state 0x19, are executed since 2026-10-21
+(`docs/spec/antwave.md`); nothing requests that state (the search is there). *Unknown*: how `Creature_hitTargetOrPlayerInArc` treats a poison entry 0x17
 on a player victim beyond `damage_apply`'s round-1 contract.

@@ -322,8 +322,8 @@ charmed again (step 1).
 Callees `Soul_run` reaches that are recording stubs here and are not executed anywhere:
 
 - `obj_stopRunning` `0x14f290`: state 0x22, airhub only.
-- `creature_getAttachMatrix0` `0x287940` and `model_getAttachMatrix` `0x1795f8`: state 0x1d
-  while owned.
+- (`creature_getAttachMatrix0` `0x287940` and `model_getAttachMatrix` `0x1795f8`, state 0x1d
+  while owned, are executed since 2026-10-21: `docs/spec/attach-matrix.md`.)
 - `model_getSamplePointCount` `0x1799c8`, `model_getSamplePoint` `0x178e18`,
   `particle_spawn` `0x18f3f8`, `terrain_height` `0x183820`, `obj_delete` `0x14f200`: the
   probe treats these as services.
