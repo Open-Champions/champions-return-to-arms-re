@@ -84,7 +84,7 @@ def executed_bodies():
              'ref_potion_ctors', 'ref_combat_round3', 'ref_combat_round4', 'ref_combat_round5',
              'ref_combat_round6', 'ref_skills_a', 'ref_skills_b', 'ref_skills_c',
              'ref_combat_ctors2', 'ref_antqueen_run', 'ref_fire_touch', 'ref_phprop', 'ref_soul_run', 'ref_skeleton_run',
-             'ref_combat_death', 'ref_weapon_holder', 'ref_sweep')
+             'ref_combat_death', 'ref_weapon_holder', 'ref_sweep', 'ref_holder_slots')
     for name in names:
         try:
             mod = importlib.import_module(name)
@@ -517,7 +517,11 @@ SERVICES |= KEEP_AS_SERVICE | {'obj_runEveryFrame', 'obj_runEvery60', 'obj_updat
 # for Gnaw (open-champions combat-ctors report, section 1): the weapon holder's slots 1 and
 # 21 (slot 21 is presentation, D37) and Creature_init.  Counted apart from the services and
 # from the unexecuted bodies; the probe does not stop on them.
-RECORDED = {'Holder.v1', 'Holder.v21', 'Creature_init'}
+RECORDED = {'Creature_init'}
+# Holder slots 1 and 21 were recorded until their bodies were executed: slot 1 in round 3
+# (tools/difftest_weapon_holder.py), slot 21 in round 4 (tools/difftest_holder_slots.py: no
+# store outside the stack, no shared draw).  What slot 21 calls is presentation:
+SERVICES |= {'fx_modelStatusEffects'}   # 0x1f6ac8: effect block and presentation tables, cosmetic seed only (FINDINGS D37)
 SERVICES -= RECORDED
 
 

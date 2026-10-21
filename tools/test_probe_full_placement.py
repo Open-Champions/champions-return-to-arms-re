@@ -51,11 +51,11 @@ class Bookkeeping(unittest.TestCase):
     def test_first_unexecuted_stops(self):
         probe = self._probe(True)
         probe.note_stub('anim_push', probe.classify_name('anim_push'), ())
-        probe.note_stub('Holder.v21', probe.classify_name('Holder.v21'), ())
+        probe.note_stub('Creature_init', probe.classify_name('Creature_init'), ())
         with self.assertRaises(P.Stop):
             probe.note_stub('Skeleton_shatter', probe.classify_name('Skeleton_shatter'), ())
         self.assertEqual(probe.first_seen['anim_push'], (5, 'service'))
-        self.assertEqual(probe.first_seen['Holder.v21'], (5, 'recorded'))
+        self.assertEqual(probe.first_seen['Creature_init'], (5, 'recorded'))
         self.assertEqual(probe.events, [(5, 'Skeleton_shatter')])
 
     def test_all_mode_keeps_going_and_keeps_the_first_tick(self):
