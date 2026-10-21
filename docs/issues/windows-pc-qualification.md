@@ -252,6 +252,31 @@ location is verified against the actual returned actor. The original northern
 card retains its low saved resources. The endpoint is immediately paused and
 does not establish a new full-health card, an extended encounter or level completion.
 
+A subsequent ordinary-control route retraces the cleared corridor after that
+recovery and stops paused at 44.045 HP / 36.6 mana. All 9,855 logged frames are
+complete, the process exits zero and no valid live-player death is observed.
+Allocations, all occupied 72-byte item records and the 26 reported defeated Kobolds
+remain unchanged. Ten approximately one-HP losses occur earlier in the corridor;
+their attacker or environmental cause remains untraced.
+
+On the same preserved native build, a guarded approach reaches a hostile WarWraith.
+The paired damage and no-second-cast runs have byte-identical 32-MiB RAM snapshots
+immediately before the compared cast. Holy Strike rank two removes exactly 48 HP
+and costs exactly 10 mana relative to that control; the player's position and HP
+match at the comparison endpoint. Both runs include the same earlier missed cast.
+The original lead-shot invocation that timed out waiting for damage remains failed.
+All four accepted approach/damage/control processes exit zero with no timeouts or
+valid player-death rows, and the original checkpoint card remains unchanged.
+
+A separate continuation uses one additional ordinary cast after that hit boundary.
+The observed final hit removes 49 HP, sets the WarWraith's death flag/state and
+awards 142 XP, reaching 1,713 XP. Its recorded last attacker resolves to the actual
+Player. The process exits zero and pauses alive at 35.9834 HP / 8.1412 mana, with
+57 gold and unchanged allocations, occupied item records and equipped definitions.
+The player takes one HP loss during casting whose exact attack attribution remains
+untraced. This kill trial writes no card; it does not establish saved-kill
+persistence, a new level transition or completion of the wider quest.
+
 Earlier overwrite attempts pressed Cross while the overwrite screen required Square;
 they wrote no new checkpoint and correctly loaded the older zero-XP save. This was
 a test-input error, not an established persistence defect. Load readiness now witnesses
@@ -469,6 +494,19 @@ per field. These are bounded lifecycle/compatibility results, not original-conso
 pixel fidelity or a repair of the three retained-texture states. The failed
 strict-equality receipts, rejected depth candidate and all baseline controls remain
 preserved privately.
+
+A separate current-source authored comparison confirms a rendered-16-bit colour
+precision gap. At 64x64 logical/physical size, without AA, blending or dithering,
+a nearest/clamp draw samples a flat-red rendered PSMCT16 surface into PSMCT32.
+All 1,024 interior native pixels contain red 255, while independent pinned GS
+software replay stores red 248. A rendered-PSMCT32 control matches at 255; a
+packed-PSMCT16 host-upload control matches at 248. All native/reference processes
+exit zero, the native checks report no GL error, and the production source hashes
+remain unchanged. The exact comparison remains failed; no production correction
+is applied. Correct rendered-format storage, blending, masks, dithering and
+format/view changes require further qualification. This uses authored packets
+and raw reference VRAM, without original game inputs, and does not establish the
+visual extent of the issue across campaign scenes.
 
 Inspected captures show textured hub, ice, fire and stone-platform scenes. Forced
 offline entry into three PvP arenas instead leaves the player at Z=-100000; longer
@@ -711,6 +749,26 @@ live rows, including 600 before fresh hub movement. Host and joiner then move
 release. Both finish alive at 27.7734 / 21.4099 HP, without party-wipe recovery or
 automatic Load. The preceding completed tick-log row 4,967 still belongs to
 `blood1` and is excluded from the hub count.
+
+The same route also passes on the installed sample/depth build identified above
+(`d7c2258b...`). The original driver and both actual child exits are zero. All 59
+shared columns match over 5,452 confirmed ticks, with no out-of-sync, dropped-player,
+automatic-Load or party-wipe event. The joiner revives at half HP at tick 4,520;
+protection reaches zero at 4,610 and the source-backed control gates clear before
+both players move. Two normal shop purchases again cost 208 gold each, raising
+the host's health stack from two to four. This invocation consumes one health
+potion, leaving three, and normal recall consumes one host recall, two to one.
+Canonical occupied 72-byte item records, equipment bags, per-player XP and gold
+are independently checked across 26 player-record snapshots. Both characters have
+zero XP, so this adds no earned-XP persistence claim.
+
+Actual hub rows span ticks 4,736 through 5,452: 717 matching live rows, excluding
+the preceding completed row 4,735, which still belongs to `blood1`. Six hundred
+actual hub rows precede fresh movement. Host and joiner move 143.76 and 102.97 units,
+then remain stationary for 20 further confirmed ticks after release. They finish
+alive at 32.8 / 21.5996 HP. This repeats the stated local route on the installed
+build with separate fresh test data; it does not qualify WAN, physical controllers
+or long-session stability.
 
 An intervening longer trial timed out waiting for a healing condition that the
 guarded host never needed. That whole invocation remains failed; it did not reach
