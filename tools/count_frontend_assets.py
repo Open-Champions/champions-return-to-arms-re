@@ -11,7 +11,7 @@ from anim_audio_info import lmp_entries
 
 LUMPS = ("SOELOGO", "FRONTEND", "INTERFAC", "SELECT", "SELECT2",
          "SAVEPNT", "SAVEPNT2", "FONT", "PVPFONT", "PFONT",
-         "PPVPFONT", "PORKO", "CREDITS")
+         "PPVPFONT", "PORKO", "CREDITS", "HEADPIC")
 
 
 def main(argv=None):
