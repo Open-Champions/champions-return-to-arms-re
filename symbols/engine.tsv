@@ -264,8 +264,8 @@
 0019e8e4	wstr_cat	(dst, src)
 0019e93c	wstr_catAscii	(dst, src)
 0019e994	wstr_len	
-0019e9c4	wstr_formatAscii	wstr_format with an 8-bit format string
-0019ea78	wstr_format	(args..., out, wideFormat) handles %d, %s and %.2f; 145 callers
+0019e9c4	wstr_formatAscii	(out, fmt8; floats f12-f19) widens the format into a 0x200-byte stack buffer, then wstr_format
+0019ea78	wstr_format	(out, wideFormat; floats f12-f19) %%, %d, %c, %s (8-bit), %u (16-bit string), %f (as %.2f); every argument is a float; executed, docs/strings.md section 2
 0019ecac	color_scale	(factor, rgba)
 0019ee10	decal_serialize	(buffer, size) packs the floor decals; caller 0x218600 in the save code
 0019f018	decal_reset	

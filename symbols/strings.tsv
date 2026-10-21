@@ -1,0 +1,23 @@
+# String table, wide-string formatter and the HUD text state of the five script commands.
+# docs/strings.md; executed by tools/difftest_strings.py unless the note says otherwise.
+00173de0	text_find	(key) -> wide text or 0; text_lookup without the miss ring; quotes dropped from the key
+0019e8b4	wstr_toAscii	(dst, wsrc) low byte of each unit
+00223ba0	credits_splitLines	(credits.txt data) skips the 2-byte BOM, cuts the UTF-16 text at CR/LF into g_creditsLines (up to 380 lines); not executed
+003aef58	soft_extendsfdf2	float -> double in software, R5900 reading: exponent 0 is a signed zero, exponent 255 an ordinary number; executed on edge patterns
+004fb5e8	g_creditsLines	u16*[380] line pointers into credits.txt (credits_splitLines)
+0041bfa8	g_textMissIndex	s8: position 0..15 of the last "NF:" text in g_textMissRing; advanced before use
+007caea0	g_textMissRing	u16[16][20]: "NF:" + 16 bytes of the missing key, sign-extended; returned by text_lookup on a miss
+004f66a9	g_hudBustHideLatch	s8: set by hud_tickMessage (4 players offline, message running) and hud_spellSelect; cleared by hud_drawBust each drawn frame
+004f66d0	g_hudBustFade	float 0..1, stepped by hud_drawBust (docs/hud-dynamic.md)
+004f66d4	g_hudBustShown	s8 countdown: hud_setBust stores 5, hud_run takes one per tick; drawn while non-zero
+004f66d5	g_hudCompassShown	s8 countdown: hud_setCompassTarget stores 5, hud_run takes one per tick; drawn while non-zero
+004f66e2	g_hudMessageForce	s8: force argument of hud_showMessage; a forced message ignores the local menu and draws on layer 7
+004f6b48	g_hudBustTexture	char[40] portrait texture name (strcpy, unbounded); 0x4f6b70 follows
+0086a8f0	g_hudCompassTarget	Vec3 world position copied from the target object +0x10 by showCompass
+0086aa64	g_helpTitle	wide-text pointer shown as the help box title (not a copy)
+0086aa68	g_helpBody	wide-text pointer shown as the help box body (not a copy)
+0086aab0	g_hudBustText	u16[32] bust caption (wstr_copy, unbounded: a longer text runs into g_hudCompassLabel)
+0086aaf0	g_hudCompassLabel	u16[32] compass label (wstr_copy, unbounded: a longer text runs into g_hudBustValue)
+0086ab30	g_hudBustValue	s32 showBust a: the value; drawn as a number when g_hudBustMax is -1, else as a meter fill; the draw clamps a negative value to 0
+0086ab34	g_hudBustMax	s32 showBust b: -1 = no meter
+0086ab78	g_hudMessageText	u16[100] one-line message (wstr_copy, unbounded: a longer text runs into g_msgIdGame 0x86ac40)
