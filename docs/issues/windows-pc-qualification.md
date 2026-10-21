@@ -1891,6 +1891,41 @@ frontend Load of that checkpoint remains separate work. Original source saves
 and all installed programs retain their hashes. The candidate remains private
 and uninstalled, with strict default-off rendering equivalence still failed.
 
+## Fresh Load of the earned four-character Save
+
+A separate private trial starts through the normal frontend Load menu with a
+copy of the newly earned four-character save. The game exits zero after 25.98
+seconds, with 1,323 complete rows across 321 columns and no timeout.
+All four characters retain XP 102/102/102/154 and Recall quantities 1/1/2/2.
+The original temporary Load flag is observed and consumed during level entry;
+settled readiness then requires four current owners, positive simulation progress
+and a fresh rendered scene before the neutral settling period.
+
+Two full RAM anchors retain all 28 occupied items, 80 equipment/auxiliary
+references, 48 skill pairs per character, declared statistics, allocations and
+quest data after the source-defined save-to-live fixups. The saved current hub
+spawn/facing prefixes and the separate blood1 return records are checked
+separately. The remaining record differences are confined to mana and the HUD timer, with
+source writers identified; whole live-record byte equality is not claimed.
+
+Each owner receives eight actual fields of isolated ordinary movement input,
+followed by 30 fields with all 56 raw/decoded control values neutral. Every
+commanded character moves, and the last eight whole-party position samples of
+each release are stable. Player two still moves about 0.01673 units on the first
+neutral field; the report does not claim zero motion throughout all 30 release
+fields. No uncommanded character motion is observed in this case, without
+qualifying a collision model or a sole cause for carryover motion. The original
+author audit and its narrow motion-boundary clarification are both retained.
+
+Game-card traffic is 311,272 bytes read and zero written. The four source game
+files and their four copies, installed game files and other protected inputs retain their
+hashes; declared host bootstrap metadata is tracked separately. This adds one
+fresh software-controlled Load and finite four-owner input/release path. It
+does not test mission return or world/enemy reconstruction from this checkpoint.
+The candidate remains private and uninstalled, strict default-off rendering
+equivalence remains failed, and full campaigns, WAN, physical controllers and
+hands-on audio/vibration remain open.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
