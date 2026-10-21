@@ -1926,6 +1926,47 @@ The candidate remains private and uninstalled, strict default-off rendering
 equivalence remains failed, and full campaigns, WAN, physical controllers and
 hands-on audio/vibration remain open.
 
+## Return to the mission from the earned Save
+
+A private test with four characters and software inputs completed a fresh Load
+of the earned party save, followed by one ordinary eight-field Use+Select
+input from player 1 in the hub. Recall returned all four players to the saved
+Lost Battleground mission without consuming another potion. XP remained
+102/102/102/154, Recall quantities remained 1/1/2/2, and party HP was
+unchanged. The process exited normally after 27.738 seconds with 1,416
+complete rows across 389 logged columns and no timeout. The final 30-field
+capture drain completed at quit callback 1,417; its last field has no recorded
+row. The game read 311,272 card bytes and wrote none; the four source files,
+four copied save files and protected installed files stayed unchanged.
+
+Both RAM anchors retained the party's canonical state after the source-defined
+serialization fixups: all 28 occupied item instances, 80 equipment and
+auxiliary references, 48 learned skill pairs per player, stats, allocations,
+quests and stored mission-return metadata. Full inverse comparisons of all
+four player records at both anchors exposed 40 residual bytes, entirely in
+regenerating mana and the HUD spell-selection timer; whole live-record byte
+equality is not claimed. Requested return vectors, source entry tables and
+settled actor positions were recorded separately. The fourth player's entry
+and settled positions differed, so this result does not assert that every
+actor returns to an identical saved XYZ.
+
+The two defeated Kobolds in the new save were identified as current allocated,
+grid-linked objects after return, using their class, variant, saved
+position/facing and state. Both had AI state 20, the required dead flags and
+saved death animations. Their negative HP matched the saved signed fraction
+multiplied by the current maximum HP using the runtime's round-toward-zero
+single-precision arithmetic; exact old battle HP was not assumed. The returned
+snapshot's 134 allocated Creature records are a census, not proof that all 261
+serialized world objects are equivalent or that the area is safe. Both
+captured scenes were inspected and showed the four-player party in the lit hub
+and mission.
+
+This is a bounded earned-save Load-and-return result. It adds no quest or
+campaign-completion claim. The candidate remains private and uninstalled; the
+existing strict rendering difference remains unresolved, and original-hardware
+fidelity, physical-controller, WAN, audio and performance coverage are
+unchanged.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
