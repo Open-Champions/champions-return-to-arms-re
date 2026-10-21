@@ -858,3 +858,7 @@
 0031d180	SmokeGen_ctor	sets the SmokeGen virtual table; callers 159c94
 0031e2b8	kbd_init	prints the INIT KEYBOARD banner
 0031e310	kbd_free	prints the FREE KEYBOARD banner
+003065fc	arena_spawnMonster	(className or 0, creature) ring search of up to 17 world_findFreeSpot calls (angle +4000 per miss), world_createObject facing the centre or re-places the creature, Creature_scaleStats by the class table 0x5037f0, SpellArena record (one draw), home range 5000, AI state 0; executed, tools/difftest_monster_build.py
+005037f0	g_arenaClassNames	30 class-name pointers; recipe bytes index it and arena_spawnMonster keys its 30 scale constants by strcmp against it
+008e7360	g_arenaRingAngle	u16 angle of the next arena spawn on the radius-200 ring; +4000 per failed free-spot search, + g_arenaRingStep after a spawn
+008e7364	g_arenaRingStep	u16 65535 / group count, stored by arena_setRingStep 0x3065b0
