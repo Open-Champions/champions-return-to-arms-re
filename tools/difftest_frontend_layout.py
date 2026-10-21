@@ -53,6 +53,49 @@ def frontend_draw(path, seed, state, table):
     return [c.args[1] & 0xFFFFFFFF for c in list_calls], anchors, frames
 
 
+def frontend_details(path, seed, state, table):
+    """Read parent submissions at their exact call sites; no resource data saved."""
+    e = emulator(path, seed)
+    e.follow = {0x1A07C4}
+    e.mem.w32(0x4F6B78, state)
+    e.mem.w32(0x4F6B7C, table)
+    e.call(0x1E08F0, max_steps=100000)
+    title_ids = [e.mem.cstr(c.args[1] & 0xFFFFFFFF) for c in e.calls
+                 if c.site == 0x1E0AAC and c.target == 0x17365C]
+    sprites = [tuple(v & 0xFFFFFFFF for v in c.args[1:5]) for c in e.calls
+               if c.site == 0x1E0AC8 and c.target == 0x17FB68]
+    parent_fonts = [(c.args[1] & 0xFFFFFFFF, c.args[2] & 0xFFFFFFFF)
+                    for c in e.calls if c.site == 0x1E0DCC and c.target == 0x1800B8]
+    extra_fonts = [(c.args[1] & 0xFFFFFFFF, c.args[2] & 0xFFFFFFFF)
+                   for c in e.calls if c.site == 0x1E13C8 and c.target == 0x1800B8]
+    extra_text = [(c.args[0] & 0xFFFFFFFF, c.args[1] & 0xFFFFFFFF)
+                  for c in e.calls if c.site == 0x1E13E0 and c.target == 0x181CA0]
+    return title_ids, sprites, parent_fonts, extra_fonts, extra_text
+
+
+def name_entry_details(path, seed):
+    e = emulator(path, seed)
+    e.follow = set()
+    e.call(0x22C920, max_steps=100000)
+    fonts = [(c.site, c.args[1] & 0xFFFFFFFF, c.args[2] & 0xFFFFFFFF)
+             for c in e.calls if c.target == 0x1800B8]
+    text = [(c.site, c.args[0] & 0xFFFFFFFF, c.args[1] & 0xFFFFFFFF)
+            for c in e.calls if c.target == 0x181CA0]
+    rects = [(c.site, *(v & 0xFFFFFFFF for v in c.args[:4]))
+             for c in e.calls if c.target == 0x1803E0]
+    return fonts, text, rects
+
+
+def credits_details(path, seed):
+    e = emulator(path, seed)
+    e.follow = set()
+    e.call(0x223C64, max_steps=100000)
+    e.reset_log()
+    e.call(0x223D3C, max_steps=100000)
+    return [(c.site, c.args[1] & 0xFFFFFFFF, c.args[2] & 0xFFFFFFFF)
+            for c in e.calls if c.target == 0x1800B8]
+
+
 def theme_queue(path, seed, volume):
     e = emulator(path, seed)
     directory = e.alloc(0xB0)
@@ -68,6 +111,8 @@ def theme_queue(path, seed, volume):
     e.stub(0x216690, ret=0)  # channel volume
     e.mem.w32(0x4F8944, volume)
     e.call(0x2110E0, name, 5, max_steps=100000)
+    # g_streams[2] is music; +0x1c0 is the eight-entry queue count
+    # (docs/audio-save.md, Streams).
     return e.mem.u32(0x876C10 + 2 * 0x1C4 + 0x1C0)
 
 
@@ -106,6 +151,8 @@ def menu_action(path, seed, state, table, mask):
     e.follow = {0x1A01D0}
     e.mem.w32(0x4F6B78, state)
     e.mem.w32(0x4F6B7C, table)
+    # The lockstep pad's held/pressed/repeat words. In this fixture 0x4000
+    # moves down, 0x40 accepts and 0x20 cancels (observed transitions below).
     for addr in (0x41BFE0, 0x41BFE4, 0x41BFE8):
         e.mem.w32(addr, mask)
     e.call(0x1E08F0, max_steps=100000)
@@ -113,7 +160,7 @@ def menu_action(path, seed, state, table, mask):
            for c in e.calls if c.target == 0x17365C and
            c.site in (0x1A03E8, 0x1E15A4, 0x1E1D6C)]
     sound_calls = [c for c in e.calls if c.target == 0x214230 and
-                   0x1A0000 <= c.site < 0x1E2000]
+                   c.site in (0x1A03FC, 0x1E15B8, 0x1E1D80)]
     return e.mem.u32(0x4F6B78), ids, len(sound_calls)
 
 
@@ -135,10 +182,35 @@ def main():
             assert assembled == list_frame_calls(count, value_rows), (
                 seed, name, assembled)
             checks += 3
-        for volume in (0, 0x3D4CCCCC - 1, 0x3D4CCCCC, 0x3F000000):
+        for volume in (0, 0x3D4CCCCC - 1, 0x3D4CCCCC, 0x3F000000,
+                       0xBF800000):
             queued = theme_queue(path, seed, volume)
             assert queued == int(first_theme_queues(volume)), (seed, volume, queued)
             checks += 1
+        for state, (name, _origin_y) in FRONTEND_STATES.items():
+            table = TABLES[name][0]
+            title_ids, sprites, parent_fonts, extra_fonts, extra_text = frontend_details(
+                path, seed, state, table)
+            if state in (0, 1, 2, 3, 4):
+                assert title_ids == ["title.tex"], (seed, state, title_ids)
+                assert sprites == [(141, 15, 5, 0x80808080)], (seed, state, sprites)
+            else:
+                assert title_ids == sprites == [], (seed, state)
+            assert parent_fonts == [(7, 0x64464646)], (seed, state, parent_fonts)
+            if state == 3:
+                assert len(extra_fonts) == 1 and extra_fonts[0][0] == 6
+                assert extra_text == [(320, 366)], (seed, extra_text)
+            else:
+                assert extra_fonts == extra_text == [], (seed, state)
+            checks += 4
+        fonts, text, rects = name_entry_details(path, seed)
+        assert [(site, x, y) for site, x, y in text] == [
+            (0x22CBA4, 163, 98), (0x22CCEC, 233, 98)], (seed, text)
+        assert (0x22D20C, 41, 0, 640, 480) in rects, (seed, rects)
+        assert fonts and fonts[0][:2] == (0x22C9C0, 6), (seed, fonts)
+        checks += 3
+        assert credits_details(path, seed) == [(0x223E40, 7, 0x80000000)], seed
+        checks += 1
         for state, (name, origin_y) in FRONTEND_STATES.items():
             table, count, value_rows = TABLES[name]
             origins, anchors, frames = frontend_draw(path, seed, state, table)

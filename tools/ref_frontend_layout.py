@@ -5,6 +5,8 @@ Coordinates are the calls submitted by menuList_draw (0x1a07c4), in the
 the minimum frame below is the result when the width callee returns zero.
 """
 
+# Keys are local geometry aliases. Names for the less-used tables are
+# descriptive only; this capture does not establish their menu semantics.
 TABLES = {
     "main": (0x4F6B88, 4, ()),
     "game_type": (0x4F6BF8, 2, ()),
@@ -43,8 +45,8 @@ def list_geometry(count, value_rows=(), origin=(320, 309)):
     return anchors, frame
 
 
-def list_frame_calls(count, value_rows=(), origin=(320, 309), selection=0):
-    """Three calls reaching ui_drawFrameImpl with text-width callee stubbed.
+def list_frame_calls(count, value_rows=(), origin=(320, 309)):
+    """Three calls reaching ui_drawFrameImpl for selected row zero.
 
     Tuples are x, y, width, height, layer, tint, style, no_center. The ninth
     no_border argument is zero in these captures. Source textures follow
@@ -53,8 +55,8 @@ def list_frame_calls(count, value_rows=(), origin=(320, 309), selection=0):
     anchors, wrapper = list_geometry(count, value_rows, origin)
     x, y, w, h, layer, tint = wrapper
     wide = bool(value_rows)
-    selected_y = anchors[selection][1]
-    if selection in value_rows:
+    selected_y = anchors[0][1]
+    if 0 in value_rows:
         cursor_x, cursor_w = origin[0] - 140, 280
     elif wide:
         cursor_x, cursor_w = origin[0] - 21, 42
@@ -95,6 +97,10 @@ MUSIC_VOLUME_GATE_BITS = 0x3D4CCCCC  # comparison in music_playGlobal 0x2110e0
 def first_theme_queues(volume):
     """Whether music_playGlobal enqueues the frontend's initial theme.
 
-    The tested finite nonnegative volumes use the positive IEEE-754 bit order.
+    The input is a finite IEEE-754 bit pattern. Negative volumes do not queue.
+    Nonfinite values are excluded from this reference model.
     """
-    return (volume & 0xFFFFFFFF) >= MUSIC_VOLUME_GATE_BITS
+    volume &= 0xFFFFFFFF
+    if volume & 0x7F800000 == 0x7F800000:
+        raise ValueError("finite volume required")
+    return not volume & 0x80000000 and volume >= MUSIC_VOLUME_GATE_BITS

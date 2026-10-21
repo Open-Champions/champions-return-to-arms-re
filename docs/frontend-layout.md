@@ -12,7 +12,9 @@ described in `open-champions/worktrees/menus/work/loop-menus-r2-report.md`.
 
 `tools/difftest_frontend_layout.py` runs `frontend_run` (0x1e08f0),
 `menuList_draw` (0x1a07c4), `splash_soeLogo` (0x321640), the normal
-`pauseMenu_task` (0x18cc08), and `music_playGlobal` (0x2110e0) under
+`pauseMenu_task` (0x18cc08), `nameEntry_draw` (0x22c920),
+`credits_load`/`credits_run` (0x223c64/0x223d3c), and
+`music_playGlobal` (0x2110e0) under
 `tools/ee_emu.py`. It compares the submitted call records with
 `tools/ref_frontend_layout.py` at seeds 20973 and 7. The pause fixture uses
 the original string comparisons and a card-idle result. Texture lookup,
@@ -40,28 +42,32 @@ by the difftest; text width can enlarge them.
 
 All entries below are centered text calls. The first x/y pair is entry 0;
 successive y positions are 22 apart. Entry meanings are descriptions, not
-copies of localized game strings.
+copies of localized game strings. The less-used table keys in
+`tools/ref_frontend_layout.py` are local geometry aliases; their semantic
+names and row meanings remain **Inferred**. Only selected row zero is covered
+by the frame model.
 
 | Screen | Executed draw submission | Remaining evidence needed |
 |---|---|---|
-| Boot/card check | `mainloop_runBootCardCheck` 0x32396c starts a modal callback; the zeroed card fixture submitted no drawing. | Run `mainloop_bootCardStep` and `memcard_browser` with card states and loaded resources; capture every prompt and spinner. |
+| Boot/card check | **Observed** in `symbols/mainloop.tsv:46-48`: `mainloop_runBootCardCheck` 0x32396c starts a modal callback. Draw submissions are **Unknown**. | Run `mainloop_bootCardStep` and `memcard_browser` with card states and loaded resources; capture every prompt and spinner. |
 | Publisher logo | `splash_soeLogo` submits `SOELOGO.LMP/soe_splash_url.tex` at `(192,330)` and `soe_splash.tex` at `(64,50)`, both layer 3, tint `0x80808080`, no explicit clip. | Texture sizes and animation/fade across frames. |
-| Intro | `splash_introMovie` 0x321788 calls the movie path and a stream path; it submitted no UI sprite under the fixture. | MPEG picture, audio and timing from the movie path. |
-| Main menu, state 0 | Four rows at `x=320`, `y=259,281,303,325`; indices 0–3 lead to new-game, load, options and credits flows. Title sprite lookup is `FRONTEND.LMP/title.tex`; submission `(141,15)`, layer 5, tint `0x80808080`. | Exact title size, background movie/frame, localized glyphs, text-width frame expansion, fade alpha. |
+| Intro | **Observed** in `symbols/mainloop.tsv:31`: `splash_introMovie` 0x321788 calls the movie path. UI sprite submissions are **Unknown**. | MPEG picture, audio and timing from the movie path. |
+| Main menu, state 0 | Four rows at `x=320`, `y=259,281,303,325`. Row destination mapping is **Unknown**; `docs/ui.md:214-223` establishes state meanings, not these four indices. **Executed** title lookup at 0x1e0aac is `FRONTEND.LMP/title.tex`; sprite call 0x1e0ac8 submits `(141,15)`, layer 5, tint `0x80808080`. | Exact title size, background movie/frame, localized glyphs, text-width frame expansion, fade alpha. |
 | Game type, state 1 | Two rows at `x=320`, `y=281,303`; offline and network choices. Same title submission. | Same unresolved art/font details. |
 | Players, state 2 | Four rows at `x=320`, `y=259,281,303,325`; player-count choices. Same title submission. | Same unresolved art/font details. |
 | Mode, state 4 | Two rows at `x=320`, `y=281,303` for the offline table (mission and arena choices). A three-row mode table also has `y=270,292,314`. Same title submission. | Which table is selected for each network setup branch; exact frame width with font loaded. |
 | Difficulty, state 3 | Four rows at `x=320`, `y=259,281,303,325`. The parent additionally submits a centered text call at `(320,366)` with layer 6; content and final colour were not established. Same title submission. | Content and colour of the extra line, disabled-entry treatment. |
-| Character model/class/appearance/ability points | `playerSel_start` 0x2245b8 and `playerSel_task` 0x225478 ran with synthetic state. The latter reached selection helpers but no UI draw call without a populated selection cache. | Populate model/cache and execute each state; capture 3D model pose, class art, control highlights and point grid. |
-| Name entry | `nameEntry_draw` 0x22c920 submitted centered text calls at `(163,98)` and `(233,98)` and a layer-6 rectangle in the zeroed fixture. Its other calls require initialized selection data. | Grid glyphs, cursor, clipped regions, accepted-name colours and sound. |
+| Character model/class/appearance/ability points | **Observed** in `symbols/audio-save.tsv:144-149`: `playerSel_start` 0x2245b8 starts the selection task at 0x225478. Draw submissions by substate are **Unknown**. | Populate model/cache and execute each state; capture 3D model pose, class art, control highlights and point grid. |
+| Name entry | **Executed** `nameEntry_draw` 0x22c920 submits centered text calls at `(163,98)` (0x22cba4) and `(233,98)` (0x22ccec), sets layer 6 at `text_begin` 0x22c9c0, and calls `ui_drawRect` for `(41,0,640,480)` at 0x22d20c in the zeroed fixture. Rectangle layer and other calls need initialized selection data. | Grid glyphs, cursor, clipped regions, accepted-name colours and sound. |
 | Options, state 11 | Thirteen rows with first three at `x=297`, remaining ten at `x=320`; `y=89,111,133,...,353`. The first three are value rows (brightness, music, effects). There is no title sprite in this state. Minimum backing-frame call: `(214,78,212,320)`, layer 7, style 2. | Value bars/knobs, option-specific glyphs, current values and fade animation. The earlier music slider timing contract is in `docs/spec/music-volume.md` on the combat-constructors branch. |
-| Load/save | `save_daemonDraw` 0x2189e0 and `memcard_browser` 0x219b90 ran with zeroed card state; no complete browser list was submitted. | Slot/card state fixtures with resources, file-list positions, error dialogs and sounds. |
-| Credits, state 15 | `credits_load` 0x223c64 then `credits_run` 0x223d3c submitted `text_begin` on layer 7, colour `0x80000000`, but no lines because the resource loader was stubbed. The front-end title sprite is absent. | Credits data layout, scroll positions and speed, images and exit sound. |
+| Load/save | **Observed** in `symbols/audio-save.tsv:100-105`: `save_daemonDraw` 0x2189e0 dispatches the browser at 0x219b90. Its draw list is **Unknown**. | Slot/card state fixtures with resources, file-list positions, error dialogs and sounds. |
+| Credits, state 15 | **Executed** `credits_load` 0x223c64 then `credits_run` 0x223d3c submits `text_begin` at 0x223e40 on layer 7, colour `0x80000000`. No lines appear with the loader stubbed. The frontend title sprite is absent at state 15 in this fixture. | Credits data layout, scroll positions and speed, images and exit sound. |
 | Pause | Normal offline `pauseMenu_open` 0x18e334 and `pauseMenu_task` 0x18cc08 enabled table rows 0,1,2,5,8 in the synthetic no-level fixture. Five centered calls: `x=320`, `y=179,201,223,245,267`. The backing-frame call is `(292,168,56,144)`, layer 7, style 2, tint `0x80808080`; cursor is `(300,179,40,33)`, layer 7, style 0, tint `0x300000ff`; front overlay `(301,180,54,136)`, layer 6, style 0, tint `0x3f000000`. A subsequent `text_begin` uses the word at `0x4f7100`, layer 7, colour `0x80464646`. | Game-scene background, font glyph placement, conditional net/debug rows, fade and prompts. |
 
 The normal front-end list starts from the font word at `0x4f7100` in the
-parent `text_begin`, layer 7; its colour in the zeroed capture was
-`0x64464646`, so alpha must be tested at real animation times. The list's
+parent `text_begin` at 0x1e0dcc, layer 7; **Executed** colour in the zeroed
+capture is `0x64464646`, asserted for states 0–4 and 11 at both seeds.
+Alpha must be tested at real animation times. The list's
 own `text_begin` is layer 7 but its colour depends on initialized state.
 `research-ui/docs/formats/ui-fonts.md` identifies the two fonts in
 `FONT.LMP` and their embedded glyph pages. A system font substitution cannot
@@ -80,7 +86,9 @@ is established by this test.
 
 **Executed:** `frontend_run` makes its initial theme request with flags 1 or
 5 at 0x1e09b0/0x1e09c4. `music_playGlobal` gates the resulting queue at
-music volume `0x3d4ccccc` (about 0.05). Volumes 0 and just below the gate
+music volume `0x3d4ccccc` (about 0.05), also traced in
+`t3/research-combat-ctors` `docs/spec/music-volume.md:33-35`. Volumes 0,
+−1 and just below the gate
 queue nothing; the gate value and 0.5 queue one entry. The native menu report
 states that its initial request is queued without this check. The native
 client should apply the gate at the music service boundary, while retaining
