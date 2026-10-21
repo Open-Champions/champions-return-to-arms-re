@@ -14,6 +14,7 @@ from ee_emu import EE  # noqa: E402
 from ref_frontend_layout import (BOOT_CARD_CALLS, BOOT_STEP_CALLS,  # noqa: E402
                                  CARD_DRAW_DISPATCH, FRONTEND_STATES,
                                  INTRO_CALLS, MAIN_MENU_ACCEPT, MENU_SOUND_IDS, TABLES,
+                                 CREDITS_EXIT_FINISHED, CREDITS_EXIT_RUNNING, FONT_USES,
                                  credits_one_line_geometry, first_theme_queues, list_frame_calls,
                                  list_geometry, pause_geometry, publisher_logo_sprites)
 
@@ -239,6 +240,69 @@ def main_accept(path, seed, row):
             music[0] if music else None)
 
 
+def credits_exit(path, seed, credits_run_result):
+    """frontend_run in state 15 with credits_run stubbed to a chosen result."""
+    e = emulator(path, seed)
+    e.follow = {0x1A01D0, 0x3B8534, 0x1E318C}  # 0x1e318c returns the main table
+    e.mem.w32(0x4F6B78, 15)
+    e.mem.w32(0x4F6B7C, 0x4F6FB8)
+    e.stub(0x223D3C, ret=credits_run_result)
+    e.call(0x1E08F0, max_steps=100000)
+    sites = {0x1E113C, 0x1E114C}
+    calls = tuple((c.site, c.target) for c in e.calls if c.site in sites)
+    music = [(e.mem.cstr(c.args[0] & 0xFFFFFFFF), c.args[1] & 0xFFFFFFFF)
+             for c in e.calls if c.site == 0x1E114C]
+    return (e.mem.u32(0x4F6B78), e.mem.u32(0x4F6B7C), calls,
+            music[0] if music else None)
+
+
+FONT_NAMES = {0xF0F0F0F0: "medium", 0xF1F1F1F1: "small"}
+
+
+def font_uses(path, seed):
+    """text_begin (site, font, layer, colour) per fixture, with sentinel font words."""
+    def plant(e):
+        e.mem.w32(0x4F7100, 0xF0F0F0F0)  # medium font pointer word
+        e.mem.w32(0x4F7104, 0xF1F1F1F1)  # small font pointer word
+
+    def begins(e, sites=None):
+        return tuple((c.site, FONT_NAMES.get(c.args[0] & 0xFFFFFFFF, c.args[0] & 0xFFFFFFFF),
+                      c.args[1] & 0xFFFFFFFF, c.args[2] & 0xFFFFFFFF)
+                     for c in e.calls if c.target == 0x1800B8 and
+                     (sites is None or c.site in sites))
+    out = {}
+    for name, state, table in (("frontend_list_state0", 0, 0x4F6B88),
+                               ("frontend_difficulty_extra", 3, 0x4F6E38)):
+        e = emulator(path, seed)
+        plant(e)
+        e.follow = {0x1A07C4}
+        e.mem.w32(0x4F6B78, state)
+        e.mem.w32(0x4F6B7C, table)
+        e.call(0x1E08F0, max_steps=100000)
+        out[name] = begins(e) if state == 0 else begins(e, {0x1E13C8})
+    e = emulator(path, seed)
+    plant(e)
+    e.follow = set()
+    e.call(0x22C920, max_steps=100000)
+    out["name_entry"] = begins(e)
+    e = emulator(path, seed)
+    plant(e)
+    e.follow = set()
+    e.call(0x223C64, max_steps=100000)
+    e.reset_log()
+    e.call(0x223D3C, max_steps=100000)
+    out["credits"] = begins(e)
+    e = emulator(path, seed)
+    plant(e)
+    e.follow = {0x1A07C4, 0x3B8534, 0x3B96A8, 0x17FBB8}
+    e.call(0x18E334, 0, max_steps=100000)
+    e.stub(0x217550, ret=-1)
+    e.reset_log()
+    e.call(0x18CC08, max_steps=100000)
+    out["pause"] = begins(e, {0x18D5E8})
+    return out
+
+
 def main():
     if len(sys.argv) != 2:
         raise SystemExit("usage: difftest_frontend_layout.py path/to/SLUS_209.73")
@@ -339,6 +403,13 @@ def main():
         checks += 5
         assert logo_draw(path, seed) == list(publisher_logo_sprites()), seed
         checks += 1
+        assert font_uses(path, seed) == FONT_USES, (seed, font_uses(path, seed))
+        checks += 1
+        assert credits_exit(path, seed, 0) == CREDITS_EXIT_FINISHED, (
+            seed, credits_exit(path, seed, 0))
+        assert credits_exit(path, seed, 1) == CREDITS_EXIT_RUNNING, (
+            seed, credits_exit(path, seed, 1))
+        checks += 2
         for row, wanted in MAIN_MENU_ACCEPT.items():
             assert main_accept(path, seed, row) == wanted, (
                 seed, row, main_accept(path, seed, row))

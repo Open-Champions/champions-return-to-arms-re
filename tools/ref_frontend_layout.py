@@ -125,6 +125,33 @@ MAIN_MENU_ACCEPT = {
 }
 
 
+# frontend_run state 15 (credits): each frame it runs credits_run 0x223d3c at
+# 0x1e1124. A zero return ends the credits: 0x211338(2) at 0x1e113c, the
+# frontend theme requested again with flags 1 at 0x1e114c, then state 0 and the
+# main table (the state-10 lobby branch needs a flag at 0x87ad58 and was not
+# exercised). A nonzero return leaves state 15 untouched.
+CREDITS_EXIT_FINISHED = (0, 0x4F6B88, ((0x1E113C, 0x211338), (0x1E114C, 0x2110E0)),
+                         ("mx_maintheme_l.vag", 1))
+CREDITS_EXIT_RUNNING = (15, 0x4F6FB8, (), None)
+
+
+# Which font word each text_begin call reads, found by planting distinct sentinel
+# values in the two font pointer words (0x4f7100 medium, 0x4f7104 small; see
+# research-ui docs/formats/ui-fonts.md). (site, font, layer, colour) per fixture.
+# The list's own text_begin (0x1a09e8) takes its font from the caller: the front
+# end passes the medium word; the pause fixture passes a zero word (font Unknown).
+FONT_USES = {
+    "frontend_list_state0": ((0x1E0DCC, "small", 7, 0x64464646),
+                             (0x1A09E8, "medium", 7, 0)),
+    "frontend_difficulty_extra": ((0x1E13C8, "small", 6, 0x082D5049),),
+    "name_entry": ((0x22C9C0, "medium", 6, 0x585E5D),
+                   (0x22D0E4, "small", 6, 0x316864),
+                   (0x22D198, "medium", 6, 0x585E5D)),
+    "credits": ((0x223E40, "medium", 7, 0x80000000),),
+    "pause": ((0x18D5E8, "medium", 7, 0x80464646),),
+}
+
+
 def credits_one_line_geometry(scroll_y):
     """Two centered submissions for one authored wide-string pointer.
 

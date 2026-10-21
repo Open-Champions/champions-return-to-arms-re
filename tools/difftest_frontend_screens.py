@@ -34,12 +34,24 @@ KIND = {
 }
 
 
+# Font pointer words: 0x4f7100 is the medium font and 0x4f7104 the small one
+# (research-ui docs/formats/ui-fonts.md, startup 0x323f64-0x323fa4). Sentinels
+# let a text_begin record name which word its first argument was read from.
+FONT_SENTINELS = {0x4F7100: 0xF0F0F0F0, 0x4F7104: 0xF1F1F1F1}
+FONT_NAMES = {0xF0F0F0F0: "medium", 0xF1F1F1F1: "small"}
+
+
+def seed_fonts(e):
+    for addr, value in FONT_SENTINELS.items():
+        e.mem.w32(addr, value)
+
+
 def record(call):
     """One normalised record; pointer arguments are dropped."""
     a = [v & 0xFFFFFFFF for v in call.args[:7]]
     kind = KIND[call.target]
     if kind == "text_begin":       # (font, layer, colour)
-        return (call.site, kind, a[1], a[2])
+        return (call.site, kind, FONT_NAMES.get(a[0], a[0]), a[1], a[2])
     if kind in ("centered", "wide", "wrapped", "ascii", "ascii_centered"):
         return (call.site, kind, a[0], a[1])
     if kind == "wrapped_centered":
@@ -60,6 +72,7 @@ def emulator(path, seed):
     e.mem.auto_map = True
     e.mem.w32(0x404460, seed)
     e.follow = set()
+    seed_fonts(e)
     return e
 
 
