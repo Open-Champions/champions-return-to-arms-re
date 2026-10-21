@@ -48,8 +48,9 @@ loop, which the list's own terminator makes unreachable.
 `world_collectObjectsInBox`, and per eligible object `Creature.v0` (slot 0), `StaticFire_typeinfo`,
 `light_unlink`.
 
-The count of step 10 includes the player and creatures that stand within 30 units: standing in a
-fire, or building a fire among three others, halves its life.
+The count of step 10 includes whatever the box query returns beside the fire: creatures that stand
+within 30 units count as well as other fires (*Inferred* for a player: the query's own filter is
+not part of this document), so building a fire among three other objects halves its life.
 
 ## 3. `StaticFire_initCommon` `0x2c5814` (fire)
 
@@ -103,7 +104,8 @@ untouched and only the velocity words and the draw happen.
 | `+0x76` | ring size | 100 or 250 | initCommon |
 | `+0x78`, `+0x7a` | both | 0 | initCommon |
 | `+0x7c` | life | −1, then life, then halved | initCommon, ctor |
-| `+0x80`–`+0xb7`, `+0xb0`–`+0xbb` | | the light record, position | ctor (§2 steps 3–4) |
+| `+0x80`–`+0xac` | | the light record (registered by `light_link`) | ctor (§2 step 4) |
+| `+0xb0`–`+0xbb` | | light position | ctor (§2 step 3) |
 | `+0x4a4`, `+0x4a8` | | ring pointer, owner | initCommon, ctor |
 
 ## 6. Not executed
