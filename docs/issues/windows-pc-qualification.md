@@ -1625,6 +1625,69 @@ retain their hashes. The four-controller candidate remains private and is not
 installed. Wider campaign progression/completion, physical multi-controller
 play, WAN, reference fidelity and performance remain open.
 
+## Four-player campaign route movement
+
+The private four-controller candidate completes the first short western waypoint
+on the saved mission route. Its actual child exits zero with 1,667 watched rows
+and no timeout. The complete accepted return prefix, 1,573 rows across 300 shared
+columns, matches exactly without normalization.
+
+All four logical owners supply six eight-field movement pulses, separated by two
+neutral fields, then release for 30 fields. The actual decoded input records
+contain 48 held left-stick fields per owner, with digital controls and the eight
+new right-stick columns neutral. Measured westward displacement is 112.65, 105.85,
+49.30 and 123.64 units. All four exceed the predeclared displacement goals and
+remain inside the corridor; maximum pairwise XY separation is 67.09 units, below
+the 160-unit bound. Their positions are stable throughout the final release.
+Different displacement under simultaneous input does not isolate the effects of
+terrain, contact or camera behavior.
+
+The initial offline readers misinterpreted the normalized diagonal axis values
+and the relationship between command markers and decoded guest-pad updates.
+The original false receipts are preserved. Separate corrected readers use the
+actual adapter conversion and require each of the six exact eight-field guest
+intervals. The game's raw-pad snapshot also copies decoded synthetic direction
+bits. Source and trace review show the command at field F becomes visible
+in guest pad RAM at F+1 in these intervals. No rows are shifted or normalized,
+and game code and actual inputs are unchanged. This is not a measurement of
+physical device or input-to-display latency.
+
+All four remain at full HP, with XP 51, 51, 51 and 77, 500 gold each and Recall
+quantities 1, 2, 2 and 2. All four RAM anchors retain the saved file's decoded
+occupied items, equipment/auxiliary references, skills, statistics, allocated
+points and quest data. Game-card I/O reads 311,272 bytes and writes zero.
+The captured town, returned mission and new waypoint views were inspected;
+image byte repeatability and reference fidelity are not established by this
+movement result.
+
+The first-waypoint census resolves the current allocated objects independently of old
+addresses. No positive-HP member of the four explicitly checked creature classes
+is within 500 units of the party at this endpoint. That bounded census does not
+establish all-enemy absence, safe future travel or completion of the mission.
+
+A further ordinary-control attempt clears space, moves selected owners south and
+southwest, then advances the party toward the western corner. Its actual child
+exits zero with 1,811 watched rows and no timeout. All 513,436 values in the
+earlier 1,667-row, 308-column prefix match exactly. The intermediate alignment
+goals pass: southward displacement is 34.00 and 27.32 units for the selected
+owners, and north-south party spread is 15.58 units at that checkpoint.
+
+This follow-up remains a partial route. It reaches the corner, with the leading
+character at X 3038.34 and all four between X 3038.34 and 3079.41, but final
+north-south spread is 42.76 units, exceeding the predeclared 40-unit limit.
+The limit is preserved. Inputs, liveness, five canonical snapshots, source/card
+preservation and zero-write checks pass; a clean process exit does not qualify
+the unmet formation goal. The current endpoint census also finds a positive-HP
+Kobold in state 3 about 432.54 units from the nearest player. Further travel
+requires fresh combat and route checks. No northern turn is attempted here.
+
+The first waypoint reaches part of the source-linked corridor toward Natasla.
+It does not reach the NPC, make a story choice, complete a mission, earn new XP
+or save new progress. Original/copied party files, the earlier checkpoint and
+installed programs retain their hashes. The candidate remains private and
+uninstalled; full campaigns, physical controllers, WAN, fidelity and performance
+remain open.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
