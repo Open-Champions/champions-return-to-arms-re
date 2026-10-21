@@ -20,10 +20,10 @@
 002378f4	AntQueen_trigger	vtable 0x511078 slot 3; purpose not established (was AntQueen_vslot3)
 002378fc	AntQueen_takeDamage	vtable 0x511078 slot 2
 00237918	AntQueen_setState	vtable 0x511078 slot 27
-00238654	AntWave_ctor	constructor; installs vtable 0x50d298
-00238750	AntWave_dtor	vtable 0x50d298 slot 1
-002387d0	AntWave_draw	vtable 0x50d298 slot 5
-00238938	AntWave_run	vtable 0x50d298 slot 4
+00238654	AntWave_ctor	(block, target, pos, facing, life): Creature_ctor(10000); +0xb0 0.6, +0xb8 100, +0x1c target r+10, +0x3cc clock+life, handle +0x3d0; executed (difftest_antwave)
+00238750	AntWave_dtor	slot 1: handle_clear +0x3d0 twice when set (once when 0), Creature_dtor, pool_free with bit 0; executed (difftest_antwave)
+002387d0	AntWave_draw	slot 5: every 3 ticks one particle 0x4febe0 from the wave's own generator +0x44 (shared with Creature_moveTo); executed (difftest_antwave)
+00238938	AntWave_run	slot 4: Creature_run, moveTo target, every 60 ticks target slot 2 (wave, 0x100; 1.0) if dist < r strictly, delete when target lost or +0x3cc < clock; executed (difftest_antwave)
 00238bb8	Arenabeast_ctor	constructor; installs vtable 0x512ee8; object size 0x3d8; factory type names: Arenabeast
 00238f18	Arenabeast_draw	vtable 0x512ee8 slot 5
 00238f5c	Arenabeast_run	vtable 0x512ee8 slot 4
