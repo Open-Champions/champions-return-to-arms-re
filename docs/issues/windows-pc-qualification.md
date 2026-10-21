@@ -30,6 +30,10 @@ release or a completed campaign.
   `830bd77800ad284e4c3244612f37deaf0d9fd82923cb9c6121355031ff8ad07c`.
   It repeats the full arithmetic/PNG/boot/62-input receipt and the matched affected-map
   smoke below. Other gameplay receipts retain their explicitly stated earlier builds.
+- Historic-display extent build, window executable SHA-256:
+  `5223bc3dbd42ad5b9e8f208a3bf5adc960350b7046b55d80f4df593c514afcd3`.
+  Its full arithmetic/PNG/boot/62-input receipt and matched three-scene diagnostic
+  smoke pass. Earlier gameplay and multiplayer receipts retain their build identities.
 - Generated game code, original data, executable binaries, saves, screenshots and
   raw logs remain private. Only authored changes and summarized receipts are contributed.
 
@@ -85,6 +89,8 @@ are recorded and checked again after execution. Raw output must remain local.
 | GS transfer diagnostics and pending-upload order | 54 authored checks, zero failures |
 | Uniform-palette load/alias/continuation behavior | 95 authored public-GIF checks, zero failures |
 | OpenGL alpha/depth canary | 16 checks, zero failures; 1,024 pixels per colour/depth check |
+| Historic-display extent/stride transitions | 33 authored public-interface checks, zero failures |
+| OpenGL historic-extent canary | 31 core checks, zero failures; repeat-edge fidelity remains open |
 | Counter-only renderer replay | 3,011 completed frames with identical draw/texture/resource checksums |
 | Earlier visible baseline session | 461.219 seconds, 59.8 pictures/s at 1280x960, clean exit |
 | Earlier visible sound-device session | WASAPI, 460.43 seconds taken, no request gaps above 30 ms |
@@ -185,6 +191,25 @@ Strike two, zero unspent points, 52 gold and the new guard death. All five accep
 trials exit zero without timeouts or valid player-death rows. Three longer walking
 probes time out after valid Load prefixes; their entire trials remain rejected.
 The first mission is still unfinished.
+
+A later continuation on the same input-fixed native build clears three enemies at
+the next choke using ordinary melee and aimed Holy Strike two, adding 75 XP.
+Another offscreen enemy dies for an additional 25 XP; its cause is not traced to
+a player attack. Proximity to environmental fire is an inference. The resulting
+1,371 XP, 54 gold, level-two allocations and remaining health potion survive normal
+hub overwrite/Load, a fresh frontend Load and mission reentry, and another normal
+save/Load at the existing first mission checkpoint. All four accepted trials exit
+zero without timeouts or valid live-player death rows. This does not qualify the
+next northern checkpoint or mission completion.
+
+Three further northern-enemy kills add 75 XP, reaching 1,446 XP. Ordinary Exit
+Mission and hub regeneration restore full 46 HP and 36.6 mana; a normal overwrite
+and Load plus an independent frontend Load/mission reentry preserve that XP,
+allocations and 54 gold. The last health potion was consumed normally. All three
+accepted trials exit zero with no timeouts or valid player-death rows; 21 reported
+dead targets retain their flags/positions on reentry. A separate probe died and
+automatically restored the older checkpoint despite process exit zero, and remains
+rejected. The next northern checkpoint and mission completion are still open.
 
 Earlier overwrite attempts pressed Cross while the overwrite screen required Square;
 they wrote no new checkpoint and correctly loaded the older zero-XP save. This was
@@ -311,6 +336,54 @@ instructions. Both runs keep 2,899 frames / 3,012 fields / 143,983,790 units. Al
 three inspected 960x720 capture files are byte-identical. The alpha/depth correction
 is demonstrated by the authored GPU canary; broader scene fidelity and performance
 remain unqualified. These destination requests are separate from normal campaign play.
+
+A subsequent correction addresses the 69 boot-time missing states. A framebuffer
+briefly named by DISPLAY remains in the display-history cache for 120 fields.
+The baseline clamps it to 640x224 even after FRAME/scissor establish a 1280x448
+offscreen surface, so the right-half texture alias at column 640 is rejected.
+Fresh wider FRAME/transfer stride now overrides only the historic display clamp;
+current display naming, actual narrow-stride reuse and film/field resizing keep
+their previous behavior. A narrow scissor alone cannot erase an already proved
+wider extent, and callers without fresh stride metadata preserve that proof.
+
+The integrated decoder passes all 182 authored checks: 54 transfer, 95 palette and
+33 extent checks. The extent baseline fails 11 of the new checks. A private
+production-OpenGL fixture passes 31 core extent/clamp/current-display/film checks,
+versus eight baseline failures. Eight additional repeat-wrap characterization
+checks bring the internal total to 39; these characterize a known edge discrepancy
+and must not be counted as correct-GS pixel assertions.
+
+Independent pinned GS software rasterization of the authored repeat fixture finds
+224 edge pixels whose channel classes differ: native repeat sampling puts green at
+the left origin where the reference stays red. The clamp control's channel classes
+match. The reference's 16-bit channel value 248 versus native 255 is a separate
+quantization difference. No original-scene pixel equivalence is established, and
+the UV/quantization issues remain open independently of the extent correction.
+
+Full native replay with the original VIF metadata/RAM callbacks completes 3,011
+fields and 165,474 records. Missing states fall from 72 to three, copies remain
+4,537 and unsupported transfers/unimplemented VU instructions stay zero. Only
+fields 56 through 124 change their modeled resources/vertices/commands; texture
+digests match throughout and all modeled components match from field 125 onward.
+This is a regression comparison of native execution, not independent VIF proof.
+
+The rebuilt extent application repeats fresh matched diagnostic requests for
+`fire4`, `torment0` and `tormenta`: missing states 72 to three, 4,537 copies,
+zero unsupported transfers/unknown GS registers/unimplemented VU1 instructions,
+and unchanged 2,899 frames / 3,012 fields / 143,983,790 units. With antialiasing
+explicitly off, all three selected 960x720 PNGs are byte-identical. Default four-sample
+captures differ in 145,510 / 63,980 / 72,220 pixels respectively; the original failed
+equality receipt is retained. A separate 12-check authored probe queries actual
+GL_SAMPLES at draws using the unchanged production backend: a 640-wide first
+allocation followed by 1280-wide reuse keeps zero samples, while 1280-wide first
+allocation gets the requested four. The early return for unchanged physical size
+preserves those sample counts. The extent correction changes that initial allocation;
+it does not repair the backend's general sample-allocation lifecycle. No-AA equality
+and the driver probe explain the changed default captures without asserting original
+console fidelity. Seven unsupported read-only information no-ops
+were removed from both comparison scripts; destination writes are explicit test
+setup rather than normal campaign transitions. The three remaining states belong
+to one retained fire-scene texture case; general retained-VRAM support remains open.
 
 Inspected captures show textured hub, ice, fire and stone-platform scenes. Forced
 offline entry into three PvP arenas instead leaves the player at Z=-100000; longer

@@ -620,6 +620,9 @@ bool Gs::display_size(uint32_t fbp, int& width, int& height) const {
 // copy out of a surface was put (the heat haze's piece of the picture lies in the middle
 // of texture memory, not at the start of a page).
 Gs::Target& Gs::target_at(uint32_t block, int width, int height) {
+    return target_at(block, width, height, 0);
+}
+Gs::Target& Gs::target_at(uint32_t block, int width, int height, int buffer_width) {
     Target& t = targets[block];
     uint32_t fbp = block >> 5;
     if (!t.id) t.id = next_target++;
@@ -628,7 +631,14 @@ Gs::Target& Gs::target_at(uint32_t block, int width, int height) {
     // it before: the film player shows one buffer of 448 lines, everything else two of 224,
     // at the same place.  (Other surfaces only grow.)
     int dw = 0, dh = 0;
-    if (!(block & 31) && display_size(fbp, dw, dh)) {
+    // A historic display name cannot override a wider render stride proved by
+    // current FRAME/transfer metadata. A narrow scissor does not reset that stride;
+    // a real return to display-width stride does. Canvas callers have no new stride,
+    // so preserve an already proved wider extent rather than inventing a shrink.
+    bool named_now = ((circuits_on & 1) && (dispfb[0] & 0x1ff) == fbp)
+                  || ((circuits_on & 2) && (dispfb[1] & 0x1ff) == fbp);
+    if (!(block & 31) && display_size(fbp, dw, dh)
+        && (named_now || (buffer_width ? buffer_width <= dw : width <= dw && t.width <= dw))) {
         if (t.width != dw || t.height != dh || !t.announced) {
             t.width = dw; t.height = dh;
             t.announced = true;
@@ -845,7 +855,7 @@ void Gs::write(uint32_t address, uint64_t value) {
                 int sx = (int)(pos & 0x7FF), sy = (int)((pos >> 16) & 0x7FF), dx = (int)((pos >> 32) & 0x7FF), dy = (int)((pos >> 48) & 0x7FF);
                 uint32_t source_id = src->second.id;
                 src->second.last_used = frames_ended;
-                Target& dst = target_at(dbp, dx + w, dy + h);
+                Target& dst = target_at(dbp, dx + w, dy + h, int((bb >> 48) & 63) * 64);
                 dst.serial = serial++;
                 dst.fbw = (uint32_t)(bb >> 48) & 0x3F;
                 dst.psm = (uint32_t)(bb >> 56) & 0x3F;
@@ -1391,7 +1401,7 @@ void Gs::rebuild_state() {
         auto known = targets.find(frame_block);
         scissor_height = known != targets.end() && known->second.height ? known->second.height : 448;
     }
-    Target& target = target_at(frame_block, buffer_width ? std::min(c.scissor[2], buffer_width) : std::min(c.scissor[2], 1280), scissor_height);
+    Target& target = target_at(frame_block, buffer_width ? std::min(c.scissor[2], buffer_width) : std::min(c.scissor[2], 1280), scissor_height, buffer_width);
     target.fbw = (uint32_t)(frame_reg >> 16) & 0x3F;
     target.psm = (uint32_t)(frame_reg >> 24) & 0x3F;
     target.serial = serial++;

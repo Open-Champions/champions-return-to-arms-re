@@ -34,7 +34,7 @@ def main():
     if sys.platform == "win32":
         flags += ["-DNOMINMAX", "-static"]
     records = []
-    for test_name in ("gs_transfer_test", "uniform_palette_gif_test"):
+    for test_name in ("gs_transfer_test", "uniform_palette_gif_test", "display_extent_test"):
         program = out / (test_name + (".exe" if sys.platform == "win32" else ""))
         command = [args.cxx] + flags + [str(source / "gs.cpp"),
                    str(source / "worldfill.cpp"), str(here / (test_name + ".cpp"))]

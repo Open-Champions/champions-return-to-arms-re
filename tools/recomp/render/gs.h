@@ -172,6 +172,7 @@ class Gs {
     bool display_size(uint32_t fbp, int& width, int& height) const;
     uint32_t next_target = 1;
     Target& target_at(uint32_t fbp, int width, int height);
+    Target& target_at(uint32_t fbp, int width, int height, int buffer_width);
     // ---- transfers and textures ----
     struct Rect { uint32_t psm, bw; int x, y, w, h; size_t offset, bytes; uint32_t bw_raw; };
     struct UploadSet { std::vector<Rect> rects; std::vector<uint8_t> data; uint64_t hash = 0, serial = 0; bool used = false; };
