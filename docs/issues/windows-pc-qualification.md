@@ -1688,6 +1688,44 @@ installed programs retain their hashes. The candidate remains private and
 uninstalled; full campaigns, physical controllers, WAN, fidelity and performance
 remain open.
 
+## Four-player feedback alignment and northwest turn
+
+The next attempt stops during startup because three new diagnostic watches use
+unsupported `x64` types. Case 17 records no watched fields or captures and does
+not qualify gameplay. Its failed run and the earlier source-admission review,
+which missed the unsupported types, are preserved with a separate correction.
+Case 18 changes those three watches to `hex8` reads, retaining their addresses,
+ordinary controller sequence and geometric requirements. Game code is unchanged.
+The actual child exits zero with 1,899 watched rows and no timeout. Its complete
+1,811-row, 308-column prefix matches case 16 exactly: 557,788 values without
+normalization. The two coordinate-gated alignment holds each take seven fields,
+followed by the bounded northwest turn.
+
+| Case 18 measurement | Observed result |
+|---|---|
+| Northward movement, players 1–4 | 51.012 / 14.937 / 35.212 / 36.575 units |
+| Final north–south spread | 37.107 units; limit 40 |
+| Greatest pairwise horizontal XY separation during the extension | 72.358 units; limit 160 |
+| Final neutral inputs | All four players, 30 fields |
+| Observed stationary XYZ tails within that release | 30 / 25 / 30 / 30 fields |
+| Game-card traffic | 311,272 bytes read; zero written |
+
+All predeclared case 18 movement and formation goals pass. Six recorded state
+anchors retain all four heroes' canonical items, equipment/auxiliary references,
+skills, statistics, allocations, quests and saved return metadata. Health stays
+unchanged, with no additional Recall consumption. The author audit passes 660
+checks and the independent audit passes 2,065; these are bounded receipt checks,
+not game-completeness measures. Neutral inputs do not imply every actor remains
+stationary for the whole release. No sole cause is assigned to the observed
+settling. Source and copied game-save files and all eight installed programs
+retain their hashes. A fresh allocated-object census validates a living Kobold
+139.19 horizontal units from player 1, so this limited result establishes neither
+all-threat absence nor safe onward travel to Natasla. Case 16 remains partial
+under its original 40-unit formation limit, and case 17 remains a startup failure.
+The candidate is private and uninstalled. No NPC decision, new battle, new Save,
+mission or campaign completion, four physical controllers, WAN, general
+performance or console pixel fidelity is qualified here.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
