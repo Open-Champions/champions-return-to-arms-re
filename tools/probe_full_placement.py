@@ -84,7 +84,8 @@ def executed_bodies():
              'ref_potion_ctors', 'ref_combat_round3', 'ref_combat_round4', 'ref_combat_round5',
              'ref_combat_round6', 'ref_skills_a', 'ref_skills_b', 'ref_skills_c',
              'ref_combat_ctors2', 'ref_antqueen_run', 'ref_fire_touch', 'ref_phprop', 'ref_soul_run', 'ref_skeleton_run',
-             'ref_combat_death', 'ref_weapon_holder', 'ref_sweep', 'ref_holder_slots')
+             'ref_combat_death', 'ref_weapon_holder', 'ref_sweep', 'ref_holder_slots',
+             'ref_attach_matrix', 'ref_antwave')
     for name in names:
         try:
             mod = importlib.import_module(name)
