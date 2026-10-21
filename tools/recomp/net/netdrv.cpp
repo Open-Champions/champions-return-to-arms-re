@@ -153,6 +153,19 @@ struct Driver {
     u64 unanswered = 0;
 } D;
 
+// The Windows hosts finish with TerminateProcess, which does not flush this stream.
+// Normal runtime completion calls rt_at_finish on the game thread, after tick writing.
+static void (*g_tick_previous_finish)() = nullptr;
+static bool g_tick_finish_done = false;
+static void finish_tick_log() {
+    if (g_tick_finish_done) return;
+    g_tick_finish_done = true;
+    if (D.tick_log) fflush(D.tick_log);
+    auto previous = g_tick_previous_finish;
+    g_tick_previous_finish = nullptr;
+    if (previous) previous();
+}
+
 int64_t now_ms() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - D.start).count();
 }
@@ -457,6 +470,8 @@ void do_setup() {
             fprintf(D.tick_log, "\t%s", (named ? line.substr(0, equals) : line.substr(0, colon)).c_str());
         }
         fprintf(D.tick_log, "\n");
+        g_tick_previous_finish = rt_at_finish;
+        rt_at_finish = finish_tick_log;
     }
     value = option("tick-do");
     if (!value.empty()) {

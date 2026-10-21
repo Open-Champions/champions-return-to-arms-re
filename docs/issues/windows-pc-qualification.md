@@ -22,6 +22,10 @@ release or a completed campaign.
   `2533bca8ec77c73a4127c5edd2951246020f247a49ab2987035b621f05fb86f4`.
   This build repeats the full arithmetic/PNG/boot/62-input receipt below; earlier
   gameplay and network observations retain the input-fixed build identity above.
+- Subsequent normal-finish tick-log correction, window executable SHA-256:
+  `7ddfb8ec522741f9dc3b37e87912e3768c09659466e2ab2f39e76932b46ad3d0`.
+  Its paired terminal-row trial is recorded separately below; earlier gameplay
+  receipts retain their stated executable identities.
 - Generated game code, original data, executable binaries, saves, screenshots and
   raw logs remain private. Only authored changes and summarized receipts are contributed.
 
@@ -351,6 +355,28 @@ Character-menu selection and subsequent play are controller-scripted; there are 
 rig `poke`/`call` commands or level/stat/inventory fixtures in these trials.
 It does not test the original online menu flow, internet connectivity, different
 PCs or long-session stability.
+
+## Windows tick-log completion
+
+A normal scripted quit could lose the buffered end of a Windows network tick log,
+because the host terminates the process after flushing only standard output and
+standard error. The driver now flushes its own tick stream through the existing
+game-thread finish callback, then chains the prior handler once. Installation is
+one-time and the callback tolerates reentry. No GUI-thread or fatal-exit path is
+changed.
+
+A matched two-client, fresh-card trial issues echo-only markers at ticks 607 and
+613, then quits through the ordinary rig command. Both baseline clients print the
+613 marker and exit zero, but their tick files stop at 604 complete rows with one
+partial trailing row. Both rebuilt clients retain all 613 complete rows and a
+terminal newline, with no partial rows. All 22 shared columns match over those
+613 ticks, and net/online/application finish reports each appear once. Both actual
+child exits and the strict driver exit are zero. Exact-helper native normal, null
+and reentrant tests also pass; the Python suite remains 675/675.
+
+This corrects evidence loss at normal completion. It does not itself establish
+party-wipe recovery or a rendering/gameplay correction. Earlier local recovery
+observations whose confirmed logs end before restoration remain incomplete.
 
 ## Remaining qualification
 
