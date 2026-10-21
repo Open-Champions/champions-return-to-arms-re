@@ -266,11 +266,43 @@ and the two seams above are what happens after this seed.
 These are cosmetic. They are not a reflection pass.
 
 The drawer does it only when level option bit 0x10 is set and the game is not frozen
-(Executed: either condition clear skips it). It then advances the generator at
-0x404460, `seed × 0x0019660d + 0x3c6ef35f`, and calls `water_disturb` (0x189514)
-only when `(newSeed >> 16) mod 300` is 0. The call's strength is 1500 and its radius
-is 6 (Executed). It then calls `terrain_height` (0x183820) and `particle_spawn`
-(0x18f3f8) twice. The point it picks inside the chunk bounds was not reduced. U.
+(Executed: either condition clear skips it, and the seed at 0x404460 does not move).
+It then advances that generator, `seed × 0x0019660d + 0x3c6ef35f`. When
+`(newSeed >> 16) mod 300` is not 0, it stores that seed and stops (Executed).
+
+On a hit it advances the generator twice more. The first of those two becomes the
+unit interval `float(seed >> 16) × 0x37800000`, and 0x37800000 is 1/65536. The
+disturb point is
+
+```
+x = minX + (maxX − minX) × u
+y = minY + (maxY − minY) × u
+z = minZ
+```
+
+The same `u` is used for x and y. `(maxZ − minZ) × u` is computed and is not an
+argument (Executed). `water_disturb` (0x189514) is called with the world, that
+point, strength 1500 and radius 6.
+
+`terrain_height` (0x183820) then runs on the same point with radius 6. Its result
+comes back in f0 and replaces the point's z (`docs/spec/world-queries.md`).
+`particle_spawn` (0x18f3f8) is called with definition pointer 0x7d5d00, that point,
+a zero vector, and f12 = 0. Both definition words are zero in the executable; the
+names are not in this image.
+
+The third generator step builds the second spawn's z only:
+
+```
+z = terrain + float(seed >> 16) × (1/65536) × 80 + 24
+```
+
+80 is 0x42a00000 and 24 is 0x41c00000. x and y stay put. The second definition
+pointer is 0x7d5cb0, also zero in the executable, with the same zero vector and
+f12 = 0 (Executed). A hit therefore consumes three seeds. Seed 324 with bounds
+(0.4, −1.2, 3.5, 120.6, 10.0, 40.0) disturbs at bits 0x42a10bbd, 0x40c88098,
+0x40600000. A terrain result of 123.5 then puts the second particle at z bits
+0x4348b360, and the stored seed is 0xaa3e5b7d (Executed). The next seed, 325, is a
+miss: one step, no calls.
 
 Separately, the simulation itself splashes when the countdown at 0x44f200 is negative
 on entry (O 0x186e38). That path reads the strength 41 and the radius 10 from section
@@ -294,8 +326,7 @@ executed.
 
 ## 8. Open
 
-- The drawer's splash point inside the chunk bounds, and the simulation's splash when
-  the countdown at 0x44f200 is negative.
+- The simulation's splash when the countdown at 0x44f200 is negative.
 - What reads the integer 4 at 0x44f06c.
 - Neighbour slots 1 and 3 beyond `water_init` reading them. The per-frame exchange
   does not.

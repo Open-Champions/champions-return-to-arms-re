@@ -148,6 +148,17 @@ class TestVertices(unittest.TestCase):
         self.assertEqual(seed, R.LCG_ADD)
         self.assertIs(splash, (seed >> 16) % 300 == 0)
 
+    def test_splash_point_shares_one_interval_and_keeps_minimum_z(self):
+        bounds = tuple(_raw(v) for v in (0.4, -1.2, 3.5, 120.6, 10.0, 40.0))
+        self.assertTrue(R.splash_seed(324)[1])
+        seed, point = R.splash_point(324, bounds)
+        self.assertEqual(seed, 0xAA3E5B7D)
+        self.assertEqual(point, (0x42A10BBD, 0x40C88098, 0x40600000))
+        self.assertEqual(R.second_particle_z(0x42F70000, seed), 0x4348B360)
+        missed, quiet = R.splash_point(325, bounds)
+        self.assertIsNone(quiet)
+        self.assertEqual(missed, R.splash_seed(325)[0])
+
 
 class TestClaim(unittest.TestCase):
     def test_one_edge_is_truncated_against_one(self):

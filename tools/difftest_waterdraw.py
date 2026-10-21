@@ -483,6 +483,70 @@ def check_splash(elf):
            'option 0x10, not frozen, and the generator hits 0 mod 300')
 
 
+def check_splash_point(elf):
+    bounds = [struct.unpack('<I', struct.pack('<f', v))[0]
+              for v in (0.4, -1.2, 3.5, 120.6, 10.0, 40.0)]
+    seed, point = R.splash_point(324, bounds)
+    terrain = 0x42F70000
+
+    def run(start, options, frozen, plant):
+        emu = new_emu(elf)
+        emu.stub(0x1EBDF8, frozen)
+        world, chunk, dl, queued, tex = prepare_draw(emu, 0, options)
+        for off, bits in zip((8, 0x0C, 0x10, 0x14, 0x18, 0x1C), bounds):
+            emu.mem.w32(chunk + off, bits)
+        seen = []
+
+        def disturb(e):
+            ptr = e.r[5] & 0xFFFFFFFF
+            seen.append(('disturb', e.r[4] & 0xFFFFFFFF,
+                         tuple(e.mem.u32(ptr + 4 * i) for i in range(3)),
+                         e.f[12], e.f[13]))
+            return 0
+
+        def height(e):
+            ptr = e.r[5] & 0xFFFFFFFF
+            seen.append(('terrain', e.r[4] & 0xFFFFFFFF, e.mem.u32(ptr + 8), e.f[12]))
+            if plant:
+                e.f[0] = terrain
+            return 0
+
+        def spawn(e):
+            pos = e.r[5] & 0xFFFFFFFF
+            extra = e.r[6] & 0xFFFFFFFF
+            seen.append(('spawn', e.r[4] & 0xFFFFFFFF,
+                         tuple(e.mem.u32(pos + 4 * i) for i in range(3)),
+                         e.f[12], tuple(e.mem.u32(extra + 4 * i) for i in range(3))))
+            return 0
+
+        emu.stub(0x189514, function=disturb)
+        emu.stub(0x183820, function=height)
+        emu.stub(0x18F3F8, function=spawn)
+        emu.mem.w32(0x404460, start)
+        emu.mem.w32(0x44FDCC, 1)
+        draw_words(emu, world, chunk, dl, 0)
+        return emu.mem.u32(0x404460), seen
+
+    got_seed, seen = run(324, 0x10, 0, True)
+    strength = struct.unpack('<I', struct.pack('<f', R.SPLASH_STRENGTH))[0]
+    radius = struct.unpack('<I', struct.pack('<f', R.SPLASH_RADIUS))[0]
+    world_ok = len(seen) == 4 and seen[0][1] != 0 and seen[0][1] == seen[1][1]
+    hit = (got_seed == seed and world_ok
+           and seen[0][2:] == (point, strength, radius)
+           and seen[1][2:] == (point[2], radius)
+           and seen[2][1:] == (R.PARTICLE_FIRST, (point[0], point[1], terrain), 0, (0, 0, 0))
+           and seen[3][1:] == (R.PARTICLE_SECOND,
+                               (point[0], point[1], R.second_particle_z(terrain, seed)),
+                               0, (0, 0, 0)))
+    missed_seed, missed = run(325, 0x10, 0, False)
+    quiet_seed, quiet = run(324, 0, 0, False)
+    frozen_seed, frozen = run(324, 0x10, 1, False)
+    report('splash-point', hit and missed == [] and missed_seed == R.splash_seed(325)[0]
+           and quiet == [] and quiet_seed == 324 and frozen == [] and frozen_seed == 324,
+           'shared unit interval, z at the minimum, then terrain and the second lift'
+           if hit else repr(seen))
+
+
 def main(argv):
     path = find_elf(argv)
     if path is None:
@@ -502,6 +566,7 @@ def main(argv):
     check_vu(path)
     check_claim(path)
     check_splash(path)
+    check_splash_point(path)
     print('%d failed' % FAILS)
     return 1 if FAILS else 0
 

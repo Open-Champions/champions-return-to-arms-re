@@ -46,6 +46,11 @@ CLIP = 1000.0                     # a vertex at exactly 1000 is kept
 SPLASH_STRENGTH = 1500.0
 SPLASH_RADIUS = 6.0
 SPLASH_MODULUS = 300
+SPLASH_UNIT = 0x37800000             # 1/65536, applied to the generator's high half
+PARTICLE_RISE = 0x42A00000           # 80, the second spawn's random lift
+PARTICLE_LIFT = 0x41C00000           # 24, added after that lift
+PARTICLE_FIRST = 0x7D5D00
+PARTICLE_SECOND = 0x7D5CB0
 LCG_MUL = 0x0019660D
 LCG_ADD = 0x3C6EF35F
 KEEP_FRAMES = 200
@@ -76,6 +81,10 @@ def _cpu_add(a, b):
 
 def _cpu_mul(a, b):
     return ee_emu.fp_mul(a, b, _CPU)
+
+
+def _cpu_sub(a, b):
+    return ee_emu.fp_sub(a, b, _CPU)
 
 
 def _vu_add(a, b):
@@ -414,6 +423,41 @@ def splash_seed(seed):
     """The drawer's generator. The second value is true when a splash is spawned."""
     new = (int(seed) * LCG_MUL + LCG_ADD) & 0xFFFFFFFF
     return new, (new >> 16) % SPLASH_MODULUS == 0
+
+
+def _unit(seed):
+    return _cpu_mul(ee_emu.fp_from_int(int(seed) >> 16, _CPU), SPLASH_UNIT)
+
+
+def _along(lo, hi, unit):
+    return _cpu_add(lo, _cpu_mul(_cpu_sub(hi, lo), unit))
+
+
+def splash_point(seed, bounds):
+    """The point the drawer passes to water_disturb, after the option and freeze gates.
+
+    bounds is six raw float bits: minimum x, y, z then maximum x, y, z. A miss
+    returns the advanced seed and None. A hit returns the seed after three steps
+    and the disturb point. z is the minimum; the z extent is multiplied by the
+    same unit interval and then not used. x and y share that interval.
+    """
+    seed1, hit = splash_seed(seed)
+    if not hit:
+        return seed1, None
+    seed2, _again = splash_seed(seed1)
+    unit = _unit(seed2)
+    min_x, min_y, min_z, max_x, max_y, _max_z = (int(b) & 0xFFFFFFFF for b in bounds)
+    return splash_seed(seed2)[0], (_along(min_x, max_x, unit), _along(min_y, max_y, unit), min_z)
+
+
+def second_particle_z(terrain, seed):
+    """z of the second particle. seed is the hit value splash_point returned.
+
+    The first particle uses the terrain height itself. x and y stay on the
+    disturb point. Order is the unit interval, times 80, plus the terrain, plus 24.
+    """
+    lift = _cpu_mul(_unit(seed), PARTICLE_RISE)
+    return _cpu_add(_cpu_add(int(terrain) & 0xFFFFFFFF, lift), PARTICLE_LIFT)
 
 
 def _s16(word):
