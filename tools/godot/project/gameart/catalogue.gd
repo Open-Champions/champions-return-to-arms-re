@@ -7,14 +7,24 @@ extends RefCounted
 #   rect          the part used, in texels of the woven picture: x, y, w, h
 #   name          the texture's content figure as the art pack names it (tools/play-net/README.md)
 #   pack          that name when this Mac's 4x pack had the file when the catalogue was written ("" none)
+# --- round 4 (2026-10-20): used size, not the GIF rectangle ---
+# For the five keys below, page and rect are the TEX used size: the source
+# rectangle ui_drawSpriteImpl (0x17b590) and the clipped drawer (0x17b8b0)
+# pass. The GIF image rectangle is a different size and is not what those drawers sample.
+# name and pack still name the older art-pack files and were not regenerated.
+#   bar_blue, bar_red          used 100x8,  source (0,0,100,8), upload 104x8 PSMT4, rows 4
+#   button                     used 83x38,  source (0,0,83,38), upload 88x40 PSMT4, rows 19
+#   statusbar, statusbar_glow  used 160x46, source (0,0,160,46), upload 80x24 PSMCT32, rows 23
+# Frames 00-09 of each bar are the same sizes as frame 10. The nine INTERFAC
+# frame pieces already matched. See docs/hud-layout.md, "Round 4".
 const VERSION := 1
 const ENTRIES := {
-	"bar_blue": {"lump": "BG/DATA/HUD.LMP", "entry": "bar_blue10.tex", "page": [104, 8], "rows": 4, "rect": [0, 0, 104, 8], "pack": "b07b1bf1d7554714-180200347e0f6521-p20-104x8.png", "name": "b07b1bf1d7554714-180200347e0f6521-p20-104x8.png", "opaque": false},
+	"bar_blue": {"lump": "BG/DATA/HUD.LMP", "entry": "bar_blue10.tex", "page": [100, 8], "rows": 4, "rect": [0, 0, 100, 8], "pack": "b07b1bf1d7554714-180200347e0f6521-p20-104x8.png", "name": "b07b1bf1d7554714-180200347e0f6521-p20-104x8.png", "opaque": false},
 	"bar_green": {"lump": "BG/DATA/HUD.LMP", "entry": "bar_green10.tex", "page": [104, 8], "rows": 3, "rect": [0, 0, 104, 6], "pack": "2b6ec840ff029be6-3ae00561a72a7e31-p20-104x8.png", "name": "2b6ec840ff029be6-3ae00561a72a7e31-p20-104x8.png", "opaque": false},
-	"bar_red": {"lump": "BG/DATA/HUD.LMP", "entry": "bar_red10.tex", "page": [104, 8], "rows": 4, "rect": [0, 0, 104, 8], "pack": "8ffbb8af3ecd9b6f-5c8b7890ebc1e562-p20-104x8.png", "name": "8ffbb8af3ecd9b6f-5c8b7890ebc1e562-p20-104x8.png", "opaque": false},
+	"bar_red": {"lump": "BG/DATA/HUD.LMP", "entry": "bar_red10.tex", "page": [100, 8], "rows": 4, "rect": [0, 0, 100, 8], "pack": "8ffbb8af3ecd9b6f-5c8b7890ebc1e562-p20-104x8.png", "name": "8ffbb8af3ecd9b6f-5c8b7890ebc1e562-p20-104x8.png", "opaque": false},
 	"bar_yellow": {"lump": "BG/DATA/BUST.LMP", "entry": "bar_yellow00.tex", "page": [96, 16], "rows": 5, "rect": [0, 0, 96, 10], "pack": "c818ee459d1c3eb8-d7fa2acc53e17fe5-p20-96x16.png", "name": "c818ee459d1c3eb8-d7fa2acc53e17fe5-p20-96x16.png", "opaque": false},
 	"bossmeter": {"lump": "BG/DATA/HUD.LMP", "entry": "bossmeter.tex", "page": [216, 24], "rows": 12, "rect": [0, 0, 216, 24], "pack": "c0ba3ba19cbd22c0-162fa278bc9850f6-p20-216x24.png", "name": "c0ba3ba19cbd22c0-162fa278bc9850f6-p20-216x24.png", "opaque": false},
-	"button": {"lump": "BG/DATA/INTERFAC.LMP", "entry": "button.tex", "page": [88, 40], "rows": 19, "rect": [0, 0, 88, 38], "pack": "", "name": "1bd21d633d300d55-e9b5fc864eca3f13-p20-88x40.png", "opaque": false},
+	"button": {"lump": "BG/DATA/INTERFAC.LMP", "entry": "button.tex", "page": [83, 38], "rows": 19, "rect": [0, 0, 83, 38], "pack": "", "name": "1bd21d633d300d55-e9b5fc864eca3f13-p20-88x40.png", "opaque": false},
 	"corona": {"lump": "BG/DATA/HUD.LMP", "entry": "smallspelliconcorona.tex", "page": [48, 48], "rows": 23, "rect": [0, 0, 48, 46], "pack": "fc9639772f9339fd-da82fa83b7553375-p20-48x48.png", "name": "fc9639772f9339fd-da82fa83b7553375-p20-48x48.png", "opaque": false},
 	"dialog": {"lump": "BG/DATA/DLGBOX.LMP", "entry": "box.tex", "page": [560, 160], "rows": 78, "rect": [0, 0, 560, 156], "pack": "8b712a5c7afc2b33-e80341d7bcf4696e-p20-560x160.png", "name": "8b712a5c7afc2b33-e80341d7bcf4696e-p20-560x160.png", "note": "dialogue box with its name tab", "opaque": false},
 	"exclaim": {"lump": "BG/DATA/ICONS.LMP", "entry": "exclaim.tex", "page": [64, 72], "rows": 35, "rect": [0, 0, 64, 70], "pack": "4c8d8f5f1f6558e9-bd61055bfff8d2ce-p20-64x72.png", "name": "4c8d8f5f1f6558e9-bd61055bfff8d2ce-p20-64x72.png", "opaque": false},
@@ -129,8 +139,8 @@ const ENTRIES := {
 	"shot_lhub": {"lump": "BG/DATA/LHUB.LMP", "entry": "shot.tex", "page": [1024, 320], "rows": 160, "rect": [2, 2, 636, 316], "pack": "ef08f1c0f487e8fd-4c8b59d4d6896008-p19-1024x320.png", "name": "ef08f1c0f487e8fd-4c8b59d4d6896008-p19-1024x320.png", "opaque": false},
 	"shot_lintro": {"lump": "BG/DATA/LINTRO.LMP", "entry": "shot.tex", "page": [1024, 320], "rows": 160, "rect": [2, 2, 636, 316], "pack": "4ca407095aac2cc1-d468cad3b9aa65d6-p19-1024x320.png", "name": "4ca407095aac2cc1-d468cad3b9aa65d6-p19-1024x320.png", "opaque": false},
 	"socket": {"lump": "BG/DATA/BUST.LMP", "entry": "frame.tex", "page": [48, 48], "rows": 24, "rect": [0, 0, 48, 48], "pack": "b4e00822cad62dc4-fab15a2ca5f90ff0-p20-48x48.png", "name": "b4e00822cad62dc4-fab15a2ca5f90ff0-p20-48x48.png", "note": "round frame of the bust", "opaque": false},
-	"statusbar": {"lump": "BG/DATA/HUD.LMP", "entry": "hud_statusbar00.tex", "page": [160, 48], "rows": 23, "rect": [0, 0, 160, 46], "pack": "bece32f59e18f149-68f05964f0a90cb7-p19-160x48.png", "name": "bece32f59e18f149-68f05964f0a90cb7-p19-160x48.png", "opaque": false},
-	"statusbar_glow": {"lump": "BG/DATA/HUD.LMP", "entry": "hud_statusbar00glow.tex", "page": [160, 48], "rows": 23, "rect": [0, 0, 160, 46], "pack": "9885bb9c029754fd-1ccc121594212e05-p19-160x48.png", "name": "9885bb9c029754fd-1ccc121594212e05-p19-160x48.png", "opaque": false},
+	"statusbar": {"lump": "BG/DATA/HUD.LMP", "entry": "hud_statusbar00.tex", "page": [160, 46], "rows": 23, "rect": [0, 0, 160, 46], "pack": "bece32f59e18f149-68f05964f0a90cb7-p19-160x48.png", "name": "bece32f59e18f149-68f05964f0a90cb7-p19-160x48.png", "opaque": false},
+	"statusbar_glow": {"lump": "BG/DATA/HUD.LMP", "entry": "hud_statusbar00glow.tex", "page": [160, 46], "rows": 23, "rect": [0, 0, 160, 46], "pack": "9885bb9c029754fd-1ccc121594212e05-p19-160x48.png", "name": "9885bb9c029754fd-1ccc121594212e05-p19-160x48.png", "opaque": false},
 }
 
 # skill id (g_skillTable 0x41b170 index, the HUD's slot "skill_id") -> its icon: the entry each Skill<Name>_slot7
