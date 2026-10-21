@@ -394,10 +394,15 @@ These are the totals of `docs/script.md`. How the literal arguments fall:
   bytes (`docs/spec/script-machine.md` 9). For those, usePresets is the caller's saved
   frame pointer, which is 0 in an entry function (Inferred). `giveOnePlayerItem`: both
   calls pass usePresets 1, and both texts are preset names.
-- `generateMonster`: 121 literal class names, 16 distinct, at most 6 distinct in one
-  script. None is 24 bytes or longer. All 121 reach a constructor through the original
-  factory, and none reaches the `Skeleton` constructor, so the rise state is not used
-  from shipped scripts. 15 names are not literals.
+- `generateMonster`: 121 calls with both arguments literal: 16 distinct class names, at
+  most 6 distinct in one script. None is 24 bytes or longer. All 121 reach a constructor
+  through the original factory, and none reaches the `Skeleton` constructor. **Corrected
+  in `docs/spec/generate-monster-names.md`:** the other 15 calls are 12 computed class
+  names and 3 computed generator names, and the 3 bring 2 more literal classes (18
+  distinct in all). The computed classes are rows of constant string tables, picked
+  through `getRand` shuffles. 2 of the 3 computed-generator calls pass a class that the
+  factory builds with the `Skeleton` constructor. So the rise state **is** reachable from
+  shipped scripts whenever that generator is a `ScriptGenerator`.
 
 ## 8. What the native client should implement first
 
@@ -430,10 +435,12 @@ start-to-finish play-through.
 
 ## 10. Open
 
-- The writer of 0x4d8ae8, if there is one, by a non-immediate address.
-- The meaning of the flag bit that guards message +0xf4 (0x135400).
-- `ItemProp_ctor2`'s own draw was not re-run here.
-- The 15 non-literal `generateMonster` class names were not classified.
-- `givePlayerRandom` was not composed.
-- Which objects on the disc are `ScriptGenerator`s, with their props. That needs the
-  level-record reader, which this round did not run.
+All six points were taken up in `docs/spec/items-gaps.md`:
+
+- The writer of 0x4d8ae8: none in the executable (section 1 there). The word stays 0.
+- The flag bit that guards message +0xf4 (0x135400): the host bit, bit 0 of 0x402a30
+  (section 2 there, executed).
+- `ItemProp_ctor2`'s draw and `givePlayerRandom`: `docs/spec/item-drops.md`.
+- The 15 non-literal `generateMonster` arguments: `docs/spec/generate-monster-names.md`.
+- Which disc objects are `ScriptGenerator`s: 105 records in 11 levels
+  (`docs/spec/hide-monster.md`).

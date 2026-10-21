@@ -757,8 +757,8 @@ drop paths, `clearAllSkills` and the mission bytes) are executed in `docs/script
 | 30 | `setMonsterRange` | 0x1449b4 | s name, i range | If range > 0: virtual slot 34 with the 16-bit value (same call as setMonsterVal which = 4). | creature | - | 0 / 0 |
 | 31 | `killMonster` | 0x144a84 | s name | For creatures not already dead: object flags gain 0x2009, hit points (+0x228) = 0, virtual slot 27 with 0x14. | creature flags, hp, AI state | - | 15 / 5 |
 | 32 | `deleteMonster` | 0x144b44 | s name | Virtual slot 1 (destructor) with 3: immediate delete. | object list | - | 33 / 8 |
-| 33 | `hideMonster` | 0x144c00 | s name | Any object: `obj_moveOffGrid` (0x14ef48), object flag 0x8000 (not run); creatures also get bit 3 of +0x231. | object flags, grid link | - | 373 / 48 |
-| 34 | `showMonster` | 0x144db8 | s name | Reverse of hideMonster: `obj_updateGridCell` (0x14f028), clears 0x8000 and the +0x231 bit. | object flags, grid link | - | 52 / 23 |
+| 33 | `hideMonster` | 0x144c00 | s name | Any object: `obj_moveOffGrid` (0x14ef48), object flag 0x8000; creatures also get bit 3 of +0x231. Executed: `docs/spec/hide-monster.md`. | object flags, grid link | - | 373 / 48 |
+| 34 | `showMonster` | 0x144db8 | s name | Reverse of hideMonster: `obj_updateGridCell` (0x14f028), clears 0x8000 and the +0x231 bit. Executed: `docs/spec/hide-monster.md`. | object flags, grid link | - | 52 / 23 |
 | 35 | `moveMonster` | 0x144cb8 | s name, s target | Copies position and facing of the target object to every object named name and relinks each into the grid. | object position, grid link | - | 3 / 2 |
 | 36 | `followPlayer` | 0x144e78 | s name | Sets bit 23 of +0xa8 and applies the same charm call as charmMonster. | creature | - | 0 / 0 |
 | 37 | `stopFollowingPlayer` | 0x144f2c | s name | Clears bit 23. | creature +0xa8 | - | 0 / 0 |
