@@ -13,6 +13,9 @@ Needs your own SLUS_209.73 (US v2.00).  Without it the script says so and exits 
     --placement    round5: AntQueen (0, 140), Skeleton (70, 140), Soul (-70, 140) as the
                    native Full fixture had them (open-champions 9c224e7); native: the Soul
                    at (-60, 100) as it is now (ed062c3).  Default round5.
+    --hit-every N  every N ticks the player hits the probed creature through its own
+                   virtual slot 2 (--hit-amount A, default 10; flags 1) before its run:
+                   a stand-in for the attacking player of the native smoke test
     --all          do not stop at the first unexecuted body: answer it with 0 and go on,
                    so the run lists every one it meets, with the tick of its first call
 
@@ -87,6 +90,9 @@ def executed_bodies():
         out.setdefault(addr, 'difftest_creature')
     for addr, where in EXECUTED_ELSEWHERE.items():
         out.setdefault(addr, where)
+    import ref_combat_runtime as T
+    for addr in T.EMPTY_BODIES:                 # empty bodies (docs/combat-runtime.md 9)
+        out.setdefault(addr, 'ref_combat_runtime.EMPTY_BODIES')
     return out
 
 
@@ -97,15 +103,16 @@ EXECUTED_ELSEWHERE = {
 
 
 # The run functions' switches: entry -> (address of the range test, jump-table base,
-# states whose arm a difftest has executed).  Round 5 executed states 0 and 1 of AntQueen
-# and Skeleton and the Soul phase gate (docs/spec/combat-round5.md).
+# states whose arm a difftest has executed).  Round 5 executed states 0 and 1 of Skeleton
+# and the Soul phase gate (docs/spec/combat-round5.md); docs/spec/antqueen-run.md every
+# AntQueen state.
 RUN_SWITCHES = {
     'AntQueen_run': (0x236F78, 0x237004),
     'Skeleton_run': (0x2A6864, 0x2A6954),
     'Soul_run': (0x2A9870, 0x2A997C),
 }
 RUN_STATES_EXECUTED = {
-    'AntQueen_run': {0, 1},
+    'AntQueen_run': set(range(0x1A)),   # every arm: tools/difftest_antqueen_run.py (this round)
     'Skeleton_run': {0, 1},
     'Soul_run': set(),
 }
@@ -126,6 +133,8 @@ SERVICES = {
     'libc_sprintf', 'model_getBounds', 'model_getAttachPoint', 'model_getSamplePointCount',
     'model_getSamplePoint', 'Creature_init', 'obj_updateActive', 'net_objOrGhost',
     'players_anyWithinRadius', 'player_speedScale',
+    'isNearCameraFocus480',             # camera only; its callers are particle/effect code
+    'obj_delete',                       # the deferred delete (docs/spec/object-system.md)
 }
 
 
@@ -138,6 +147,10 @@ FACING = 0xC000
 LEVEL = b'drunare'                      # any level but airhub (the Soul class tests that name)
 HP = 120.0
 TYPE_NAMES = {'antqueen': b'AntQueen', 'skeleton': b'Skeleton', 'soul': b'Soul'}
+# The stand-ins carry their class's own virtual table, so that a slot the probed creature
+# calls on them reaches the real function (run when executed, reported when not).
+TABLES = {'player': 0x511308, 'skelight': 0x5174B0, 'antqueen': 0x511078, 'skeleton': 0x5175F8,
+          'soul': 0x517740}
 # Type-info getters (virtual slot 0; C++ runtime, symbols/runtime.tsv): they run for real.
 TYPEINFO = {'creature': 0x3C2608, 'player': 0x3C3AB8, 'antqueen': 0x3C3C78, 'skeleton': 0x3CC62C,
             'skelight': 0x3CC6DC, 'soul': 0x3CC7A0}
@@ -193,8 +206,12 @@ class World(DCT.World):
         if probe is None:                       # during the world's own build
             return DCT.World.respond(self, name, args, view, rng)
         handler = getattr(self, 'on_' + name.replace('.', '_'), None)
+        label = name
+        rec = probe.rig.emu._fresh_call
+        if name.startswith(('Creature.v', 'Holder.v')) and rec is not None and rec.target in probe.symbols:
+            label = '%s (%s)' % (probe.symbols[rec.target], name)
         cls = probe.classify_name(name)
-        probe.note_stub(name, cls, args)
+        probe.note_stub(label, cls, args)
         if handler is None or name not in self.DETERMINISTIC:
             probe.defaulted[name] = probe.defaulted.get(name, 0) + 1
             return Res()
@@ -208,7 +225,14 @@ class World(DCT.World):
         'handle_link', 'handle_clear', 'Creature.v16', 'Creature.v37', 'obj_getPropInt',
         'obj_getPropStr', 'iter_begin', 'iter_next', 'net_objOrGhost', 'player_speedScale',
         'model_getSamplePointCount', 'terrain_raycast', 'world_raycast',
+        'SkillLifeTap_getStat0Fraction', 'player_getSkillRank',
     }
+
+    def on_SkillLifeTap_getStat0Fraction(self, args, view, rng):
+        return Res(f=0)
+
+    def on_player_getSkillRank(self, args, view, rng):
+        return Res(0)
 
     # ---- construction and services -----------------------------------------------------
     def on_GameObject_ctor(self, args, view, rng):
@@ -345,7 +369,10 @@ class World(DCT.World):
 # construction whose executed bodies need the full object lists of tools/ref_objects.py.
 KEEP_AS_SERVICE = {'GameObject_ctor', 'pool_new', 'pool_free', 'obj_runEveryFrame', 'obj_runEvery60',
                    'handle_link', 'handle_clear', 'handle_removeNode', 'obj_updateGridCell',
-                   'obj_moveOffGrid', 'iter_begin', 'iter_next', 'iter_end'}
+                   'obj_moveOffGrid', 'iter_begin', 'iter_next', 'iter_end',
+                   # executed (skills); its skill object is the game's, which this world has
+                   # not got: the stand-in player has no rank in it, so the answer is 0
+                   'SkillLifeTap_getStat0Fraction'}
 SERVICES |= KEEP_AS_SERVICE | {'obj_runEveryFrame', 'obj_runEvery60', 'obj_updateGridCell', 'obj_moveOffGrid',
                                'iter_end', 'lump_load'}
 
@@ -383,14 +410,8 @@ class Probe:
         for addr, name in rig.names.items():
             self.name_of[addr] = name
         # every executed body runs for real unless it is kept as a service
-        self.runtime = set(TYPEINFO.values())
-        self.tables = {}
-        for kind_, getter in TYPEINFO.items():         # a base Creature table per stand-in kind
-            table = emu.alloc(8 * 48)
-            for k in range(0, 8 * 48, 4):
-                mem.w32(table + k, mem.u32(world.vt_base + k))
-            mem.w32(table + 4, getter)
-            self.tables[kind_] = table
+        self.runtime = set(TYPEINFO.values()) | {a for a, n in self.symbols.items() if n.endswith('_typeinfo')}
+        self.tables = dict(TABLES)
         for addr, name in list(rig.names.items()):
             if addr in self.executed and name not in KEEP_AS_SERVICE:
                 emu.unhook(addr)
@@ -420,7 +441,10 @@ class Probe:
         return target in self.executed or target in self.runtime or DC.LIB_LO <= target < DC.LIB_HI
 
     def label(self, addr):
-        return self.name_of.get(addr) or self.symbols.get(addr) or 'fn_%06x' % addr
+        name = self.name_of.get(addr)
+        if name is None or name.startswith(('Creature.v', 'Holder.v')) and addr in self.symbols:
+            name = self.symbols.get(addr, name)
+        return name or 'fn_%06x' % addr
 
     def classify_name(self, name):
         if name in SERVICES:
@@ -527,11 +551,13 @@ class Probe:
         mem.w8(o + 0x310, team)
         mem.w32(o + 0x4C, 0)
 
-    def _call(self, addr, *args):
+    def _call(self, addr, *args, fargs=()):
         emu = self.rig.emu
         emu.reset_log()
         emu.r[29] = emu.stack_hi - 0x100
         ints = [ee_emu.s32(a & M32) for a in args]
+        for k, raw in enumerate(fargs):
+            emu.f[12 + k] = raw & M32
         emu.trace = []
         try:
             return emu.call(addr, *ints, max_steps=4000000)
@@ -539,17 +565,32 @@ class Probe:
             for fn in sorted(self._functions_run(set(emu.trace))):
                 if fn in self.allowed or fn in self or fn in emu.hooks:
                     continue
-                name = self.label(fn) + ' (entered by a jump)'
+                name = self.label(fn)
+                if self.classify_name(name) != 'unexecuted':
+                    continue
+                name += ' (entered by a jump)'
                 if name not in self.first_seen:
                     self.first_seen[name] = (self.tick, 'unexecuted')
                     self.events.append((self.tick, name))
             for rec in emu.calls:
                 if rec.target not in self and rec.target not in emu.hooks:
                     name = self.label(rec.target)
-                    self.note_stub(name, 'unexecuted', ())
+                    self.note_stub(name, self.classify_name(name), ())
 
     # ---- ticks ---------------------------------------------------------------------------
-    def run(self, ticks):
+    def hit(self, amount, flags=1):
+        """The player hits the creature: its own virtual slot 2 (attacker, flags; amount),
+        as damage_apply's take-damage call makes it (AUTHORED stand-in for the attacking
+        player of the native smoke test)."""
+        mem, c = self.rig.emu.mem, self.world.C
+        table = mem.u32(c + 0x48)
+        fn = mem.u32(table + 8 * 2 + 4)
+        this = (c + mem.s16(table + 8 * 2)) & M32
+        if fn not in self and fn not in self.rig.emu.hooks:
+            self.note_stub(self.label(fn), 'unexecuted', ())
+        self._call(fn, this, self.world.players[0], flags, fargs=(f32(amount),))
+
+    def run(self, ticks, hit_every=0, hit_amount=10.0):
         mem, c = self.rig.emu.mem, self.world.C
         self.stopped = self.ctor_error
         if self.stopped:
@@ -558,6 +599,8 @@ class Probe:
             self.tick = tick
             mem.w32(RC.G_SIM_FRAME, tick)
             try:
+                if hit_every and tick % hit_every == hit_every - 1:
+                    self.hit(hit_amount)
                 self._call(self.run_entry, c)
             except Stop as exc:
                 self.stopped = exc
@@ -590,6 +633,7 @@ def report(probe):
 def main(argv):
     args = list(argv)
     elf, ticks, kinds, serial, placement, stop_first = None, 300, ('antqueen', 'skeleton', 'soul'), 0, 'round5', True
+    hit_every, hit_amount = 0, 10.0
     while args:
         a = args.pop(0)
         if a == '--ticks':
@@ -602,6 +646,10 @@ def main(argv):
             placement = args.pop(0)
         elif a == '--all':
             stop_first = False
+        elif a == '--hit-every':
+            hit_every = int(args.pop(0), 0)
+        elif a == '--hit-amount':
+            hit_amount = float(args.pop(0))
         else:
             elf = a
     if elf is None:
@@ -620,7 +668,7 @@ def main(argv):
     for kind in kinds:
         probe = Probe(elf, kind, placement, serial, stop_first, executed)
         probe.placement = placement
-        probe.run(ticks)
+        probe.run(ticks, hit_every, hit_amount)
         report(probe)
     return 0
 

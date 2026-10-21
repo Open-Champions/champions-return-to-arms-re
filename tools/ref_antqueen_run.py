@@ -42,6 +42,9 @@ F_500 = 0x43FA0000                              # state 0x17 landing sight, 0x23
 POISON = 0x17                                   # descriptor entry id the stings build
 WAVE_SIZE, WAVE_LIFE = 0x3D8, 600               # pool_new size and the last AntWave_ctor argument
 
+# bodies executed by tools/difftest_antqueen_run.py (name -> entry)
+EXECUTED = {'AntQueen_run': 0x236F78, 'AntQueen_pickFlyDest': 0x238150}
+
 EXTERNALS = dict(CT.EXTERNALS)
 EXTERNALS.update({
     'Creature_hitTargetOrPlayerInArc': Ext(0x119A20, 'piiiiiiE', 2, 'i',

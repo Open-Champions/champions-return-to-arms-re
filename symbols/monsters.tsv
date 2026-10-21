@@ -621,7 +621,7 @@
 002a7688	Skeleton_onNearbyEvent	vtable 0x5175f8 slot 12; purpose not established (was Skeleton_vslot12)
 002a774c	Skeleton_takeDamage	vtable 0x5175f8 slot 2
 002a7768	Skeleton_setState	vtable 0x5175f8 slot 27
-002a7e04	Skeleton_isEnemy	vtable 0x5175f8 slot 20; purpose not established (was Skeleton_vslot20)
+002a7e04	Skeleton_isEnemy	vtable 0x5175f8 slot 20 (this, other): Creature_isEnemy + 1 (2 or 5) when that is nonzero; else 1 for a live Skeleton on the opposite side (+0x3d4 2/1 or 1/2) while this +0x312 is 0; else 0 (docs/spec/combat-ctors-2.md)
 002a8770	Skelight_ctor	constructor; installs vtable 0x5174b0; object size 0x468; factory type names: Skelight
 002a8a64	Skelight_draw	vtable 0x5174b0 slot 5
 002a8b84	Skelight_run	vtable 0x5174b0 slot 4

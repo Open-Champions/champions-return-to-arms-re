@@ -184,10 +184,14 @@ Executed:
 
 - The run switches past round 5's states 0 and 1: Skeleton's arrow release, AntQueen's
   flight, Soul's thrown flight. They are prose in `docs/monsters-2.md`, not executed here.
+  Since then (2026-10-21): every AntQueen state and `AntQueen_pickFlyDest` are executed
+  (`docs/spec/antqueen-run.md`); Skeleton past state 1 and Soul's switch are not.
 - `Soul_takeDamage` `0x2aa908` (the Demon test). The difftest sends no damage to a Soul
   for that reason. `Skeleton_takeDamage` `0x2a774c`, `Skeleton_isEnemy` `0x2a7e04`,
   `Skeleton_shatter` `0x2a7ef0`, and `AntQueen_pickFlyDest` `0x238150` stay recording
-  stubs.
+  stubs. Since then (2026-10-21): `Soul_takeDamage`, `Skeleton_takeDamage`,
+  `AntQueen_takeDamage` and `Skeleton_isEnemy` are executed (`docs/spec/combat-ctors-2.md`),
+  `AntQueen_pickFlyDest` too (`docs/spec/antqueen-run.md`); `Skeleton_shatter` is not.
 - Whether the game's pool hands AntQueen a zeroed `+0x44` (the hit-point argument draw)
   is Inferred. It does not matter after `Creature_setStats`, but the draw advances
   nothing shared: it is the block's own word.

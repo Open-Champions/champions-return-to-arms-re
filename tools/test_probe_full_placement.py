@@ -33,6 +33,7 @@ class Tables(unittest.TestCase):
 
     def test_run_states_executed_before_this_round(self):
         self.assertTrue({0, 1} <= P.RUN_STATES_EXECUTED['Skeleton_run'])
+        self.assertEqual(P.RUN_STATES_EXECUTED['AntQueen_run'], set(range(0x1A)))
         self.assertEqual(P.RUN_STATES_EXECUTED['Soul_run'], set())
 
 
