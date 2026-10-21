@@ -19,9 +19,11 @@ before, plus two that are new in this round (balance_lookup and Creature_init, s
 
 The result is what the difftest compares: shared seed, own seed and own draw count,
 the ordered list of SERVICE calls (the bodies the test does not run), and final
-fields.  Nothing from the game is stored here: class names, definitions, the balance
-records and the executable's rules tables are read from the caller's memory at run
-time through ``u32`` / ``u8`` readers.
+fields.  No game data is stored here: class names, definitions, the balance records and
+the executable's rules tables are read from the caller's memory at run time through
+``u32`` / ``u8`` readers.  The only literals are Creature_init's property keys, as
+docs/creatures.md and docs/script.md already list them, and addressed constants read
+from the instructions cited.
 """
 import ref_arena_match_classes as AC
 import ref_combat as RC
