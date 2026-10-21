@@ -1158,7 +1158,7 @@ A separate physical-controller session on the installed build provides partial e
 
 A normal visible, paced installed-build couch trial now completes the ordinary offline frontend, sequential creation of two characters, and independent movement in one shared hub/camera. The process exits zero with all 3,915 consecutive watched rows retained. Player one moves 30.4263 world units while player two remains stationary; player two then moves 30.0955 while player one remains stationary. Each leg records 12 effective axis rows, neutral opposite-port axes, and 30 final neutral rows with both positions stable. Both distinct player actors remain alive. The two captured views show a lit scene, readable two-player HUDs and changed player positions. These are two scripted PS2 input ports in one process, not two physical controllers, multiplayer combat or campaign acceptance.
 
-An earlier private two-port candidate passed 254 CPU checks and linked as `370b5295aa12393a884ae4adac0bcae7e7abc7397434c2c0a8b2dc906d1f4662`, but remains rejected and uninstalled. Its fixtures missed the case where both pads detach and only the former second pad reconnects, allowing promotion to player one. A separate red control runs the new 70-check fixture against that preserved v1 source: all original 49 checks still pass, while 14 added ownership/reservation checks fail. The corrected v2 result is separate below. Physical two-controller play and three/four-player virtual multitap remain unqualified.
+An earlier private two-port candidate passed 254 CPU checks and linked as `370b5295aa12393a884ae4adac0bcae7e7abc7397434c2c0a8b2dc906d1f4662`, but remains rejected and uninstalled. Its fixtures missed the case where both pads detach and only the former second pad reconnects, allowing promotion to player one. A separate red control runs the new 70-check fixture against that preserved v1 source: all original 49 checks still pass, while 14 added ownership/reservation checks fail. The corrected v2 result is separate below. That revision did not qualify physical two-controller play or three/four-player virtual multitap; the later four-player software checks are recorded separately below.
 
 The separate private v2 controller revision resolves former-slot ownership before filling vacant ports and prevents generic assignment from stealing another port's reserved XInput index. Its CPU fixtures passed 275 checks: the prior 129 input, 22 rumble, 39 mapping and 15 Windows merge checks, plus 70 two-port checks. The latter include 21 additional checks for both pads detached, reverse/forward/simultaneous reconnection, replacement slots and an arrival between probes. These use fake callbacks and establish the tested software behavior; they do not establish actual hardware hotplug identity or felt vibration.
 
@@ -1171,6 +1171,83 @@ The private `bef3bd53` candidate also completes the same normal visible/paced tw
 A separate mapped-launcher check invokes Start local directory, Find games against that actual loopback listener, then the normal close callback. It receives a complete empty list, the native browser exits zero, and the owned service is deliberately terminated with Windows exit one. Both children are terminal before outer cleanup. Two convenience launcher copies with separate profiles expose the previously tested manual host/search/join/start route; their local paths, game inputs and private identities stay outside this report. They contain no automatic character or match-start scripts. No Internet directory is deployed by this work.
 
 The proposed online path uses player-hosted game rooms, configurable replacement directory/rendezvous infrastructure, direct peer UDP where available, and relay fallback. Discovery still requires a directory; this is not fully decentralized server-free Internet discovery. The local tests did not contact retired official services or establish a public Internet deployment. No proprietary game files, generated game code, executable binaries, saves, certificates, credentials or raw game-state captures accompany this public prose. Existing failed and partial receipts remain retained privately.
+
+## Four local players and subsequent campaign/rendering checks
+
+A separate private opt-in virtual multitap application is SHA-256
+`af99e292bad152a604e77385dbc95118c210dee5063b0df24fd3d047a53bb149`.
+Its normal two-pad topology remains PS2 ports 0 and 1, slot 0. With `--multitap`,
+four logical inputs map to PS2 port 0, slots 0 through 3, following the original
+game's slot-count and player-routing code. Physical ports 2 and 3 are not invented.
+The connection-monitor open/close behavior is an explicit virtual policy, without
+a claim about physical PS2 adapter unplugging.
+
+Ten CPU fixture runs report 426 checks with zero failures, including all 275 prior
+input checks, four-host assignment/merge tests, the actual script parser/scheduler,
+and baseline/candidate extracted IOP controller services. Ten of those checks run
+the baseline IOP control. Complete normal-two controller records match byte for
+byte. The private app replaces exactly four objects; the unchanged control relink
+matches the prior two-port candidate after normalizing only the COFF timestamp.
+These fixtures use fake device callbacks and do not establish physical hotplug or
+felt vibration.
+
+Two normal visible, paced four-character trials each finish with actual child exit
+zero, no timeout and all 6,663 consecutive watched rows retained. Both use the
+ordinary Four Players menu and serial character creation before entering one
+shared hub. One supplies four logical scripted sticks; the other keeps those
+sticks neutral during movement and uses all four compiled Windows software
+controller adapters. Four distinct actors/names use the default class 6, level 1,
+zero XP and 500 gold. Each finite leg moves its intended actor with the other
+three stationary; releases retain 30 neutral, stationary rows. All four remain
+alive, and inspected views show four readable HUDs and the shared scene. This is
+bounded four-player movement, without four-player combat, mission, physical-pad
+or network qualification on this binary.
+
+The same application also repeats the accepted ordinary two-character Windows
+software-controller route with multitap disabled: actual exit zero, no timeout
+and 3,915 watched rows. The earlier two-port build's results remain separate.
+Fresh private cards are used for these frontend tests; campaign saves and the
+installed `d7c2258b` application are unchanged.
+
+The installed application also continues from its preserved level-2 checkpoint
+with 1,888 XP and armor 54 through ordinary frontend Load and controller inputs.
+The west corridor route finishes with full health/mana. These campaign checks are
+offscreen, clock-paced at 59.94 and muted; the original first plan's unpaced label
+is corrected by its actual runtime header and option order.
+
+An aimed Holy Strike deals 28 observed damage to a Kobold, with the player resolved
+as its attacker and an advancing damage stamp. That target survives. A subsequent
+spell/melee continuation deals 26 then 23 damage to another Kobold, kills it and
+awards 25 XP, reaching 1,913 XP. That invocation ends alive; its minimum HP is
+24.609240. The 1,913-XP progress is unsaved. A later blocking/regeneration attempt
+fails survival and ordinary checkpoint recovery restores the saved 1,888-XP state.
+A health-only test wait accepts restored health while the actor pointer is briefly
+null. Its clean process exit and completion marker therefore do not qualify
+surviving combat. This is a failed test strategy/guard and ordinary gameplay death,
+with no demonstrated engine defect. All source/copied game-save files remain
+unchanged, with zero emulated card bytes written. Mission completion remains open.
+
+A separate private color-PSMCT16S address correction is built as
+`e2719a8715f5ae0f318a696293d72138d2d37939cb9719a6b6c8801e8d986cce`.
+The prior decoder aliases CT16S to CT16 at five upload/extent/palette/texture sites,
+although their documented block layouts differ. An independent table oracle and
+cross-format GIF upload/sample cases distinguish that error from a same-wrong
+upload/read cancellation. The baseline fails 11 of 37 fixture checks; the candidate
+passes all 37. Difference counts include byte comparisons and a size-mismatch
+sentinel, not uniformly pixel counts. Fixture-only wrap arithmetic and unsupported
+depth controls do not implement canonical wrapped storage or depth transfers.
+
+Only the GS object changes in that standalone app; its unchanged control relink
+matches installed d7 after COFF timestamp normalization. A matched ordinary west
+walk completes with exit zero: all 2,043 rows across 43 watched columns and the
+960x720 PNG are byte-identical to the installed baseline. Canonical items,
+equipment, skills, stats, quests and the four game-save files match. Each whole-RAM
+pair retains 26 differing bytes: 24 are source-backed copied-file timestamps and
+two remain unclassified. Whole-RAM equality, CT16S use in this scene, visible
+improvement and console fidelity are not established. The separate production
+CT16 write-precision gap remains open. Both new applications and their source
+overlays remain private, pending native-client handoff; this is an authored
+research update with no new implementation, game data or raw captures published.
 
 ## Remaining qualification
 
