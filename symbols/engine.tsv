@@ -3,7 +3,7 @@
 00160a88	ParticleMorphEffect_ctor	GameObject_ctor then vtable 0x512338; start and end (start+150) stamped from g_simFrame; caller script_particleMorph
 00160b20	ParticleMorphEffect_run	vtable slot 4; picks model sample points on two objects with its own generator (GameObject_rand) and spawns particles between them
 00161270	world_damageInRadius	(inner, outer, attacker, pos, maxDamage, type, minDamage, skipFlags): box query, linear falloff, damage through 0x1e8230; a player attacker hits only what its vtable slot 20 accepts
-001614f0	world_collectObjectsInArc	(f12 radius, f13 arcDegrees, f14 a third float; a0 pos, a1 facing16, a2 out, a3 ...): box query filtered by direction; the third value, given as ? in the earlier note, is a float argument (read into f22 at 0x16152c; the player tick passes 0.0, docs/spec/player-tick.md section 12); 19 callers, mostly skills; output format not read
+001614f0	world_collectObjectsInArc	(pos, facing16, out list, filter; f12 radius, f13 arc degrees (-1 none), f14 width): the box is the only range test; creatures without flags 0xd; filter = slot 20; partnerless nodes via handle_insertNode, so a destroyed object stays listed; first entry the nearest, the rest in reverse order of acceptance; 19 callers, mostly skills; executed (difftest_combat_spells)
 001618d4	StrongStancePhantom_ctor	sets vtable 0x50f448, starts an animation with anim_startBlendInOut; callers 0x308578, 0x3130f4
 00161a54	StrongStancePhantom_run	vtable slot 4
 00161adc	StrongStancePhantom_draw	vtable slot 5
