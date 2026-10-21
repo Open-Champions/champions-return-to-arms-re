@@ -1571,9 +1571,59 @@ motion and whole-party stability for all 30 release rows are not claimed.
 Original and copied party files, the earlier 1,888-XP checkpoint and installed
 programs retain their hashes. The private candidate is not installed. These cases
 qualify one scripted four-player return, party Save, fresh Load and movement/release
-path on one PC. Later mission return, persisted mission kills, wider campaign
+path on one PC. The following return test extends this evidence; wider campaign
 progression/completion, physical multi-pad play, WAN, reference fidelity and
 performance remain open.
+
+## Four-player saved mission return
+
+A fresh process on the private four-controller candidate loads the accepted
+four-character party file through the normal frontend. After the existing four
+movement/release checks, only owner 0 supplies the ordinary hub Recall chord.
+The countdown starts and the whole party returns to the saved first mission.
+The hub return consumes no additional Recall item: quantities remain 1, 2, 2
+and 2. This extends the earlier Save/fresh Load result with actual mission return.
+
+The first return attempt remains failed. It reaches four live mission actors,
+but stops at the final brightness guard before its returned-world RAM/image
+capture. The test accepted an old RGB value in the same field that the warm-up
+counter reached zero. The original code then resets the new fade to zero and
+advances it by four per field. The trace ends at RGB 116; the one-field final
+deadline expires before full brightness. The initial source review missed this
+temporal admission window. No game-code defect follows from that failed test.
+
+The retry changes only the test's return-readiness sampling: advance one ordinary
+field after warm-up reaches zero, reacquire exact RGB 128 with a bounded wait,
+then retain all 30 neutral settling fields and the original final brightness,
+ownership, liveness and card-idle checks. Gameplay inputs and game code are
+unchanged. Its actual child exits zero with 1,573 watched rows and no timeout.
+Post-reset RGB readiness is marked at frame 1,540 and the returned-world capture
+at 1,570, after the complete neutral interval. The viewed image shows the rendered
+mission with four avatars, their HUDs and the savepoint.
+
+Independent raw-state review compares the restored party with the actual saved
+file: all occupied item records, equipment and auxiliary references, skills,
+statistics, allocated points and quests retain their source-decoded values.
+The four live actors retain XP 51, 51, 51 and 77, full HP and 500 gold each.
+Requested return coordinates match the saved metadata; normal terrain and
+secondary-player placement can adjust live positions. Whole live-record byte
+equality is not claimed for those positions, regeneration or transient fields.
+
+The saved mission contains one negative-HP Kobold record from the earlier battle.
+The runtime check resolves its current allocation from the actual object pools,
+class, saved coordinates and variant, independently of its old address. It
+requires the matching current creature to retain negative HP and the
+source-defined dead state and flag bits; absence alone is not accepted. The saved
+HP fraction is applied to the newly created creature's maximum HP, so raw HP need
+not equal the earlier battle value. This establishes restoration of
+that one saved defeated enemy after normal fresh Load and mission return. It
+does not establish every saved object or completion of the mission.
+
+The game reads 311,272 card bytes and writes zero. Original and copied party
+files, the earlier campaign checkpoint, source inputs and installed programs
+retain their hashes. The four-controller candidate remains private and is not
+installed. Wider campaign progression/completion, physical multi-controller
+play, WAN, reference fidelity and performance remain open.
 
 ## Remaining qualification
 
