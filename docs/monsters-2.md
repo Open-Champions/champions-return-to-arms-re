@@ -1160,8 +1160,9 @@ Constructor 0x270968: Creature_ctor(max hp argument 10, …, class def 0x500680,
 +0x5c = 1.0, +0xe0 = -20, scale +0xdc = 1.2, HomeRange +0x3c0 = 2400, visualrange +0x3ae =
 2400, creature flags |= 0x20200040000, +0x3c8 = 0, +0x3cc = 0, +0xf4 = 0. Nightmare_setState
 (0); obj_runEvery60. No property read by the class itself; the constructor's fifth argument
-is a property list passed through to Creature_ctor (for a rider's mount the two-entry list at
-0x500848 + 12 v: a MiniBoss flag and a name), and HomeRange, visualrange and scale are then
+is a property list passed through to Creature_ctor (for a rider's mount the 12-byte list at
+0x500848 + 12 v, passed as a pointer only: its contents were never decoded, so "a MiniBoss
+flag and a name" is Inferred at most, `docs/spec/horsemen-mount.md` 2.2), and HomeRange, visualrange and scale are then
 overwritten (2026-10-21, executed: `docs/spec/horsemen-mount.md` 2.2-2.3). Event tables: entries 4 (+0x24) and 8 (+0x44): 0.5->1,
 0.8->2, 1.2->2, 1.5->4 (only entry 8 is started by this class).
 Fields:

@@ -97,12 +97,17 @@ clearing of creature flag 0x200, for **every request below 0x19** (0x272f7c–0x
 | +0x318 | s16 | attack cooldown 60 on entering 0x10 | set-state 0x2718cc |
 | +0xd0/+0xd2/+0xd4 | s16 | damage min/max/rating from `Creature_setStats`; kicks and trampling use **twice** min and max | run, slot 11 |
 
-The property list the rider hands over is a two-entry list per variant (12 bytes: two text
-pointers and a terminator at `0x500848 + 12 v`): a **MiniBoss** flag and a **name**.
-`Creature_ctor` reads it as for any record (`docs/spec/arena-monsters.md` 2.1), so the mount
-gets creature flag 1 (MiniBoss: the boss-meter block of `Creature_run`, `docs/creatures.md`
-C3) and, through `GameObject_ctor`, a per-variant object name (`docs/spec/object-system.md`
-2.2 step 7 registers every `name=` property; a call-out in this test, so Inferred here). `Nightmare_ctor` then
+The property list the rider hands over is a 12-byte list per variant at `0x500848 + 12 v`
+(Executed only as a pointer: the difftest compares the pointer passed to `Creature_ctor`
+and `GameObject_ctor`, `difftest_horsemen_mount.py`, and never reads the list). **Unknown:**
+what the entries are. An earlier draft said "a MiniBoss flag and a name"; nothing in this
+branch decodes or checks the contents, so that is **Inferred at most** (from the list being
+the same kind of argument a placed record passes) and is not used below. In particular,
+whether the mount gets creature flag 1 (the boss-meter block of `Creature_run`,
+`docs/creatures.md` C3) or a per-variant object name (`docs/spec/object-system.md` 2.2
+step 7) is **not established**. A native port must read the list from the image, must not
+assume a MiniBoss flag, and must refuse to hard-code either until the 12-byte lists are
+decoded and difftested (section 10). `Nightmare_ctor` then
 overwrites three fields such a list could have set: HomeRange `+0x3c0 = 2400.0`,
 visualrange `+0x3ae = 2400` and scale `+0xdc = 1.2`. (Earlier documents called this
 argument "variant data"; it is the constructor's property-list argument, passed through to
@@ -193,7 +198,10 @@ floats)` (rating 100000 = always hits), then object flag 1 and `+0x3d0 = clock +
 object flag 8 clear, up to eight rays `terrain_raycast(world, player + (0,0,24),
 (cos a, sin a, 0)·360, 0; 480)` for a = 0, 0x2000, …; a result strictly between 0 and 1
 is a hit and ends that player. The first player with no hit becomes the mount's target
-(`handle_clear` + `handle_link` on +0x234) and 1 is returned; else 0. It reads the
+(`handle_clear` + `handle_link` on +0x234) and 1 is returned; else 0. The table
+capacity and the maximum player count are **Unknown** here (not cited in the research); a
+native port must clamp or refuse a player count above whatever capacity it establishes
+rather than copy this unbounded read. It reads the
 **global** player table (all players, not local ones) and the terrain: no per-machine
 input (`docs/monsters-2.md` per-machine note confirmed by execution).
 
@@ -238,8 +246,9 @@ linked.
 onto the rider (section 5). The rider's set-state ignores everything below 0x19, so the
 base class's own requests (hit reactions, stun, root, death from damage) do nothing to a
 mounted rider. The rider's attacks happen only through the mount's state 8 (one of the
-three mounted swings 0x20–0x22) and the kick states (0x1e/0x1f poses); its damage is its
-own `hitAllEnemiesInArc` in 0x1f–0x22.
+three mounted swings 0x20–0x22) and the mount's state 0x18, which pushes the 0x1f swing;
+mount states 6 and 0x17 push the 0x1e pose, which does nothing (rider runs in 0x1b–0x1e do
+nothing, section 2.1). The rider's damage is its own `hitAllEnemiesInArc` in 0x1f–0x22.
 
 **Mount death.** Damage kills the mount like any creature (`Creature_processDamage` →
 slot 27 0x14). Set-state 0x14 sends the rider 0x23 and drops the mount's handle; the
@@ -369,7 +378,9 @@ rider flags 9). 5 / 5 pass on both seeds.
 
 `tools/test_ref_horsemen_mount.py`, 13 tests, no game files: the push table, the rider's
 swing choice, the stranded rider, the factory construction, the constructor constants, the
-picker, trampling, the dead mount's run-off.
+picker, trampling, the dead mount's run-off. They compute expected values from the model's
+own formulas and constants, so they are a regression guard on the model and are **not
+evidence** about the original; the comparison with the original is the difftest (9.1, 9.2).
 
 ## 10. Open
 
@@ -377,9 +388,13 @@ picker, trampling, the dead mount's run-off.
 - Who requests mount states 0x19 / 0x1a (section 6).
 - Whether a mounted rider can carry a stun, root or cooldown in the game (section 6).
 - Slot 1 of the mount table (0x3cae50) was not read (`docs/monsters-2.md`).
-- The per-variant name the mount receives is registered by `GameObject_ctor`, a call-out in
-  this test (Inferred from `docs/spec/object-system.md` 2.2 step 7); which script, if any,
-  addresses a mount by that name was not looked for.
+- The contents of the four 12-byte mount property lists (`0x500848 + 12 v`) were never
+  decoded or compared: whether they hold a MiniBoss flag and/or a name is Unknown
+  (Inferred at most). To settle it, decode the lists from the image in the difftest and
+  assert the entries, with seeds 20973 and 7, citing the entry addresses. Until then the
+  mount's creature flag 1 and any per-variant object name are unestablished, and so is
+  which script, if any, addresses a mount by a name.
+- Table capacity / maximum player count for the charge-target picker (section 4).
 
 ## 11. What the native client should implement, ranked
 
