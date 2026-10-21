@@ -146,9 +146,10 @@ The native client's prerequisites, ranked by first dependency and wave reach:
    execution alone is not target-runtime proof.
 
 The seed stream matches the documented SpellArena draw after each constructed
-spawn. It does **not** prove a real match's final seed or placement: the Player
-replacement and class constructors are fixtures, and those missing bodies can
-draw from the shared generator.
+spawn. With `--real-player` the Player replacement and its placement are the
+original code (section above). The class constructors are still fixtures, and
+their base `GameObject_ctor` draws are missing, so a real match's final seed is
+still **not** proved.
 
 `tools/difftest_arena_match_combat.py` adds 69 comparisons per seed 20973 and 7:
 all 25 Orc2 set-state and run numbers in a neutral recruit fixture, close and
