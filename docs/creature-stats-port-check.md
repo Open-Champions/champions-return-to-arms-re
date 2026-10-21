@@ -14,6 +14,14 @@ constructed state and its documented call-outs, not live gameplay.
 | `Skelight_ctor` 0x2a8770 and lifecycle | `difftest_arena_monsters.py --quick -k skel` | 20973, 7 | zero mismatches in calls, stores and seed |
 | `Zek_ctor` 0x2c1f94 and lifecycle | `difftest_arena_monsters.py --quick -k zek` | 20973, 7 | zero mismatches in calls, stores and seed |
 | `item_loadResources` 0x108434 seed side | `difftest_items.py --quick --jobs 2 -k load` | 20973, 7 | zero mismatches; three start seeds per run, 223 draws each |
+| `balance_hashName` 0x223914 and `balance_lookup` 0x223a4c | `difftest_balance_lookup.py --cases 300` | 20973, 7 | zero mismatches on authored rows, including duplicate hashes, absent hashes and negative s16 encodings |
+
+**Correction to `docs/data-tables.md` section 3.1:** the five percentage
+halfwords are read as **unsigned** by `balance_lookup`, although the table was
+described as s16. A synthetic row with 0xff80 yields a large positive factor.
+The model initially used signed halfwords and the differential test caught it.
+The original also multiplies the converted integer by the single-precision
+0.01 constant, so a stored 100 produces 0x3f7fffff, not 1.0.
 
 The arena family filters run constructor calls during their setup and later
 lifecycle calls. The scope is the individual executed bodies with the listed

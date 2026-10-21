@@ -219,7 +219,7 @@ level load outside the front end (`objects_levelReset` 0x15da80, called from
 
 ```
 u16 count                      (184)
-count × { u16 nameHash; s16 hp, armour, damage, attack, experience; }   percentages, 100 = ×1
+count × { u16 nameHash; u16 hp, armour, damage, attack, experience; }   percentages, 100 ≈ ×1
 ```
 
 `balance_lookup(typeName, …)` 0x223a4c hashes the name with `balance_hashName` 0x223914 and
@@ -231,6 +231,13 @@ h = 0
 for c in name:  h = ((h + lower(c)) & 0xffff) * 0x401 & 0xffff;  h ^= h >> 6
 h = h * 9 & 0xffff;  h = ((h >> 11) ^ h) * 0x8001 & 0xffff
 ```
+
+**Executed correction (2026-10-21):** `tools/difftest_balance_lookup.py`
+compared 300 authored rows on each of seeds 20973 and 7 with the original
+`balance_hashName` and `balance_lookup` in `tools/ee_emu.py`, with no mismatch.
+The five percentages use unsigned halfword loads. Each converts to float and
+multiplies by the single-precision 0.01 constant; stored 100 becomes
+0x3f7fffff, one bit below 1.0. Negative s16 interpretations had been wrong.
 
 The type name is the class string of the level record (object +0x34), not the C++ class:
 one constructor serves many type names with different rows (the factory's prefix tests,
