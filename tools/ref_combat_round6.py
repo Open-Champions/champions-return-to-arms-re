@@ -62,8 +62,9 @@ ARENA_TINT = (0x56, 0x35, 0x21, 0x3D)
 
 # SpellHornOmenEffect_run 0x2fc684 and SpellPlanarSteelEffect_run 0x2fb9b4.
 HO_PARTICLE = 0x8E6C40
+VT_SPELL, HO_VT, PS_VT = 0x515BA0, 0x51AE58, 0x51AE28
 PS_BURST, PS_SPARK, PS_SPARK2, PS_FALL = 0x8E6BA0, 0x8E6B00, 0x8E6B50, 0x8E6BF0
-PS_LUMP, PS_SOUND_BURST = 0x551320, 0x551340
+PS_LUMP, PS_SOUND_START, PS_SOUND_BURST = 0x551320, 0x551328, 0x551340
 G_GLOW_TEX_C = 0x4F8498
 
 MODELLED = {
@@ -74,7 +75,9 @@ MODELLED = {
     'SmokeGen_run': 0x31C898,
     'Pustule_run': 0x30BDE0,
     'SpellArena_run': 0x305BBC,
+    'SpellHornOmenEffect_ctor': 0x2FC574,
     'SpellHornOmenEffect_run': 0x2FC684,
+    'SpellPlanarSteelEffect_ctor': 0x2FB728,
     'SpellPlanarSteelEffect_run': 0x2FB9B4,
 }
 
@@ -394,6 +397,26 @@ class Model(SA.Model):
         for slot, value in enumerate(ARENA_TINT + ARENA_TINT):
             self.w16(creature + 0x90 + 2 * slot, value)
 
+    def hornomen_ctor(self, spell, kind, owner, extra):
+        """SpellHornOmenEffect_ctor 0x2fc574 (spell, kind, creature, word).
+
+        The shared draw is inlined and seeds +0x10.  The vtable lands on 0x51ae58,
+        the group handle is particleGroup_create, and the end frame is the simulation
+        frame plus 600.
+        """
+        self.w8(spell, kind)
+        self.w32(spell + 0x14, VT_SPELL)
+        self.w32(spell + 0xC, owner)
+        self.w32(spell + 8, extra)
+        self.w32(spell + 4, 0)
+        self.w32(spell + 0x14, HO_VT)
+        self.w32(spell + 0x10, self.draw())
+        self.w8(spell, kind)
+        self.w32(spell + 0xC, owner)
+        self.w32(spell + 8, extra)
+        self.w32(spell + 0x1C, self.call('particleGroup_create'))
+        self.w32(spell + 0x18, (self.u32(SA.G_SIM_FRAME) + 600) & M32)
+
     def hornomen_run(self, spell, pos):
         """SpellHornOmenEffect_run 0x2fc684 (spell, position).
 
@@ -445,6 +468,47 @@ class Model(SA.Model):
                 self.call('particle_spawn', HO_PARTICLE, place, velocity, C.ZERO)
                 made += 1
         self.call('particleGroup_end', self.u32(spell + 0x1C))
+
+    def planarsteel_ctor(self, spell, kind, owner, extra):
+        """SpellPlanarSteelEffect_ctor 0x2fb728 (spell, kind, creature, word).
+
+        The shared draw is inlined.  The light at +0x30 copies the creature's position,
+        stores the colour twice, and divides 1 by a zero radius.  The end frame is the
+        simulation frame plus 240, the countdown is int(the float at creature +0x20
+        times 3), and the two orbit angles start at 0 and 0x7fff.  A sound plays.
+        """
+        self.w8(spell, kind)
+        self.w32(spell + 0x14, VT_SPELL)
+        self.w32(spell + 4, 0)
+        seed = self.draw()
+        self.w32(spell + 0xC, owner)
+        self.w32(spell + 8, extra)
+        self.w32(spell + 0x10, seed)
+        self.w32(spell + 0x14, PS_VT)
+        light = (spell + 0x30) & M32
+        inverse = C.div(C.ONE, C.ZERO)
+        self.w8(light + 9, 0)
+        self.wvec(spell + 0x60, self.vec(owner + 0x10))
+        self.w32(light + 0x28, inverse)
+        self.w32(light + 0x2C, 0x3F266666)
+        for off, value in ((0xA, 0x4B), (0xC, 0x4B), (0xE, 200), (0x10, 0xFF),
+                           (0x12, 0x4B), (0x14, 0x4B), (0x16, 200), (0x18, 0xFF)):
+            self.w16(light + off, value)
+        self.w32(light + 0x20, inverse)
+        self.w32(light + 0x1C, C.ZERO)
+        self.w32(light + 0x24, C.ZERO)
+        self.w8(light + 8, 0)
+        self.call('light_link', light)
+        self.w8(spell, kind)
+        self.w32(spell + 8, extra)
+        self.w32(spell + 0xC, owner)
+        self.w32(spell + 0x20, 0)
+        self.w32(spell + 0x24, (self.u32(SA.G_SIM_FRAME) + 0xF0) & M32)
+        self.w16(spell + 0x1C, C.to_int(C.mul(self.u32(owner + 0x20), 0x40400000)))
+        self.w16(spell + 0x18, 0)
+        self.w16(spell + 0x1A, 0x7FFF)
+        entry = self.call('res_find', PS_LUMP, PS_SOUND_START)
+        self.call('sound_playAtPos', entry, self.vec(owner + 0x10), C.ONE)
 
     def planarsteel_run(self, spell, pos):
         """SpellPlanarSteelEffect_run 0x2fb9b4 (spell, position).

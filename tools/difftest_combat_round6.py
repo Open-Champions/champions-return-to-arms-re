@@ -54,7 +54,9 @@ ENTRIES = {
     'pustule': (0x30BDE0, 'i', 'pustule_run', ((0x30BDE0, 0x30C4AC),)),
     'arena': (0x305BBC, 'iv', 'arena_run', ((0x305BBC, 0x305E9C),)),
     'hornomen': (0x2FC684, 'iv', 'hornomen_run', ((0x2FC684, 0x2FCE8C),)),
+    'hornCtor': (0x2FC574, 'iiii', 'hornomen_ctor', ((0x2FC574, 0x2FC610),)),
     'planarsteel': (0x2FB9B4, 'iv', 'planarsteel_run', ((0x2FB9B4, 0x2FC3AC),)),
+    'planarCtor': (0x2FB728, 'iiii', 'planarsteel_ctor', ((0x2FB728, 0x2FB924),)),
 }
 ANGLES = {COS, SIN, SPELL_RAND}
 FOLLOW = {
@@ -66,7 +68,9 @@ FOLLOW = {
     'pustule': {RAND, COS, SIN},
     'arena': set(ANGLES),
     'hornomen': set(ANGLES) | {MAT34},
+    'hornCtor': set(),
     'planarsteel': set(ANGLES),
+    'planarCtor': set(),
 }
 EXTS = {
     'particle_spawn': Ext(0x18F3F8, 'pvv', 1, 'n'),
@@ -84,7 +88,9 @@ EXTS = {
     'terrain_heightAtPoint': Ext(0x182F28, 'pv', 0, 'f'),
     'model_getSamplePointCount': Ext(0x1799C8, 'p', 0, 'i'),
     'model_getSamplePoint': Ext(0x178E18, 'ppviioOi', 1, 'n'),
+    'particleGroup_create': Ext(0x18E880, '', 0, 'i'),
     'particleGroup_setMatrix': Ext(0x18E9E8, 'ip', 0, 'n'),
+    'light_link': Ext(0x148AF8, 'p', 0, 'n'),
     'particleGroup_begin': Ext(0x18E958, 'i', 0, 'n'),
     'particleGroup_end': Ext(0x18E9A0, 'i', 0, 'n'),
     'light_relink': Ext(0x14A528, 'p', 0, 'n'),
@@ -204,6 +210,8 @@ class World:
             return Res(outs=[self.sample, self.sample_extra])
         if name == 'Creature.v16':
             return Res(self.model_id)
+        if name == 'particleGroup_create':
+            return Res(0xB100)
         return Res(0)
 
 
@@ -460,6 +468,10 @@ def generate(rig, key, rng, kind):
         return _horn(w, mem, rng, kind)
     if key == 'planarsteel':
         return _planar(w, mem, rng, kind)
+    if key == 'hornCtor':
+        return _horn_ctor(w, mem, rng, kind)
+    if key == 'planarCtor':
+        return _planar_ctor(w, mem, rng, kind)
     return _smoke(w, mem, rng, kind)
 
 
@@ -722,6 +734,18 @@ def _spell(w, mem, rng):
     return spell, (f32(8.0), f32(9.0), f32(10.0))
 
 
+def _horn_ctor(w, mem, rng, kind):
+    spell, _pos = _spell(w, mem, rng)
+    kind_byte = 1 if kind == 'plain' else 4
+    return (spell, kind_byte, w.owner, 0x11 if kind == 'plain' else 0x22)
+
+
+def _planar_ctor(w, mem, rng, kind):
+    spell, _pos = _spell(w, mem, rng)
+    mem.w32(w.owner + 0x20, f32(10.0 if kind == 'plain' else -2.5))
+    return (spell, 2 if kind == 'plain' else 9, w.owner, 0x33)
+
+
 def _arena(w, mem, rng, kind):
     spell, pos = _spell(w, mem, rng)
     counter = {'quiet': 0, 'start': 30, 'fading': 61, 'spent': 200}[kind]
@@ -779,7 +803,9 @@ SCENARIOS = {
     'pustule': ('old', 'burst-done', 'drops', 'fall', 'land'),
     'arena': ('quiet', 'start', 'fading', 'spent'),
     'hornomen': ('ended', 'early', 'late', 'empty'),
+    'hornCtor': ('plain', 'other'),
     'planarsteel': ('ended', 'steady', 'burst'),
+    'planarCtor': ('plain', 'high'),
 }
 
 

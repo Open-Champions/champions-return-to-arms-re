@@ -239,6 +239,17 @@ class Round6Test(unittest.TestCase):
         self.assertEqual(names(model), ['Spell.v1'])
         self.assertEqual(model.calls[0][1], (OBJ, 3))
 
+    def test_horn_ctor_ends_six_hundred_frames_later(self):
+        mem = memory()
+        mem.poke(SA.G_SIM_FRAME, 4, 12)
+        mem.poke(RC.G_RAND_SEED, 4, 1)
+        model = R6.Model(mem, Callbacks())
+        model.hornomen_ctor(OBJ, 1, OWNER, 9)
+        self.assertEqual(names(model), ['particleGroup_create'])
+        self.assertEqual(mem.load(OBJ + 0x18, 4), 612)
+        self.assertEqual(mem.load(OBJ + 0x14, 4), R6.HO_VT)
+        self.assertEqual(mem.load(OBJ + 0xC, 4), OWNER)
+
 
 if __name__ == '__main__':
     unittest.main()
