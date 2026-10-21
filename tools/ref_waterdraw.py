@@ -103,6 +103,16 @@ def _vu_div(a, b):
     return ee_emu.fp_div(a, b, _VU)
 
 
+def colour_word(red, green, blue):
+    """The RGBAQ word a waterColor property stores. The fourth integer is the fix."""
+    return (int(red) & 0xFF) | ((int(green) & 0xFF) << 8) | ((int(blue) & 0xFF) << 16)
+
+
+def wavyness_scale(parsed):
+    """waterWavyness stores the parsed float times the static set-1 scale."""
+    return _cpu_mul(int(parsed) & 0xFFFFFFFF, SET1_SCALE)
+
+
 def colour_channels(word):
     """R, G, B, A of an RGBAQ word. A is stored as 0 and is not the blend."""
     word &= 0xFFFFFFFF

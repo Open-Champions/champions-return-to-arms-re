@@ -650,6 +650,97 @@ def check_splash_point(elf):
            if hit else repr(seen))
 
 
+def _cstr(emu, addr):
+    chars = []
+    while True:
+        byte = emu.mem.u8(addr)
+        if byte == 0 or len(chars) == 80:
+            break
+        chars.append(chr(byte))
+        addr += 1
+    return ''.join(chars)
+
+
+def _lines(emu, texts):
+    ptrs = emu.alloc(4 * (len(texts) + 1))
+    for index, text in enumerate(texts):
+        buf = emu.alloc(len(text) + 1)
+        emu.mem.write(buf, text.encode('ascii') + b'\0')
+        emu.mem.w32(ptrs + 4 * index, buf)
+    emu.mem.w32(ptrs + 4 * len(texts), 0)
+    return ptrs
+
+
+def _globals(emu):
+    names = {
+        'fix0': 0x44F074, 'fix1': 0x44F078, 'col0': 0x44F07C, 'col1': 0x44F080,
+        'scale0': 0x44F084, 'scale1': 0x44F088, 'strength': 0x44F064,
+        'radius': 0x44F068, 'timer': 0x44F06C, 'texture': 0x44F10C,
+    }
+    return {name: emu.mem.u32(addr) for name, addr in names.items()}
+
+
+def check_level(elf):
+    emu = new_emu(elf)
+    emu.mem.map(0x7D5000, 0x2000)
+    world = emu.alloc(0x80)
+    emu.call(0x18B270, world)
+    reset = _globals(emu)
+    reset_ok = (reset['scale0'] == R.SET1_SCALE and reset['strength'] == _raw_f(R.WAVE_STRENGTH)
+                and reset['radius'] == _raw_f(4.0) and reset['timer'] == 6
+                and reset['fix0'] == R.SET1_FIX and reset['col0'] == R.SET1_COLOUR
+                and reset['scale1'] == 0 and reset['fix1'] == 0 and reset['col1'] == 0)
+    emu.call(0x1875D4, 0x2222)
+    setup = _globals(emu)
+    setup_ok = (setup['fix0'] == R.SET0_FIX and setup['col0'] == R.SET0_COLOUR
+                and setup['scale0'] == R.SET0_SCALE and setup['strength'] == _raw_f(R.WAVE_STRENGTH)
+                and setup['radius'] == _raw_f(R.WAVE_RADIUS) and setup['timer'] == 4
+                and setup['texture'] == 0x2222
+                and setup['scale1'] == 0 and setup['fix1'] == 0 and setup['col1'] == 0)
+    report('load-reset', reset_ok and setup_ok,
+           'reset zeros set 1, then setup replaces set 0 only')
+
+    emu = new_emu(elf)
+    for addr in (0x44F064, 0x44F068, 0x44F06C, 0x44F074, 0x44F078, 0x44F07C, 0x44F080, 0x44F084, 0x44F088):
+        emu.mem.w32(addr, 0x11111111)
+    emu.call(0x22E714, _lines(emu, ['waterColor2=1,2,3,4', 'waterColor=10,20,30,40']))
+    colour = _globals(emu)
+    colour_ok = (colour['col1'] == R.colour_word(1, 2, 3) and colour['fix1'] == 4
+                 and colour['col0'] == R.colour_word(10, 20, 30) and colour['fix0'] == 40
+                 and colour['scale0'] == 0x11111111 and colour['scale1'] == 0x11111111)
+    emu.call(0x22E714, _lines(emu, ['waterBumpTimer=7']))
+    timer_ok = emu.mem.u32(0x44F06C) == 7 and emu.mem.u32(0x44F064) == 0x11111111
+    report('level-colour', colour_ok and timer_ok,
+           'three colour bytes, the fourth integer is the fix, timer 7')
+
+    emu = new_emu(elf)
+    for addr in (0x44F064, 0x44F068, 0x44F084, 0x44F088):
+        emu.mem.w32(addr, 0x11111111)
+    seen = []
+
+    def deposit(entry):
+        text = _cstr(entry, entry.r[4] & 0xFFFFFFFF)
+        dest = entry.r[6] & 0xFFFFFFFF
+        bits = struct.unpack('<I', struct.pack('<f', float(text.split('=', 1)[1])))[0]
+        seen.append((dest, bits))
+        entry.mem.w32(dest, bits)
+        return 1
+
+    emu.stub(0x3B7F88, function=deposit)
+    emu.call(0x22E714, _lines(emu, ['waterWavyness2=0.5', 'waterWavyness=1',
+                                   'waterBumpAmount=12.5', 'waterBumpRadius=3']))
+    got = _globals(emu)
+    half = struct.unpack('<I', struct.pack('<f', 0.5))[0]
+    one = struct.unpack('<I', struct.pack('<f', 1.0))[0]
+    amount = struct.unpack('<I', struct.pack('<f', 12.5))[0]
+    radius = struct.unpack('<I', struct.pack('<f', 3.0))[0]
+    wave_ok = (got['scale1'] == R.wavyness_scale(half) and got['scale0'] == R.wavyness_scale(one)
+               and got['strength'] == amount and got['radius'] == radius
+               and seen == [(0x44F088, half), (0x44F084, one), (0x44F064, amount), (0x44F068, radius)])
+    report('level-wave', wave_ok,
+           'wavyness is scaled by 0x3cc00000; bump amount and radius are stored as parsed')
+
+
 def main(argv):
     path = find_elf(argv)
     if path is None:
@@ -671,6 +762,7 @@ def main(argv):
     check_splash(path)
     check_splash_point(path)
     check_disturb(path)
+    check_level(path)
     print('%d failed' % FAILS)
     return 1 if FAILS else 0
 

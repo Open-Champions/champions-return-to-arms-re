@@ -191,6 +191,15 @@ class TestDisturb(unittest.TestCase):
         self.assertEqual(negative[16][16], -100)
 
 
+class TestLevel(unittest.TestCase):
+    def test_colour_packs_three_bytes_and_wavyness_scales(self):
+        self.assertEqual(R.colour_word(10, 20, 30), 0x001E140A)
+        self.assertEqual(R.wavyness_scale(0x3F800000), R.SET1_SCALE)
+        half = R.wavyness_scale(0x3F000000)
+        self.assertEqual(half, R._cpu_mul(0x3F000000, R.SET1_SCALE))
+        self.assertLess(R.ee_emu.fp_cmp(half, R.SET1_SCALE), 0)
+
+
 class TestClaim(unittest.TestCase):
     def test_one_edge_is_truncated_against_one(self):
         ten = R._cpu_mul(R.ee_emu.fp_from_int(10, 'ps2'), R.EDGE_WEIGHT)

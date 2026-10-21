@@ -38,9 +38,14 @@ queues (Executed). The loader passes the first `.tex` entry of `waterenv.lmp`
 
 ## 2. Colour and transparency
 
-`water_setup` runs at level load. It writes one constant set and leaves the other as
-the executable stored it (Executed). Chunk flag 0x1000 selects set 1; otherwise set 0
-(O 0x1876e0, Executed).
+`water_setup` writes set 0 and leaves set 1 unchanged (Executed). On the load path
+the reset at 0x18b270 runs first: `game_loadLevel` calls 0x1e4e88 at 0x1e5674 and
+0x1e5718, and that calls the reset at 0x1e5070, both before `water_setup` at
+0x1e5d80 (O). The reset stores set 0 as fix 98, colour 0x00808080 and scale
+0x3cc00000, strength 41, radius 4 and timer 6, and writes set 1's fix, colour and
+scale as 0 (Executed). `water_setup` then replaces set 0 with the table below,
+stores strength 41, radius 10 and timer 4, and still does not write set 1
+(Executed). Chunk flag 0x1000 selects set 1; otherwise set 0 (O 0x1876e0, Executed).
 
 | | Set 0 | Set 1 (flag 0x1000) |
 |---|---|---|
@@ -50,7 +55,30 @@ the executable stored it (Executed). Chunk flag 0x1000 selects set 1; otherwise 
 
 Setup also stores wave strength 41.0 at 0x44f064 and radius 10.0 at 0x44f068, and the
 integer 4 at 0x44f06c. The strength and the radius are what the in-simulation splash
-reads (section 6). What reads the 4 was not found. U.
+reads (section 6). The integer is `waterBumpTimer`; what reads it on the negative
+countdown was not executed (section 8).
+
+A level object can replace these words. `levelSettings_parse` (0x22e714) matches the
+property name, and the `2` form is tested first so it is not swallowed by the shorter
+name (O). `waterColor` and `waterColor2` take four integers. The first three are
+packed `R | (G << 8) | (B << 16)` into 0x44f07c or 0x44f080. The fourth is stored as
+that set's fix, 0x44f074 or 0x44f078 (Executed: `10,20,30,40` gives colour 0x001e140a
+and fix 40; `1,2,3,4` gives colour 0x00030201 and fix 4). `waterWavyness` and
+`waterWavyness2` parse a float into 0x44f084 or 0x44f088 and multiply it by
+0x3cc00000, the static set-1 scale (Executed: 1 stays 0x3cc00000, and 0.5 is half of
+that). The decimal conversion inside `sscanf` does not return in this interpreter, so
+that test deposited the IEEE value and ran the original multiply. `waterBumpAmount`
+and `waterBumpRadius` store the parsed float at 0x44f064 and 0x44f068 with no further
+scale. `waterBumpTimer` stores an integer at 0x44f06c (Executed: 7). On the disc the
+property text occurs in 65, 11, 48, 11, 41, 38 and 39 archives, in that order.
+
+The texture is not one shared image. `game_loadLevel` loads `waterenv.lmp` (0x53db08),
+finds extension `tex` at index 0 (0x171fd8) and passes that record's data pointer,
+record+4, to `water_setup` (O 0x1e5d50). All 120 level archives contain that lump.
+The lumps are three files, 113, 5 and 2 archives, and every first `.tex` entry is
+the same size (D). Flag 0x1000 is set on 66 of the 9,884 water chunks, all of them
+in the two archives that also contain `waterColor2` (D). Nine further archives
+contain that property and no flagged chunk.
 
 One `RGBAQ` covers the whole tile. Its alpha channel is 0 and is not the transparency.
 The blend is `ALPHA_1` with C = FIX (0x80 means 1):
@@ -352,9 +380,10 @@ executed.
 
 1. Queue the tile on layer 3, after ordinary world geometry and before flag-0x200
    world chunks. One pass. The texture is the `waterenv` image `water_setup` was given.
-2. Colour the whole tile with the set's RGB. Blend with FIX 102/128 or 98/128 as
-   `(src − dst) × F + dst`. Write colour. Do not update depth and do not reject the
-   pixel for being behind what is already there.
+2. Colour the whole tile with the active set's RGB. A level property in section 2
+   can replace that RGB and the fix. Blend as `(src − dst) × F + dst` when the fix
+   is positive. Write colour. Do not update depth and do not reject the pixel for
+   being behind what is already there.
 3. Sample bilinear, repeating. UV is the slope formula in section 4, not a scroll.
 4. Build the 30 strips from records 2..32. Height, in sixteenths times the set's
    scale, is world z. The row index steps in world x and the column index in world y,
@@ -366,6 +395,8 @@ executed.
 ## 8. Open
 
 - The simulation's splash when the countdown at 0x44f200 is negative.
-- What reads the integer 4 at 0x44f06c.
+- What reads `waterBumpTimer` at 0x44f06c. Setup stores 4 and the load reset stores
+  6; the property parser stores the level's integer. The negative-countdown splash
+  is the unread side of that word.
 - Neighbour slots 1 and 3 beyond `water_init` reading them. The per-frame exchange
   does not.
