@@ -588,6 +588,7 @@ class Commands:
         self.table = table
         self.hud = hud
         self.find_object = find_object or (lambda name: None)
+        self.last_f = None
 
     def _key(self, key):
         if len(key) + 1 > 0xA0:
@@ -612,6 +613,7 @@ class Commands:
         out1, _ = format_one_int(self.table.reader(a1), v1)
         a2, _u2, _ = self.table.lookup(self._key(key2))
         out2, _ = format_one_int(self.table.reader(a2), v2)
+        self.last_f = (out1, out2)
         if len(out1) * 2 > 0x200 or len(out2) * 2 > 0x200:
             raise FormatError('formatted text overruns its 0x200-byte stack buffer')
         title, body = wstr_copy(out1), wstr_copy(out2)
