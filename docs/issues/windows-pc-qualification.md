@@ -1388,6 +1388,109 @@ compatibility run leaves the strict path disabled and does not exercise strict
 CT16 writes in gameplay. All eight installed programs remain unchanged. The
 broader production CT16 problem remains open, and the implementation stays private.
 
+## Separate online cameras and four-player input preflight
+
+Two installed-build clients now complete a separate-camera test through the native
+direct-launch integration and replacement loopback rendezvous. Both actual child
+processes exit zero and finish their scripts. All 908 common confirmed ticks match
+across 29 shared columns, including both decoded camera-yaw words: 26,332 equal
+values, with no observed out-of-sync or drop-counter increase, death or checkpoint reset.
+This is one-PC direct-peer evidence, not Internet, router/NAT or two-PC proof.
+
+The two owners move 320.058707 and 292.115102 units, reaching an actual horizontal
+separation of 630.214809 units. Each local camera follows its validated local
+prediction copy rather than the party midpoint; maximum observed XY errors are
+0.0000691 and 0.0001249 units. Opposite ordinary right-stick inputs produce local
+yaw changes of +3,157 and -2,557 angle units, ending at -5,173 and -10,982. All four
+actual captured views were inspected: the local characters occupy different hub
+areas and each view follows its own character. Both real players remain alive at
+32.799995 HP. Their positions and HP are exactly stable for the final 30 common
+ticks with movement released. All four decoded axes are neutral for the final 26
+ticks, and both camera yaws are settled for the final 23. These windows are distinct.
+The application renders offscreen at 320x240 with sound disabled; its unpaced
+render loop and 59.94 network pacing do not establish display performance or feel.
+
+An earlier invocation fails both children at a late exact-reset-yaw assertion,
+before any authored movement or captures. Its 200 common ticks still match. The
+recorded first tick has the expected -8,192 yaw on both clients; the original
+centered-stick codec startup transient then rotates their local cameras. The
+corrected test declares a finite 2.8125-degree steering tolerance as a route
+admission condition, checking local and replicated yaw, neutral axes, follow mode,
+control, zoom and stopped yaw velocity before movement. This tolerance is not a
+camera invariant, and the earlier failed invocation is preserved. No game camera
+or simulation state is forced.
+
+Fresh character startup writes the ordinary game header and two icon files,
+129,572 bytes per client. No character-slot file or Save action occurs. The test
+permits that explicit initialization and separate private network defaults; it
+does not claim zero cumulative card writes. Each client uses a distinct private
+profile; known source checkpoint files and installed programs remain unchanged.
+The original multiplayer camera behavior is
+preserved: online clients have individual views; couch play uses one shared view.
+
+An additional private four-player mission preflight completes with exit zero and
+9,203 watched rows. Each owner's ordinary Cross pulse reaches that owner's melee
+action state while the other three digital inputs remain neutral. The party then
+moves northwest through twelve finite chunks, with 96 actual held-input rows per
+player. Their measured horizontal displacements range from 199.448267 to
+232.601022 units. All four remain alive at 32.799995 HP and zero XP, with their
+canonical items, equipment and skills unchanged.
+
+This is approach and attack-input evidence only. Four watched enemies retain
+positive HP, with no observed enemy HP decrease, death or earned XP; the closest
+observed enemy-to-party distance is still 548.269957 units. An AI-state or target
+handle change alone does not establish a chase, attack or hit. Fresh startup
+writes the header and two icons, 129,572 game-card bytes, without creating a
+character-slot file or issuing Save. The author-owned offline audit preserves its
+earlier evaluator failure and correction; despite the receipt's filename, it is
+not an independent review. Four-player combat and campaign durability remain open.
+
+## Application frame-queue transport correction
+
+Source inspection finds that the experimental CT16 write-history fields reach the
+standalone backend fixtures but are omitted by both application frame queues. The
+Windows and Qt handoffs manually transfer the older frame-list members, losing
+the new upload windows and transfer-exclusion flags. The earlier full-application
+compatibility test had strict mode disabled and remains a default-mode result.
+
+A private correction transfers the whole frame list and restores the producer's
+legacy display/aspect/number metadata. This retains the inactive display-rectangle
+behavior when a following frame has no display target. Shot association, timing
+and queue control stay unchanged. Exact source-extracted Windows and Qt handoffs
+are tested with actual GS-decoded authored uploads and transfer exclusions, empty
+and nonzero three-slot queues, reuse and empty-display frames. Across 36 cases and
+432 checks, the original handoffs show 62 isolated CT16 transport failures; the
+candidate has zero failures. The negative controls retain zero unrelated failures. The CPU fixture consumes
+its ring immediately on one thread; it does not exercise real Screen scheduling,
+mutex/event ordering, a full queue or sustained queue pressure.
+
+The private Windows build recompiles only the application queue object and reuses
+the other 87 pinned objects. An original-object control matches the previous
+private application after excluding only its COFF timestamp. No frame-list ABI or
+renderer-state layout changes, strict-mode option changes or installation occur.
+The Qt evidence is an extracted CPU handoff test, not a built or running Qt app.
+This correction alone does not qualify strict writes in general gameplay,
+canonical GS storage, rendering fidelity or performance.
+
+A subsequent private Windows application, `c32c93c8`, completes the same ordinary
+checkpoint Load and westward traversal with the transport change, strict mode
+still disabled, and a fresh copy of the accepted 1,888-XP checkpoint. Its actual
+child exits zero with 2,043 watched rows and no timeout. Author and independent
+offline reviews find all 87,849 values across 43 columns exactly equal to each of the installed
+baseline and the previous private application. The 960x720 PNG bytes and all
+decoded RGBA pixels also match both baselines exactly.
+
+Each before/after 32 MiB RAM comparison actually differs in 40 bytes, all verified
+as copied-card file timestamps and their original-game BCD menu-date derivatives;
+the remaining bytes match. The full player record, six canonical items, equipment,
+skills, allocations and quests remain unchanged. The character retains level 2,
+1,888 XP, 68 gold, 46 HP, full mana and armor 54. The four original and copied
+game-save/icon files retain their hashes, and game-card I/O records zero bytes
+written. Private network defaults may still be created. Installed programs and
+source inputs remain unchanged. The independently reviewed traversal qualifies
+only the observed default-mode comparison; strict CT16 writes in gameplay, Qt
+application runtime, console fidelity, performance and installation remain open.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
