@@ -290,7 +290,8 @@ def run_match(path, seed, attacked, max_frames=2400, fighting=False):
                 combat_frames[wave] = phase + 1
         if attacked and wave not in killed_waves and emu.mem.u16(D.INTRO) == 0xFFFF and \
                 (not fighting or combat_frames.get(wave, 0) >= 2):
-            player = emu.mem.u32(D.PLAYERS + 0x43D8)
+            player = emu.arena_player
+            D.bind_player(emu, 0, player)
             for index, obj in created:
                 if (emu.mem.u32(obj + 0xC) & 0x68) == 0x20:
                     emu.call(TAKE_DAMAGE, obj, player, 1, fargs=(1000.0,))
