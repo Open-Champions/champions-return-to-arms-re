@@ -219,6 +219,26 @@ class Round6Test(unittest.TestCase):
         self.assertEqual(damage[6], SA.descriptor((0x26, 1, 1, 0)))
         self.assertEqual(damage[-2:], (C.from_int(5), C.from_int(5)))
 
+    def test_arena_below_thirty_clears_the_mark(self):
+        mem = memory()
+        plant(mem, OWNER, 2)
+        mem.poke(OBJ + 0xC, 4, OWNER)
+        mem.poke(R6.G_ARENA_COUNTER, 2, 0)
+        model = R6.Model(mem, Callbacks())
+        model.arena_run(OBJ, (C.ZERO, C.ZERO, C.ZERO))
+        self.assertEqual(names(model), [])
+        self.assertEqual(mem.load(OWNER + 0xC, 4), 0)
+
+    def test_horn_at_its_end_destroys_the_spell(self):
+        mem = memory()
+        mem.poke(SA.G_SIM_FRAME, 4, 10)
+        mem.poke(OBJ + 0x18, 4, 10)
+        mem.poke(OBJ + 0x14, 4, VT)
+        model = R6.Model(mem, Callbacks())
+        model.hornomen_run(OBJ, (C.ZERO, C.ZERO, C.ZERO))
+        self.assertEqual(names(model), ['Spell.v1'])
+        self.assertEqual(model.calls[0][1], (OBJ, 3))
+
 
 if __name__ == '__main__':
     unittest.main()

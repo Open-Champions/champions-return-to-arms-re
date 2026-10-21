@@ -21,7 +21,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import ref_core as C                            # noqa: E402
 import ref_creature as RC                       # noqa: E402
 import ref_skills_a as SA                       # noqa: E402
-from ref_creature import M32, s32               # noqa: E402
+from ref_creature import M32, s16, s32          # noqa: E402
 
 # poisonGasSpell_run 0x1fd0f0.  The particle definition is the immediate at 0x1fd328.
 GAS_PARTICLE = 0x871088
@@ -55,6 +55,17 @@ PUS_DROP_GRAVITY = 0xBEE1C9F7
 PUS_AGE = 0x420ECCFB                            # burst dies once the timer float exceeds this
 PUS_LIFE = 0x12D                                # 301: the launch timer destroys the blob
 
+# SpellArena_run 0x305bbc.  The counter is the signed halfword at 0x5038c8.
+G_ARENA_COUNTER = 0x5038C8
+ARENA_PARTICLES = (0x8E71E0, 0x8E7190)
+ARENA_TINT = (0x56, 0x35, 0x21, 0x3D)
+
+# SpellHornOmenEffect_run 0x2fc684 and SpellPlanarSteelEffect_run 0x2fb9b4.
+HO_PARTICLE = 0x8E6C40
+PS_BURST, PS_SPARK, PS_SPARK2, PS_FALL = 0x8E6BA0, 0x8E6B00, 0x8E6B50, 0x8E6BF0
+PS_LUMP, PS_SOUND_BURST = 0x551320, 0x551340
+G_GLOW_TEX_C = 0x4F8498
+
 MODELLED = {
     'poisonGasSpell_run': 0x1FD0F0,
     'DiseaseCorpse_run': 0x2CE4A4,
@@ -62,6 +73,9 @@ MODELLED = {
     'MultiFireProjectile_end': 0x2DA928,
     'SmokeGen_run': 0x31C898,
     'Pustule_run': 0x30BDE0,
+    'SpellArena_run': 0x305BBC,
+    'SpellHornOmenEffect_run': 0x2FC684,
+    'SpellPlanarSteelEffect_run': 0x2FB9B4,
 }
 
 
@@ -337,3 +351,189 @@ class Model(SA.Model):
             point = tuple(C.add(C.mul(ball[j], 0x403FEE34), self.u32(place + 4 * j)) for j in range(3))
             self.call('particle_spawn', PUS_DROP, point, speed, C.ZERO)
         self.w32(obj + 0x64, (self.u32(obj + 0x64) + 1) & M32)
+
+    def arena_run(self, spell, pos):
+        """SpellArena_run 0x305bbc (spell, position).
+
+        The signed arena counter at 0x5038c8 clears object flag 2 on the creature
+        when it is below 61 and sets it otherwise.  Below 30 that is the whole
+        call.  From 30 on, f = 1 - (counter - 30) x 0x3bda740d and int(23 f)
+        particles are laid, every fourth from 0x8e71e0 and the rest from 0x8e7190.
+        Each is a sample of the creature's model (index = the spell draw modulo the
+        sample count) moved back along (cos, sin, 0) of a second draw times (1 - f)
+        times 10.  Both tint words, +0x90 and +0x98, become (0x56, 0x35, 0x21, 0x3d).
+        The position argument is copied and not read again.
+        """
+        counter = self.s16(G_ARENA_COUNTER)
+        creature = self.u32(spell + 0xC)
+        flags = self.u32(creature + 0xC)
+        self.w32(creature + 0xC, (flags & ~2) if counter < 0x3D else (flags | 2))
+        if counter < 0x1E:
+            return
+        fade = C.sub(C.ONE, C.mul(C.sub(C.from_int(counter), 0x41F00000), 0x3BDA740D))
+        count = s32(self.call('model_getSamplePointCount', self.vcall(creature, 16)))
+        limit = C.to_int(C.mul(fade, 0x41B80000))
+        index = 0
+        while index < limit:
+            model = self.vcall(self.u32(spell + 0xC), 16)
+            draw = self.spell_rand(spell)
+            creature = self.u32(spell + 0xC)
+            sample = s32(draw) % count
+            point, _extra = self.call('model_getSamplePoint', model, (creature + 0x114) & M32,
+                                       self.vec(creature + 0x10), self.s16(creature + 0x38),
+                                       sample, 1, 0, C.ONE)
+            speed = C.mul(C.sub(C.ONE, fade), 0x41200000)
+            angle = self.spell_rand(spell)
+            velocity = (C.mul(C.cos16(angle), speed), C.mul(C.sin16(angle), speed),
+                        C.mul(C.ZERO, speed))
+            place = tuple(C.sub(point[j], C.mul(velocity[j], 0x40F25FDC)) for j in range(3))
+            definition = ARENA_PARTICLES[0 if index & 3 == 0 else 1]
+            self.call('particle_spawn', definition, place, velocity, C.ZERO)
+            index += 1
+        creature = self.u32(spell + 0xC)
+        for slot, value in enumerate(ARENA_TINT + ARENA_TINT):
+            self.w16(creature + 0x90 + 2 * slot, value)
+
+    def hornomen_run(self, spell, pos):
+        """SpellHornOmenEffect_run 0x2fc684 (spell, position).
+
+        At the end frame +0x18, slot 1 with 3 destroys the spell.  Until then a is
+        the ticks since the start, frame - end + 600.  Below 140 the creature tint
+        is int(t x (225, 20, 0, 100)) with t = a x 0x3bea0ea0, and the particle
+        count is int(150 t).  From 140 the tint is (225, 20, 0, 100) and the count
+        is 150.  The group matrix is the one mat34_setPosRotZ left on the stack.
+        Each particle is a sample of the creature's model, taken at the origin with
+        facing 0, plus 3.0007868 times a ball point; the velocity is 30.000292 times
+        a second ball point.  A sample count of 0 lays none.
+        """
+        frame = self.frame()
+        if not frame < self.s32(spell + 0x18):
+            self.table_call('Spell', spell, 0x14, 1, 3)
+            return
+        age = C.from_int(frame - self.s32(spell + 0x18) + 600)
+        creature = self.u32(spell + 0xC)
+        early = C.lt(age, 0x430C0000)
+        if early:
+            scale = C.mul(age, 0x3BEA0EA0)
+            red, green, blue = (C.to_int(C.mul(scale, channel))
+                                for channel in (0x43610000, 0x41A00000, 0x42C80000))
+        else:
+            red, green, blue = 0xE1, 0x14, 100
+        for base in (0x90, 0x98):
+            self.w16(creature + base, red)
+            self.w16(creature + base + 2, green)
+            self.w16(creature + base + 4, 0)
+            self.w16(creature + base + 6, blue)
+        self.call('particleGroup_setMatrix', self.u32(spell + 0x1C), 'stack')
+        self.call('particleGroup_begin', self.u32(spell + 0x1C))
+        count = s32(self.call('model_getSamplePointCount', self.vcall(creature, 16)))
+        if count:
+            made = 0
+            while True:
+                if early:
+                    if not C.lt(C.from_int(made), C.mul(C.mul(age, 0x3BEA0EA0), 0x43160000)):
+                        break
+                elif made > 0x95:
+                    break
+                model = self.vcall(self.u32(spell + 0xC), 16)
+                sample = self.spell_rand(spell) % count
+                point = self.call('model_getSamplePoint', model, (self.u32(spell + 0xC) + 0x114) & M32,
+                                  (C.ZERO, C.ZERO, C.ZERO), 0, sample, 0, 0, C.ONE)
+                ball = self.spell_ball(spell)
+                place = tuple(C.add(point[j], C.mul(ball[j], 0x40400CE4)) for j in range(3))
+                velocity = tuple(C.mul(part, 0x41F00099) for part in self.spell_ball(spell))
+                self.call('particle_spawn', HO_PARTICLE, place, velocity, C.ZERO)
+                made += 1
+        self.call('particleGroup_end', self.u32(spell + 0x1C))
+
+    def planarsteel_run(self, spell, pos):
+        """SpellPlanarSteelEffect_run 0x2fb9b4 (spell, position).
+
+        At the end frame +0x24, slot 1 with 3 destroys the spell.  Until then, with
+        s = sin16(frame x 1000): the light follows the creature and its radius is
+        (the kind byte + 0x42) + 10 s; the tint is the four rounded channels at
+        +0x90 and again at +0x98.  The countdown +0x1c loses one.  The first time
+        that halfword is negative, 60 particles of 0x8e6ba0 spawn 18 above the
+        creature and a sound plays.  Two orbit points 40 out, at the countdown
+        height, each get a glow and ten sparks.  Ten more sparks fall within 40 of
+        the position, and ten sit 5 above the ground under it.
+        """
+        frame = self.frame()
+        if not frame < self.s32(spell + 0x24):
+            self.table_call('Spell', spell, 0x14, 1, 3)
+            return
+        sway = C.sin16((frame * 1000) & M32)
+        creature = self.u32(spell + 0xC)
+        self.wvec(spell + 0x60, self.vec(creature + 0x10))
+        self.call('light_relink', (spell + 0x30) & M32)
+        radius = C.add(C.from_int(self.s8(spell) + 0x42), C.mul(sway, 0x41200000))
+        share = C.mul(sway, 0x42440000)
+        high = C.to_int(C.add(share, 0x43480000))
+        low = C.to_int(C.add(C.mul(sway, 0x40A00000), 0x41700000))
+        mid = C.to_int(C.add(share, 0x42960000))
+        self.w32(spell + 0x4C, radius)
+        self.w32(spell + 0x54, radius)
+        inverse = C.div(C.ONE, C.mul(radius, radius))
+        creature = self.u32(spell + 0xC)
+        for base in (0x90, 0x98):
+            self.w16(creature + base, mid)
+            self.w16(creature + base + 2, mid)
+            self.w16(creature + base + 4, high)
+            self.w16(creature + base + 6, low)
+        self.w32(spell + 0x58, inverse)
+        self.w32(spell + 0x50, inverse)
+        count = (self.u16(spell + 0x1C) - 1) & 0xFFFF
+        self.w16(spell + 0x1C, count)
+        if count & 0x8000 and not self.u32(spell + 0x20):
+            self.w32(spell + 0x20, 1)
+            angle = 0
+            for _ in range(60):
+                vx = C.mul(C.cos16(angle), 0x42C80000)
+                vy = C.mul(C.sin16(angle), 0x42C80000)
+                vz = C.mul(C.mul(C.from_int(self.spell_rand(spell)), RC.F_2M16), 0x41A00000)
+                creature = self.u32(spell + 0xC)
+                place = (C.add(self.u32(creature + 0x10), C.ZERO), self.u32(creature + 0x14),
+                         C.add(self.u32(creature + 0x18), 0x41900000))
+                self.call('particle_spawn', PS_BURST, place, (vx, vy, vz), C.ZERO)
+                angle = s16(angle + 0x444)
+            entry = self.call('res_find', PS_LUMP, PS_SOUND_BURST)
+            self.call('sound_playAtPos', entry, self.vec(self.u32(spell + 0xC) + 0x10), C.ONE)
+        for slot in range(2):
+            angle = (self.u16(spell + 0x18 + 2 * slot) - 0x5DC) & 0xFFFF
+            self.w16(spell + 0x18 + 2 * slot, angle)
+            x = C.mul(C.cos16(s16(angle)), 0x42200000)
+            y = C.mul(C.sin16(self.s16(spell + 0x18 + 2 * slot)), 0x42200000)
+            lifted = C.mul(sway, 0x42200000)
+            creature = self.u32(spell + 0xC)
+            height = C.from_int(self.s16(spell + 0x1C))
+            colour = C.to_int(C.add(lifted, 0x42480000))
+            blue = C.to_int(C.add(lifted, 0x42C80000))
+            point = (C.add(x, self.u32(creature + 0x10)), C.add(y, self.u32(creature + 0x14)),
+                     C.add(height, self.u32(creature + 0x18)))
+            self.call('glow_add', point, colour, colour, blue, colour, self.u32(G_GLOW_TEX_C),
+                      0, 2, C.ZERO, 0x457A0000)
+            for definition, copies, speed in ((PS_SPARK, 6, 0x3ECCCCCC), (PS_SPARK2, 4, 0x40C00000)):
+                for _ in range(copies):
+                    velocity = tuple(C.mul(part, speed) for part in self.spell_ball(spell))
+                    ball = self.spell_ball(spell)
+                    place = tuple(C.add(C.add(ball[j], ball[j]), point[j]) for j in range(3))
+                    self.call('particle_spawn', definition, place, velocity, C.ZERO)
+        for _ in range(10):
+            angle = s16(self.spell_rand(spell))
+            radius = C.mul(C.mul(C.from_int(self.spell_rand(spell)), RC.F_2M16), 0x42200000)
+            x = C.mul(C.cos16(angle), radius)
+            y = C.mul(C.sin16(angle), radius)
+            z = C.add(C.add(0x43480000, C.from_int(self.spell_rand(spell) % 200)), 0xC2C80000)
+            place = (C.add(x, pos[0]), C.add(y, pos[1]), C.add(z, pos[2]))
+            self.call('particle_spawn', PS_FALL, place, (C.ZERO, C.ZERO, 0xC2A00000), C.ZERO)
+        for _ in range(10):
+            angle = s16(self.spell_rand(spell))
+            radius = C.mul(C.mul(C.from_int(self.spell_rand(spell)), RC.F_2M16), 0x42200000)
+            x = C.mul(C.cos16(angle), radius)
+            y = C.mul(C.sin16(angle), radius)
+            vx = C.add(C.from_int(self.spell_rand(spell) & 1), C.MINUS_ONE)
+            vy = C.add(C.from_int(self.spell_rand(spell) & 1), C.MINUS_ONE)
+            place = (C.add(x, pos[0]), C.add(y, pos[1]), C.add(C.ZERO, pos[2]))
+            ground = self.call('terrain_heightAtPoint', self.u32(RC.G_WORLD), place)
+            place = (place[0], place[1], C.add(ground, 0x40A00000))
+            self.call('particle_spawn', PS_SPARK, place, (vx, vy, C.ZERO), C.ZERO)

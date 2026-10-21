@@ -40,8 +40,10 @@ OPTIONS = {'seed': 20973, 'filter': None}
 
 RAND, END = 0x1509D0, 0x2DA928
 COS, SIN = 0x166630, 0x1666E0
+SPELL_RAND, MAT34 = 0x16A964, 0x163B30
 FN_DTOR, FN_ENEMY = 0x3E0100, 0x3E0120
 FN_STAT10, FN_STAT13 = 0x3E0140, 0x3E0160
+FN_SPELL, FN_MODEL = 0x3E0180, 0x3E01A0
 
 ENTRIES = {
     'poisonGas': (0x1FD0F0, 'i', 'poison_gas_run', ((0x1FD0F0, 0x1FD54C), (0x1FD550, 0x1FD5B0))),
@@ -50,7 +52,11 @@ ENTRIES = {
     'multifireEnd': (0x2DA928, 'ii', 'multifire_end', ((0x2DA928, 0x2DAA4C),)),
     'smokeGen': (0x31C898, 'i', 'smoke_gen_run', ((0x31C898, 0x31CAC4),)),
     'pustule': (0x30BDE0, 'i', 'pustule_run', ((0x30BDE0, 0x30C4AC),)),
+    'arena': (0x305BBC, 'iv', 'arena_run', ((0x305BBC, 0x305E9C),)),
+    'hornomen': (0x2FC684, 'iv', 'hornomen_run', ((0x2FC684, 0x2FCE8C),)),
+    'planarsteel': (0x2FB9B4, 'iv', 'planarsteel_run', ((0x2FB9B4, 0x2FC3AC),)),
 }
+ANGLES = {COS, SIN, SPELL_RAND}
 FOLLOW = {
     'poisonGas': {RAND},
     'diseaseCorpse': set(),
@@ -58,6 +64,9 @@ FOLLOW = {
     'multifireEnd': {RAND},
     'smokeGen': set(),
     'pustule': {RAND, COS, SIN},
+    'arena': set(ANGLES),
+    'hornomen': set(ANGLES) | {MAT34},
+    'planarsteel': set(ANGLES),
 }
 EXTS = {
     'particle_spawn': Ext(0x18F3F8, 'pvv', 1, 'n'),
@@ -72,6 +81,16 @@ EXTS = {
     'sound_playOnObject': Ext(0x214230, 'pp', 1, 'n'),
     'sound_playAtPos': Ext(0x214428, 'pv', 1, 'n'),
     'terrain_height': Ext(0x183820, 'pv', 1, 'f'),
+    'terrain_heightAtPoint': Ext(0x182F28, 'pv', 0, 'f'),
+    'model_getSamplePointCount': Ext(0x1799C8, 'p', 0, 'i'),
+    'model_getSamplePoint': Ext(0x178E18, 'ppviioOi', 1, 'n'),
+    'particleGroup_setMatrix': Ext(0x18E9E8, 'ip', 0, 'n'),
+    'particleGroup_begin': Ext(0x18E958, 'i', 0, 'n'),
+    'particleGroup_end': Ext(0x18E9A0, 'i', 0, 'n'),
+    'light_relink': Ext(0x14A528, 'p', 0, 'n'),
+    'glow_add': Ext(0x18FC78, 'viiiiiii', 2, 'n'),
+    'Creature.v16': Ext(FN_MODEL, 'p', 0, 'i'),
+    'Spell.v1': Ext(FN_SPELL, 'pi', 0, 'n'),
     'isNearView': Ext(0x1E77C0, 'p', 1, 'i'),
     'SmokeGen_stepParticles': Ext(0x31CAC8, 'p', 0, 'n'),
     'Creature.v1': Ext(FN_DTOR, 'ii', 0, 'n'),
@@ -119,6 +138,17 @@ class World:
         self.smoke = emu.alloc(0x500)
         self.pustule = emu.alloc(0x180)
         self.world_word = emu.alloc(0x10)
+        self.spell = emu.alloc(0x80)
+        self.spell_vt = emu.alloc(0x20)
+        self.creature_vt = emu.alloc(0x90)
+        mem.map(0x503000, 0x1000)
+        mem.map(0x4F8000, 0x1000)
+        self._plant(mem, self.spell_vt, 1, FN_SPELL)
+        self._plant(mem, self.creature_vt, 16, FN_MODEL)
+        self.sample = (f32(3.0), f32(4.0), f32(5.0))
+        self.sample_extra = (f32(0.0), f32(0.0), f32(1.0))
+        self.samples = 4
+        self.model_id = 0xD000
         self.skill = emu.alloc(0x80)
         self.skill_vt = emu.alloc(0x80)
         self.obj_vt = emu.alloc(0x20)
@@ -166,8 +196,14 @@ class World:
             return Res(1 if self.near else 0)
         if name == 'res_find':
             return Res(self.entry)
-        if name == 'terrain_height':
+        if name in ('terrain_height', 'terrain_heightAtPoint'):
             return Res(f=self.ground)
+        if name == 'model_getSamplePointCount':
+            return Res(self.samples)
+        if name == 'model_getSamplePoint':
+            return Res(outs=[self.sample, self.sample_extra])
+        if name == 'Creature.v16':
+            return Res(self.model_id)
         return Res(0)
 
 
@@ -223,18 +259,24 @@ class Rig:
 
     def decode(self, name, ext, emu):
         mem, canon, outs = emu.mem, [], []
+        index = 0
         for kind in ext.ints:
             if kind == '-':
                 continue
-            index = len(canon) + len(outs)
             reg = emu.r[4 + index] & M32
+            index += 1
             if kind == 'v':
                 canon.append(tuple(mem.u32(reg + 4 * j) for j in range(3)))
             elif kind == 'D':
                 canon.append(desc_canon(mem, reg))
             elif kind == 's':
                 canon.append(('buf', self.buffers[reg]) if reg in self.buffers else reg)
-            elif kind == 'n':
+            elif kind == 'p':
+                canon.append('stack' if is_stack(reg) else reg)
+            elif kind in ('n', 'o'):
+                outs.append(reg)
+            elif kind == 'O':
+                canon.append(1 if reg else 0)
                 outs.append(reg)
             else:
                 canon.append(reg)
@@ -255,11 +297,17 @@ class Rig:
             canon, outs = self.decode(name, ext, emu)
             self.calls.append((name, canon))
             res = self.world.respond(name, canon, None, None)
-            if outs:
+            if name == 'world_collectObjectsInBox':
                 ptr = outs[0]
-                for j, obj in enumerate(res.outs[0] if res.outs else ()):
+                objects = res.outs[0] if res.outs else ()
+                for j, obj in enumerate(objects):
                     emu.mem.w32(ptr + 4 * j, obj)
-                emu.mem.w32(ptr + 4 * len(res.outs[0] if res.outs else ()), 0)
+                emu.mem.w32(ptr + 4 * len(objects), 0)
+            elif name == 'model_getSamplePoint':
+                for ptr, value in zip(outs, res.outs):
+                    if ptr:
+                        for j in range(3):
+                            emu.mem.w32(ptr + 4 * j, value[j])
             if ext.ret == 'f':
                 emu.f[0] = res.f & M32
             return res.ret
@@ -274,8 +322,11 @@ class Rig:
                 res = self.rig.world.respond(name, args, None, None)
                 if name == 'libc_sprintf':
                     return ('buf', res.outs[0])
-                if name == 'terrain_height':
+                if name in ('terrain_height', 'terrain_heightAtPoint'):
                     return res.f & M32
+                if name == 'model_getSamplePoint':
+                    point, extra = res.outs
+                    return (point, extra) if args[5] else point
                 if res.outs:
                     return res.outs[0]
                 return res.ret & M32
@@ -297,7 +348,15 @@ class Rig:
         emu.reset_log()
         emu.trace = []
         emu.r[29] = emu.stack_hi - 0x1000
-        regs = [value & M32 for value in args]
+        regs, scratch = [], self.world.argbuf
+        for value, kind in zip(args, kinds):
+            if kind == 'v':
+                for j in range(3):
+                    mem.w32(scratch + 4 * j, value[j])
+                regs.append(scratch)
+                scratch += 0x10
+            else:
+                regs.append(value & M32)
         try:
             emu.call(addr, *regs, max_steps=4000000)
         except EmuError as exc:
@@ -395,6 +454,12 @@ def generate(rig, key, rng, kind):
         return _end(w, mem, rng, kind)
     if key == 'pustule':
         return _pustule(w, mem, rng, kind)
+    if key == 'arena':
+        return _arena(w, mem, rng, kind)
+    if key == 'hornomen':
+        return _horn(w, mem, rng, kind)
+    if key == 'planarsteel':
+        return _planar(w, mem, rng, kind)
     return _smoke(w, mem, rng, kind)
 
 
@@ -639,6 +704,70 @@ def _pustule(w, mem, rng, kind):
     return (obj,)
 
 
+def _spell(w, mem, rng):
+    spell, creature = w.spell, w.owner
+    _zero(mem, spell, 0x80)
+    _zero(mem, creature, 0x180)
+    mem.w32(spell + 0x14, w.spell_vt)
+    mem.w32(spell + 0xC, creature)
+    mem.w32(spell + 0x10, rng.getrandbits(32) or 1)
+    mem.w32(creature + 0x48, w.creature_vt)
+    mem.w32(creature + 0xC, 0)
+    _put(mem, creature + 0x10, (f32(1.0), f32(2.0), f32(3.0)))
+    mem.w16(creature + 0x38, 0x1000)
+    mem.w32(R6.G_GLOW_TEX_C, 0x00D30000)
+    mem.w32(RC.G_WORLD, w.world_word)
+    w.ground = f32(0.5)
+    w.samples = 4
+    return spell, (f32(8.0), f32(9.0), f32(10.0))
+
+
+def _arena(w, mem, rng, kind):
+    spell, pos = _spell(w, mem, rng)
+    counter = {'quiet': 0, 'start': 30, 'fading': 61, 'spent': 200}[kind]
+    mem.w16(R6.G_ARENA_COUNTER, counter)
+    return (spell, pos)
+
+
+def _horn(w, mem, rng, kind):
+    spell, pos = _spell(w, mem, rng)
+    mem.w32(spell + 0x1C, 7)
+    if kind == 'ended':
+        mem.w32(SA.G_SIM_FRAME, 100)
+        mem.w32(spell + 0x18, 100)
+    elif kind == 'early':
+        mem.w32(SA.G_SIM_FRAME, 5)
+        mem.w32(spell + 0x18, 600)
+    elif kind == 'late':
+        mem.w32(SA.G_SIM_FRAME, 140)
+        mem.w32(spell + 0x18, 600)
+    elif kind == 'empty':
+        mem.w32(SA.G_SIM_FRAME, 5)
+        mem.w32(spell + 0x18, 600)
+        w.samples = 0
+    return (spell, pos)
+
+
+def _planar(w, mem, rng, kind):
+    spell, pos = _spell(w, mem, rng)
+    mem.w8(spell, 1)
+    mem.w16(spell + 0x18, 0x2000)
+    mem.w16(spell + 0x1A, 0x3000)
+    mem.w16(spell + 0x1C, 40)
+    if kind == 'ended':
+        mem.w32(SA.G_SIM_FRAME, 80)
+        mem.w32(spell + 0x24, 80)
+    elif kind == 'steady':
+        mem.w32(SA.G_SIM_FRAME, 10)
+        mem.w32(spell + 0x24, 400)
+        mem.w32(spell + 0x20, 1)
+    elif kind == 'burst':
+        mem.w32(SA.G_SIM_FRAME, 10)
+        mem.w32(spell + 0x24, 400)
+        mem.w16(spell + 0x1C, 0)
+    return (spell, pos)
+
+
 SCENARIOS = {
     'poisonGas': ('expire', 'idle', 'grow', 'reject', 'above', 'negative', 'no-owner', 'empty', 'skip', 'two'),
     'diseaseCorpse': ('empty', 'half', 'flags', 'spawn-then-stop', 'no-handle', 'pool-empty',
@@ -648,6 +777,9 @@ SCENARIOS = {
     'multifireEnd': ('already', 'quiet', 'ice', 'stone'),
     'smokeGen': ('far', 'spent', 'negative', 'off-frame', 'empty', 'mixed'),
     'pustule': ('old', 'burst-done', 'drops', 'fall', 'land'),
+    'arena': ('quiet', 'start', 'fading', 'spent'),
+    'hornomen': ('ended', 'early', 'late', 'empty'),
+    'planarsteel': ('ended', 'steady', 'burst'),
 }
 
 
