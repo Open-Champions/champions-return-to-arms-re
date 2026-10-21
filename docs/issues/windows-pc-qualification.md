@@ -176,6 +176,16 @@ The accepted routes observe no valid live-player death frames. Rejected retreat
 and menu-input attempts remain excluded; the first quest and good exit to `strife`
 are still unfinished.
 
+A later continuation on that same native build isolates a stronger guard and kills
+it with four aimed Holy Strike rank-two casts and normal blocking/regeneration,
+earning 1,271 XP. Normal loot adds two gold and raises the health-potion stack
+from one to two. A real hub overwrite and Load, a separately bounded fresh-process
+frontend Load, and clean mission reentry preserve level two, Strength 49, Holy
+Strike two, zero unspent points, 52 gold and the new guard death. All five accepted
+trials exit zero without timeouts or valid player-death rows. Three longer walking
+probes time out after valid Load prefixes; their entire trials remain rejected.
+The first mission is still unfinished.
+
 Earlier overwrite attempts pressed Cross while the overwrite screen required Square;
 they wrote no new checkpoint and correctly loaded the older zero-XP save. This was
 a test-input error, not an established persistence defect. Load readiness now witnesses
@@ -364,6 +374,21 @@ python -B tools/recomp/net2/n2party.py local/pc-relay --players 2 --kind window 
 Use fresh output directories for independent trials. Both commands own a temporary
 loopback service and fresh individual cards, and do not contact public players.
 
+**Ran four separate local network clients on the guarded uniform-palette build:**
+normal character selection and scripted hub play pass over direct loopback and a
+forced loopback relay. Both strict drivers and all eight actual child exits are
+zero; all scripts complete. All six peer comparisons match in each trial. The
+four-way common intervals contain 1,355 direct ticks and 1,338 relay ticks across
+43 shared columns; all four players move and remain alive, with zero out-of-sync
+or dropped-player flags over those intervals.
+
+Each client has three direct peer routes with zero relayed packets in the first
+trial. In the second, every counted game packet uses the relay. One joining client
+reports 18 carrier strays; their packet-level cause was not captured and remains
+open. Shared simulation still matches. These are four independent local network
+windows with the existing native launch adapter. Four-player missions, WAN and
+single-window multi-controller play remain unqualified.
+
 **Ran a further natural two-player mission round trip:** both characters walked
 from the hub spawn; ordinary dialogue unlocked the mission for both. The host's
 portal interaction loaded `blood1` on both clients. A normal recall consumed the
@@ -423,6 +448,22 @@ and tested starting item stacks. Both characters are fresh level-one Shamans wit
 zero XP and 500 gold; this does not establish persistence of earned co-op combat
 progress. The original cards remain unchanged during verification.
 
+**Ran earned co-op owner persistence on the guarded uniform-palette build:** two
+fresh, distinctly named Shamans use normal dialogue/portal entry, combat, recall
+and serial hub Savepoint saves. The original driver and both actual child exits
+are zero. All 47 shared columns match over 4,421 confirmed ticks, with no observed
+death, automatic reload, out-of-sync or dropped-player flag. The players earn
+55 and 37 XP; their valid-row health minima are 22.6647 and 27.1303.
+
+Each local owner writes the correct separate 310,392-byte, one-player card after
+positive busy/transfer and clean-idle gates. Two fresh offline frontend Loads exit
+zero and preserve the distinct names, class six, level one, 55/37 XP and 500 gold.
+Definition indices and quantities for every occupied item across all three bags
+match between the final co-op records, each saved card and its fresh Load. This
+includes used health/mana potions and the host's consumed recall. The source cards
+remain byte-identical during verification. This establishes earned owner-card
+persistence through separate offline Loads; online card rejoin is untested.
+
 Network pause-menu Load is deliberately disabled by the existing game code.
 These offline loads verify the owner-card files; shared party-wipe recovery and
 Savepoint resurrection are separate tests. A first resurrection probe times out
@@ -461,6 +502,19 @@ earned co-op XP persistence, survivor-at-Savepoint resurrection, four players or
 Earlier raw-field movement attempts could occur before confirmed simulation resumed;
 those trials remain excluded from the bidirectional input result.
 
+Further survivor probes on the guarded-palette build observe actual Savepoint
+resurrection on both peers: the dead player's countdown reaches zero, HP becomes
+16.4 of 32.8, protection becomes 90, and the dead countdown resets to 240. The host
+stays alive through that event and no load flag is set. This distinguishes the
+event from automatic party-wipe recovery.
+
+The original game's tick deliberately substitutes a zero pad while spawn
+protection is nonzero ([pad-selection research](../spec/player-tick.md#2-which-pad-the-tick-reads-0x1a56400x1a5764));
+24 exact supported-ELF instruction anchors independently verify this gate. Early
+post-revival stick holds therefore do not establish a control defect. Later host
+death prevents the strict usable-controls endpoint. Those whole invocations remain
+failed; safe after-protection controls and a clean survivor-revival route are open.
+
 ## Windows tick-log completion
 
 A normal scripted quit could lose the buffered end of a Windows network tick log,
@@ -488,6 +542,6 @@ observations whose confirmed logs end before restoration remain incomplete.
 A full good/evil campaign, all quests, difficulties, item combinations and every
 skill rank have not been completed. Rendering captures establish only the scenes
 actually observed; a destination request is not a normal mission transition.
-Cross-machine/network multiplayer, local multi-controller play, device disconnects
+Cross-machine/WAN multiplayer, four-player missions, local multi-controller play, device disconnects
 during physical gameplay and hands-on audio/vibration quality remain separate work.
 The existing Godot bridge has not been qualified by these standalone-native tests.
