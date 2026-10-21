@@ -1822,6 +1822,42 @@ equivalence remains failed, and wider combat, mission and campaign completion,
 physical multi-controller play, audio/vibration, WAN/NAT, public discovery,
 general performance, console fidelity and the Godot bridge remain open.
 
+## Four-owner live-input battle
+
+A subsequent private trial rotates one ordinary Poison Bolt request through each
+of the four characters. Each cast has seven actual held guest fields and fresh
+readiness and resource checks. The first three casters return to ordinary guard
+before the next cast. The target dies after the fourth cast, followed by release
+of all inputs; the optional fifth request is never sent.
+The game and client exit zero with 2,089 complete watched rows and no timeout.
+The full earlier route prefix remains identical across 641,862 watched values.
+
+Living-target HP reductions of 23, 25, 24 and 26 resolve the four current player
+owners in order. Three intervening one-HP reductions resolve player one. Actual
+projectiles are sampled for players two, three and four, with current allocation
+and owner handles revalidated; player one's projectile remains unsampled. These
+observations do not establish every flight or exact impact path. The same target
+reaches negative HP and death state, with player four as the current killing
+source. XP rises from 51/51/51/77 to 102/102/102/154. A later one-HP corpse change
+is recorded separately, with no additional kill or XP award inferred.
+
+All four remain at 32.800 HP throughout the extension. All raw and decoded inputs
+become neutral within the declared eight-field deadline and remain neutral
+through the final capture and closing observation period. Seven full party
+anchors retain canonical items, equipment and auxiliary references, skills,
+statistics, allocations and quests, with earned XP reported separately. Gold
+stays 500 per player and Recall quantities are unchanged. Game-card traffic is
+311,272 bytes read and zero written; the new XP is **unsaved**. Original and copied
+party files and all eight installed programs retain their hashes.
+
+Independent raw review qualifies this finite software-controlled four-character
+battle. The first author-reader failure, which incorrectly
+searched loading fields for death, remains preserved with its post-arm correction.
+The candidate remains private and uninstalled. Wider combat, earned checkpoint
+durability, NPC/mission and full campaign completion, physical controllers,
+audio/vibration, WAN/NAT, public discovery, strict rendering equivalence,
+performance and the Godot bridge remain open.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
