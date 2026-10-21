@@ -11,7 +11,8 @@ import sys
 
 sys.path.append(os.path.dirname(__file__))
 from ee_emu import EE  # noqa: E402
-from ref_frontend_layout import TABLES, first_theme_queues, list_geometry  # noqa: E402
+from ref_frontend_layout import (TABLES, first_theme_queues, list_geometry,  # noqa: E402
+                                 pause_geometry, publisher_logo_sprites)
 
 SHA256 = "292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675"
 SEEDS = (20973, 7)
@@ -53,6 +54,34 @@ def theme_queue(path, seed, volume):
     return e.mem.u32(0x876C10 + 2 * 0x1C4 + 0x1C0)
 
 
+def pause_draw(path, seed):
+    e = emulator(path, seed)
+    e.follow = {0x1A07C4, 0x3B8534, 0x3B96A8}
+    e.call(0x18E334, 0, max_steps=100000)  # open normal offline table
+    e.stub(0x217550, ret=-1)  # card is idle; do not close the menu
+    e.reset_log()
+    e.call(0x18CC08, max_steps=100000)
+    flags = tuple(e.mem.u32(0x44F3B8 + i * 16 + 12) for i in range(9))
+    anchors = [(c.args[0] & 0xFFFFFFFF, c.args[1] & 0xFFFFFFFF)
+               for c in e.calls if c.site == 0x1A0E5C and c.target == 0x181CA0]
+    frames = [tuple(x & 0xFFFFFFFF for x in c.args[:6])
+              for c in e.calls if c.site == 0x1A11BC and c.target == 0x17FBB8]
+    colors = [(c.args[1] & 0xFFFFFFFF, c.args[2] & 0xFFFFFFFF)
+              for c in e.calls if c.site == 0x18D5E8 and c.target == 0x1800B8]
+    return flags, anchors, frames, colors
+
+
+def logo_draw(path, seed):
+    e = emulator(path, seed)
+    e.follow = set()
+    e.call(0x321640, max_steps=100000)
+    lookups = [e.mem.cstr(c.args[1] & 0xFFFFFFFF)
+               for c in e.calls if c.target == 0x17365C]
+    sprites = [(lookups[i], *(v & 0xFFFFFFFF for v in c.args[1:5]))
+               for i, c in enumerate(c for c in e.calls if c.target == 0x17FB68)]
+    return sprites
+
+
 def main():
     if len(sys.argv) != 2:
         raise SystemExit("usage: difftest_frontend_layout.py path/to/SLUS_209.73")
@@ -73,6 +102,15 @@ def main():
             queued = theme_queue(path, seed, volume)
             assert queued == int(first_theme_queues(volume)), (seed, volume, queued)
             checks += 1
+        flags, anchors, frames, colors = pause_draw(path, seed)
+        want_anchors, want_frame = pause_geometry()
+        assert flags == (0, 0, 0, 1, 1, 0, 1, 1, 0), (seed, flags)
+        assert anchors == want_anchors, (seed, anchors)
+        assert frames == [want_frame], (seed, frames)
+        assert colors == [(7, 0x80464646)], (seed, colors)
+        checks += 4
+        assert logo_draw(path, seed) == list(publisher_logo_sprites()), seed
+        checks += 1
     print("PASS frontend list layout and theme gate: %d checks; seeds 20973, 7" % checks)
 
 

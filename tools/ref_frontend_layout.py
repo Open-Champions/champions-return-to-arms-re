@@ -34,6 +34,17 @@ def list_geometry(count, value_rows=(), origin=(320, 309)):
     return anchors, frame
 
 
+def pause_geometry():
+    """Normal offline table's five enabled rows at 0x44f3b8."""
+    return list_geometry(5, origin=(320, 240))
+
+
+def publisher_logo_sprites():
+    """Two unclipped ui_drawSprite submissions from splash_soeLogo 0x321640."""
+    return (("soe_splash_url.tex", 192, 330, 3, 0x80808080),
+            ("soe_splash.tex", 64, 50, 3, 0x80808080))
+
+
 MUSIC_VOLUME_GATE_BITS = 0x3D4CCCCC  # comparison in music_playGlobal 0x2110e0
 
 
