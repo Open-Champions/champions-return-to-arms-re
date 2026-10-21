@@ -31,10 +31,11 @@ class Tables(unittest.TestCase):
         for addr in RC_RUNS:
             self.assertIn(addr, P.RUN_SWITCHES_ENTRIES)
 
-    def test_run_states_executed_before_this_round(self):
+    def test_run_states_executed(self):
         self.assertTrue({0, 1} <= P.RUN_STATES_EXECUTED['Skeleton_run'])
         self.assertEqual(P.RUN_STATES_EXECUTED['AntQueen_run'], set(range(0x1A)))
-        self.assertEqual(P.RUN_STATES_EXECUTED['Soul_run'], set())
+        self.assertEqual(P.RUN_STATES_EXECUTED['Soul_run'], set(range(0x23)))    # tools/difftest_soul_run.py
+        self.assertIn(0x155A0C, P.executed_bodies())                            # PhProp_ctor, ref_phprop
 
 
 RC_RUNS = (0x236F78, 0x2A6864, 0x2A9870)
