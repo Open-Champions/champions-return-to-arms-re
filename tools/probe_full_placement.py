@@ -105,6 +105,22 @@ def executed_bodies():
 EXECUTED_ELSEWHERE = {
     0x1E8230: 'ref_combat.damage_apply (tools/difftest_combat.py)',
 }
+# tools/ref_items.py keeps no address table.  Whole bodies its difftest (tools/difftest_items.py)
+# compares, by property; rerun 2026-10-21: 22 of 22 properties PASS.  Partial ones (the scatter
+# loop of loot_spawnGold, the seed side of item_loadResources) are not listed.
+ITEM_BODIES = {
+    0x1069B8: 'parse-tables, parse-random', 0x1024A8: 'value-random', 0x103E08: 'stats-random',
+    0x103EC8: 'stats-random', 0x103F88: 'stats-random', 0x104100: 'stats-random', 0x1083F8: 'stats-random',
+    0x104C04: 'small', 0x104C48: 'small', 0x108924: 'small', 0x107CA8: 'small', 0x107EA4: 'small',
+    0x107EC0: 'small', 0x104758: 'preset-full', 0x104CA4: 'affix-full', 0x106214: 'plain', 0x106658: 'plain',
+    0x108590: 'plain', 0x107D54: 'shop', 0x100D54: 'loot-full', 0x100BA0: 'named', 0x1C4948: 'equip',
+    0x101E48: 'names',
+    # callees those bodies run for real in the same properties (their jal closure, C library
+    # aside): item_getUnitMultiplier (attack rating, damage range), item_randomizeVariant
+    0x1046B4: 'stats-random, inside 0x103f88 and 0x104100', 0x1046E0: 'parse-random, preset-full, affix-full',
+}
+for _addr, _prop in ITEM_BODIES.items():
+    EXECUTED_ELSEWHERE.setdefault(_addr, 'ref_items (tools/difftest_items.py %s)' % _prop)
 
 
 # The run functions' switches: entry -> (address of the range test, jump-table base,
@@ -148,6 +164,9 @@ SERVICES = {
     # the physics prop's rigid body and its bookkeeping (docs/spec/gut-chunk.md 9): the body's
     # one draw is the cosmetic seed, not the shared one
     'rigidbody_init', 'quat_fromMat3', 'quat_normalize', 'rigidbody_updateDerived', 'obj_stopRunning',
+    # resource and pose lookups (as res_find, model_getBounds, model_getAttachPoint): where a
+    # bone prop starts (PhProp_ctor2) and the gold pile's clip (Gold_ctor2)
+    'model_getMeshJoint', 'anim_getJointMatrix', 'resref_get',
 }
 
 
@@ -158,6 +177,7 @@ PLACEMENTS = {
 SKELIGHTS = (((80, 0), 0x8000), ((-40, 0), 0))
 FIXTURE_PAGE = 0x00C00000              # difftest_creature's fixture handles live in this page
 POOL_LIMIT = 4000                       # blocks --pool hands out before refusing again
+MAX_STEPS = 400000000                   # per call: a boss death builds items with the real C string code
 FACING = 0xC000
 LEVEL = b'drunare'                      # any level but airhub (the Soul class tests that name)
 HP = 120.0
@@ -240,8 +260,18 @@ class World(DCT.World):
         'handle_link', 'handle_clear', 'Creature.v16', 'Creature.v37', 'obj_getPropInt',
         'obj_getPropStr', 'iter_begin', 'iter_next', 'net_objOrGhost', 'player_speedScale',
         'model_getSamplePointCount', 'terrain_raycast', 'world_raycast',
-        'SkillLifeTap_getStat0Fraction', 'player_getSkillRank',
+        'SkillLifeTap_getStat0Fraction', 'player_getSkillRank', 'libc_sprintf',
     }
+
+    def on_libc_sprintf(self, args, view, rng):
+        """The format with its one integer rendered (a sound or clip name)."""
+        fmt, value = args[0], args[1]
+        text = bytearray()
+        while view.load(fmt + len(text), 1):
+            text.append(view.load(fmt + len(text), 1))
+        if value is not None and b'%d' in text:
+            text = text.replace(b'%d', b'%d' % ee_emu.s32(value))
+        return Res(outs=[bytes(text)])
 
     def on_SkillLifeTap_getStat0Fraction(self, args, view, rng):
         return Res(f=0)
@@ -590,7 +620,7 @@ class Probe:
             emu.f[12 + k] = raw & M32
         emu.trace = []
         try:
-            return emu.call(addr, *ints, max_steps=4000000)
+            return emu.call(addr, *ints, max_steps=MAX_STEPS)
         finally:
             for fn in sorted(self._functions_run(set(emu.trace))):
                 if fn in self.allowed or fn in self or fn in emu.hooks:
