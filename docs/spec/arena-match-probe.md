@@ -61,3 +61,18 @@ through death; the Mummy constructor and class behavior for wave 1; the already
 modelled Scorpion constructor, state/run and death path for wave 2. The arena
 helper sequence and factory row selection already have independent difftests;
 the synthetic wave proof does not replace the missing class contracts.
+
+Of the two common later indices, index 25 is `snobadge` and uses the Badger
+contract in `tools/ref_monsters_1.py` and `docs/spec/monsters-1.md`. Its quick
+difftest was rerun on seeds 20973 and 7: 380 and 366 comparisons, respectively,
+with no mismatches. Index 4 is `orc2`; this round verified its factory row
+(size `0x488`, constructor `0x2a0954`) but did not model its class behavior.
+
+2026-10-21 coordination handoff: `t3/research-arena-match` reached mode-B
+recipe-0 waves 0–2 through the original factory and arena task with constructor
+fixtures; seeded Goblin/Mummy neutral state difftests and reused Scorpion,
+Creature, and Badger contracts pass; authored lethal player hits execute base
+damage and class death states. Native order: Goblin, Mummy, Scorpion, then Orc2;
+remaining risk is real constructors, AI/combat interactions, and target-runtime
+execution. This line belongs in the canonical `COORDINATION.md`, which is not
+present in this research worktree.
