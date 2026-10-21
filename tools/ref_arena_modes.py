@@ -402,8 +402,9 @@ def wave_plan(wave, active, record_count, records, seed, saved=0):
 
 
 def level_record_index(wave, record_count):
-    """Mode B's next file: ((signed wave + 1) / 3) % record_count, then that record's
-    low nibble.  Returns (record index, name-table index)."""
+    """Record chosen when mode B changes level: ((signed wave + 1) / 3) % record_count.
+
+    The caller then takes that record's low nibble as the mode-B name index."""
     quot, _rem = sdiv(s16(wave) + 1, 3)
     _q, index = sdiv(quot, record_count)
     return index
@@ -503,8 +504,9 @@ def pvp_half(amount):
 
 
 def spell_arena_flag(counter):
-    """SpellArena_run sets owner flag bit 1 while the intro counter is >= 61, and clears
-    it otherwise.  Particles and the tint run only when the counter is >= 30."""
+    """SpellArena_run sets owner flag bit 1 while the intro counter is >= 61.
+    Below 61 it clears that bit with a mask of -3 (bit 0 stays).  Particles and the
+    tint run only when the counter is >= 30."""
     return s16(counter) >= 0x3D
 
 

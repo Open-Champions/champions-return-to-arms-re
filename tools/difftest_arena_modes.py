@@ -373,6 +373,11 @@ def test_respawn(chk, path):
     emu.reset_log()
     emu.call(RESPAWN_P, 0)
     chk.eq('no respawn during intermission', calls(emu, PICK), [])
+    emu.mem.w16(INTER, 0)
+    emu.reset_log()
+    emu.call(RESPAWN_P, 0)
+    chk.eq('mode A respawns at -1 life',
+           [(c.args[0], c.args[1]) for c in calls(emu, PICK)], [(0, 0)])
 
 
 def test_hermite_and_hud(chk, path):
@@ -727,20 +732,20 @@ def test_fade_and_spell(chk, path):
         return emu.mem.u32(owner + 0xC), tint, stopped
 
     flags, tint, stopped = spell(180, 0x11)
-    chk.eq('counter >= 61 sets flag bit 1', flags & 2, 2)
+    chk.eq('counter >= 61 sets flag bit 1', flags, 0x13)
     chk.true('counter 180 ran', stopped is None, stopped)
     chk.eq('counter >= 30 tints', tint, list(A.TINT))
     flags, tint, stopped = spell(40, 0x13)
-    chk.eq('counter 40 clears the flag', flags & 2, 0)
+    chk.eq('counter 40 clears bit 1 and keeps bit 0', flags, 0x11)
     if stopped:
         chk.note('counter 40 particle loop stopped (%s); tint stores are the ones executed at counter 180' % stopped)
     else:
         chk.eq('counter 40 still tints', tint, list(A.TINT))
     flags, tint, stopped = spell(10, 0x13)
-    chk.eq('counter < 30 clears the flag', flags & 2, 0)
+    chk.eq('counter < 30 clears bit 1 and keeps bit 0', flags, 0x11)
     chk.eq('counter < 30 leaves the tint', tint, [0x1111] * 4)
     flags, tint, stopped = spell(0xFFFF, 0x13)
-    chk.eq('steady state clears the flag', flags & 2, 0)
+    chk.eq('steady state clears bit 1 and keeps bit 0', flags, 0x11)
     chk.eq('steady state leaves the tint', tint, [0x1111] * 4)
 
 
