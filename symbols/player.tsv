@@ -56,7 +56,7 @@
 001bdb80	mission_grantMedal	(mission, level) for every player whose medal byte is lower: runs the first-bronze/silver/gold script hooks and stores the level
 001bdf60	ui_fitText	(font, index, text, width) copies text into scratch buffer 0x4f3ec8[index] and shortens it to fit; 9 callers
 001be0d0	player_packRecord	(slot) zero-run-length encodes the 0x4c30-byte record into the save area; used by net_launchTransfer
-001be1d8	player_removeFlag39Items	(slot) removes bag items whose flag bit 39 is set, except a few named item types
+001be1d8	player_removeFlag39Items	(slot) removes that player's bag items whose flag bit 39 is set, except a definition name containing bloodstone or shardof, or equal to spiritrunes, emptybag, fullbag, pickaxe or twistedkey; the remove is inventory_removeItem
 001be398	player_setFlag	(slot or -1 for all, bit, on) record +0x4c28 bit field; script built-in setPlayerFlag
 001be7e8	eqcache_lookupForItem	builds the item picture name (item_buildPictureFilename) and calls eqcache_lookupModel
 001be880	Player_spendMana	(amount, player) subtracts mana if enough, else cancels the cast and plays the no-mana voice; no direct caller found
