@@ -67,7 +67,7 @@
 # ---- save and load (unit ends at 0x222f74) ----
 00216bf8	save_itemPtrToIndex	(item address, record) -> bag * 1000 + index, or -1
 00216c80	save_snapshotPlayer	(slot) copies g_players[slot] to the saved copy at 0x879ec0 and turns item pointers into indices
-00216e10	save_itemIndexToPtr
+00216e10	save_itemIndexToPtr	(index, record) -> the cell for bag*1000+index, or 0 when the index is -1 or past that bag's count
 00216ea8	save_fixupPlayer	(slot) inverse of the pointer conversion on the live record; clears the object pointer
 00216fcc	save_init	memory-card setup; registers the save daemon tasks; sets the debug flag 0x4f8ee0 when the card has a file debug.sht
 002174b8	save_reset	clears play time and the save buffer

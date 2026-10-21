@@ -60,7 +60,7 @@
 001cc130	itemList_drawRows	Inferred from the stack-count formats and the call to itemList_drawItemInfo
 001cc7e0	itemList_drawGrid	Inferred from the inventrybox textures
 001cd208	itemList_draw	(slot, mode, panel, panelStruct) draws one player's item panel
-001cd988	itemList_input	(slot, mode, panel, panelStruct) reads the raw pad of a local slot and sends equip/unequip/drop/buy/sell/combine messages
+001cd988	itemList_input	(slot, mode, panel, panelStruct) reads the raw pad of a local slot. Mode 0 buys, 1 sells or equips, 2 equips, drops or drags, 3 is the workshop. Masks come from game_initCamera (docs/menus.md)
 001cec68	itemList_analogCursor	moves the free cursor of a panel with the raw local analogue stick
 001ceeb8	inventory_combineGems	handler of inventory msg 8 (slot, bag, descriptor address, item address): workshop combine of gems into an item
 001d0ab8	shop_close	clears shop flags, removes the task; net game sends close msg, offline clears g_paused
@@ -85,7 +85,7 @@
 001d3968	quest_remove	script removeQuest: every matching entry is overwritten with a placeholder, but only the entries behind the last match move up and the count drops by one (executed, FINDINGS N3)
 001d3adc	quest_clearAll
 001d3b78	skills_drawDescription
-001d436c	skills_nextRankCost	Inferred: cost from the class skill table 0x4ef530 and the current rank
+001d436c	skills_nextRankCost	(slot, row) param byte at the class row +2; below 5 returns param*(level+1), else param plus trunc(level^0x3fcccccc). Executed, docs/menus.md
 001d4414	skills_drawPercentLine	Inferred from the "%d%%" format; called from stats_screen
 001d4660	skills_screen	skill tree page; sends skill-point msg 7
 001d59f0	skills_drawTreeLines
