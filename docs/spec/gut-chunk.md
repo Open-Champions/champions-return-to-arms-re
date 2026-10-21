@@ -1,4 +1,4 @@
-# The gut chunk's constructor chain: PhProp_ctor, Prop_ctorNamedLaunch, Prop_launch, PhProp_initPhysics
+# The gut chunk's constructor chain (PhProp_ctor, Prop_ctorNamedLaunch, Prop_launch, PhProp_initPhysics), the bone props (PhProp_ctor2) and the gold pile (Gold_ctor2)
 
 US `SLUS_209.73` v2.00. Prose of `tools/ref_phprop.py`. The comparison is
 `tools/difftest_phprop.py`; the synthetic tests are `tools/test_ref_phprop.py`.
@@ -54,8 +54,8 @@ Commands:
 
 | | Seed 20973 | Seed 7 |
 |---|---|---|
-| Cases per entry (gutChunk, phprop, namedLaunch, launch, physics) | 3,000 each | 3,000 each |
-| Shared draws seen (one per construction) | 9,000 | 9,000 |
+| Cases per entry (gutChunk, phprop, namedLaunch, launch, physics, phprop2, gold) | 3,000 each | 3,000 each |
+| Shared draws seen (one per construction) | 15,000 | 15,000 |
 | Mismatches (calls, writes, seed, result, faults) | 0 | 0 |
 
 | Function | Address | Executed |
@@ -65,6 +65,8 @@ Commands:
 | `Prop_ctorNamedLaunch` | `0x153e54` | 117 of 117 |
 | `Prop_launch` | `0x1541a0` | 221 of 221 |
 | `PhProp_initPhysics` | `0x155110` | 161 of 161 |
+| `PhProp_ctor2` | `0x1556c0` | 211 of 211 |
+| `Gold_ctor2` | `0x157668` | 59 of 59 |
 
 Both seeds give the same coverage.
 
@@ -73,6 +75,20 @@ Checks (`--quick`): each of these model changes was detected.
 - Launch bit 8's span set to 324 instead of 224: 3 failing checks.
 - The spin factor set to 10 for bit 0x10 only, not 0x400: `phprop` writes 28, `physics`
   writes 24.
+- `PhProp_ctor2`'s angle `facing + 0x3fff` instead of `+ 0x4000`: `phprop2` writes 300 of 300.
+- `Gold_ctor2`'s flags `| 0x200c` instead of `| 0x220c`: `gold` writes 300 of 300.
+
+The second two were added on 2026-10-21 for the death path (`docs/spec/full-placement.md`
+§3.2). The entries **phprop2** and **gold** are:
+
+- **phprop2**: `PhProp_ctor2` with the shatter's arguments (launch `0x107`) and others. The
+  part bits are any 64-bit value, the facing any value. The joint matrix the stub answers
+  is the identity or random. An item record is present or not.
+- **gold**: `Gold_ctor2` with values 0 to `0xffffffff`.
+
+The matrix bodies run for real: `mat34_setPosRotZScale` `0x163cb8`, `mat34_mul`
+`0x162808` and `mat34_transformPoint` `0x1660a0`. They come from `tools/ref_core.py` and
+were executed by `tools/difftest_core.py`.
 
 ## 3. GutChunk_ctor (block G, point P, kind, bits; 1.0)
 
@@ -189,6 +205,67 @@ the three callees.
 8. `+0x23c` = −0.1 (`0xbdcccccc`) with launch bit `0x800`, otherwise −0.4 (`0xbecccccc`).
 9. Launch bit `0x1000`: `+0x19c`, `+0x194` and `+0x198` = 0.
 
+## 7a. PhProp_ctor2 `0x1556c0`: the shattered skeleton's bone props
+
+Arguments: obj, position, facing, model, anim state, lump, model name, texture; scale in
+f12. Three more are 64-bit slots in the caller's outgoing stack (`ld 0x140(sp)`, `lw
+0x148(sp)`, `lw 0x150(sp)` at `0x155708`–`0x155740`): the part bits, the launch flags and
+the item record. `Skeleton_shatter` passes its class definition's words and the launch
+`0x107` (`docs/spec/combat-death.md`).
+
+*Executed*, in this order:
+
+1. `Prop_ctorNamedLaunch(obj, copy of the position, lump, model name, texture, part bits,
+   launch | 4)` (`ori` at `0x155738`). The bit 4 moves the prop by its parts' centre and
+   relinks it. This is **one shared draw** plus the facing's and the launch's own draws
+   (§5, §6).
+2. As `PhProp_ctor` (the shared part, `phprop_record` in the model):
+   - table `0x511ba8`;
+   - the empty item record;
+   - `+0x240` = scale, flags `|= 0x4000`;
+   - the item branch.
+3. `+0x22c` = −1, byte `+0x23a` = 0, `+0x234` = 0. When the part mask `+0xe8` is non-zero,
+   `+0x22c` becomes the index of its highest bit (the same `dsrl` loop as
+   `PhProp_initPhysics`).
+4. J = `anim_getJointMatrix(anim state, model_getMeshJoint(model, +0x22c))`, a 3×4 matrix
+   on the stack.
+5. R = `mat34_setPosRotZScale(+0x240, (0, 0, 0), s16(s16 facing + 0x4000))`. Then
+   `mat34_mul(J, J, R)`, which writes back into J.
+6. The prop's offset from the given position (its position now, less the copy) is
+   transformed by J (`mat34_transformPoint`). The given position plus that offset becomes
+   the new `+0x10`–`+0x18`.
+7. `PhProp_initPhysics(obj, launch)`, with the launch as given (without the 4).
+8. The item sound of `PhProp_ctor` (one own draw) when `+0x238` is set and the launch has
+   any of `0x19`.
+9. Flags `|= 0x2000`.
+
+Draws: one shared, then own draws as in §8 for its launch. The shatter's `0x107` gives:
+
+- bit 1: two own draws;
+- bit 2: `+0x10c` = 2000;
+- bit 4: the centre move;
+- bit `0x100`: `+0x140 |= 2` and flags `|= 0x4000`;
+- the spin: three own draws.
+
+So each bone costs 1 shared and 6 own draws, and makes no sound. The damping is −0.4.
+
+## 7b. Gold_ctor2 `0x157668` (obj, position, value): the gold pile
+
+*Executed*, in this order:
+
+1. `GameObject_ctor(obj, copy of the position, no definition, no properties)`. This is
+   **one shared draw**.
+2. Table `0x511a88` (`0x1576b0`/`0x1576b8`).
+3. Byte `+0x5d` = 1. This is the embedded anim state's `+5`; the anim state is at `+0x58`.
+4. An empty five-pass loop (`0x1576c4`–`0x1576e8`, only `nop`s).
+5. Byte `+0x4c` = `0x29`. `+0x80` = the value. Flags `|= 0x220c`.
+6. `anim_clear(+0x58)`.
+7. `+0x50` = `g_simFrame`.
+8. `anim_push(+0x58, resref_get(0x6e01b0), 0x204)`.
+9. `obj_runEveryFrame(obj)`.
+
+No own draws.
+
 ## 8. What one gut chunk costs (Executed)
 
 The launch is `0xb41` with no item. That gives:
@@ -217,5 +294,6 @@ when the pool has a block.
 - `rigidbody_init`, `quat_fromMat3`, `quat_normalize`, `rigidbody_updateDerived`,
   `model_getBounds`, `obj_updateGridCell`, `obj_runEveryFrame`, `obj_stopRunning`,
   `sound_playOnObject`, `res_find` and `handle_link`. All were recording stubs.
-- `PhProp_ctor2` `0x1556c0`, the variant `Skeleton_shatter` uses (`docs/spec/combat-death.md`
-  when it covers it).
+- `model_getMeshJoint` `0x179358` and `anim_getJointMatrix` `0x16f720` (`PhProp_ctor2`),
+  and `resref_get`, `anim_clear` and `anim_push` (`Gold_ctor2`). All were recording stubs.
+- `Gold_run` `0x157b58` and `Gold_onTouch` `0x157a9c`: the pile's frame and its pickup.

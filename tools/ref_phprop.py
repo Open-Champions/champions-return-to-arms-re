@@ -9,6 +9,10 @@ unless a docstring says otherwise.
     GutChunk_ctor          0x201958  (tools/ref_combat_round3.py; PhProp_ctor now real under it)
     PhProp_ctor            0x155a0c  (scale; obj, position, lump, model, texture, part mask,
                                       launch flags, item record)
+    PhProp_ctor2           0x1556c0  (scale; obj, position, facing, model, anim state, lump, model
+                                      name, texture; stack: part bits, launch flags, item record):
+                                      the prop of a body part, placed by the creature's joint
+    Gold_ctor2             0x157668  (obj, position, value): the dropped gold pile
     Prop_ctorNamedLaunch   0x153e54  (obj, position, lump, model, texture, part mask, launch flags)
     Prop_launch            0x1541a0  (obj, launch flags)
     PhProp_initPhysics     0x155110  (obj, launch flags)
@@ -22,9 +26,11 @@ prop launched with any of 0x19.  A gut chunk (launch 0xb41, no item) makes 1 sha
 import ref_core as C
 import ref_creature as RC
 import ref_combat_round3 as R3
-from ref_creature import Ext, M32, M64, s32
+from ref_creature import Ext, M32, M64, s16, s32
 
-GUTCHUNK_CTOR, PHPROP_CTOR = 0x201958, 0x155A0C
+GUTCHUNK_CTOR, PHPROP_CTOR, PHPROP_CTOR2, GOLD_CTOR2 = 0x201958, 0x155A0C, 0x1556C0, 0x157668
+VT_GOLD = 0x511A88                                  # 0x1576b0/0x1576b8
+R_GOLD_CLIP = 0x6E01B0                              # the resource reference of the gold clip (0x157714/0x157718)
 PROP_CTOR_NAMED_LAUNCH, PROP_LAUNCH, PHPROP_INIT_PHYSICS = 0x153E54, 0x1541A0, 0x155110
 VT_PROP, VT_PHPROP = 0x511D58, 0x511BA8             # stored at 0x153ebc/0x153ec0, 0x155a54/0x155a58
 ITEM_NAME_FIELD = 0x403AB8                          # +0x34 of an item prop (0x155b1c/0x155b20)
@@ -45,6 +51,9 @@ MODELLED = {
     'GutChunk_ctor': GUTCHUNK_CTOR, 'PhProp_ctor': PHPROP_CTOR,
     'Prop_ctorNamedLaunch': PROP_CTOR_NAMED_LAUNCH, 'Prop_launch': PROP_LAUNCH,
     'PhProp_initPhysics': PHPROP_INIT_PHYSICS, 'GameObject_ctor': 0x14CB10,
+    'PhProp_ctor2': PHPROP_CTOR2, 'Gold_ctor2': GOLD_CTOR2,
+    # tools/ref_core.py's matrix bodies, executed by tools/difftest_core.py, run for real
+    'mat34_setPosRotZScale': 0x163CB8, 'mat34_mul': 0x162808, 'mat34_transformPoint': 0x1660A0,
 }
 # the bodies tools/difftest_phprop.py adds to what was executed before (name -> entry)
 EXECUTED = {'PhProp_ctor': PHPROP_CTOR, 'Prop_ctorNamedLaunch': PROP_CTOR_NAMED_LAUNCH,
@@ -67,6 +76,11 @@ EXTERNALS = {
     'rigidbody_updateDerived': Ext(0x167A58, 'p', 0, 'n', '(body)'),
     'sound_playOnObject': Ext(0x214230, 'pp', 1, 'i', '(entry, object; volume)'),
     'libc_sprintf': Ext(0x3B7EF0, '-pi', 0, 's', '(stack buffer, format, one integer) -> the text'),
+    'model_getMeshJoint': Ext(0x179358, 'pi', 0, 'i', '(model, mesh index) -> joint'),
+    'anim_getJointMatrix': Ext(0x16F720, 'piM', 0, 'n', '(anim state, joint, out mat34)'),
+    'anim_clear': Ext(0x1707B0, 'p', 0, 'n', '(anim state)'),
+    'resref_get': Ext(0x17377C, 'p', 0, 'i', '(resource reference) -> data'),
+    'anim_push': Ext(0x170838, 'ppi', 0, 'n', '(anim state, clip, flags)'),
 }
 
 
@@ -89,6 +103,11 @@ class Model(R3.Model):
         if name == 'libc_sprintf':                  # (format, one integer): a stub of the rig
             self.calls.append((name, args))
             return render(self.cstr(args[0]), args[1])
+        if name == 'anim_getJointMatrix':           # a 3x4 matrix the callee fills
+            args = tuple(a & M32 for a in args)
+            self.calls.append((name, args))
+            function = self.cb.get(name)
+            return list(function(*args)) if function is not None else [0] * 12
         if name == 'model_getBounds':               # the mask is a 64-bit register
             args = (args[0] & M32, args[1] & M64)
             self.calls.append((name, args))
@@ -303,6 +322,89 @@ class Model(R3.Model):
         if launch & 0x1000:
             for off in (0x19C, 0x194, 0x198):
                 w32(obj + off, 0)
+
+    # ---- PhProp_ctor2 ---------------------------------------------------------------------------
+    def phprop_ctor2(self, obj, pos, facing, model, anim, lump, model_name, texture, part_bits, launch, item,
+                     scale):
+        """PhProp_ctor2 0x1556c0 (obj, position, facing, model, anim state, lump, model name,
+        texture; stack: 64-bit part bits, launch flags, item record; scale).
+
+        Prop_ctorNamedLaunch(obj, copy of the position, lump, model name, texture, part bits,
+        launch | 4): the position moves by the parts' centre.  Table 0x511ba8, the empty item
+        record, +0x240 = scale, flags |= 0x4000, the item branch: all as PhProp_ctor.  +0x22c
+        = the highest bit of the part mask (-1 for none), byte +0x23a = 0, +0x234 = 0.
+        J = anim_getJointMatrix(anim, model_getMeshJoint(model, +0x22c)) times
+        mat34_setPosRotZScale(+0x240, (0, 0, 0), s16(facing + 0x4000)) (mat34_mul(J, J, R));
+        the offset (prop position - the given position) is transformed by J and added to the
+        given position: the new +0x10..+0x18.  PhProp_initPhysics(obj, launch) (without the
+        4), the item sound as PhProp_ctor, flags |= 0x2000.  No draws besides the chain's."""
+        u32, w32, w8 = self.u32, self.w32, self.w8
+        pos = tuple(pos)
+        self.prop_ctor_named_launch(obj, pos, lump, model_name, texture, part_bits, (launch | 4) & M32)
+        self.phprop_record(obj, item, scale)
+        w32(obj + 0x22C, M32)
+        w8(obj + 0x23A, 0)
+        w32(obj + 0x234, 0)
+        mask = self.u64(obj + 0xE8)
+        if mask:
+            w32(obj + 0x22C, bit_index(mask) & M32)
+        joint = self.call('model_getMeshJoint', model, u32(obj + 0x22C))
+        m = self.call('anim_getJointMatrix', anim, joint)
+        r = C.mat34_set_pos_rot_z_scale(u32(obj + 0x240), (ZERO, ZERO, ZERO), s16(s16(facing) + 0x4000))
+        m = C.mat34_mul(m, r)
+        here = self.vec(obj + 0x10)
+        v = C.mat34_transform_point(m, [C.sub(here[k], pos[k]) for k in range(3)])
+        self.wvec(obj + 0x10, tuple(C.add(pos[k], v[k]) for k in range(3)))
+        self.phprop_init_physics(obj, launch)
+        self.item_sound(obj, launch)
+        w32(obj + 0xC, u32(obj + 0xC) | 0x2000)
+
+    def phprop_record(self, obj, item, scale):
+        """The part PhProp_ctor and PhProp_ctor2 share after Prop_ctorNamedLaunch."""
+        w8, w16, w32 = self.w8, self.w16, self.w32
+        w32(obj + 0x48, VT_PHPROP)
+        for k in range(4):
+            w16(obj + 0x16C + 8 * k, 0xFFFF)
+        w8(obj + 0x169, 0xFF)
+        w8(obj + 0x168, 0xFF)
+        for k in range(4):
+            w16(obj + 0x158 + 2 * k, 0)
+            w16(obj + 0x160 + 2 * k, 0)
+        w32(obj + 0x240, scale)
+        w32(obj + 0xC, self.u32(obj + 0xC) | 0x4000)
+        if item:
+            for k in range(0, 0x48, 4):
+                w32(obj + 0x148 + k, self.u32(item + k))
+            w8(obj + 0x238, 1)
+            w32(obj + 0x34, ITEM_NAME_FIELD)
+            w32(obj + 0xC, (self.u32(obj + 0xC) | 0x100000) & ~0x800 & ~0x4000 & M32)
+
+    def item_sound(self, obj, launch):
+        """An item prop (+0x238) launched with any of 0x19: ONE OWN DRAW, the swish sound."""
+        if self.s8(obj + 0x238) and launch & 0x19:
+            n = (self.obj_rand(obj) & M32) % 3 + 1
+            text = self.call('libc_sprintf', S_SWISH_FORMAT, n)
+            entry = self.call('res_find', S_FX_LUMP, ('buf', text))
+            self.call('sound_playOnObject', entry, obj, ONE)
+
+    # ---- Gold_ctor2 ----------------------------------------------------------------------------
+    def gold_ctor2(self, obj, pos, value):
+        """Gold_ctor2 0x157668 (obj, position, value): GameObject_ctor(obj, copy of the
+        position, no definition, no properties) - ONE SHARED DRAW; table 0x511a88; byte
+        +0x5d = 1 (the anim state's +5); byte +0x4c = 0x29; +0x80 = value; flags |= 0x220c;
+        anim_clear(+0x58); +0x50 = g_simFrame; anim_push(+0x58, resref_get(0x6e01b0),
+        0x204); obj_runEveryFrame."""
+        self.gameobject_ctor(obj, tuple(pos), 0, 0)
+        self.w32(obj + 0x48, VT_GOLD)
+        self.w8(obj + 0x5D, 1)
+        self.w8(obj + 0x4C, 0x29)
+        self.w32(obj + 0x80, value)
+        self.w32(obj + 0xC, self.u32(obj + 0xC) | 0x220C)
+        self.call('anim_clear', obj + 0x58)
+        self.w32(obj + 0x50, self.u32(RC.G_SIM_FRAME))
+        clip = self.call('resref_get', R_GOLD_CLIP)
+        self.call('anim_push', obj + 0x58, clip, 0x204)
+        self.call('obj_runEveryFrame', obj)
 
     # ---- entries the difftest calls directly ----------------------------------------------------
     def phprop_ctor_entry(self, obj, pos, lump, model, texture, part_mask, launch, item, scale):

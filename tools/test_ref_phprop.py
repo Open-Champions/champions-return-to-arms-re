@@ -146,5 +146,48 @@ class Shape(Fixture):
             self.assertEqual(self.mem.load(OBJ + 0x1C8, 4), C.mul(C.sub(C.add(f, f), C.ONE), f32(factor)))
 
 
+class Ctor2(Fixture):
+    bounds = (0, 0, 0, 0, 0, 0)
+
+    def get(self, name):
+        if name == 'anim_getJointMatrix':
+            # a turn of a quarter about z and a lift of 10
+            return lambda *args: [0, f32(1.0), 0, f32(-1.0), 0, 0, 0, 0, f32(1.0), 0, 0, f32(10.0)]
+        if name == 'model_getMeshJoint':
+            return lambda *args: 3
+        return Fixture.get(self, name)
+
+    def test_joint_and_flags(self):
+        pos = (f32(100.0), f32(0.0), f32(0.0))
+        self.model.phprop_ctor2(OBJ, pos, 0, 0x140000, 0x150000, *self.names(), 1 << 40, 0x107, 0, C.ONE)
+        self.assertEqual(self.mem.load(OBJ + 0x22C, 4), 40)                # the highest part bit
+        self.assertEqual(self.calls('model_getMeshJoint')[0], (0x140000, 40))
+        flags = self.mem.load(OBJ + 0xC, 4)
+        self.assertTrue(flags & 0x2000 and flags & 0x4000)
+        # the offset from the given position is 0 (flat bounds): the prop sits at pos + J's lift
+        self.assertEqual(self.mem.load(OBJ + 0x18, 4), f32(10.0))
+        self.assertEqual(self.mem.load(OBJ + 0x10, 4), f32(100.0))
+
+    def test_launch_four_added_for_the_centre_only(self):
+        self.model.phprop_ctor2(OBJ, (0, 0, 0), 0, 0, 0, *self.names(), 0, 0x100, 0, C.ONE)
+        self.assertEqual(len(self.calls('obj_updateGridCell')), 2)       # bit 4 (centre) and Prop_launch
+        self.assertEqual(self.mem.load(OBJ + 0x23C, 4), PP.F_DAMP_HEAVY)  # no 0x800
+
+
+class Gold(Fixture):
+    def test_gold(self):
+        self.mem.poke(RC.G_SIM_FRAME, 4, 1234)
+        self.model.gold_ctor2(OBJ, (f32(1.0), f32(2.0), f32(3.0)), 25)
+        self.assertEqual(self.model.draws, 1)
+        self.assertEqual(self.mem.load(OBJ + 0x48, 4), PP.VT_GOLD)
+        self.assertEqual(self.mem.load(OBJ + 0x80, 4), 25)
+        self.assertEqual(self.mem.load(OBJ + 0x50, 4), 1234)
+        self.assertEqual(self.mem.load(OBJ + 0x4C, 1), 0x29)
+        self.assertEqual(self.mem.load(OBJ + 0x5D, 1), 1)
+        self.assertEqual(self.mem.load(OBJ + 0xC, 4) & 0x220C, 0x220C)
+        self.assertEqual(self.calls('resref_get'), [(PP.R_GOLD_CLIP,)])
+        self.assertEqual(self.calls('anim_push')[0][2], 0x204)
+
+
 if __name__ == '__main__':
     unittest.main()

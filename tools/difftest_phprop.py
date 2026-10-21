@@ -57,6 +57,8 @@ BODIES = {
     'Prop_ctorNamedLaunch': (0x153E54, 0x154028),
     'Prop_launch': (0x1541A0, 0x154514),
     'PhProp_initPhysics': (0x155110, 0x155394),
+    'PhProp_ctor2': (0x1556C0, 0x155A0C),
+    'Gold_ctor2': (0x157668, 0x157754),
 }
 GAMEOBJECT_SPAN = (0x14CB10, 0x14CF84)
 REAL = set(PP.MODELLED.values()) | {0x1509D0}
@@ -68,6 +70,9 @@ ENTRIES = {
     'namedLaunch': (0x153E54, 'cvpppii', 'n', 'prop_ctor_named_launch'),
     'launch': (0x1541A0, 'ci', 'n', 'prop_launch'),
     'physics': (0x155110, 'ci', 'n', 'phprop_init_physics'),
+    # k: a 64-bit word in the caller's outgoing stack area, slots of 8 bytes in order
+    'phprop2': (0x1556C0, 'cvippppp' + 'kkk' + 'f', 'n', 'phprop_ctor2'),
+    'gold': (0x157668, 'cvi', 'n', 'gold_ctor2'),
 }
 
 LAUNCH_BITS = (1, 2, 4, 8, 0x10, 0x20, 0x40, 0x80, 0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000, 0x4000,
@@ -110,6 +115,20 @@ class World:
             return rng.choice((0, 1, -1, 3, -7, 12, -12, 40, -40, 255, 0x7FFFFFFF, -0x80000000,
                                rng.randrange(-300, 300)))
         return D.Res(outs=[v() & M32 for _ in range(6)])
+
+    def on_model_getMeshJoint(self, args, view, rng):
+        return D.Res(rng.choice((0, 1, 5, 17, 0xFF)))
+
+    def on_anim_getJointMatrix(self, args, view, rng):
+        if rng.random() < 0.2:
+            m = [1.0, 0, 0, 0, 1.0, 0, 0, 0, 1.0]
+        else:
+            m = [rng.uniform(-1.2, 1.2) for _ in range(9)]
+        m += [rng.uniform(-3000, 3000), rng.uniform(-3000, 3000), rng.uniform(-50, 80)]
+        return D.Res(outs=[[f32(v) for v in m]])
+
+    def on_resref_get(self, args, view, rng):
+        return D.Res(rng.choice((0, 0x00A30000)))
 
     def on_sound_playOnObject(self, args, view, rng):
         return D.Res(rng.choice((0xFFFFFFFF, 3)))
@@ -188,6 +207,8 @@ class Rig:
                     canon.append(ptr)
             elif kind == 'w':
                 outs.append(reg & M32)
+            elif kind == 'M':
+                outs.append(('M', reg & M32))
             else:
                 canon.append(reg & M32)
         for j in range(ext.floats):
@@ -201,7 +222,12 @@ class Rig:
             res = self.world.respond(name, canon, self.eview, self.script_rng)
             given = list(res.outs)
             for ptr in outs:
-                emu.mem.w32(ptr, given.pop(0) if given else 0)
+                if isinstance(ptr, tuple):              # a 3x4 matrix
+                    words = given.pop(0) if given else [0] * 12
+                    for k, word in enumerate(words):
+                        emu.mem.w32(ptr[1] + 4 * k, word)
+                else:
+                    emu.mem.w32(ptr, given.pop(0) if given else 0)
             return res.ret
         return stub
 
@@ -224,6 +250,8 @@ class Rig:
             def answer(*args):
                 res = self.rig.world.respond(name, args, self.view, self.rng)
                 ext = PP.EXTERNALS[name]
+                if 'M' in ext.ints:
+                    return list(res.outs[0]) if res.outs else [0] * 12
                 if 'w' in ext.ints:
                     n = ext.ints.count('w')
                     given = list(res.outs) + [0] * n
@@ -252,8 +280,11 @@ class Rig:
         emu.reset_log()
         emu.trace = []
         emu.r[29] = emu.stack_hi - 0x800
-        regs, scratch, nfloat = [], self.world.argbuf, 0
+        regs, scratch, nfloat, stack = [], self.world.argbuf, 0, []
         for value, kind in zip(args, kinds):
+            if kind == 'k':
+                stack.append(value)
+                continue
             if kind == 'v':
                 for j in range(3):
                     mem.w32(scratch + 4 * j, value[j])
@@ -264,6 +295,8 @@ class Rig:
                 nfloat += 1
             else:
                 regs.append(ee_emu.s32(value & M32))
+        for k, value in enumerate(stack):
+            mem.w64((emu.r[29] & M32) + 8 * k, value & M64)
         emu_error = None
         try:
             eret = emu.call(addr, *regs, max_steps=4000000)
@@ -376,6 +409,20 @@ def generate(rig, key, rng):
         mask = rng.choice((0, 1, 2, 3, 0x80000000, 0x40000000, rng.getrandbits(32)))
         scale = f32(rng.choice((0.5, 1.0, 1.0, 2.0, 3.0)))
         return (obj, _pos(rng), names(), names(), names(), mask, _launch(rng), item, scale)
+    if key == 'phprop2':
+        item = 0
+        if rng.random() < 0.3:
+            item = rng.choice(w.items)
+            _fill(mem, item, 0x50, rng, False)
+            mem.w64(item + 8, rng.choice((0, 0x20000, rng.getrandbits(64))))
+        bits = rng.choice((0, 1, 0x80, 0x400, 0x10000, 1 << 40, 0xFE000000000000, 1 << 63, rng.getrandbits(64)))
+        launch = rng.choice((0x107, 0x107, 0x107)) if rng.random() < 0.5 else _launch(rng)
+        scale = f32(rng.choice((0.5, 1.0, 1.0, 1.0, 2.0)))
+        facing = rng.choice((0, 0x4000, 0xC000, 0x8000, 0xFFFF, rng.randrange(0x10000), 0xFFFF8000))
+        return (obj, _pos(rng), facing, 0x00A40000, rng.choice(w.blocks) + 0x114, names(), names(), names(),
+                bits, launch, item, scale)
+    if key == 'gold':
+        return (obj, _pos(rng), rng.choice((0, 1, 7, 25, 250, 0x7FFFFFFF, 0xFFFFFFFF)))
     if key == 'namedLaunch':
         mask = rng.choice((0, 1, 0x80000000, rng.getrandbits(32)))
         return (obj, _pos(rng), names(), names(), names(), mask, _launch(rng))
