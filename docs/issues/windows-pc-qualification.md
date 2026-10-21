@@ -1491,11 +1491,42 @@ source inputs remain unchanged. The independently reviewed traversal qualifies
 only the observed default-mode comparison; strict CT16 writes in gameplay, Qt
 application runtime, console fidelity, performance and installation remain open.
 
+## First four-player mission battle
+
+A separate retry of the private multitap prototype completes one ordinary first-
+mission battle. The previous attempt remains failed: it stops before casting at
+an enemy-X admission condition, with all four players alive and no damage or XP.
+Its endpoint already places the enemy within spell range; southwest facing is
+41-54 degrees from the recorded enemy bearing, beyond the source's 30-degree
+half-cone. No spell is attempted there. The retry preserves the
+executed prefix and the same 300-field wait, turns west through ordinary blocking
+input, and uses an attained range box. It changes the test recipe, not game code.
+
+All four fresh Shamans cast their normally learned starting Poison Bolt twice.
+The first burst kills the watched Kobold: three contemporaneously resolved party
+attackers deal 22, 21 and 27 damage, taking HP from 69.0224914 to -0.977508544 and
+AI state 20. XP rises on that death row to 51, 51, 51 and 77. The second burst is
+another cast attempt, not another kill. Later post-death changes lower corpse HP
+further; final HP must not be treated as the killing blow. A reused damage-handle
+node resolves to different actors at the actual hits, so its final contents do
+not establish ownership of earlier damage. The second player casts and spends
+mana but has no credited direct hit in this observed kill.
+
+The actual child exits zero with 10,077 watched rows, completion and no timeout.
+All four remain at 32.7999954 HP through the added interval and finish released in
+normal state 2. Canonical items, equipment and skills match the before/after
+captures; character-slot files and Save actions are absent. Ordinary startup
+writes the header and two icons, 129,572 game-card bytes. The seven startup files,
+original checkpoints and installed programs remain unchanged. The captured shared
+mission views were inspected; raw-state reviews establish the damage and XP.
+This qualifies one scripted fresh-profile four-player battle. Wider combat,
+campaign saving, mission completion, physical four-pad play and WAN remain open.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
 skill rank have not been completed. Rendering captures establish only the scenes
 actually observed; a destination request is not a normal mission transition.
-Cross-machine/WAN multiplayer, four-player combat, campaign saving and mission completion, local physical multi-controller play, device disconnects
+Cross-machine/WAN multiplayer, wider four-player combat, campaign saving and mission completion, local physical multi-controller play, device disconnects
 during physical gameplay and hands-on audio/vibration quality remain separate work.
 The existing Godot bridge has not been qualified by these standalone-native tests.
