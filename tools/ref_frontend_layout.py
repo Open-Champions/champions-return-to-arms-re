@@ -43,6 +43,31 @@ def list_geometry(count, value_rows=(), origin=(320, 309)):
     return anchors, frame
 
 
+def list_frame_calls(count, value_rows=(), origin=(320, 309), selection=0):
+    """Three calls reaching ui_drawFrameImpl with text-width callee stubbed.
+
+    Tuples are x, y, width, height, layer, tint, style, no_center. The ninth
+    no_border argument is zero in these captures. Source textures follow
+    research-ui's menu_frame: style 0 = ctile*, style 2 = tile*.
+    """
+    anchors, wrapper = list_geometry(count, value_rows, origin)
+    x, y, w, h, layer, tint = wrapper
+    wide = bool(value_rows)
+    selected_y = anchors[selection][1]
+    if selection in value_rows:
+        cursor_x, cursor_w = origin[0] - 140, 280
+    elif wide:
+        cursor_x, cursor_w = origin[0] - 21, 42
+    else:
+        cursor_x, cursor_w = origin[0] - 20, 40
+    return [
+        (cursor_x, selected_y, cursor_w,
+         32 + (selected_y & 1), 7, 0x300000FF, 0),
+        (x - 1, y - 4, w + 2, h + 8, layer, tint, 2),
+        (x + 8, y + 8, w, h, 6, 0x3F000000, 0),
+    ]
+
+
 def pause_geometry():
     """Normal offline table's five enabled rows at 0x44f3b8."""
     return list_geometry(5, origin=(320, 240))

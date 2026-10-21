@@ -12,7 +12,7 @@ import sys
 sys.path.append(os.path.dirname(__file__))
 from ee_emu import EE  # noqa: E402
 from ref_frontend_layout import (FRONTEND_STATES, MENU_SOUND_IDS, TABLES,  # noqa: E402
-                                 first_theme_queues,
+                                 first_theme_queues, list_frame_calls,
                                  list_geometry, pause_geometry, publisher_logo_sprites)
 
 SHA256 = "292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675"
@@ -28,13 +28,15 @@ def emulator(path, seed):
 
 def draw_list(path, seed, table):
     e = emulator(path, seed)
-    e.follow = set()
+    e.follow = {0x17FBB8}
     e.call(0x1A07C4, 320, 309, table, 0x80446B6A, max_steps=100000)
     anchors = [(c.args[0] & 0xFFFFFFFF, c.args[1] & 0xFFFFFFFF)
                for c in e.calls if c.target == 0x181CA0]
     frames = [tuple(x & 0xFFFFFFFF for x in c.args[:6])
               for c in e.calls if c.target == 0x17FBB8]
-    return anchors, frames
+    assembled = [tuple(x & 0xFFFFFFFF for x in c.args[:7])
+                 for c in e.calls if c.target == 0x17C118]
+    return anchors, frames, assembled
 
 
 def frontend_draw(path, seed, state, table):
@@ -125,10 +127,12 @@ def main():
     for seed in SEEDS:
         for name, (table, count, value_rows) in TABLES.items():
             expected_anchors, expected_frame = list_geometry(count, value_rows)
-            anchors, frames = draw_list(path, seed, table)
+            anchors, frames, assembled = draw_list(path, seed, table)
             assert anchors == expected_anchors, (seed, name, anchors, expected_anchors)
             assert frames == [expected_frame], (seed, name, frames, expected_frame)
-            checks += 2
+            assert assembled == list_frame_calls(count, value_rows), (
+                seed, name, assembled)
+            checks += 3
         for volume in (0, 0x3D4CCCCC - 1, 0x3D4CCCCC, 0x3F000000):
             queued = theme_queue(path, seed, volume)
             assert queued == int(first_theme_queues(volume)), (seed, volume, queued)
