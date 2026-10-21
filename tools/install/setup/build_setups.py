@@ -2,7 +2,7 @@
 """build_setups.py - "Champions Setup" for macOS, Windows and Linux: one file each that a player double-clicks.
 
   python3 tools/install/setup/build_setups.py [--platform mac,windows,linux] [--out DIR] [--service HOST:PORT]
-          [--ref REV] [--godot-mac APP] [--godot-linux DIR] [--no-godot]
+          [--ref REV] [--godot-mac APP] [--godot-linux DIR] [--godot-windows DIR] [--no-godot]
   python3 tools/install/setup/build_setups.py --check FILE ...     # only the proof below, for setups made earlier
 
 What a setup holds - and what it never holds:
@@ -10,7 +10,9 @@ What a setup holds - and what it never holds:
     --ref REV: `git archive REV` instead). The whitelist .gitignore keeps everything made from the game out of it;
   * the setup's own program: mac/main.swift + mac/setup-mac.sh, windows/stub.c + windows/setup-windows.ps1,
     linux/setup-linux.sh;
-  * the Godot version as exported by tools/godot/build.py export (our code only, no game library), macOS and Linux;
+  * the Godot version as exported by tools/godot/build.py export (our code only, no game library), macOS, Linux and
+    Windows (RtaGodot.exe, RtaGodot.pck and the extension's DLL; the setup builds the game library on the player's PC with
+    tools/godot/build_lib_win.py, through fromdisc.py --godot);
   * with --service: setup.ini, "service = HOST:PORT" (the room service its programs use). The address is given by
     whoever builds the setup to hand it out; it is never in the repository.
   NEVER a disc image, the game's executable, a translation of it, a game library or program built from it, or any of
@@ -52,6 +54,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 GODOT_MAC = os.path.join(ROOT, 'local', 'godot-r7', 'export', 'macos', 'RtaGodot.app')
 GODOT_LINUX = os.path.join(ROOT, 'local', 'godot-r7', 'export')
+GODOT_WINDOWS = os.path.join(ROOT, 'local', 'godot-r9', 'export', 'windows')
 TRAILER = b'CHSETUP1'
 
 
@@ -60,8 +63,20 @@ def say(text):
 
 
 # ---- what goes in: the source code ------------------------------------------------------------------------------------
+def source_id(ref):
+    """SOURCE_ID: the commit the setup's source is (tools/recomp/app/buildid.py reads it where there is no git)."""
+    rev = subprocess.run(['git', '-C', ROOT, 'rev-parse', '--short', ref or 'HEAD'], capture_output=True, text=True).stdout.strip() or 'unknown'
+    if not ref and subprocess.run(['git', '-C', ROOT, 'diff', '--quiet', 'HEAD', '--'], capture_output=True).returncode != 0:
+        rev += '+'
+    return ('SOURCE_ID', (rev + ' (the source this setup was made from: tools/install/setup/build_setups.py)\n').encode(), 0o644)
+
+
 def source_files(ref):
-    """(path in the archive, bytes, mode) of the repository's files."""
+    """(path in the archive, bytes, mode) of the repository's files, and SOURCE_ID."""
+    return [f for f in source_files_only(ref) if f[0] != 'SOURCE_ID'] + [source_id(ref)]
+
+
+def source_files_only(ref):
     if ref:
         data = subprocess.run(['git', '-C', ROOT, 'archive', '--format=tar', ref], capture_output=True, check=True).stdout
         out = []
@@ -304,7 +319,7 @@ def build_mac(out, files, ini, godot, work):
 
 
 # ---- Windows --------------------------------------------------------------------------------------------------------
-def build_windows(out, files, ini, work):
+def build_windows(out, files, ini, godot, work):
     src = os.path.join(HERE, 'windows')
     res = os.path.join(work, 'setup-res.o')
     stub = os.path.join(work, 'stub.exe')
@@ -321,6 +336,19 @@ def build_windows(out, files, ini, work):
         z.writestr('source.zip', source_zip(files))
         if ini:
             z.writestr('setup.ini', ini)
+        if godot:
+            # the Godot version (our application, no game inside): setup-windows.ps1 asks fromdisc.py for its game library
+            # when godot/RtaGodot.pck is in the payload, and puts the three files beside it into place
+            names = sorted(os.listdir(godot)) if os.path.isdir(godot) else []
+            if 'RtaGodot.exe' not in names or 'RtaGodot.pck' not in names:
+                say('no Godot export for Windows at %s (tools/godot/build.py extension --release --platform windows; export --platform windows): '
+                    'the Windows setup is made without the Godot version' % godot)
+            else:
+                for name in names:
+                    path = os.path.join(godot, name)
+                    if os.path.isfile(path):
+                        z.write(path, 'godot/' + name)
+                say('the Godot version for Windows: %s' % ', '.join(names))
     payload = buf.getvalue()
     final = os.path.join(out, 'Champions-Setup-Windows.exe')
     with open(final + '.part', 'wb') as f:
@@ -393,6 +421,7 @@ def main():
     parser.add_argument('--ref', default='', help='take the source code from this git revision (default: this folder as it is)')
     parser.add_argument('--godot-mac', default=GODOT_MAC)
     parser.add_argument('--godot-linux', default=GODOT_LINUX)
+    parser.add_argument('--godot-windows', default=GODOT_WINDOWS)
     parser.add_argument('--no-godot', action='store_true')
     parser.add_argument('--check', nargs='+', metavar='FILE', help='only the proof, for setups made earlier')
     args = parser.parse_args()
@@ -419,7 +448,7 @@ def main():
             if platform_ == 'mac':
                 result = build_mac(out, files, ini, None if args.no_godot else args.godot_mac, folder)
             elif platform_ == 'windows':
-                result = build_windows(out, files, ini, folder)
+                result = build_windows(out, files, ini, None if args.no_godot else args.godot_windows, folder)
             elif platform_ == 'linux':
                 result = build_linux(out, files, ini, None if args.no_godot else args.godot_linux, folder)
             else:

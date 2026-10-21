@@ -3,7 +3,7 @@
 
 #include "res://shaders/atmosphere.gdshaderinc"
 
-uniform int kind = 1;                   // 1 ceiling, 2 skirt
+uniform int kind = 1;                   // 1 ceiling, 2 skirt, 3 rim (under a floor's edge over nothing; drawn as a skirt)
 uniform int has_swatch = 0;
 uniform sampler2D swatch : filter_linear_mipmap, repeat_enable;
 uniform float gain = 1.0;               // the swatch to the mean brightness of the level's swatches
@@ -73,6 +73,7 @@ void fragment() {
 	} else {
 		alpha = clamp(v_fill.w, 0.0, 1.0);
 		rgb = base;
+		if (kind == 3) rgb *= v_fill.z * 0.9;          // a rim: the underside of the ground, darker away from the edge (grey 150 .. 90)
 	}
 	// the haze, as for the level's own draws - a ceiling a little less: it is seen at a slant, above what lies at that distance
 	float f = rta_haze(kind == 1 ? dist * 0.72 : dist, v_world.z);

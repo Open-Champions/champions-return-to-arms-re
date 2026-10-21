@@ -18,6 +18,13 @@
 //                  sinking, with alpha falling to nothing - ground for the haze to lie on,
 //                  and a horizon where the saw-tooth edge was.  A floor that ends at the rim
 //                  (a floating island, a beach) gets none: there the edge is the design.
+//   FILL_RIM       under a floor that ends at the edge of nothing (a floating island, a hall over
+//                  the void, a chasm with no ground in it: storm2, torment2, fay2, pvpfire2), a
+//                  surface that falls away from the edge - steeply for `rim_knee` units, then
+//                  gently - and fades out by `rim_width`: what the eye finds when it looks over
+//                  the edge instead of nothing.  Not over water (a beach's sea is the level's).
+//                  Drawn as the skirt is, as a background (2026-10-21; native-first-person-
+//                  world.md 8.8, cause 4).
 //
 // What it is NOT: nothing here is the game's art.  A vertex has a position, a normal, a
 // place for a tiling texture (world x, y / 64) and a grey level that says how near the next
@@ -40,7 +47,7 @@
 
 namespace render {
 
-enum : uint8_t { FILL_CEILING = 1, FILL_SKIRT = 2 };
+enum : uint8_t { FILL_CEILING = 1, FILL_SKIRT = 2, FILL_RIM = 3 };
 
 struct FillVertex {
     float position[3];      // world space: z is up, the game's units (a character is about 60 high)
@@ -66,6 +73,9 @@ struct FillOptions {
     float clearance = 96;       // and is never nearer to the floor than this
     float skirt_width = 480, skirt_drop = 0.12f;
     float rim_min = 40;         // the rim is a lid when it is this far over the nearest floor
+    bool rims = true;           // FILL_RIM: under a floor's edge over nothing (a lid's edge has the skirt, when skirts are made)
+    float rim_width = 768;      // how far out it reaches (it fades out over the outer 55 %)
+    float rim_knee = 160, rim_fall = 0.9f, rim_fall_far = 0.2f;    // it falls rim_fall a unit out to rim_knee, then rim_fall_far
     uint8_t far_shade = 150;
 };
 
@@ -75,7 +85,7 @@ struct FillLevel {
     std::vector<FillVertex> vertices;
     std::vector<FillMesh> meshes;
     // figures: square units
-    double floor_area = 0, ceiling_area = 0, skirt_area = 0;
+    double floor_area = 0, ceiling_area = 0, skirt_area = 0, rim_area = 0;
     float lid_median = 0;       // of the walls that carry a ceiling, over the floor beside them
     int walls = 0;              // cells of such walls
     float bounds[6] = {0, 0, 0, 0, 0, 0};

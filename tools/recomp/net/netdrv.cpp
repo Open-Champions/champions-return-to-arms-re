@@ -57,7 +57,7 @@
 #include <thread>
 
 unsigned recomp_patches(const u32 (**words)[2]);
-__attribute__((weak)) unsigned recomp_patch_set_words() { return ~0u; }    // a translation older than --extra-pnach
+unsigned recomp_patch_set_words();     // rt/runtime.cpp (weak: ~0, a translation older than --extra-pnach)
 
 namespace fs = std::filesystem;
 

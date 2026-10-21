@@ -10,6 +10,10 @@
 #      %LOCALAPPDATA%\Champions\workspace and runs tools\install\fromdisc.py: the game's executable out of the disc
 #      image, translated and built on this PC;
 #   4. "Champions" on the desktop and in the Start menu, and starts it.
+#   With the Godot version in the payload (godot\RtaGodot.exe, .pck and the extension's DLL: our application, no game
+#   inside - build_setups.py puts it there), step 3 also builds its game library (fromdisc.py --godot:
+#   tools/godot/build_lib_win.py, into %APPDATA%\Open Champions\RTA Godot) and step 4 puts the Godot version into
+#   %LOCALAPPDATA%\Champions\godot with a "Champions Godot" shortcut beside the other.
 # setup.ini beside this script may hold "service = HOST:PORT", the room service the program uses (written by whoever
 # hands out the setup; there is none in the repository).
 # Options for a test from a console:  -Disc FILE  -Console (no window: lines on the console)  -NoStart
@@ -350,6 +354,10 @@ try {
     $arguments = @("-u", "-B", (& $q (Join-Path $Work "tools\install\fromdisc.py")), "--platform", "windows", "--disc", (& $q $Disc),
                    "--progress", "--desktop", (& $q $desktop), "--launcher-name", "Champions")
     if ($service) { $arguments += @("--service", $service) }
+    $godotFrom = Join-Path $Payload "godot"
+    $withGodot = (Test-Path -LiteralPath (Join-Path $godotFrom "RtaGodot.pck")) -and (Test-Path -LiteralPath (Join-Path $godotFrom "RtaGodot.exe"))
+    if ($withGodot) { $arguments += @("--godot") }
+    Log "the Godot version: $(if ($withGodot) { 'in this setup' } else { 'not in this setup' })"
     $out = Join-Path $Base "build-output.txt"
     Show "Building Champions from your disc image: 10 to 40 minutes; you can keep using the PC." 25 "Starting"
     $script:Build = Start-Process -FilePath $pyExe -ArgumentList $arguments -WorkingDirectory $Work -RedirectStandardOutput $out `
@@ -387,7 +395,30 @@ try {
     Make-Shortcut (Join-Path $startMenu "Champions.lnk") $program $arg (Split-Path $program)
     if (-not (Test-Path -LiteralPath (Join-Path $desktop "Champions.lnk"))) { Make-Shortcut (Join-Path $desktop "Champions.lnk") $program $arg (Split-Path $program) }
     Log "shortcuts: $(Join-Path $desktop 'Champions.lnk'), $(Join-Path $startMenu 'Champions.lnk')"
-    Show "Champions is ready: on your desktop and in the Start menu. Starting it now." 100 "Done"
+    # the Godot version: its game library was built by fromdisc.py --godot; the application itself comes from the payload
+    # (local\install.txt names it when this build made it: a library of an earlier setup does not count)
+    $godotLibrary = ""
+    $installTxt = Join-Path $Work "local\install.txt"
+    if (Test-Path -LiteralPath $installTxt) {
+        foreach ($line in Get-Content -LiteralPath $installTxt) { if ($line -match '^godot_library=(.+)$') { $godotLibrary = $Matches[1].Trim() } }
+    }
+    $godotMade = $withGodot -and $godotLibrary -and (Test-Path -LiteralPath $godotLibrary)
+    if ($godotMade) {
+        Show "Putting the Godot version in place ..." 99 ""
+        $godotDir = Join-Path $Base "godot"
+        if (Test-Path -LiteralPath $godotDir) { Remove-Item -Recurse -Force -LiteralPath $godotDir }
+        New-Item -ItemType Directory -Force -Path $godotDir | Out-Null
+        Get-ChildItem -LiteralPath $godotFrom -File | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $godotDir -Force }
+        $godotExe = Join-Path $godotDir "RtaGodot.exe"
+        $godotArg = '-- --disc "' + $Disc + '"'
+        Make-Shortcut (Join-Path $startMenu "Champions Godot.lnk") $godotExe $godotArg $godotDir
+        if (-not (Test-Path -LiteralPath (Join-Path $desktop "Champions Godot.lnk"))) { Make-Shortcut (Join-Path $desktop "Champions Godot.lnk") $godotExe $godotArg $godotDir }
+        Log "the Godot version: $godotExe (game library $godotLibrary); shortcuts: Champions Godot"
+    } elseif ($withGodot) {
+        Log "the Godot version is left out: its game library was not built (the lines above say why); Champions itself is ready"
+    }
+    $ready = if ($godotMade) { "Champions and Champions Godot are ready: on your desktop and in the Start menu. Starting Champions now." } else { "Champions is ready: on your desktop and in the Start menu. Starting it now." }
+    Show $ready 100 "Done"
     Log "@done $program"
     if (-not $NoStart) { Start-Process -FilePath $program -ArgumentList $arg -WorkingDirectory (Split-Path $program) }
     Finish-Window "Close" { $script:Ui.Form.Close() }

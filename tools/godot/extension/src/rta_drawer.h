@@ -63,6 +63,9 @@ class RtaDrawer : public RefCounted {
     Ref<Image> get_shown_image() const;             // what Godot drew into the shown surface (after the frame was rendered)
     String figures() const;
     void dump_surfaces(const String& prefix) const; // debugging: every surface as Godot holds it now, PREFIX-s<id>-p<pass>.png
+    void log_draws(int frames);                     // debugging: every draw of the next FRAMES lists to the output, with its state
+    bool get_shown_stored() const;                  // the shown picture holds stored values under the sRGB curve (view.gd decodes it)
+    int draw_log = 0;
     void release();                                 // free everything made in the RenderingServer
 
     // ---- scene mode (rta_scene.cpp) ----
@@ -110,6 +113,8 @@ class RtaDrawer : public RefCounted {
         std::vector<uint8_t> overridden;            // per instance: it carries a material of its own (place_mesh)
         size_t used = 0;                            // instances with something to draw this frame
         bool drawn_once = false;
+        bool stored = false;                        // its picture holds stored values under Godot's sRGB curve (V_STORED)
+        bool stored_next = false;                   // ... what this frame's run draws it as (taken over when it is rendered)
     };
     struct Target {
         uint32_t id = 0;
@@ -166,6 +171,7 @@ class RtaDrawer : public RefCounted {
     float flip_y = 1.0f;
     bool flip_surfaces = false;
     bool rd = false;                                // Forward+ / Mobile: surfaces stored the other way up (setup)
+    uint32_t draw_space = 0;                        // V_STORED / V_DECODE for the draw being added (submit sets it)
     bool stored_colours = true;
     float world_bias = 0.00002f;                    // scene mode: draws that do not write depth come this much nearer (clip space)
 

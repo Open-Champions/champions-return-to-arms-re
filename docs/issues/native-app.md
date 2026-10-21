@@ -2209,3 +2209,63 @@ for byte**, at frames 2300 and 2400 (640 x 448: the hub with the player's charac
 translation made from the executable alone draws what the one made from recorded streams draws.
 **Not run**: the script's install paths (command line tools, Homebrew, qtbase were already there),
 the file window (the test gave `--disc`), Finder's first-start question, an Intel Mac.
+
+## 15. The tester's kit: a bug report on a key, a crash report, the build line (2026-10-21)
+
+One file for the three programs and the Godot library: `tools/recomp/app/testerkit.{h,cpp}` (with
+`testerkit_app.h`, the view and mode settings the three programs report). Nothing is uploaded: a report is a zip in
+`<data>/reports/` that stays on the player's computer; the player sends it.
+
+- **F8** (or **L3 + R3 held for a second** on a controller): the report is taken at once - the last 60 s of the
+  **tick log** (a row per vertical blank with the rig's columns: lockstep tick, seed, level, players, and for each of
+  the four players position, state, hit points, gold, experience, read from main memory at the blank) and of the
+  **input record** (port 1's buttons and sticks as the game was given them, and whether the box held them at rest),
+  both kept in two fixed rings of 3,600 rows (nothing allocated while playing); a **picture** of the screen (the next
+  picture drawn, by the program's own shot path); `about.txt`: build id, fix set figure, platform, the view and mode
+  settings (view, aim, combat, aspect, resolution, antialiasing, anisotropy, mip maps, art pack yes/no, frame cap,
+  the HUD switches, music volume, present/pacing/full screen), and in a room of our own the room's code, its state
+  and every member's slot, host/this-machine marks, fix set and word count, arithmetic, route and round trip (no
+  names: `net2hook::room_describe`, set by `net2/launch.cpp`, which only tries the lock). A box on the screen takes a
+  short text (optional): Enter or Start saves, Escape or Select drops the report; while it is open the keyboard is the
+  box's and the game is given a controller at rest. Then `report-YYYYMMDD-HHMMSS.zip` (stored zip: `about.txt`,
+  `ticks.tsv`, `input.tsv`, `screenshot.png`, `note.txt`) and a note on the screen for 8 s.
+- **Crash handler** on all three systems: POSIX signals (SEGV, BUS, ILL, FPE, ABRT, TRAP; an alternate stack for the
+  main thread) and Windows' unhandled-exception filter. It writes `crash-<seconds>/` (about.txt with the cause - the
+  signal or exception code, the fault address, the stack: `backtrace_symbols_fd` on macOS and Linux, on Windows the
+  words on the stack that point into a loaded module as `module+offset` - and the two rings) with its own buffers and
+  the system's calls, then passes the fault on to the handler before it (the system's crash report; Godot's own;
+  `rt/host_win32.cpp`'s line). At the next start the folder is renamed to the local date, zipped, and the program
+  says where (a box on macOS, Windows and Linux for a person; the log; a note on the screen for 12 s).
+- **F9**: the build line, top right: `RTA <commit>[+] <date time>  fixes <figure>  <system version arch>`. The build id
+  is `tools/recomp/app/buildid.py`'s (git's short commit, `+` when tracked files differ; a setup's source without git
+  has `SOURCE_ID`, written by `build_setups.py`; a container build is given the id made outside it), compiled into
+  `testerkit.cpp` alone. The fix set figure is the network driver's (FNV-1a of the set's words); the weak
+  `recomp_patch_set_words` moved from `net/netdrv.cpp` to `rt/runtime.cpp` so that a program without the network
+  links it.
+- Text is drawn by the overlay in the shown surface (`testerkit::overlay`, after `soulscombat::overlay`): squares of a
+  5 x 7 letter set written for this file (capitals; the note keeps the player's own case).
+- Tests: `app report open | type TEXT | enter | escape | backspace | line | info | crash` (crash only with
+  `RTA_TESTERKIT_CRASH=1`, which also ends the process after the report instead of the system's crash report);
+  `RTA_TESTERKIT=1` makes a test window behave as a person's. In a test (`--test`, `--offscreen`) nothing is drawn and
+  nothing waits for keys; the rings and the crash handler are there.
+
+**Ran** (helpers and results under `local/tester/`, not in the repository):
+
+| Where | What | Result |
+|---|---|---|
+| macOS (`rta_app_next`, offscreen, 1280 x 896) | boot to the hub, walk, `report open`, text, `enter` | `report-...zip` 2.33 MB: about.txt 578 B, ticks.tsv 2,622 rows, input.tsv 2,622 rows, screenshot.png 1280 x 896, note.txt; the zip tests clean (`zipfile.testzip`); the box and the line in `mac1/box.png` |
+| macOS | `report crash` at the hub, then a second start | `crash-.../` with about.txt (signal 11 at address 0, the stack through `script_vblank` into the translated code), ticks.tsv 2,612 rows and input.tsv; next start: "crash report of the last run: .../crash-20261021-174727.zip", 3 files |
+| Windows (the VM, `rta_app.exe`, Mesa llvmpipe, offscreen) | the same two runs | report zip with 5 files (screenshot 1280 x 896, `win1/box.png`); crash: `exception 0xc0000005 at rta_app.exe+0x18dce9b`, `access = writing 0x0`, 28 stack words as `rta_app.exe+offset`; zipped and announced at the next start |
+| Linux (aarch64 container, Xvfb) | the same two runs | report zip, `lin1/box.png`; crash: signal 11, 14 frames as `rta_app(+offset)`; zipped and announced at the next start |
+| Godot (scene mode, the r9 library) | `report open`, text, `enter`; `report crash`; the next start | the zip (about.txt with the host's lines: Godot version, mode, window, portal settings; screenshot 2560 x 1440 from the window); crash zipped and announced ("crash report from last time") |
+
+**The simulation**: the rig comparison with this work (and section 8.8's rim fill of `native-first-person-world.md`)
+linked into the unpatched translation (`rta_app_orig_next`) is byte for byte the reference in overhead and first
+person (`local/tester/rig/over2`, `first2`: `compare.txt` identical to `reference-compare.txt` and
+`s13-first-compare.txt`). The kit reads main memory at a blank and writes nothing the game reads; only the box's
+controller at rest is input, and only while a person has it open.
+
+**Not run**: a real controller's chord (the chord was read from the code path the script's controller takes; `pad()`
+sees the merged port), typing on a real keyboard in the Windows and Linux windows (WM_CHAR, SDL_TEXTINPUT: written,
+compiled, not pressed), a stack overflow on a game thread (no alternate stack there: the handler may not run), the
+system's crash dialogs after the report (the tests end the process themselves).

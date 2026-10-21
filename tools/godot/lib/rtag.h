@@ -335,7 +335,7 @@ void rtag_mouse_button(int button, int down);           /* 0 left, 1 right, 2 mi
  * perspective off - the host draws the packets' complete geometry itself - and the host draws the fill.  A ceiling is
  * for a camera under it.  rtag_set_option("world", "views|off|always"), "world.ceilings" / "world.skirts" = auto|on|off.
  * Added after version 6 of the interface without changing it: looked up by name. */
-enum { RTAG_FILL_CEILING = 1, RTAG_FILL_SKIRT = 2 };
+enum { RTAG_FILL_CEILING = 1, RTAG_FILL_SKIRT = 2, RTAG_FILL_RIM = 3 };   /* RIM: under a floor's edge over nothing (worldfill.h FILL_RIM) */
 typedef struct rtag_fill_vertex {
     float position[3];          /* world space, z up, the game's units */
     float normal[3];            /* a ceiling's looks down, a skirt's up */
@@ -343,7 +343,7 @@ typedef struct rtag_fill_vertex {
     uint8_t rgba[4];            /* grey level: a ceiling 255 at a wall, less away from it; a skirt's alpha 128 at the rim, 0 outside */
 } rtag_fill_vertex;
 typedef struct rtag_fill_mesh {
-    uint8_t kind, pad[3];       /* RTAG_FILL_CEILING or RTAG_FILL_SKIRT */
+    uint8_t kind, pad[3];       /* RTAG_FILL_CEILING, RTAG_FILL_SKIRT or RTAG_FILL_RIM */
     uint32_t first, count;      /* vertices[first .. first + count): triangles, three vertices each */
     float bounds[6];            /* min x, y, z, max x, y, z */
 } rtag_fill_mesh;
@@ -397,6 +397,19 @@ uint64_t rtag_fields(void);             /* vertical blanks since power-on */
 const char* rtag_info(void);
 int rtag_ended(void);                   /* 1 once the machine has ended */
 int rtag_exit_code(void);               /* the runtime's: 0 done, 3 a script condition timed out or it stopped on something it cannot do */
+
+/* ---- the tester's kit (tools/recomp/app/testerkit.h; optional functions, added after version 6) ----------------
+ * The library keeps the last 60 s of the tick log and of the input record (rings, always), and from rtag_start a
+ * crash handler that writes a report into <data_dir>/reports.  The host draws the box and the build line
+ * (tools/godot/project/testerkit.gd).  Strings stay valid until the next call of the same function; "" when the library
+ * was built without the kit.  No upload: the reports stay on the player's computer. */
+const char* rtag_report_begin(const char* host_lines);  /* take a report now; returns its folder (the host writes
+                                                           <folder>/screenshot.png itself); host_lines: "key = value" lines
+                                                           for its about.txt (the host's settings), may be NULL */
+const char* rtag_report_finish(const char* folder, const char* text, int keep);   /* the player's text (may be ""); keep 0
+                                                           drops it.  Returns the zip's path ("" when dropped or failed) */
+const char* rtag_build_line(void);      /* "RTA <commit> <date>  fixes <set>  <platform>" */
+const char* rtag_report_told(void);     /* after rtag_start: what to tell the player about a crash report of the run before ("" none) */
 
 /* End the run: the game's thread prints the runtime's report at its next blank and stands still for good.
  * Returns when that has happened (or after 2 s).  The process may then exit. */

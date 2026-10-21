@@ -1,4 +1,4 @@
-// rta_fill.cpp - RtaDrawer's fill: the ceilings and skirts the library generates for a level (rtag_fill_get,
+// rta_fill.cpp - RtaDrawer's fill: the ceilings, skirts and rims the library generates for a level (rtag_fill_get,
 // tools/recomp/render/worldfill.h), drawn in the world of scene mode as if they were part of the level.
 //
 // What the library hands over is plain geometry: blocks of 128 x 128 units, a ceiling over the walked floor of a walled
@@ -24,7 +24,11 @@
 //   visibility as the OpenGL program has it (render/gs.cpp, Gs::draw_fill): a ceiling block only when the eye is under
 //              its top, and a ceiling seen from below only - a camera that has got above a lid looks through it.
 //
-// Options (set_scene_option): fill 0|1 (drawn at all: scene_view.gd's look switch), fill_ceilings, fill_skirts 0|1,
+// Rims (RTAG_FILL_RIM, 2026-10-21): under a floor's edge over nothing (floating ground), a surface falling away from the
+// edge; drawn as a skirt (the skirt's shader, a background), with the plain stone darkened by its grey level (150 at the
+// edge, 90 far out: fill.gdshaderinc), no swatch.
+//
+// Options (set_scene_option): fill 0|1 (drawn at all: scene_view.gd's look switch), fill_ceilings, fill_skirts, fill_rims 0|1,
 // fill_light (how much of the swatch's brightness a ceiling keeps, default 0.42), fill_scale (times the wall's own texel
 // density, default 1).
 #include "rta_drawer.h"
@@ -75,14 +79,14 @@ struct RtaDrawer::Fill {
     std::vector<Cell> grid;
     int gx0 = 0, gy0 = 0, gw = 0, gh = 0;
     bool any_ceiling = false, any_skirt = false;
-    RID stone[3];                       // the materials without a swatch, by kind
+    RID stone[4];                       // the materials without a swatch, by kind (1 ceiling, 2 skirt, 3 rim)
     RID blocks_scenario;
     float level_order = -1, order_set = -1e9f;
     size_t next_assign = 0;
     bool assign_all = false;
     int learn_budget = 0;
     // switches
-    bool on = false, ceilings = true, skirts = true;
+    bool on = false, ceilings = true, skirts = true, rims = true;
     double light = 0.36, scale = 1.0;
     bool params_dirty = true;
     Ref<Shader> shader;
@@ -107,20 +111,21 @@ Dictionary RtaDrawer::get_fill_info() const {
     Dictionary d;
     if (!fill) return d;
     const Fill& fl = *fill;
-    int ceilings = 0, skirts = 0, sc = 0, ss = 0;
-    for (const auto& b : fl.blocks) (b.kind == RTAG_FILL_CEILING ? ceilings : skirts)++;
+    int ceilings = 0, skirts = 0, rims = 0, sc = 0, ss = 0;
+    for (const auto& b : fl.blocks) (b.kind == RTAG_FILL_CEILING ? ceilings : b.kind == RTAG_FILL_SKIRT ? skirts : rims)++;
     for (const auto& s : fl.swatches) (s.kind == RTAG_FILL_CEILING ? sc : ss)++;
     d["level"] = String(fl.level.c_str());
     d["on"] = fl.on;
     d["blocks"] = (int64_t)fl.blocks.size();
     d["ceiling_blocks"] = ceilings;
     d["skirt_blocks"] = skirts;
+    d["rim_blocks"] = rims;
     d["ceiling_swatches"] = sc;
     d["skirt_swatches"] = ss;
     double n = fl.frames ? (double)fl.frames : 1;
-    d["figures"] = vformat("fill: level %s, %d blocks (%d ceiling, %d skirt), %.1f drawn a frame over %d frames; swatches cut %d (%d for ceilings, %d for skirts) of %d "
+    d["figures"] = vformat("fill: level %s, %d blocks (%d ceiling, %d skirt, %d rim), %.1f drawn a frame over %d frames; swatches cut %d (%d for ceilings, %d for skirts) of %d "
                            "looked at; %d builds; the library's own fill draws left out: %.2f a frame",
-                           String(fl.level.c_str()), (int64_t)fl.blocks.size(), ceilings, skirts, fl.blocks_drawn / n, (int64_t)fl.frames, (int64_t)fl.cut, sc, ss,
+                           String(fl.level.c_str()), (int64_t)fl.blocks.size(), ceilings, skirts, rims, fl.blocks_drawn / n, (int64_t)fl.frames, (int64_t)fl.cut, sc, ss,
                            (int64_t)fl.tried, (int64_t)fl.builds, fl.library_dropped / n);
     return d;
 }
@@ -142,8 +147,8 @@ void RtaDrawer::fill_release() {
 RID RtaDrawer::fill_material(Fill& fl, uint8_t kind, RID texture) {
     RenderingServer* s = rs();
     RID m = s->material_create();
-    // a skirt is a background (docs/issues/native-first-person-world.md 8.8, cause 3): its own shader writes no depth
-    const Ref<Shader>& shader = kind == RTAG_FILL_SKIRT && fl.skirt_shader.is_valid() ? fl.skirt_shader : fl.shader;
+    // a skirt, a rim are backgrounds (docs/issues/native-first-person-world.md 8.8, cause 3): their shader writes no depth
+    const Ref<Shader>& shader = kind != RTAG_FILL_CEILING && fl.skirt_shader.is_valid() ? fl.skirt_shader : fl.shader;
     s->material_set_shader(m, shader->get_rid());
     s->material_set_param(m, "kind", (int)kind);
     s->material_set_param(m, "has_swatch", texture.is_valid() ? 1 : 0);
@@ -180,7 +185,7 @@ void RtaDrawer::fill_build(const rtag_fill& f, RID scenario) {
     fl.level = level;
     fl.serial = f.serial;
     fl.builds++;
-    for (int k = 1; k <= 2; k++)
+    for (int k = 1; k <= 3; k++)
         if (!fl.stone[k].is_valid()) fl.stone[k] = fill_material(fl, (uint8_t)k, RID());
     // the grid: where a ceiling is and how low, where a skirt begins (to know which of the level's triangles a swatch
     // may be cut from)
@@ -211,10 +216,11 @@ void RtaDrawer::fill_build(const rtag_fill& f, RID scenario) {
             memcpy(a + 20, v.normal, 12);
             if (Fill::Cell* c = fl.cell(v.position[0], v.position[1])) {
                 if (m.kind == RTAG_FILL_CEILING) c->ceiling = std::min(c->ceiling, v.position[2]);
-                else if (v.rgba[3] >= 96) c->skirt = true;
+                else if (m.kind == RTAG_FILL_SKIRT && v.rgba[3] >= 96) c->skirt = true;
             }
         }
-        (m.kind == RTAG_FILL_CEILING ? fl.any_ceiling : fl.any_skirt) = true;
+        if (m.kind == RTAG_FILL_CEILING) fl.any_ceiling = true;
+        else if (m.kind == RTAG_FILL_SKIRT) fl.any_skirt = true;
         Dictionary surface;
         surface["primitive"] = RenderingServer::PRIMITIVE_TRIANGLES;
         surface["format"] = (int64_t)(RenderingServer::ARRAY_FORMAT_VERTEX | RenderingServer::ARRAY_FORMAT_COLOR | RenderingServer::ARRAY_FORMAT_CUSTOM0 |
@@ -231,7 +237,7 @@ void RtaDrawer::fill_build(const rtag_fill& f, RID scenario) {
         b.instance = s->instance_create2(b.mesh, scenario);
         s->instance_geometry_set_cast_shadows_setting(b.instance, RenderingServer::SHADOW_CASTING_SETTING_OFF);
         if (m.kind == RTAG_FILL_CEILING) s->instance_set_layer_mask(b.instance, CEILING_LAYER);
-        s->instance_geometry_set_material_override(b.instance, fl.stone[m.kind == RTAG_FILL_CEILING ? 1 : 2]);
+        s->instance_geometry_set_material_override(b.instance, fl.stone[m.kind >= 1 && m.kind <= 3 ? m.kind : 2]);
         s->instance_set_visible(b.instance, false);
         fl.blocks.push_back(b);
     }
@@ -262,7 +268,7 @@ void RtaDrawer::fill_frame(const rtag_frame& f, const Vector3& eye, RID scenario
     fl.frames++;
     // which blocks are drawn
     for (auto& b : fl.blocks) {
-        bool want = fl.on && (b.kind == RTAG_FILL_CEILING ? fl.ceilings && eye.z <= b.bounds[5] + 2.0f : fl.skirts);
+        bool want = fl.on && (b.kind == RTAG_FILL_CEILING ? fl.ceilings && eye.z <= b.bounds[5] + 2.0f : b.kind == RTAG_FILL_SKIRT ? fl.skirts : fl.rims);
         if (want != b.visible) { s->instance_set_visible(b.instance, want); b.visible = want; }
         if (want) fl.blocks_drawn++;
     }
@@ -445,6 +451,7 @@ void RtaDrawer::fill_option(const String& name, double value) {
     if (name == "fill") fl.on = value != 0;
     else if (name == "fill_ceilings") fl.ceilings = value != 0;
     else if (name == "fill_skirts") fl.skirts = value != 0;
+    else if (name == "fill_rims") fl.rims = value != 0;
     else if (name == "fill_light") { fl.light = value; fl.params_dirty = true; }
     else if (name == "fill_scale") { fl.scale = value; fl.params_dirty = true; }
 }

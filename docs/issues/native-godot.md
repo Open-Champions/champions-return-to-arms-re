@@ -9,6 +9,70 @@ Nothing derived from the game is in the repository. `tools/godot/` holds glue, b
 scripts, the Godot project's scripts and shaders. The translated code, the libraries, the
 staged project, exported applications, pictures and logs are under `local/godot-spike/`.
 
+## NINTH ROUND (2026-10-21, evening): the tester's kit, rims, the shop's Buy list, the Windows setup with Godot
+
+Built into `local/godot-r9/` (`RTA_GODOT_OUT=local/godot-r9`; snapshot of `tools/recomp` taken this round; `run.py
+import` once after `build.py all`). Tests and pictures: `local/tester/` (`g1`, `g2`: the kit; `grim/`: rims; `shop/`: the
+shop; `hubcmp/`: the hub before and after the blending change).
+
+| Asked | State | Shown |
+|---|---|---|
+| the tester's kit in Godot | **done, Ran**: the library keeps the rings and the crash handler (`app/testerkit.cpp`, `-DRTAG_HAVE_TESTERKIT`; new optional exports `rtag_report_begin`, `rtag_report_finish`, `rtag_build_line`, `rtag_report_told`; `RtaMachine.report_begin/finish`, `build_line`, `report_told`); `project/testerkit.gd` is the host's half: F8 or L3 + R3 held for a second, the window's picture into the report, a box (LineEdit; Enter / Start saves, Escape / Select drops), F9 the build line (left of the new HUD's minimap), the notes; `main.gd` holds the controller at rest while the box is open, adds its lines (`report_lines`: Godot's version, mode, window, the portal's settings) and hands `app report ...` lines to it | `local/tester/g1/box-s.png`, `note-s.png`; `g2` (crash and the next start) |
+| rims | **done, Ran**: `rta_fill.cpp` draws RTAG_FILL_RIM blocks as skirts (the skirt's shader, no depth written), with the plain stone darkened by their grey (`fill.gdshaderinc` kind 3); `fill_rims` scene option; `RtaMachine.get_fill_info().rims` | `local/tester/grim/pvpfire2/sheet.png` (off left, on right) |
+| the shop's Buy list | **opened, Ran; what drew wrong found and fixed**: the round-7 route with cross on "Buy" (`local/tester/shop/mkshop.py`: the list, down, its four tabs, an item, back out), the same route in the native program as the reference | `shop/v1.png`, `crop-buy-h.png` |
+| the Windows setup with Godot | see below | |
+
+**What drew wrong in the Buy list, and why.** Against the native program (the library's own renderer gives the same
+picture to the pixel: `shop/g5`), Godot's scene mode had: the selected item's green glow white-grey, the red cells
+(items too dear) gone, the whole list about 17 % darker; 14 % of the picture off by more than 8 of 255. The draws
+(`app drawlog N`, new: `RtaDrawer.log_draws`, each draw's state): the glow is the item drawn 100 times a pixel apart in
+the fog colour, added (`blend 0201`, fog on); the red cells one untextured quad list, red at alpha 32 over the cells;
+the cells' textures are translucent over a black clear; and the whole list is copied 1.2 times brighter into the surface
+that is shown (`tfx 2`, colour 153). With `--rendering-method gl_compatibility` the picture was right (within 1 of
+255): **Forward+ blends in linear light**, the GS in stored values, and every translucent or additive draw over another
+came out different. Opaque draws were exact already (the exact sRGB inverse of the fifth round).
+**Fix** (`rta_drawer.cpp`, `rta_variant.h`, `gs_draw.gdshaderinc`, `view.gd`): under Forward+ / Mobile a surface with
+no 3-D scene in it this frame - every 2-D surface, and the world's own surface in a frame where the game draws no scene
+(the shop, the bag, the title screens) - is drawn in **stored space**: its draws write the stored values themselves as
+the colour (`GS_STORED_SPACE`), so Godot's blending works on them as the GS's does; Godot then puts its sRGB curve on
+the picture, which is taken off where such a surface is read (`GS_DECODE`, also by the world's draws), where it is shown
+(`view.gd`, a canvas shader) and where it is written (`get_shown_image`). The world's surface with a scene in it is
+drawn in linear light as before (Godot's lights, haze, shadows need it). `RTA_GODOT_LINEAR_BLEND=1` gives the old way
+for comparing. **Ran**: draw mode, the whole shop route: 0.000 of every picture off by more than 8 (was 0.14);
+scene mode 0.005 (the item's glow edge a pixel off, two thin seams at the item card's corner); the hub in scene mode,
+chase, first person and the pause menu over the scene: 0.0001 or less off by more than 8 against the old way (`hubcmp/`).
+**Not fixed**: in a frame with the scene, the 2-D layer over it (the HUD, the pause menu) still blends in linear light;
+draw mode (not scene mode) under Forward+ draws no level after the shop (the same with the old blending: not this
+change; not looked into).
+
+**The Windows setup with the Godot version** (`tools/install/setup/build_setups.py`, `windows/setup-windows.ps1`).
+`build_setups.py` puts the Windows export (`--godot-windows`, default `local/godot-r9/export/windows`: `RtaGodot.exe`,
+`RtaGodot.pck`, the extension's DLL; made by `build.py extension --release --platform windows` and `build.py export
+--platform windows`, our code only) into the payload as `godot/`, and a `SOURCE_ID` file (the commit; the build id of
+`app/buildid.py` where there is no git) into the source. `setup-windows.ps1`: with `godot\RtaGodot.pck` in the payload it
+asks `fromdisc.py` for `--godot` (`tools/godot/build_lib_win.py` on the player's PC, the library into `%APPDATA%\Open
+Champions\RTA Godot`), and when `local\install.txt` names the library this build made, copies the three files to
+`%LOCALAPPDATA%\Champions\godot` and makes "Champions Godot" on the desktop and in the Start menu (`RtaGodot.exe -- --disc
+"<image>"`). Without the export, or if the library did not build, the setup is what it was. The proof passed: 737 files,
+nothing of the game; `local/dist-setups-r9/Champions-Setup-Windows.exe` 39.9 MB (not uploaded anywhere).
+**Ran in the Windows 11 ARM VM from a fresh user folder** (`C:\fresh9`: USERPROFILE, LOCALAPPDATA, APPDATA pointed at
+empty folders, the setup started with `-Disc ... -Console -NoStart` by a task in the desktop session): Python 3.13.9 and
+llvm-mingw 20261006 downloaded and checked (sizes, SHA-256), the source unpacked, the game translated and built (95 of 95
+files in 32 s), the Godot library (40 of 40 files in 8 s, the translated game's 49 objects of the native build reused):
+**6 min 38 s** from start to "@done", two shortcuts each on the desktop and in the Start menu. Then the installed
+Godot version, from the fresh folder: (a) scripted (`--rendering-driver opengl3_angle`, scene mode, offscreen corner,
+`RTA_TESTERKIT=1`): the library found in the fresh `APPDATA`, boot to the hub, a bug report with the text box
+(`local/tester/winsetup/gbox.png`: the box and the build line "RTA 79dbdc1+ 2026-10-21 23:48 fixes 9ac29719 Windows
+10.0.26300 x86-64" - the id from `SOURCE_ID`), the zip in the fresh data folder; (b) as the shortcut starts it (no
+options but the disc, `--quit-after 1200`): Vulkan refused ("VK_KHR_surface not found"), Godot fell back by itself to
+Direct3D 12 on Microsoft's Basic Render Driver, Forward+, ran the 1,200 frames and ended with 0. The installed native
+`rta_app.exe` started too (llvmpipe; without `GALLIUM_DRIVER=llvmpipe` it ends with 0x80070057 - the Mesa D3D12-over-WARP
+fault of `native-windows.md`, VM only). The setup in `local/dist-setups-r9/` was made again after the run with one line
+more in `tools/godot/build_lib_linux.py` (the build id given to its container) and these notes; the copy that ran is
+`Champions-Setup-Windows.tested-in-vm.exe`. **Not run**: a real PC (GPU, x86-64 processor), the setup's window (the
+console mode was used), the portal by hand.
+
+
 ## EIGHTH ROUND (2026-10-21): aiming by looking, the Windows game library, the skirt's depth
 
 Built into `local/godot-r8/` (`RTA_GODOT_OUT=local/godot-r8`; snapshot of `tools/recomp` taken this round; after `build.py

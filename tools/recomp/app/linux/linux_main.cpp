@@ -31,7 +31,8 @@
 //
 // Keyboard: as win_main.cpp: W A S D left stick, arrows direction pad, I J K L triangle
 // square cross circle, Q E L1 R1, 1 3 L2 R2, X C L3 R3, Enter Start, Backspace Select, F or
-// F11 or Alt+Enter full screen, Escape leaves it, F12 a picture into the data directory,
+// F11 or Alt+Enter full screen, Escape leaves it, F12 a picture into the data directory, F8 (or L3 + R3
+// held on a controller) a bug report into its reports folder, F9 the build line (testerkit.h),
 // V the next camera view.
 #if defined(__linux__)
 #include "app_rt.h"
@@ -47,6 +48,8 @@
 #include "pipeline.h"
 #include "recorder.h"
 #include "settings.h"
+#include "testerkit.h"                  // the bug report (F8), the crash report, the build line (F9)
+#include "testerkit_app.h"
 #include "glsdl.h"
 #ifdef RTA_NET
 #include "netdrv.h"                                     // tools/recomp/net: the hooks for the notes on this window
@@ -261,6 +264,7 @@ struct Pads : rta::PadSource {
             bossmusic::blank(blank);            // the player's own boss music (bossmusic.h): reads the game's state, plays nothing without files
             fpaim::blank(blank);                // aiming by looking (fpaim.h): off unless asked for; as app_main.cpp
         }
+        testerkit::pad(blank, state);           // the input record of a report; L3 + R3 held: the report box; at rest while it is open
         last_buttons = state.buttons;
         last_sticks = state.lx | state.ly << 8 | state.rx << 16 | (uint32_t)state.ry << 24;
     }
@@ -520,6 +524,7 @@ struct Screen {
             if (h != opt.size_h || w != opt.size_w) { opt.size_w = w; opt.size_h = h; backend->set_output_size(w, h); }
         }
         soulscombat::overlay(*frame);           // the souls mode's stamina bar and lock-on marker (nothing when it is off)
+        testerkit::overlay(*frame);             // the build line, the report box, its notes (testerkit.h; nothing in a test)
         backend->execute(*frame);
         vertices += frame->vertices.size();
         commands += frame->commands.size();
@@ -729,6 +734,7 @@ static uint16_t parse_buttons(const std::string& text) {
 }
 
 static void app_command(const std::string& text, uint64_t frame) {
+    if (testerkit::command(text)) return;           // app report ... (testerkit.h)
     std::vector<std::string> w;
     for (size_t at = 0; at < text.size();) {
         while (at < text.size() && isspace((unsigned char)text[at])) at++;
@@ -827,6 +833,7 @@ struct AppSink : app::Sink {
     std::mutex notes_lock;
     std::vector<std::pair<uint64_t, std::string>> notes;
     void vblank(unsigned field, uint64_t number) override {
+        testerkit::blank(number, rta::memory());        // the tick log of a report (testerkit.h)
         {
             std::lock_guard<std::mutex> hold(g_shot_lock);
             if (!g_shots_asked.empty()) {
@@ -877,6 +884,7 @@ static const char* HELP =
 #endif
     "keys: W A S D left stick; arrows direction pad; I J K L triangle square cross circle; Q E L1 R1; 1 3 L2 R2; X C L3 R3;\n"
     "      Enter Start; Backspace Select; F, F11 or Alt+Enter full screen; Escape leaves full screen; F12 writes a picture; V the view\n"
+    "      F8 (or L3 + R3 held) reports a bug: a zip in <data>/reports; F9 the build line\n"
     "a game controller SDL2 knows (Xbox, PlayStation, Switch, most others) is port 1 as well\n";
 
 int main(int argc, char** argv) {
@@ -1091,6 +1099,24 @@ int main(int argc, char** argv) {
         return 1;
     }
     hostpad::start(log_line);
+    // the tester's kit (testerkit.h): the bug report (F8, L3 + R3), the crash handler, the build line (F9)
+    {
+        testerkit::Setup kit;
+        kit.data_dir = opt.data;
+        kit.program = "rta_app (Linux)";
+        kit.person = opt.test.empty() && !opt.offscreen;
+        static app::Settings kit_settings;
+        kit_settings = opt.set;
+        static std::string kit_extra;
+        kit_extra = std::string("pacing = ") + (opt.queued ? "queued" : "ahead") + "\nfullscreen = " + (opt.set.fullscreen || opt.fullscreen ? "yes" : "no") + "\n";
+        kit.describe = [] { return testerkit::describe_app(kit_settings, kit_extra); };
+        kit.ask_shot = [](const std::string& path) { std::lock_guard<std::mutex> hold(g_shot_lock); g_shots_asked.push_back(path); };
+        kit.log = log_line;
+        std::string told = testerkit::start(kit);
+        if (!told.empty() && kit.person)
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "Champions: Return to Arms - the program stopped last time", told.c_str(), screen.window);
+        log_line("build " + testerkit::build_line() + "; F8 reports a bug into " + opt.data + "/reports");
+    }
 #ifdef RTA_NET
     if (opt.test.empty() && !opt.offscreen) rtanet::show_note = online_note;
     rtanet::show_warning = online_warning;
@@ -1216,6 +1242,15 @@ int main(int argc, char** argv) {
                 if (e.key.repeat) break;
                 SDL_Scancode key = e.key.keysym.scancode;
                 bool down = e.type == SDL_KEYDOWN;
+                // the report box (testerkit.h) has the keyboard while it is open; its letters come as SDL_TEXTINPUT
+                if (!test && testerkit::box_open()) {
+                    if (down && (key == SDL_SCANCODE_RETURN || key == SDL_SCANCODE_KP_ENTER)) testerkit::box_key(testerkit::KEY_ENTER);
+                    else if (down && key == SDL_SCANCODE_ESCAPE) testerkit::box_key(testerkit::KEY_ESCAPE);
+                    else if (down && key == SDL_SCANCODE_BACKSPACE) testerkit::box_key(testerkit::KEY_BACKSPACE);
+                    break;
+                }
+                if (down && !test && key == SDL_SCANCODE_F8) { g_keys = 0; fpcontrols::release_all(); testerkit::open_box(); break; }   // report a bug
+                if (down && !test && key == SDL_SCANCODE_F9) { testerkit::toggle_line(); break; }                                // the build line
                 if (down && (e.key.keysym.mod & KMOD_ALT)) {
                     if ((key == SDL_SCANCODE_RETURN) && !test) screen.toggle_fullscreen();
                     break;
@@ -1234,6 +1269,9 @@ int main(int argc, char** argv) {
                 }
                 break;
             }
+            case SDL_TEXTINPUT:
+                if (!test && testerkit::box_open()) testerkit::box_text(e.text.text);
+                break;
             case SDL_WINDOWEVENT:
                 if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) { g_keys = 0; fpcontrols::release_all(); hold_pointer(false); }
                 break;

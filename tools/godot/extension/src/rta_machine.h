@@ -83,6 +83,11 @@ class RtaMachine : public RefCounted {
     bool fill(rtag_fill& out) const;
     // the same as figures: level, serial, vertices, meshes, ceilings, skirts ({} when there is none)
     Dictionary get_fill_info() const;
+    // the tester's kit (tools/recomp/app/testerkit.h, rtag.h): "" when the library has none
+    String report_begin(const String& host_lines);
+    String report_finish(const String& folder, const String& text, bool keep);
+    String build_line() const;
+    String report_told() const;
 
   protected:
     static void _bind_methods();

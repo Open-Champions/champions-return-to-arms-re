@@ -135,6 +135,8 @@ RID RtaDrawer::shader_for(uint32_t variant) {
     if (variant & V_NEARFADE) code += "#define GS_NEARFADE\n";
     if (variant & V_MODEL) code += "#define GS_MODEL\n";
     if (variant & V_CONTACT) code += "#define GS_CONTACT\n";
+    if (variant & V_STORED) code += "#define GS_STORED_SPACE\n";
+    if (variant & V_DECODE) code += "#define GS_DECODE\n";
     if (stored_colours) code += "#define GS_STORED_COLOURS\n";
     code += shader_code;
     Ref<Shader> shader;
@@ -160,6 +162,8 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
         fix = (float)d.fix / 128.0f;
     }
     uint32_t variant = extra;
+    // stored-space blending (submit): a draw of the 3-D world reads such a surface too (V_DECODE), it is never drawn so (V_STORED)
+    variant |= (extra & V_WORLD) ? (draw_space & V_DECODE) : draw_space;
     if (!(extra & V_CASTER)) {
         if (subtract) variant |= V_BLEND_SUB;
         if (d.ztst == 1) { if (d.depth_write) { if (inverted) variant |= V_DEPTH_INVERTED; } else variant |= V_DEPTH_ALWAYS; }
@@ -425,6 +429,15 @@ void RtaDrawer::submit() {
     std::vector<Read> reads;
     std::vector<int> node_of(f.draw_count, -1);
     std::vector<RID> texture_of(f.draw_count);
+    std::vector<uint8_t> decode_of(f.draw_count, 0);   // the texture is a surface that holds stored values (V_DECODE)
+    // Forward+ / Mobile: which surfaces are drawn in stored values (V_STORED) - every one but the 3-D world's while it has
+    // the scene in it; the Compatibility renderer blends stored values anyway
+    Target* world_now = scene_mode ? world_target() : nullptr;
+    bool world_has_scene = false;
+    if (world_now)
+        for (uint32_t i = 0; i < f.draw_count && !world_has_scene; i++) if (f.draws[i].target == world_now->id && f.draws[i].scene_first >= 0) world_has_scene = true;
+    static const bool stored_on = !getenv("RTA_GODOT_LINEAR_BLEND");     // (a test aid: blending in linear light, as before)
+    auto stored_for = [&](const Target* t) { return stored_on && rd && !(t == world_now && world_has_scene); };
     std::vector<Pass*> used_this_frame;
     for (uint32_t i = 0; i < f.draw_count; i++) {
         const rtag_draw& d = f.draws[i];
@@ -448,6 +461,7 @@ void RtaDrawer::submit() {
                 if (!node.pass) node.pass = make_pass(target);
             }
             used_this_frame.push_back(node.pass);
+            node.pass->stored_next = stored_for(&target);
             nodes.push_back(node);
             n = (int)nodes.size() - 1;
             current[d.target] = n;
@@ -464,10 +478,12 @@ void RtaDrawer::submit() {
             auto from_open = current.find(from.id);
             if (from_open == current.end()) {
                 texture_of[i] = from.latest ? from.latest->texture : RID();        // what the last list left there
+                decode_of[i] = from.latest && from.latest->stored;
                 reads.push_back({n, from.id, -1, i});
             } else {
                 Node& writer = nodes[from_open->second];
                 texture_of[i] = writer.pass->texture;
+                decode_of[i] = writer.pass->stored_next;
                 if (from.screen) reads.push_back({n, from.id, from_open->second, i});       // before or after it: known when the list is through
                 else { writer.sealed = true; nodes[n].after.push_back(from_open->second); }
             }
@@ -509,6 +525,20 @@ void RtaDrawer::submit() {
         }
     }
 
+    if (draw_log > 0) {                                 // debugging (log_draws): each draw's state, its first vertex
+        draw_log--;
+        String t = vformat("frame %d: shows target %d (%d %d %d %d); targets", (int64_t)f.number, (int64_t)f.show_target, f.show_rect[0], f.show_rect[1], f.show_rect[2], f.show_rect[3]);
+        for (const auto& entry : targets) t += vformat(" %d:%dx%d%s", (int64_t)entry.first, entry.second.lw, entry.second.lh, String(entry.second.screen ? "(screen)" : ""));
+        UtilityFunctions::print(t);
+        for (uint32_t i = 0; i < f.draw_count; i++) {
+            const rtag_draw& d = f.draws[i];
+            const rtag_vertex* v = d.count ? &f.vertices[d.first] : nullptr;
+            UtilityFunctions::print(vformat("draw %d: kind %d prim %d by %d target %d tex %d%s tfx %d tcc %d | test %d atst %d aref %d afail %d | z %d/%d/%d | blend %d %d%d%d%d fix %d | mask %d%d | fog %d | scissor %d %d %d %d | %d vertices",
+                (int64_t)i, d.kind, d.prim, d.made_by, (int64_t)d.target, (int64_t)d.texture, String(d.tex_is_target ? " (surface)" : ""), d.tfx, d.tcc, d.alpha_test, d.atst, d.aref, d.afail,
+                d.depth_test, d.ztst, d.depth_write, d.blend, d.ba, d.bb, d.bc, d.bd, d.fix, d.mask_rgb, d.mask_a, d.fog, d.scissor[0], d.scissor[1], d.scissor[2], d.scissor[3], (int64_t)d.count) +
+                (v ? vformat(" | first %.0f %.0f rgba %d %d %d %d", v->x, v->y, v->r, v->g, v->b, v->a) : String()));
+        }
+    }
     // ---- the draws ----
     for (Pass* pass : all_passes) pass->used = 0;
     Target* world = scene_mode ? world_target() : nullptr;
@@ -518,6 +548,7 @@ void RtaDrawer::submit() {
         const rtag_draw& d = f.draws[i];
         Node& node = nodes[node_of[i]];
         float order_in_pass = (float)(i - node.first_draw);
+        draw_space = (node.pass->stored_next ? V_STORED : 0) | (decode_of[i] ? V_DECODE : 0);
         if (d.kind == RTAG_COPY) {
             auto source = targets.find(d.texture);
             if (source != targets.end() && texture_of[i].is_valid()) add_copy(*node.pass, d, *node.target, source->second, texture_of[i], order_in_pass);
@@ -533,6 +564,7 @@ void RtaDrawer::submit() {
         }
         add_draw(*node.pass, f, d, *node.target, texture_of[i], d.tex_is_target && flip_surfaces, order_in_pass);
     }
+    draw_space = 0;
     if (scene_mode) scene_end(f);
 
     // instances left over from a frame with more draws show nothing
@@ -545,6 +577,7 @@ void RtaDrawer::submit() {
         s->viewport_set_active(pass->viewport, true);
         s->viewport_set_update_mode(pass->viewport, RenderingServer::VIEWPORT_UPDATE_ONCE);
         pass->drawn_once = true;
+        pass->stored = pass->stored_next;
         nodes[n].target->latest = pass;
         passes_rendered++;
     }
@@ -589,14 +622,34 @@ Rect2 RtaDrawer::get_shown_region() const {
     return Rect2(shown_rect[0] * sx, shown_rect[1] * sy, shown_rect[2] * sx, shown_rect[3] * sy);
 }
 
+bool RtaDrawer::get_shown_stored() const { return shown && shown->latest && shown->latest->drawn_once && shown->latest->stored; }
+
 Ref<Image> RtaDrawer::get_shown_image() const {
     RID texture = get_shown_texture();
     if (!texture.is_valid()) return Ref<Image>();
     Ref<Image> image = rs()->texture_2d_get(texture);
     if (image.is_valid() && image->get_format() != Image::FORMAT_RGB8) image->convert(Image::FORMAT_RGB8);
+    if (image.is_valid() && get_shown_stored()) {
+        // stored values under Godot's sRGB curve (V_STORED): the curve taken off, as view.gd does on the screen
+        static uint8_t table[256];
+        static bool made = false;
+        if (!made) {
+            for (int k = 0; k < 256; k++) {
+                double c = k / 255.0, l = c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+                table[k] = (uint8_t)std::lround(std::min(1.0, l) * 255.0);
+            }
+            made = true;
+        }
+        PackedByteArray bytes = image->get_data();
+        uint8_t* p = bytes.ptrw();
+        for (int64_t k = 0; k < bytes.size(); k++) p[k] = table[p[k]];
+        image = Image::create_from_data(image->get_width(), image->get_height(), false, Image::FORMAT_RGB8, bytes);
+    }
     if (image.is_valid() && rd) image->flip_y();
     return image;
 }
+
+void RtaDrawer::log_draws(int frames) { draw_log = frames; }
 
 void RtaDrawer::dump_surfaces(const String& prefix) const {
     for (auto& entry : targets) {
@@ -724,6 +777,8 @@ void RtaDrawer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_shown_image"), &RtaDrawer::get_shown_image);
     ClassDB::bind_method(D_METHOD("figures"), &RtaDrawer::figures);
     ClassDB::bind_method(D_METHOD("dump_surfaces", "prefix"), &RtaDrawer::dump_surfaces);
+    ClassDB::bind_method(D_METHOD("log_draws", "frames"), &RtaDrawer::log_draws);
+    ClassDB::bind_method(D_METHOD("get_shown_stored"), &RtaDrawer::get_shown_stored);
     ClassDB::bind_method(D_METHOD("release"), &RtaDrawer::release);
     ClassDB::bind_method(D_METHOD("set_scene_mode", "on"), &RtaDrawer::set_scene_mode);
     ClassDB::bind_method(D_METHOD("set_art_pack", "folder", "mipmaps"), &RtaDrawer::set_art_pack);

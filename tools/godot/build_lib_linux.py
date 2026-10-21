@@ -98,7 +98,7 @@ def run_docker(args):
             print('no image %s in the docker context %s: python3 tools/recomp/app/build_linux.py --docker %s makes it' % (image, args.context, arch))
             return 1
         command = docker + ['run', '--rm', '--platform', 'linux/' + arch, '--user', '%d:%d' % (os.getuid(), os.getgid()),
-                            '-e', 'HOME=/tmp', '-e', 'RTA_GODOT_OUT=' + gb.OUT, '-v', '%s:%s' % (ROOT, ROOT), '-w', ROOT, image,
+                            '-e', 'HOME=/tmp', '-e', 'RTA_GODOT_OUT=' + gb.OUT, '-e', 'RTA_BUILD_ID=' + bw.buildid.build_id(), '-v', '%s:%s' % (ROOT, ROOT), '-w', ROOT, image,
                             'python3', '-B', os.path.abspath(__file__), '--here'] + passed
         print('docker (%s, %s): build_lib_linux.py %s' % (arch, image, ' '.join(passed)))
         code = subprocess.run(command).returncode or code
@@ -186,6 +186,9 @@ def build(args):
         if os.path.exists(os.path.join(app, 'fpaim.cpp')):         # aiming by looking (fpaim.h): needs the controls too
             sources.append((os.path.join(app, 'fpaim.cpp'), rt_flags + ['-I', app], 'a_'))
             lib_flags.append('-DRTAG_HAVE_AIM')
+    if os.path.exists(os.path.join(app, 'testerkit.cpp')):         # the tester's kit (app/testerkit.h): reports, the build line
+        sources.append((os.path.join(app, 'testerkit.cpp'), rt_flags + ['-I', app, '-I', render, bw.buildid.define()], 'a_'))
+        lib_flags.append('-DRTAG_HAVE_TESTERKIT')
     else:
         lib_flags.append('-DRTAG_NO_CONTROLS')
     # the films' entries are left to app/film.cpp when the translation was made with them (build_linux.py's rule)

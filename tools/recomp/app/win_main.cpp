@@ -62,7 +62,8 @@
 //
 // Keyboard: W A S D left stick, arrows direction pad, I J K L triangle square cross circle,
 // Q E L1 R1, 1 3 L2 R2, X C L3 R3, Enter Start, Backspace Select, F12 a picture of the
-// game into the data directory.
+// game into the data directory, F8 (or L3 + R3 held on a controller) a bug report into its reports
+// folder, F9 the build line (testerkit.h).
 //
 //   --pacing ahead|queued   how the game is held to one frame per picture (pipeline.h): let go
 //                       by a clock just ahead of each picture's moment (the default, as in the
@@ -95,6 +96,8 @@
 #include "pipeline.h"
 #include "recorder.h"
 #include "settings.h"
+#include "testerkit.h"                  // the bug report (F8), the crash report, the build line (F9)
+#include "testerkit_app.h"
 #include "win/wgl.h"
 #ifdef RTA_NET
 #include "online_win.h"                                 // tools/recomp/net: the name question and the notes on this window
@@ -366,6 +369,7 @@ struct Pads : rta::PadSource {
             bossmusic::blank(blank);            // the player's own boss music (bossmusic.h): reads the game's state, plays nothing without files
             fpaim::blank(blank);                // aiming by looking (fpaim.h): off unless asked for; as app_main.cpp
         }
+        testerkit::pad(blank, state);           // the input record of a report; L3 + R3 held: the report box; at rest while it is open
         last_buttons = state.buttons;
         last_sticks = state.lx | state.ly << 8 | state.rx << 16 | (uint32_t)state.ry << 24;
     }
@@ -686,6 +690,7 @@ struct Screen {
             if (h != opt.size_h || w != opt.size_w) { opt.size_w = w; opt.size_h = h; backend->set_output_size(w, h); }
         }
         soulscombat::overlay(*frame);           // the souls mode's stamina bar and lock-on marker (nothing when it is off)
+        testerkit::overlay(*frame);             // the build line, the report box, its notes (testerkit.h; nothing in a test)
         backend->execute(*frame);
         vertices += frame->vertices.size();
         commands += frame->commands.size();
@@ -853,8 +858,17 @@ LRESULT CALLBACK Screen::proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
     switch (message) {
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:
+        // the report box (testerkit.h) has the keyboard while it is open; its letters come as WM_CHAR
+        if (s && !test && testerkit::box_open()) {
+            if (wp == VK_RETURN) testerkit::box_key(testerkit::KEY_ENTER);
+            else if (wp == VK_ESCAPE) testerkit::box_key(testerkit::KEY_ESCAPE);
+            else if (wp == VK_BACK) testerkit::box_key(testerkit::KEY_BACKSPACE);
+            return 0;
+        }
         if (lp & (1 << 30)) return 0;                   // the key repeating
         g_key_events++;
+        if (s && !test && message == WM_KEYDOWN && wp == VK_F8) { g_keys = 0; fpcontrols::release_all(); testerkit::open_box(); return 0; }   // report a bug
+        if (s && !test && message == WM_KEYDOWN && wp == VK_F9) { testerkit::toggle_line(); return 0; }                                // the build line
         if (message == WM_SYSKEYDOWN) {                 // Alt held: only Alt+Enter means something here
             if (wp == VK_RETURN && s && !test) s->toggle_fullscreen();
             else if (wp == VK_F4) break;                // Alt+F4 closes, as everywhere
@@ -895,6 +909,14 @@ LRESULT CALLBACK Screen::proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
     case WM_MOUSEWHEEL:
         if (!test) fpcontrols::mouse_wheel((float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA);
         return 0;
+    case WM_CHAR:
+        if (s && !test && testerkit::box_open() && wp >= 32 && (wp < 0xD800 || wp > 0xDFFF)) {
+            char text[4];
+            int n = WideCharToMultiByte(CP_UTF8, 0, (const wchar_t*)&wp, 1, text, sizeof text, nullptr, nullptr);
+            if (n > 0) testerkit::box_text(std::string(text, (size_t)n));
+            return 0;
+        }
+        break;
     case WM_INPUT:
         if (g_pointer_held) {
             RAWINPUT raw;
@@ -1025,6 +1047,7 @@ static uint16_t parse_buttons(const std::string& text) {
 }
 
 static void app_command(const std::string& text, uint64_t frame) {
+    if (testerkit::command(text)) return;           // app report ... (testerkit.h)
     std::vector<std::string> w;
     for (size_t at = 0; at < text.size();) {
         while (at < text.size() && isspace((unsigned char)text[at])) at++;
@@ -1131,6 +1154,7 @@ struct AppSink : app::Sink {
     std::mutex notes_lock;
     std::vector<std::pair<uint64_t, std::string>> notes;     // (blank number, path), game thread -> decoder
     void vblank(unsigned field, uint64_t number) override {
+        testerkit::blank(number, rta::memory());        // the tick log of a report (testerkit.h)
         {
             std::lock_guard<std::mutex> hold(g_shot_lock);
             if (!g_shots_asked.empty()) {
@@ -1196,6 +1220,7 @@ static const char* HELP =
 #endif
     "keys: W A S D left stick; arrows direction pad; I J K L triangle square cross circle; Q E L1 R1; 1 3 L2 R2; X C L3 R3;\n"
     "      Enter Start; Backspace Select; F, F11 or Alt+Enter full screen; Escape leaves full screen; F12 writes a picture\n"
+    "      F8 (or L3 + R3 held) reports a bug: a zip in <data>\\reports; F9 the build line\n"
     "a controller that speaks XInput (Xbox; PlayStation through Steam or DS4Windows) is port 1 as well\n";
 
 int main(int argc, char** argv) {
@@ -1413,6 +1438,23 @@ int main(int argc, char** argv) {
     }
     hostpad::set_window(screen.window);
     hostpad::start(log_line);
+    // the tester's kit (testerkit.h): the bug report (F8, L3 + R3), the crash handler, the build line (F9)
+    {
+        testerkit::Setup kit;
+        kit.data_dir = opt.data;
+        kit.program = "rta_app.exe (Windows)";
+        kit.person = opt.test.empty() && !opt.offscreen;
+        static app::Settings kit_settings;
+        kit_settings = opt.set;
+        static std::string kit_extra;
+        kit_extra = std::string("pacing = ") + (opt.queued ? "queued" : "ahead") + "\nfullscreen = " + (opt.set.fullscreen || opt.fullscreen ? "yes" : "no") + "\n";
+        kit.describe = [] { return testerkit::describe_app(kit_settings, kit_extra); };
+        kit.ask_shot = [](const std::string& path) { std::lock_guard<std::mutex> hold(g_shot_lock); g_shots_asked.push_back(path); };
+        kit.log = log_line;
+        std::string told = testerkit::start(kit);
+        if (!told.empty() && kit.person) MessageBoxW(screen.window, wide(told).c_str(), L"Champions: Return to Arms - the program stopped last time", MB_OK | MB_ICONINFORMATION);
+        log_line("build " + testerkit::build_line() + "; F8 reports a bug into " + opt.data + "\\reports");
+    }
 #ifdef RTA_NET
     onlinewin::attach(screen.window, !opt.test.empty() || opt.offscreen);
 #endif

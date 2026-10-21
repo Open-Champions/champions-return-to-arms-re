@@ -294,6 +294,7 @@ static bool g_skip_draw = false;
 // The level's fill (worldfill.h) into the list: plain triangles, depth tested like the level's
 // own (a ceiling also writes depth, a skirt does not: it is the background).  A ceiling is dark,
 // lighter by the wall it meets; a skirt has the clear colour, darkened, and fades out with its alpha.
+// A rim (under a floor's edge over nothing) is drawn as a skirt, darker by its grey level.
 void Gs::draw_fill(const float* m, const float* eye, uint32_t clear_colour, uint32_t light_level, uint32_t kinds) {
     std::shared_ptr<const FillLevel> level = current_fill();
     if (!level || level->vertices.empty()) return;
@@ -312,8 +313,9 @@ void Gs::draw_fill(const float* m, const float* eye, uint32_t clear_colour, uint
     };
     if (cur.count) frame.commands.push_back(cur);
     world.fill_draws++;
-    for (int kind = FILL_SKIRT; kind >= FILL_CEILING; kind--) {     // the skirt first: it lies behind everything
+    for (int kind = FILL_RIM; kind >= FILL_CEILING; kind--) {       // rims and the skirt first: they lie behind everything
         if (!(kinds & (1u << (kind - 1)))) continue;
+        const bool background = kind != FILL_CEILING;
         DrawCmd c = cur;
         c.texture = 0; c.tex_is_target = false; c.tex_missing = 0; c.weave_half = 0; c.texa_mode = 0;
         // A skirt is a background: ground where the level has none, fading to nothing at its outer edge.  It
@@ -321,8 +323,8 @@ void Gs::draw_fill(const float* m, const float* eye, uint32_t clear_colour, uint
         // before it or after.  Until 2026-10-20 it had its own depth and wrote it: a sheet hanging over level
         // geometry the terrain it is made from does not have (firbonus's lava sea below the cliffs) hid that
         // geometry, and where its alpha was low the clear colour showed through - a band of nothing.
-        c.alpha_test = false; c.depth_test = true; c.ztst = 2; c.depth_write = kind != FILL_SKIRT;
-        c.blend = kind == FILL_SKIRT; c.ba = 0; c.bb = 1; c.bc = 0; c.bd = 1;
+        c.alpha_test = false; c.depth_test = true; c.ztst = 2; c.depth_write = !background;
+        c.blend = background; c.ba = 0; c.bb = 1; c.bc = 0; c.bd = 1;
         c.mask_rgb = c.mask_a = false; c.fog = false; c.made_by = 0; c.scissor_moved = false;
         c.first = (uint32_t)frame.vertices.size();
         c.count = 0;
@@ -353,7 +355,9 @@ void Gs::draw_fill(const float* m, const float* eye, uint32_t clear_colour, uint
                         const float g = (float)f.rgba[0] * 0.10f * light;
                         v[k].c[0] = g; v[k].c[1] = g * 0.92f; v[k].c[2] = g * 0.85f; v[k].c[3] = 128.0f;
                     } else {
-                        v[k].c[0] = clear[0] * 0.6f; v[k].c[1] = clear[1] * 0.6f; v[k].c[2] = clear[2] * 0.6f; v[k].c[3] = (float)f.rgba[3];
+                        // the skirt: the clear colour, darkened; a rim darker by its grey (150 at the edge, 90 far out)
+                        const float g = kind == FILL_RIM ? 0.6f * (float)f.rgba[0] / 255.0f : 0.6f;
+                        v[k].c[0] = clear[0] * g; v[k].c[1] = clear[1] * g; v[k].c[2] = clear[2] * g; v[k].c[3] = (float)f.rgba[3];
                     }
                 }
                 const int in = (v[0].w >= wn) + (v[1].w >= wn) + (v[2].w >= wn);
@@ -382,7 +386,7 @@ void Gs::draw_fill(const float* m, const float* eye, uint32_t clear_colour, uint
                         Vertex o;
                         o.x = a.x / a.w + cx; o.y = a.y / a.w + cy;
                         const float zf = a.z / a.w * (1.0f / 4096.0f);
-                        o.z = kind == FILL_SKIRT ? 0.0f : zf > 0.99999994f ? 0.99999994f : zf < 0 ? 0 : zf;     // a skirt: the farthest depth
+                        o.z = background ? 0.0f : zf > 0.99999994f ? 0.99999994f : zf < 0 ? 0 : zf;     // a skirt, a rim: the farthest depth
                         o.s = o.t = 0; o.q = 1;
                         o.r = (uint8_t)std::min(255.0f, a.c[0]); o.g = (uint8_t)std::min(255.0f, a.c[1]); o.b = (uint8_t)std::min(255.0f, a.c[2]); o.a = (uint8_t)std::min(255.0f, a.c[3]);
                         o.fog = 255;

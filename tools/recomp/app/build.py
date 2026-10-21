@@ -43,6 +43,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RECOMP = os.path.dirname(HERE)
 sys.path.insert(0, RECOMP)
 import genfiles  # noqa: E402  (the translation's own list of files)
+import buildid  # noqa: E402  (the build id of testerkit.cpp)
 ROOT = os.path.dirname(os.path.dirname(RECOMP))
 OUT = os.path.join(ROOT, 'local', 'recomp-out')
 
@@ -154,6 +155,8 @@ def main():
     jobs.append((os.path.join(HERE, 'soulscombat.cpp'), rt_flags + ['-I', HERE, '-I', render], 'a_'))
     # aiming by looking (fpaim.h; docs/issues/native-first-person-aim.md): the same kind of module
     jobs.append((os.path.join(HERE, 'fpaim.cpp'), rt_flags + ['-I', HERE], 'a_'))
+    # the tester's kit (testerkit.h): the bug report (F8), the crash report, the build line (F9); the build id is buildid.py's
+    jobs.append((os.path.join(HERE, 'testerkit.cpp'), rt_flags + ['-I', HERE, '-I', render, buildid.define()], 'a_'))
     # the player's own boss music (bossmusic.h; docs/issues/native-hud.md): the state reader and the decoders, plain C++
     jobs.append((os.path.join(HERE, 'gamestate.cpp'), ['-std=c++17', args.opt, '-Wall', '-I', HERE], 'a_'))
     jobs.append((os.path.join(HERE, 'bossmusic.cpp'), ['-std=c++17', args.opt, '-Wall', '-I', HERE, '-I', rt], 'a_'))

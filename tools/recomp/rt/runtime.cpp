@@ -1673,6 +1673,9 @@ static bool read_file(const char* path, u8* into, size_t size) {
 // The words of a patch set the translation was made with (recomp.py --pnach writes
 // patches.cpp into the generated directory; a translation without patches has none).
 __attribute__((weak)) unsigned recomp_patches(const u32 (**words)[2]) { *words = nullptr; return 0; }
+// How many of them are the fix set's (the rest are --extra-pnach's); ~0: a translation older than that, all of them.
+// (Here rather than in net/netdrv.cpp since 2026-10-21: the bug report of app/testerkit.cpp names the set too.)
+__attribute__((weak)) unsigned recomp_patch_set_words() { return ~0u; }
 
 static bool load_elf(const char* path, u32* entry) {
     FILE* f = fopen(path, "rb");

@@ -17,6 +17,14 @@ Nothing derived from the game is in the repository. The generated game code
 (`local/recomp-out/gen-app`), the objects and the programs are under `local/recomp-out/`;
 a Windows build is made by the builder from the builder's own disc.
 
+STATE (2026-10-21, evening): **the tester's kit** (`docs/issues/native-app.md` 15) is in `win_main.cpp` (F8 and the
+L3 + R3 chord, the box's keys and its text by WM_CHAR, F9, the overlay, the tick rows, the crash filter chained in
+front of `rt/host_win32.cpp`'s, a box about a crash report of the run before). **Ran on Windows (VM)**: a report from the
+hub (zip with the picture), a crash on purpose (exception 0xc0000005 at `rta_app.exe+offset`, the stack's code words as
+`module+offset`), zipped and announced at the next start (`local/tester/win1`). **The one-click setup now installs the
+Godot version too** (`docs/issues/native-godot.md`, ninth round): ran from a fresh user folder in the VM, 6 min 38 s,
+both programs started from it.
+
 STATE (2026-10-21): **aiming by looking** (`docs/issues/native-first-person-aim.md`) is in `win_main.cpp` where
 `app_main.cpp` has it (`fpaim::blank` after the controls, `fpaim::drawn` in `fpview::on_drawn`, `--aim look|off`, the
 `combat.aim` setting, `app aim ...`, the figures line), and `build_win.py` compiles `app/fpaim.cpp`. **Ran on Windows

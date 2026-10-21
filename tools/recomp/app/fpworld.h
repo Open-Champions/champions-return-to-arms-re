@@ -42,6 +42,9 @@
 //                  any renderer, and drawn by the OpenGL program in front of the frame's first
 //                  level chunk.  auto (the default): ceilings in a level that clears to black,
 //                  has no sky dome and is walled; skirts in a level without a sky dome.
+//   world.rims     a surface falling away under a floor's edge over nothing (render/worldfill.h,
+//                  FILL_RIM), drawn as the skirt is, as a background.  auto: in a level WITH a sky
+//                  dome (floating ground: storm2, torment2, fay2, pvpfire2).
 //
 // This header includes nothing of the runtime; fpworld.cpp is compiled with the runtime's
 // flags (it supplies fn_<address> hooks listed under "the world from the ground" in
@@ -52,7 +55,7 @@
 namespace fpworld {
 
 // "world" = views (the default: on while a view of fpview.h is drawn) | off | always;
-// "world.<part>" = on | off, <part> one of clip, persp, objects, cells, sweep; "world.ceilings", "world.skirts" =
+// "world.<part>" = on | off, <part> one of clip, persp, objects, cells, sweep; "world.ceilings", "world.skirts", "world.rims" =
 // auto | on | off.  False when the key is not one.
 bool setting(const char* key, const char* value);
 // The settings as lines for the settings file.

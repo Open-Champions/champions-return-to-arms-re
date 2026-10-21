@@ -78,7 +78,7 @@ def run_docker(args, rest):
             if built.returncode != 0:
                 return built.returncode
         command = docker + ['run', '--rm', '--platform', 'linux/' + arch, '--user', '%d:%d' % (os.getuid(), os.getgid()),
-                            '-e', 'HOME=/tmp', '-v', '%s:%s' % (ROOT, ROOT), '-w', ROOT, image,
+                            '-e', 'HOME=/tmp', '-e', 'RTA_BUILD_ID=' + bw.buildid.build_id(), '-v', '%s:%s' % (ROOT, ROOT), '-w', ROOT, image,
                             'python3', '-B', os.path.join(HERE, 'build_linux.py'), '--no-game'] + rest
         print('docker (%s): %s' % (arch, ' '.join(command[-6:])))
         code = subprocess.run(command).returncode or code
@@ -136,6 +136,7 @@ def build(args):
              (os.path.join(HERE, 'fpworld.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),
              (os.path.join(HERE, 'soulscombat.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),
              (os.path.join(HERE, 'fpaim.cpp'), rt_flags + ['-I', HERE], 'a_'),  # aiming by looking (fpaim.h)
+             (os.path.join(HERE, 'testerkit.cpp'), rt_flags + ['-I', HERE, '-I', RENDER, bw.buildid.define()], 'a_'),  # the bug and crash reports, the build line (testerkit.h)
              (os.path.join(HERE, 'gamestate.cpp'), app_flags, 'a_'),           # the player's own boss music (bossmusic.h)
              (os.path.join(HERE, 'bossmusic.cpp'), app_flags, 'a_')] +
             ([(os.path.join(NET, 'netdrv.cpp'), rt_flags, 'n_'),

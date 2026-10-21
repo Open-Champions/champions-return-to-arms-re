@@ -6,6 +6,11 @@ extends Control
 
 var texture: Texture2D
 var drawer: Object
+# Forward+ / Mobile: a picture drawn in stored values (RtaDrawer.get_shown_stored, gs_draw.gdshaderinc GS_STORED_SPACE)
+# carries Godot's sRGB curve on top: taken off here
+const DECODE := "shader_type canvas_item;\nuniform bool decode = false;\nvoid fragment() {\n\tvec4 c = texture(TEXTURE, UV) * COLOR;\n" + \
+	"\tif (decode) c.rgb = mix(c.rgb / 12.92, pow((c.rgb + vec3(0.055)) / 1.055, vec3(2.4)), step(vec3(0.04045), c.rgb));\n\tCOLOR = c;\n}\n"
+var decoding: ShaderMaterial
 var aspect := 4.0 / 3.0
 var message := "":
 	set(value):
@@ -26,6 +31,14 @@ func _picture_rect() -> Rect2:
 
 func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), Color.BLACK)
+	if drawer != null and drawer.has_method("get_shown_stored"):
+		if decoding == null:
+			var shader := Shader.new()
+			shader.code = DECODE
+			decoding = ShaderMaterial.new()
+			decoding.shader = shader
+			material = decoding
+		decoding.set_shader_parameter("decode", bool(drawer.call("get_shown_stored")))
 	if drawer != null:
 		var shown: RID = drawer.call("get_shown_texture")
 		if shown.is_valid():

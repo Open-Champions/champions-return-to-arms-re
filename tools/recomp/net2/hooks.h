@@ -39,4 +39,7 @@ inline int (*aim_wanted)() = nullptr;
 inline void (*aim_want)(bool on) = nullptr;
 inline uint32_t (*aim_figure)() = nullptr;
 inline void (*aim_room)(int on) = nullptr;
+// The bug report (tools/recomp/app/testerkit.h): the room's code and every member's copy as "key = value" lines
+// into out (empty when the lock is busy or there is no session).  Set by launch.cpp; null in a program without it.
+inline void (*room_describe)(char* out, size_t size) = nullptr;
 }  // namespace net2hook

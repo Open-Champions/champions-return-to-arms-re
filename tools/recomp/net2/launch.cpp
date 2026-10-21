@@ -674,9 +674,34 @@ std::string option(const char* key, const char* fallback = "") {
     return value ? value : fallback;
 }
 
+// The bug report's lines about the room (net2hook::room_describe, app/testerkit.h): the code, the state and every
+// member's copy - slot, host or this machine, fix set and word count, arithmetic, route and round trip.  No names.
+// The lock is only tried: the report never waits for the network.
+void room_describe(char* out, size_t size) {
+    out[0] = 0;
+    std::unique_lock<std::recursive_mutex> hold(net2impl::big_lock(), std::try_to_lock);
+    if (!hold.owns_lock()) { snprintf(out, size, "online = (the room was busy)\n"); return; }
+    if (!G.session) return;
+    net2_room_t room;
+    net2_room(G.session, &room);
+    static const char* STATES[] = {"none", "joining", "open", "starting", "in game"};
+    static const char* ROUTES[] = {"none", "trying", "direct", "relay", "self"};
+    if (room.state == NET2_ROOM_NONE) { snprintf(out, size, "online = a session, no room\n"); return; }
+    int n = snprintf(out, size, "online = room %s, %s, %d players, this machine slot %d, host slot %d, game phase %s\n", room.code,
+                     room.state >= 0 && room.state <= 4 ? STATES[room.state] : "?", room.count, room.my_slot, room.host_slot, phase_name(G.phase).c_str());
+    for (int k = 0; k < room.count && n > 0 && n < (int)size; k++) {
+        const net2_member& m = room.members[k];
+        n += snprintf(out + n, size - n, "peer.%d = %s%sfix %08x words %u arith %u/%u route %s rtt %d ms phase %d\n", m.slot, m.host ? "host, " : "",
+                      m.me ? "this machine, " : "", m.fix_set, m.fix_words, m.arith_can, m.arith_does, m.route >= 0 && m.route <= 4 ? ROUTES[m.route] : "?",
+                      m.rtt_ms, m.phase);
+    }
+    if (room.mismatch && n > 0 && n < (int)size) snprintf(out + n, size - n, "online_warning = %s\n", room.warning);
+}
+
 void install() {
     if (G.installed) return;
     G.installed = true;
+    net2hook::room_describe = room_describe;
     G.previous_command = script_app_command;
     script_app_command = command;
     if (const char* file = rt_option("net2-log")) G.log = fopen(file, "w");

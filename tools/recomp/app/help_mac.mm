@@ -20,6 +20,8 @@ std::string keys_text() {
            "  Full screen           F or F11 (Escape leaves it)\n"
            "  Camera view           V (overhead, action, chase, shoulder, first person)\n"
            "  This list             F1\n"
+           "  Report a bug          F8 (or L3 + R3 held on a controller): a zip in the reports folder\n"
+           "  The build line        F9\n"
            "\n"
            "A game controller that macOS knows (PlayStation, Xbox and others, by cable or\n"
            "Bluetooth) is player 1 as soon as it is connected - there is nothing to set up.\n"

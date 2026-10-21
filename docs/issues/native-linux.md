@@ -13,6 +13,18 @@ Nothing derived from the game is in the repository: the translation
 (`local/recomp-out/linux/gen-app`, `gen-orig`), objects, programs, logs and the tester's
 folders are under `local/recomp-out/linux/`.
 
+## STATE (2026-10-21, evening): the tester's kit
+
+`linux_main.cpp` has the tester's kit (`docs/issues/native-app.md` 15): F8 and the L3 + R3 chord (`testerkit::pad`), the
+box's keys and its text by SDL_TEXTINPUT, F9, the overlay, the tick rows at each blank, the crash handler, an SDL box
+about a crash report of the run before; `build_linux.py` compiles `app/testerkit.cpp` and gives the container the build
+id made outside it (`RTA_BUILD_ID`; git there sees another owner). **Ran** in the aarch64 container (Xvfb, offscreen,
+`RTA_TESTERKIT=1`): a report from the hub (zip with the picture, `local/tester/lin1/box.png`), a crash on purpose (signal
+11, 14 frames as `rta_app(+offset)`), zipped and announced at the next start. The Godot library for Linux
+(`tools/godot/build_lib_linux.py --arch arm64`) builds with the kit (`rtag_report_*` exported). (A note for the next
+tester: the disc image's folder is given to the container with `--mount type=bind,...` - `-v` with that path found
+nothing this time.)
+
 ## STATE (2026-10-21): aiming by looking
 
 `linux_main.cpp` calls aiming by looking (`app/fpaim.h`, `docs/issues/native-first-person-aim.md`) where `app_main.cpp`

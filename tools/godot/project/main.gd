@@ -53,6 +53,9 @@ extends Node
 #   --net2-flow ROLE:DIR   a test: a room of our own through RtaNet2 as the portal drives it (dev/net2_flow.gd); give the
 #                       runtime "--opt net2-boot=1" after "--" so that the game walks to its title screen by itself
 #
+# Keys besides the game's: V the next camera view; F8 (or L3 + R3 held) a bug report into <data>/reports, F9 the build
+# line (testerkit.gd).
+#
 # Under the portal (res://portal/portal.tscn is the project's first scene; this scene is then put under it):
 #   signal session_over(why)    the game is back at its own front end after a level ("frontend"), or the machine has
 #                               ended ("ended"); the portal is told (handover.finish) and the program is NOT ended
@@ -137,6 +140,7 @@ var view: Control                       # shows the picture (view.gd)
 var picture_texture: ImageTexture
 var drawer: Object                      # RtaDrawer, in the draw and scene modes
 var scene_view: Node                    # scene_view.gd, in the scene mode
+var tester: Node                        # testerkit.gd: the bug report (F8, L3 + R3), the build line (F9)
 var player: AudioStreamPlayer
 var started := false
 var message := ""
@@ -407,6 +411,9 @@ func _start() -> void:
 		"applied" if machine.has("fixes") else "not applied", "linked" if machine.has("films") else "not linked", opt.mode, size.x, size.y,
 		"not paced" if opt.unpaced else "paced"])
 	view.set("message", "")
+	tester = load("res://testerkit.gd").new()
+	tester.call("setup", machine, self, opt.test == "")
+	add_child(tester)
 	if not opt.game_hud:
 		machine.set_option("game_hud", "off")
 	if String(opt.combat) != "" and not machine.set_option("combat.mode", String(opt.combat)):
@@ -604,7 +611,7 @@ func _portal_settings(delta: float) -> void:
 
 func _read_pad() -> void:
 	_pointer()
-	if input_held:
+	if input_held or (tester != null and tester.call("is_open")):    # (the report box has the keyboard and the controller)
 		last_buttons = 0
 		last_sticks = [128, 128, 128, 128]
 		machine.set_pad(0, 0, 128, 128, 128, 128)
@@ -695,6 +702,10 @@ func _host_command(text: String) -> void:
 		apply_settings({w[1]: (w[2] == "true" if w[2] in ["true", "false"] else (w[2].to_int() if w[2].is_valid_int() else w[2]))})
 	elif w.size() >= 1 and w[0] == "hud":
 		pass                                # the HUD's own lines (res://hud/hud.gd reads them)
+	elif w.size() >= 2 and w[0] == "drawlog" and drawer != null:
+		drawer.call("log_draws", w[1].to_int())   # debugging: the next lists' draws with their state (RtaDrawer.log_draws)
+	elif w.size() >= 1 and w[0] == "report" and tester != null:
+		tester.call("command", w, text)     # the bug report (testerkit.gd)
 	else:
 		push_warning("app command not known: " + text)
 
@@ -927,6 +938,16 @@ func _finish(code: int) -> void:
 
 
 const VIEWS := ["overhead", "action", "chase", "shoulder", "first"]
+
+
+func report_lines() -> String:
+	# what a bug report says about this host (testerkit.gd): the mode, the window, the portal's settings
+	var lines := "godot = %s\nmode = %s\nwindow = %dx%d\nportal = %s\n" % [Engine.get_version_info().string, opt.mode,
+		get_window().size.x, get_window().size.y, "yes" if portal != null else "no"]
+	for key in stored:
+		if key in ["view", "wide", "sharpness", "music", "effects"]:
+			lines += "portal.%s = %s\n" % [key, str(stored[key])]
+	return lines
 
 
 func _unhandled_key_input(event: InputEvent) -> void:

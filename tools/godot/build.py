@@ -69,6 +69,8 @@ SRC = os.path.join(OUT, 'src')
 SNAP = os.path.join(SRC, 'recomp')
 SNAP_ORIG = os.path.join(SRC, 'recomp.orig')
 LIB = os.path.join(HERE, 'lib')
+sys.path.insert(0, os.path.join(ROOT, 'tools', 'recomp', 'app'))
+import buildid  # noqa: E402  (the build id the tester's kit says: app/testerkit.h)
 PATCH = os.path.join(HERE, 'recomp.patch')
 PARTS = ('rt', 'render', 'sound', 'app', 'net', 'net2')    # net, net2: the network and a room of our own (fix-set library only)
 GAMES = {'fix': ('obj-rta_native_fix', 'gen-app'), 'orig': ('obj-run', 'gen')}
@@ -77,7 +79,8 @@ RUNTIME = ['runtime.cpp', 'iop.cpp', 'script.cpp']
 NICE = ['nice', '-n', '10']
 EXPORTS = ['rtag_api_version', 'rtag_has', 'rtag_start', 'rtag_set_pad', 'rtag_step', 'rtag_poll', 'rtag_run', 'rtag_audio_pull',
            'rtag_memory', 'rtag_fields', 'rtag_info', 'rtag_ended', 'rtag_exit_code', 'rtag_stop', 'rtag_set_option',
-           'rtag_controls_hud', 'rtag_mouse', 'rtag_mouse_button', 'rtag_fill_get', 'rtag_texture_names']
+           'rtag_controls_hud', 'rtag_mouse', 'rtag_mouse_button', 'rtag_fill_get', 'rtag_texture_names',
+           'rtag_report_begin', 'rtag_report_finish', 'rtag_build_line', 'rtag_report_told']
 # A room of our own (tools/recomp/net2/session.h, game.h): the fix-set library carries the one copy of net2 in the
 # process - the session client, the carrier of the game's datagrams and the direct launch - and hands out its plain-C
 # functions under their own names, for the portal (docs/issues/native-rendezvous.md 5.1).
@@ -294,6 +297,10 @@ def build_lib(args):
         if os.path.exists(os.path.join(app, 'fpaim.cpp')):
             jobs.append((os.path.join(app, 'fpaim.cpp'), rt_flags + ['-I', app], 'a_'))
             lib_flags.append('-DRTAG_HAVE_AIM')
+    # the tester's kit (app/testerkit.h): the bug and crash reports, the build line; the host draws the box (main.gd)
+    if os.path.exists(os.path.join(app, 'testerkit.cpp')):
+        jobs.append((os.path.join(app, 'testerkit.cpp'), rt_flags + ['-I', app, '-I', render, buildid.define()], 'a_'))
+        lib_flags.append('-DRTAG_HAVE_TESTERKIT')
     else:
         lib_flags.append('-DRTAG_NO_CONTROLS')
     if not args.original:

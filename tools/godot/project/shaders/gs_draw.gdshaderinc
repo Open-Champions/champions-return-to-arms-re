@@ -17,6 +17,10 @@
 //   GS_MODEL            ... a solid model: form light per pixel by the game's own normals, a rim light, a sharper
 //                       texture (rta_model; scene_view.gd "models")
 //   GS_CONTACT          ... a solid piece of the level: darkened under the figures standing on it (rta_contacts)
+//   GS_STORED_SPACE     Forward+ / Mobile, a surface with no 3-D scene in it: the colour is written as the stored values
+//                       themselves, so that blending - which these renderers do in linear light - works on stored values
+//                       as the GS's does (a translucent overlay, an additive glow; the shop's lists).  Godot puts its sRGB
+//                       curve on the picture; GS_DECODE takes it off where such a surface is read (and view.gd where it is shown)
 //
 // Colours are carried in the GS's units as in tools/recomp/render/backend_gl.cpp, whose
 // fragment shader this follows line for line: 0..255, with 128 = 1.0 for alpha and for the
@@ -240,6 +244,12 @@ void fragment() {
 #else
 		vec4 t = textureLod(tex, uv, 0.0) * 255.0;
 #endif
+#ifdef GS_DECODE
+		{
+			vec3 e = t.rgb / 255.0;         // a stored-space surface (GS_STORED_SPACE): the sRGB curve off
+			t.rgb = mix(e / 12.92, pow((e + vec3(0.055)) / 1.055, vec3(2.4)), step(vec3(0.04045), e)) * 255.0;
+		}
+#endif
 		if (texa.x > 0.5) {
 			bool black = texa.w > 0.5 && t.r + t.g + t.b < 0.5;
 			t.a = (texa.x > 1.5 && t.a >= 127.5) ? texa.z : (black ? 0.0 : texa.y);
@@ -337,7 +347,11 @@ void fragment() {
 	ALBEDO = to_linear(rgb);
 	EMISSION = to_linear(clamp(rgb * rta_light_ambient.rgb + haze, 0.0, 1.0));
 #else
+#ifdef GS_STORED_SPACE
+	ALBEDO = clamp(rgb + haze, 0.0, 1.0);              // the stored values as they are: blended as the GS blends them
+#else
 	ALBEDO = to_linear(clamp(rgb + haze, 0.0, 1.0));
+#endif
 #endif
 #ifdef GS_BLEND_SUB
 	ALPHA = 1.0;                                        // destination - source

@@ -67,6 +67,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 RECOMP = os.path.dirname(HERE)
 sys.path.insert(0, RECOMP)
 import genfiles  # noqa: E402  (the translation's own list of files)
+sys.path.insert(0, HERE)
+import buildid  # noqa: E402  (the build id of testerkit.cpp)
 ROOT = os.path.dirname(os.path.dirname(RECOMP))
 OUT = os.path.join(ROOT, 'local', 'recomp-out')
 WIN = os.path.join(OUT, 'win')
@@ -417,6 +419,7 @@ def build_mac(args):
         (os.path.join(HERE, 'fpworld.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),
         (os.path.join(HERE, 'soulscombat.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),
         (os.path.join(HERE, 'fpaim.cpp'), rt_flags + ['-I', HERE], 'a_'),         # aiming by looking: app_main.cpp calls it
+        (os.path.join(HERE, 'testerkit.cpp'), rt_flags + ['-I', HERE, '-I', RENDER, buildid.define()], 'a_'),  # the tester's kit (testerkit.h)
         (os.path.join(HERE, 'gamestate.cpp'), app_flags, 'a_'),                   # the player's own boss music (bossmusic.h): app_main.cpp calls it
         (os.path.join(HERE, 'bossmusic.cpp'), app_flags, 'a_'),
         (os.path.join(HERE, 'fpcontrols.cpp'), ['-std=c++17', opt, '-Wall', '-I', HERE, '-I', RT], 'a_'),
@@ -625,6 +628,7 @@ def main():
              (os.path.join(HERE, 'fpworld.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),  # the world for a camera inside it (the same)
              (os.path.join(HERE, 'soulscombat.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),  # the souls-style combat mode (the same)
              (os.path.join(HERE, 'fpaim.cpp'), rt_flags + ['-I', HERE], 'a_'),  # aiming by looking (fpaim.h; the same)
+             (os.path.join(HERE, 'testerkit.cpp'), rt_flags + ['-I', HERE, '-I', RENDER, buildid.define()], 'a_'),  # the bug and crash reports, the build line (testerkit.h)
              (os.path.join(HERE, 'gamestate.cpp'), app_flags, 'a_'),           # the player's own boss music (bossmusic.h): the state reader
              (os.path.join(HERE, 'bossmusic.cpp'), app_flags, 'a_'),           # and the director, the decoders, the mixer (the Mac's files)
              (os.path.join(WINSRC, 'wgl.cpp'), app_flags, 'a_')], objdir, search)

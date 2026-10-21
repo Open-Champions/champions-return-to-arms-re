@@ -10,7 +10,7 @@
 //
 // Options (after "--" on the command line, "--opt key=value"): world=views|off|always,
 // world-clip=on|off, world-persp=on|off, world-objects=on|off, world-ceilings=auto|on|off,
-// world-skirts=auto|on|off, world-cells=on|off, world-sweep=on|off, world-box-xy=N (default 256),
+// world-skirts=auto|on|off, world-rims=auto|on|off, world-cells=on|off, world-sweep=on|off, world-box-xy=N (default 256),
 // world-box-z=N (default 0); world-log=1; world-nocull=1 (a
 // test aid: every box passes the frustum test).  Test aids also as "app world set": world.nocull on|off,
 // world.box-xy N, world.box-z N, world.dump N (every chunk of the next N level walks to the output: its box
@@ -45,7 +45,7 @@ enum { WHEN_VIEWS = 0, WHEN_OFF = 1, WHEN_ALWAYS = 2 };
 std::atomic<int> g_when{WHEN_VIEWS};
 std::atomic<bool> g_clip{true}, g_persp{true}, g_objects{true}, g_cells{true}, g_sweep_on{false};
 enum { AUTO = 0, ON = 1, OFF = 2 };
-std::atomic<int> g_ceilings{AUTO}, g_skirts{AUTO};
+std::atomic<int> g_ceilings{AUTO}, g_skirts{AUTO}, g_rims{AUTO};
 bool g_options_read = false, g_log = false;
 
 inline float as_float(u32 bits) { float f; memcpy(&f, &bits, 4); return f; }
@@ -69,6 +69,7 @@ void read_options() {
     if (const char* o = rt_option("world-sweep")) setting("world.sweep", o);
     if (const char* o = rt_option("world-ceilings")) setting("world.ceilings", o);
     if (const char* o = rt_option("world-skirts")) setting("world.skirts", o);
+    if (const char* o = rt_option("world-rims")) setting("world.rims", o);
     if (const char* o = rt_option("world-log")) g_log = atoi(o) != 0;
     if (const char* o = rt_option("world-nocull")) g_nocull = atoi(o);
     if (const char* o = rt_option("world-box-z")) g_box_margin = (float)atof(o);
@@ -498,14 +499,17 @@ u32 shelved_header(s16 cell, u32 offset, u32& table) {
 //             and a night forest 0.01 clear to black too and get none);
 //   skirts    auto = the level has no sky dome (a dome is a bowl of cloud under a floating level,
 //             or a painted horizon: the rim is the design there).
+//   rims      auto = the level HAS a sky dome: floating ground, where a floor's edge stands over nothing
+//             and the eye looks down past it (storm2, torment2, fay2, pvpfire2: native-first-person-world.md
+//             8.8, cause 4); a surface falls away under the edge, a background like the skirt.
 const u32 G_WORLD = 0x44FDC8, G_LEVEL_NAME = 0x41B721, G_BACKGROUND = 0x506044, G_DOME_LUMP = 0x86AF54, G_LIGHT_LEVEL = 0x5D347C;
 const u32 G_VIEW_PROJ = 0x44F140;
 struct LevelFill {
     u32 world = 0;
     char name[16] = {0};
     u8 header[0x84] = {0};                  // the .world's header as it lay there: another level at the same address is another level
-    int ceilings = -1, skirts = -1;         // the settings it was built with
-    u32 kinds = 0;                          // what there is to draw: bit 0 ceilings, bit 1 skirts
+    int ceilings = -1, skirts = -1, rims = -1;      // the settings it was built with
+    u32 kinds = 0;                          // what there is to draw: bit 0 ceilings, bit 1 skirts, bit 2 rims
     std::shared_ptr<const render::FillLevel> level;
     std::string why;
 } g_level;
@@ -514,17 +518,18 @@ u64 g_fill_builds = 0;
 void level_fill(u32 world) {
     char name[16] = {0};
     memcpy(name, g_ram + at(G_LEVEL_NAME), 15);
-    int ceilings = g_ceilings.load(), skirts = g_skirts.load();
-    if (world == g_level.world && !strcmp(name, g_level.name) && ceilings == g_level.ceilings && skirts == g_level.skirts &&
+    int ceilings = g_ceilings.load(), skirts = g_skirts.load(), rims = g_rims.load();
+    if (world == g_level.world && !strcmp(name, g_level.name) && ceilings == g_level.ceilings && skirts == g_level.skirts && rims == g_level.rims &&
         !memcmp(g_level.header, g_ram + at(world), sizeof g_level.header)) return;
     memcpy(g_level.header, g_ram + at(world), sizeof g_level.header);
-    g_level.world = world; memcpy(g_level.name, name, 16); g_level.ceilings = ceilings; g_level.skirts = skirts;
+    g_level.world = world; memcpy(g_level.name, name, 16); g_level.ceilings = ceilings; g_level.skirts = skirts; g_level.rims = rims;
     g_level.kinds = 0; g_level.level.reset(); g_level.why.clear();
     const bool dome = W(G_DOME_LUMP) != 0, black = (W(G_BACKGROUND) & 0xFFFFFF) == 0;
     render::FillOptions opt;
     opt.skirts = skirts == ON || (skirts == AUTO && !dome);
     opt.ceilings = ceilings == ON || (ceilings == AUTO && !dome && black);
-    if (opt.ceilings || opt.skirts) {
+    opt.rims = rims == ON || (rims == AUTO && dome);
+    if (opt.ceilings || opt.skirts || opt.rims) {
         std::shared_ptr<const render::FillLevel> level = render::build_fill(g_ram, 0x02000000, world, true, name, opt);
         g_fill_builds++;
         if (level) {
@@ -532,10 +537,10 @@ void level_fill(u32 world) {
             bool keep_ceiling = opt.ceilings && (ceilings == ON || walled);
             if (opt.ceilings && !keep_ceiling) {            // not an interior after all: built again without
                 opt.ceilings = false;
-                level = opt.skirts ? render::build_fill(g_ram, 0x02000000, world, true, name, opt) : nullptr;
+                level = opt.skirts || opt.rims ? render::build_fill(g_ram, 0x02000000, world, true, name, opt) : nullptr;
             }
             if (level) {
-                g_level.kinds = (level->ceiling_area > 0 ? 1u : 0u) | (level->skirt_area > 0 ? 2u : 0u);
+                g_level.kinds = (level->ceiling_area > 0 ? 1u : 0u) | (level->skirt_area > 0 ? 2u : 0u) | (level->rim_area > 0 ? 4u : 0u);
                 g_level.level = level;
             }
         } else g_level.why = "the level's terrain was not read";
@@ -543,8 +548,8 @@ void level_fill(u32 world) {
     render::publish_fill(g_level.level);
     if (g_log) {
         const render::FillLevel* l = g_level.level.get();
-        fprintf(stderr, "world: level %s: sky dome %s, clears to %06x; fill: ceiling %.0f, skirt %.0f square units, %zu triangles, walls %d cells (lid %.0f over the floor), floor %.0f, %.1f ms %s\n",
-                name, dome ? "yes" : "no", W(G_BACKGROUND) & 0xFFFFFF, l ? l->ceiling_area : 0.0, l ? l->skirt_area : 0.0, l ? l->vertices.size() / 3 : (size_t)0,
+        fprintf(stderr, "world: level %s: sky dome %s, clears to %06x; fill: ceiling %.0f, skirt %.0f, rim %.0f square units, %zu triangles, walls %d cells (lid %.0f over the floor), floor %.0f, %.1f ms %s\n",
+                name, dome ? "yes" : "no", W(G_BACKGROUND) & 0xFFFFFF, l ? l->ceiling_area : 0.0, l ? l->skirt_area : 0.0, l ? l->rim_area : 0.0, l ? l->vertices.size() / 3 : (size_t)0,
                 l ? l->walls : 0, l ? l->lid_median : 0.0f, l ? l->floor_area : 0.0, l ? l->build_ms : 0.0, g_level.why.c_str());
     }
 }
@@ -560,10 +565,10 @@ bool setting(const char* key, const char* value) {
         if (v == "views") g_when = WHEN_VIEWS; else if (v == "always") g_when = WHEN_ALWAYS; else if (is_off(value)) g_when = WHEN_OFF; else return false;
         return true;
     }
-    if (k == "world.ceilings" || k == "world.skirts") {
+    if (k == "world.ceilings" || k == "world.skirts" || k == "world.rims") {
         int mode = v == "auto" ? AUTO : is_on(value) ? ON : is_off(value) ? OFF : -1;
         if (mode < 0) return false;
-        (k == "world.ceilings" ? g_ceilings : g_skirts) = mode;
+        (k == "world.ceilings" ? g_ceilings : k == "world.skirts" ? g_skirts : g_rims) = mode;
         return true;
     }
     if (k == "world.dump") { g_dump = atoi(value); return true; }
@@ -586,7 +591,8 @@ const char* settings_text() {
         "\nworld.objects = " + (g_objects.load() ? "on" : "off") + "\nworld.cells = " + (g_cells.load() ? "on" : "off") +
         "\nworld.sweep = " + (g_sweep_on.load() ? "on" : "off") + "\n";
     static const char* const modes[3] = {"auto", "on", "off"};
-    g_settings_text += std::string("world.ceilings = ") + modes[g_ceilings.load()] + "\nworld.skirts = " + modes[g_skirts.load()] + "\n";
+    g_settings_text += std::string("world.ceilings = ") + modes[g_ceilings.load()] + "\nworld.skirts = " + modes[g_skirts.load()] +
+        "\nworld.rims = " + modes[g_rims.load()] + "\n";
     return g_settings_text.c_str();
 }
 
@@ -601,9 +607,9 @@ const char* info() {
              ((W(G_DL_CURSOR) & RAM_MASK) - (W(G_DL_BASE) & RAM_MASK)) >> 3, W(G_DL_UNITS));
     {
         const render::FillLevel* l = g_level.level.get();
-        char more[240];
-        snprintf(more, sizeof more, "; fill of %s: ceiling %.0f, skirt %.0f square units in %zu triangles (walls %d cells, lid %.0f; floor %.0f; %.1f ms), said %llu times",
-                 g_level.name, l ? l->ceiling_area : 0.0, l ? l->skirt_area : 0.0, l ? l->vertices.size() / 3 : (size_t)0, l ? l->walls : 0, l ? l->lid_median : 0.0f,
+        char more[260];
+        snprintf(more, sizeof more, "; fill of %s: ceiling %.0f, skirt %.0f, rim %.0f square units in %zu triangles (walls %d cells, lid %.0f; floor %.0f; %.1f ms), said %llu times",
+                 g_level.name, l ? l->ceiling_area : 0.0, l ? l->skirt_area : 0.0, l ? l->rim_area : 0.0, l ? l->vertices.size() / 3 : (size_t)0, l ? l->walls : 0, l ? l->lid_median : 0.0f,
                  l ? l->floor_area : 0.0, l ? l->build_ms : 0.0, (unsigned long long)g_fill_notes);
         strncat(line, more, sizeof line - strlen(line) - 1);
     }

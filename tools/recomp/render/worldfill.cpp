@@ -492,11 +492,162 @@ std::shared_ptr<const FillLevel> build_fill(const uint8_t* memory, size_t size, 
             }
     }
 
+    // ---- rims: under a floor that ends over nothing ----
+    // On a grid of RIM-unit cells reaching rim_width beyond the level: the cells with no terrain at all that are not water
+    // are "empty"; a terrain cell beside one is an edge, which starts a fill when it is a floor's (walked ground within two
+    // cells, not rim_min under the top) - or any edge when no skirt is made.  The fill is carried out over the empty cells
+    // (chamfer distance), falling with the distance.  The edge cells are filled too, at the floor's height less 4, so
+    // that seen over the edge it begins where the ground ends inside a cell that is only partly ground; where there is
+    // ground the level's own covers it (it is a background, drawn first, writing no depth).  Corners beside ground that
+    // is not an edge are fastened there.
+    if (opt.rims && !queue.empty()) {
+        const int RIM = 32;
+        const int ring = (int)std::ceil(opt.rim_width / RIM) + 2;
+        Grid t;
+        t.x0 = (int)std::floor((double)unit0x / RIM) - ring; t.y0 = (int)std::floor((double)unit0y / RIM) - ring;
+        t.w = (int)std::ceil((double)(unit1x - unit0x) / RIM) + 2 * ring; t.h = (int)std::ceil((double)(unit1y - unit0y) / RIM) + 2 * ring;
+        const size_t tn = (size_t)t.w * t.h;
+        if (tn > 0 && tn <= 6000000) {
+            std::vector<int16_t> ttop(tn, (int16_t)NONE);
+            std::vector<float> tfloor(tn, NAN);
+            for (int j = 0; j < g.h; j++)
+                for (int i = 0; i < g.w; i++) {
+                    const size_t c = (size_t)j * g.w + i;
+                    if (hi[c] == NONE) continue;
+                    const int ti = (int)std::floor((double)((g.x0 + i) * FINE) / RIM) - t.x0, tj = (int)std::floor((double)((g.y0 + j) * FINE) / RIM) - t.y0;
+                    if (!t.inside(ti, tj)) continue;
+                    const size_t k = (size_t)tj * t.w + ti;
+                    if (ttop[k] == NONE || hi[c] > ttop[k]) ttop[k] = hi[c];
+                    if (!std::isnan(floor_z[c]) && (std::isnan(tfloor[k]) || floor_z[c] < tfloor[k])) tfloor[k] = floor_z[c];
+                }
+            // water: the boxes of the water chunks (a beach's sea, a lava lake are the level's own)
+            std::vector<uint8_t> water(tn, 0);
+            {
+                const size_t chunk_at = r.at(r.u32(base + 0x24));
+                if (r.fits(chunk_at, (size_t)chunks * 0x3C))
+                    for (uint32_t k = 0; k < chunks; k++) {
+                        const size_t o = chunk_at + (size_t)k * 0x3C;
+                        if (!(r.u32(o + 0x24) & 0x80)) continue;
+                        float b[6];
+                        memcpy(b, r.m + o + 8, 24);
+                        if (!(b[0] <= b[3] && b[1] <= b[4]) || b[3] - b[0] > 20000.0f || b[4] - b[1] > 20000.0f) continue;
+                        const int i0 = std::max(0, (int)std::floor(b[0] / RIM) - t.x0 - 1), i1 = std::min(t.w - 1, (int)std::floor(b[3] / RIM) - t.x0 + 1);
+                        const int j0 = std::max(0, (int)std::floor(b[1] / RIM) - t.y0 - 1), j1 = std::min(t.h - 1, (int)std::floor(b[4] / RIM) - t.y0 + 1);
+                        for (int j = j0; j <= j1; j++)
+                            for (int i = i0; i <= i1; i++) water[(size_t)j * t.w + i] = 1;
+                    }
+            }
+            auto empty = [&](int i, int j) { if (!t.inside(i, j)) return false; const size_t c = (size_t)j * t.w + i; return ttop[c] == NONE && !water[c]; };
+            // the edges: a terrain cell beside an empty one; its height is that of the floor there
+            std::vector<float> edge_z(tn, NAN);
+            static const int nx[4] = {1, -1, 0, 0}, ny[4] = {0, 0, 1, -1};
+            for (int j = 0; j < t.h; j++)
+                for (int i = 0; i < t.w; i++) {
+                    const size_t c = (size_t)j * t.w + i;
+                    if (ttop[c] == NONE) continue;
+                    bool beside = false;
+                    for (int k = 0; k < 4; k++) if (empty(i + nx[k], j + ny[k])) beside = true;
+                    if (!beside) continue;
+                    float f = NAN;
+                    for (int y = j - 2; y <= j + 2; y++)
+                        for (int x = i - 2; x <= i + 2; x++)
+                            if (t.inside(x, y)) { float v = tfloor[(size_t)y * t.w + x]; if (!std::isnan(v) && (std::isnan(f) || v > f)) f = v; }
+                    const bool lid = std::isnan(f) || (float)ttop[c] - f >= opt.rim_min;
+                    if (lid && opt.skirts) continue;                   // a lid's edge: the skirt's (and nobody looks over it)
+                    edge_z[c] = std::isnan(tfloor[c]) ? (std::isnan(f) ? (float)ttop[c] : f) : tfloor[c];
+                }
+            // out over the empty cells
+            std::vector<float> d(tn, 1e9f), z0(tn, 0.0f);
+            std::vector<uint32_t> q;
+            for (int j = 0; j < t.h; j++)
+                for (int i = 0; i < t.w; i++) {
+                    if (!empty(i, j)) continue;
+                    const size_t c = (size_t)j * t.w + i;
+                    float best = NAN;                           // the highest floor edge beside it
+                    for (int k = 0; k < 4; k++) {
+                        const int x = i + nx[k], y = j + ny[k];
+                        if (!t.inside(x, y)) continue;
+                        const float e = edge_z[(size_t)y * t.w + x];
+                        if (!std::isnan(e) && (std::isnan(best) || e > best)) best = e;
+                    }
+                    if (std::isnan(best)) continue;
+                    d[c] = RIM * 0.5f; z0[c] = best;
+                    q.push_back((uint32_t)c);
+                }
+            for (size_t head = 0; head < q.size(); head++) {
+                const uint32_t c = q[head];
+                const int ci = (int)(c % t.w), cj = (int)(c / t.w);
+                for (int dy = -1; dy <= 1; dy++)
+                    for (int dx = -1; dx <= 1; dx++) {
+                        if (!dx && !dy) continue;
+                        const int x = ci + dx, y = cj + dy;
+                        if (!empty(x, y)) continue;
+                        const size_t m = (size_t)y * t.w + x;
+                        const float step = (dx && dy) ? RIM * 1.41421356f : (float)RIM, nd = d[c] + step;
+                        if (nd >= d[m] || nd > opt.rim_width) continue;
+                        d[m] = nd; z0[m] = z0[c];
+                        q.push_back((uint32_t)m);
+                    }
+            }
+            for (size_t c = 0; c < tn; c++)
+                if (!std::isnan(edge_z[c])) { d[c] = 0; z0[c] = edge_z[c] - 4.0f; }
+            auto filled = [&](int i, int j) { return t.inside(i, j) && d[(size_t)j * t.w + i] < 1e8f; };
+            auto fall = [&](float at) { return std::min(at, opt.rim_knee) * opt.rim_fall + std::max(0.0f, at - opt.rim_knee) * opt.rim_fall_far; };
+            const float fade_from = opt.rim_width * 0.45f;
+            const int cw = t.w + 1;
+            std::vector<float> corner_z((size_t)cw * (t.h + 1), 0.0f), corner_a((size_t)cw * (t.h + 1), 0.0f), corner_d((size_t)cw * (t.h + 1), 0.0f);
+            for (int j = 0; j <= t.h; j++)
+                for (int i = 0; i <= t.w; i++) {
+                    float sum = 0, dsum = 0, edge = NAN; int cnt = 0, around = 0; bool ground = false;
+                    for (int y = j - 1; y <= j; y++)
+                        for (int x = i - 1; x <= i; x++) {
+                            if (!t.inside(x, y)) continue;
+                            around++;
+                            const size_t c = (size_t)y * t.w + x;
+                            if (filled(x, y)) { sum += z0[c] - fall(d[c]); dsum += d[c]; cnt++; }
+                            else if (ttop[c] != NONE) ground = true;
+                            if (!std::isnan(edge_z[c])) edge = std::isnan(edge) ? edge_z[c] : std::max(edge, edge_z[c]);
+                        }
+                    const size_t v = (size_t)j * cw + i;
+                    if (ground && !std::isnan(edge)) { corner_z[v] = edge - 4.0f; corner_a[v] = 128.0f; corner_d[v] = 0; }    // fastened under the ground
+                    else if (cnt) {
+                        const float at = dsum / (float)cnt;
+                        corner_z[v] = sum / (float)cnt; corner_d[v] = at;
+                        corner_a[v] = cnt == around ? 128.0f * std::max(0.0f, std::min(1.0f, (opt.rim_width - at) / (opt.rim_width - fade_from))) : 0.0f;
+                    }
+                }
+            const int block = 8;
+            for (int bj = 0; bj < t.h; bj += block)
+                for (int bi = 0; bi < t.w; bi += block) {
+                    const uint32_t first = (uint32_t)level->vertices.size();
+                    for (int j = bj; j < std::min(bj + block, t.h); j++)
+                        for (int i = bi; i < std::min(bi + block, t.w); i++) {
+                            if (!filled(i, j)) continue;
+                            float p[4][3];
+                            uint8_t shade[4], alpha[4];
+                            static const int ox[4] = {0, 1, 1, 0}, oy[4] = {0, 0, 1, 1};
+                            for (int k = 0; k < 4; k++) {
+                                const size_t v = (size_t)(j + oy[k]) * cw + i + ox[k];
+                                p[k][0] = (float)((t.x0 + i + ox[k]) * RIM); p[k][1] = (float)((t.y0 + j + oy[k]) * RIM); p[k][2] = corner_z[v];
+                                alpha[k] = (uint8_t)std::max(0.0f, std::min(128.0f, corner_a[v]));
+                                // grey: 150 at the edge, 90 at the outer edge (the renderer darkens the underside with it)
+                                shade[k] = (uint8_t)(150.0f - 60.0f * std::min(1.0f, corner_d[v] / opt.rim_width));
+                            }
+                            quad(level->vertices, p, shade, alpha, true);
+                            level->rim_area += (double)RIM * RIM;
+                        }
+                    close_mesh(*level, FILL_RIM, first);
+                }
+        }
+    }
+
     // a number of this build
     uint64_t serial = 1469598103934665603ull;
     auto mix = [&](const void* p, size_t count) { const uint8_t* b = (const uint8_t*)p; for (size_t k = 0; k < count; k++) serial = (serial ^ b[k]) * 1099511628211ull; };
     mix(level->name.data(), level->name.size());
-    const float numbers[10] = {(float)opt.over, opt.wall_min, opt.reach, opt.vault, opt.vault_most, opt.clearance, opt.skirt_width, opt.skirt_drop, opt.rim_min, (float)(opt.far_shade + (opt.ceilings ? 256 : 0) + (opt.skirts ? 512 : 0))};
+    const float numbers[14] = {(float)opt.over, opt.wall_min, opt.reach, opt.vault, opt.vault_most, opt.clearance, opt.skirt_width, opt.skirt_drop, opt.rim_min,
+                               (float)(opt.far_shade + (opt.ceilings ? 256 : 0) + (opt.skirts ? 512 : 0) + (opt.rims ? 1024 : 0)), opt.rim_width, opt.rim_knee, opt.rim_fall,
+                               opt.rim_fall_far};
     mix(numbers, sizeof numbers);
     const uint64_t counts[3] = {level->vertices.size(), level->meshes.size(), cells};
     mix(counts, sizeof counts);

@@ -14,6 +14,14 @@ named) or **Read**. Pictures are game output and stay under
 
 ## STATE (rewritten at every step; read this first after a stop)
 
+**2026-10-21 - the rims (8.8, cause 4).** Where a floor ends over nothing (floating ground, halls over the void, a
+chasm with no ground in it), a fill now lies under the edge: `render/worldfill.*` makes FILL_RIM meshes (a surface
+falling 0.9 a unit for 160 units from the edge, then 0.2, fading out by 768 units; not over water chunks), drawn like
+the skirt as a background - by `render/gs.cpp` (the clear colour darkened by its grey) and by the Godot drawer
+(`rta_fill.cpp`, the skirt's shader, the plain stone darkened). `world.rims = auto | on | off` (auto: on; a level's own
+geometry covers it wherever there is any). Picture only: the rig comparison is byte for byte the reference in both views
+(`docs/issues/native-app.md` 15). Section 8.8, cause 4, has the figures.
+
 **2026-10-20 - section 8.8.** The eight levels flagged in every walk were looked at. Three general causes
 were fixed: the eye's near plane in a wall beside it (`app/fpview.cpp`: sideways step, the picture's real width,
 a nearer near plane in a corner), ground of resident cells left out for want of a prepared texture (drawn from
@@ -820,7 +828,27 @@ walk of 8.6. Their pictures were looked at and the flagged places probed with sw
 4. **Beyond the rim, the level's own** (`fire5`, `storm2`; also `torment2`, `fay2` and `pvpfire2` in the full
    walk). **Ran:** looking over the edge of floating ground into the chasm or the void below
    (`c-storm2.png`, `c-fire5.png`, `all2-rest.png`). The game's overhead view shows the same void beside the
-   character at most of those places (`as-overhead`). The levels are made that way. Not changed.
+   character at most of those places (`as-overhead`). The levels are made that way. Not changed then.
+   **2026-10-21: a fill under the rim (Ran).** `render/worldfill.cpp` FILL_RIM: on a grid of 32-unit cells reaching
+   `rim_width` (768) beyond the level, the cells with no terrain that are not under a water chunk's box are "empty";
+   a terrain cell beside one is an edge, which starts a rim when it is a floor's edge (walked ground within two cells,
+   less than `rim_min` under its top) - or any edge when no skirt is made. The fill is carried out over the empty
+   cells (chamfer distance), falling `rim_fall` (0.9) a unit to `rim_knee` (160), then `rim_fall_far` (0.2), its
+   alpha full to 45 % of the width and then fading out, its grey 150 at the edge and 90 far out; the edge cells are
+   filled too, 4 under the floor, so that it begins where the ground ends inside a cell that is partly ground. Drawn as
+   the skirt, a background (farthest depth, no depth written): `gs.cpp` with the clear colour times 0.6 x grey, the
+   Godot drawer (`rta_fill.cpp`, RTAG_FILL_RIM = 3) with the skirt's shader and the plain stone times the grey
+   (`fill.gdshaderinc`). `fpworld.cpp`: `world.rims` / `--opt world-rims=` auto | on | off (auto = on: the sky dome is
+   no guide - storm2, fay2 and pvpfire2 have none, torment2 has one), kind bit 4 of the fill command, the figures in
+   `app world info`. Built from the `.world` files (`worldfill_test`): storm1 rim 4.8 M square units in 9,444
+   triangles, fire1 28.1 M in 54,876 (its outer floor edge all round, hidden under the level's lava geometry), hub
+   9,328, islsm1 none (water). **Pictures** (`local/tester/rim/`, the native program, first person, rims on against
+   off at the walks' flagged places; the share of the picture's lower third the rim fill covers): pvpfire2 (12, -128,
+   153) heading 0 level 44 %, looking 25 degrees down 13 %, other headings 5 to 9 %; fay2 (-524, 1759, 129) 1 to 17 %;
+   storm2 (789, -5664, 34) up to 10 %; torment2 (-124, -3274, 0) 3 to 11 % looking down, none level. What it looks like:
+   dark ground falling away from the edge into the clear colour, where there was the clear colour (`rim/sheet.png`). In
+   Godot (`local/tester/grim/pvpfire2`, scene mode): the same places 45 % / 13 % / 10 % / 8 %, a hazy surface below the
+   edge in the level's haze colour (`grim/pvpfire2/sheet.png`).
 
 **Before and after, the eight** (looks flagged of 40; the walks route the character by the fight, so the
 places differ from walk to walk):
@@ -874,8 +902,8 @@ walks to the output: box test, cell, slot, texture header, words put into the li
 the next N passes: distances to the walls, shift, place, near plane, queries, time), `view.arms-near N` (the
 near cut of arms mode, default 14).
 
-**Left:** the rims (4) are the levels' design; a fill under them would be a new part, as the skirt is for the
-outer rim. `nitbonus` at (248, 3322) is not explained. With the nearer near plane in a corner, more of the
+**Left:** the rims (4) have a fill since 2026-10-21 (above); whether it should be lighter (haze) or darker (rock) in
+the OpenGL program is a matter of taste not yet settled. `nitbonus` at (248, 3322) is not explained. With the nearer near plane in a corner, more of the
 own figure can show in an attack (not looked for). The skirt was still not seen in a picture where it fills
 anything (fire1 and storm1a, eight headings at the start: skirt on and off differ in under 450 pixels of
 129,600). Not measured paced.

@@ -53,6 +53,11 @@
 #include "worldfill.h"
 #endif
 
+// the tester's kit (tools/recomp/app/testerkit.h): build.py defines RTAG_HAVE_TESTERKIT when the snapshot has it
+#ifdef RTAG_HAVE_TESTERKIT
+#include "testerkit.h"
+#endif
+
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
@@ -141,6 +146,7 @@ struct Note { uint64_t number; uint32_t sim_tick, flags; std::vector<std::string
 
 struct Machine;
 Machine* g_m;
+std::string g_report_told;                              // testerkit::start's words about a crash report of the run before
 
 // The sink of the picture path with the gate behind it, and what travels beside a frame.
 struct GateSink : app::Sink {
@@ -191,6 +197,9 @@ struct Pads : rta::PadSource {
         state.buttons |= p.buttons;
         if (state.lx == 128 && state.ly == 128) { state.lx = p.lx; state.ly = p.ly; }
         if (state.rx == 128 && state.ry == 128) { state.rx = p.rx; state.ry = p.ry; }
+#ifdef RTAG_HAVE_TESTERKIT
+        struct Record { ~Record() { if (port == 0) testerkit::pad(blank, state); } unsigned port; uint64_t blank; rta::PadState& state; } record{port, blank, state};
+#endif
 #ifdef RTAG_HAVE_CONTROLS
         // The views that look along the ground: stick and pointer are the look (the game camera's yaw word), the
         // character is turned to it; in the overhead views nothing changes (fpcontrols.h; as app_main.cpp does it).
@@ -302,6 +311,9 @@ void GateSink::vblank(unsigned field, uint64_t number) {
     }
     note.view = sent_view;
     first_transfer = true;
+#ifdef RTAG_HAVE_TESTERKIT
+    testerkit::blank(number, ram);                      // the tick log of a report (testerkit.h)
+#endif
     { std::lock_guard<std::mutex> hold(shots_lock); note.shots.swap(shots_asked); note.commands.swap(commands_asked); }
     { std::lock_guard<std::mutex> hold(notes_lock); notes.push_back(std::move(note)); }
     if (g_m->scene3d) scene::at_blank(rta::memory(), number);
@@ -416,10 +428,10 @@ void app_command(const std::string& text, uint64_t frame) {
     } else if (w[0] == "fill") {                        // app fill: what rtag_fill_get hands a host now
         rtag_fill f;
         if (rtag_fill_get(&f)) {
-            unsigned ceilings = 0, skirts = 0;
-            for (uint32_t k = 0; k < f.mesh_count; k++) (f.meshes[k].kind == RTAG_FILL_CEILING ? ceilings : skirts)++;
-            printf("[frame %llu] fill: level %s, serial %llu, %u vertices (%u triangles), %u meshes (%u ceiling, %u skirt), bounds %.0f %.0f %.0f .. %.0f %.0f %.0f\n",
-                   (unsigned long long)frame, f.level, (unsigned long long)f.serial, f.vertex_count, f.vertex_count / 3, f.mesh_count, ceilings, skirts,
+            unsigned ceilings = 0, skirts = 0, rims = 0;
+            for (uint32_t k = 0; k < f.mesh_count; k++) (f.meshes[k].kind == RTAG_FILL_CEILING ? ceilings : f.meshes[k].kind == RTAG_FILL_SKIRT ? skirts : rims)++;
+            printf("[frame %llu] fill: level %s, serial %llu, %u vertices (%u triangles), %u meshes (%u ceiling, %u skirt, %u rim), bounds %.0f %.0f %.0f .. %.0f %.0f %.0f\n",
+                   (unsigned long long)frame, f.level, (unsigned long long)f.serial, f.vertex_count, f.vertex_count / 3, f.mesh_count, ceilings, skirts, rims,
                    f.bounds[0], f.bounds[1], f.bounds[2], f.bounds[3], f.bounds[4], f.bounds[5]);
         } else printf("[frame %llu] fill: none\n", (unsigned long long)frame);
         fflush(stdout);
@@ -427,6 +439,10 @@ void app_command(const std::string& text, uint64_t frame) {
     } else if (w[0] == "stats") {
         printf("[frame %llu] rtag: %s\n", (unsigned long long)frame, rtag_info());
         fflush(stdout);
+#ifdef RTAG_HAVE_TESTERKIT
+    } else if (w[0] == "report" && w.size() >= 2 && w[1] == "crash") {
+        testerkit::command(text);                       // the crash handler's test (RTA_TESTERKIT_CRASH=1); the box is the host's
+#endif
     } else {                                            // the host's (rtag_frame::host_commands)
         std::lock_guard<std::mutex> hold(g_m->sink.shots_lock);
         g_m->sink.commands_asked.push_back(text);
@@ -639,6 +655,37 @@ extern "C" {
 
 int rtag_api_version(void) { return RTAG_API_VERSION; }
 
+// ---- the tester's kit (testerkit.h) ----
+const char* rtag_report_begin(const char* host_lines) {
+    static std::string folder;
+#ifdef RTAG_HAVE_TESTERKIT
+    std::string shot;
+    folder = testerkit::begin(shot, false, host_lines ? host_lines : "");
+#else
+    (void)host_lines;
+    folder.clear();
+#endif
+    return folder.c_str();
+}
+const char* rtag_report_finish(const char* folder, const char* text, int keep) {
+    static std::string zip;
+#ifdef RTAG_HAVE_TESTERKIT
+    zip = folder && *folder ? testerkit::finish(folder, text ? text : "", keep != 0) : "";
+#else
+    (void)folder; (void)text; (void)keep;
+    zip.clear();
+#endif
+    return zip.c_str();
+}
+const char* rtag_build_line(void) {
+    static std::string line;
+#ifdef RTAG_HAVE_TESTERKIT
+    line = testerkit::build_line();
+#endif
+    return line.c_str();
+}
+const char* rtag_report_told(void) { return g_report_told.c_str(); }
+
 uint32_t rtag_texture_names(rtag_texture_name* out, uint32_t max) {
     if (!g_m || !out) return 0;
     uint32_t n = (uint32_t)std::min<size_t>(max, g_m->texture_names.size());
@@ -751,6 +798,32 @@ int rtag_start(const rtag_config* config) {
     }
     g_m = m;
 
+#ifdef RTAG_HAVE_TESTERKIT
+    {
+        // the tester's kit: the rings and the crash handler here; the host draws the box and the line (testerkit.gd)
+        testerkit::Setup kit;
+        kit.data_dir = m->data;
+        kit.program = "Godot library";
+        kit.host_ui = true;
+        kit.describe = [] {
+            std::string s = std::string("view = ") + fpview::mode_name(fpview::mode()) + "\n";
+#ifdef RTAG_HAVE_AIM
+            s += std::string("aim = ") + (fpaim::wanted() ? "where you look" : "the game's") + "\n";
+#endif
+#ifdef RTAG_HAVE_SOULS
+            s += std::string("combat = ") + (soulscombat::wanted() ? "souls" : "the game's") + "\n";
+#endif
+            if (g_m) {
+                char text[160];
+                snprintf(text, sizeof text, "drawn_by = %s\nlibrary_picture = %dx%d\naspect = %.4f\n", g_m->scene3d ? "Godot (scene)" : "the library (picture)",
+                         g_m->picture_w, g_m->picture_h, g_m->aspect);
+                s += text;
+            }
+            return s;
+        };
+        g_report_told = testerkit::start(kit);
+    }
+#endif
     m->renderer.gs.layout.enabled = true;
     gfxrt::install();
     gfxrt::set_aspect(m->aspect);

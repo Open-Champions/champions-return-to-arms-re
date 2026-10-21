@@ -132,6 +132,9 @@ def build(args):
         if os.path.exists(os.path.join(app, 'fpaim.cpp')):
             sources.append((os.path.join(app, 'fpaim.cpp'), rt_flags + ['-I', app], 'a_'))
             lib_flags.append('-DRTAG_HAVE_AIM')
+    if os.path.exists(os.path.join(app, 'testerkit.cpp')):         # the tester's kit (app/testerkit.h): reports, the build line
+        sources.append((os.path.join(app, 'testerkit.cpp'), rt_flags + ['-I', app, '-I', render, bw.buildid.define()], 'a_'))
+        lib_flags.append('-DRTAG_HAVE_TESTERKIT')
     else:
         lib_flags.append('-DRTAG_NO_CONTROLS')
     if os.path.exists(bw.FILM) and os.path.exists(bw.FILM_HLE):

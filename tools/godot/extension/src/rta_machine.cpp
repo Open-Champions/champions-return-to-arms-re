@@ -155,18 +155,38 @@ bool RtaMachine::fill(rtag_fill& out) const {
     return rta_library().rtag_fill_get(&out) != 0 && out.vertex_count > 0;
 }
 
+String RtaMachine::report_begin(const String& host_lines) {
+    const RtaLibrary& lib = rta_library();
+    if (!started || !lib.rtag_report_begin) return String();
+    return String::utf8(lib.rtag_report_begin(host_lines.utf8().get_data()));
+}
+String RtaMachine::report_finish(const String& folder, const String& text, bool keep) {
+    const RtaLibrary& lib = rta_library();
+    if (!lib.rtag_report_finish) return String();
+    return String::utf8(lib.rtag_report_finish(folder.utf8().get_data(), text.utf8().get_data(), keep ? 1 : 0));
+}
+String RtaMachine::build_line() const {
+    const RtaLibrary& lib = rta_library();
+    return lib.loaded && lib.rtag_build_line ? String::utf8(lib.rtag_build_line()) : String();
+}
+String RtaMachine::report_told() const {
+    const RtaLibrary& lib = rta_library();
+    return lib.loaded && lib.rtag_report_told ? String::utf8(lib.rtag_report_told()) : String();
+}
+
 Dictionary RtaMachine::get_fill_info() const {
     Dictionary d;
     rtag_fill f;
     if (!fill(f)) return d;
-    int ceilings = 0, skirts = 0;
-    for (uint32_t k = 0; k < f.mesh_count; k++) (f.meshes[k].kind == RTAG_FILL_CEILING ? ceilings : skirts)++;
+    int ceilings = 0, skirts = 0, rims = 0;
+    for (uint32_t k = 0; k < f.mesh_count; k++) (f.meshes[k].kind == RTAG_FILL_CEILING ? ceilings : f.meshes[k].kind == RTAG_FILL_SKIRT ? skirts : rims)++;
     d["level"] = String(f.level ? f.level : "");
     d["serial"] = (int64_t)f.serial;
     d["vertices"] = (int64_t)f.vertex_count;
     d["meshes"] = (int64_t)f.mesh_count;
     d["ceilings"] = ceilings;
     d["skirts"] = skirts;
+    d["rims"] = rims;
     return d;
 }
 
@@ -343,6 +363,10 @@ void RtaMachine::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_option", "key", "value"), &RtaMachine::set_option);
     ClassDB::bind_method(D_METHOD("get_controls_hud"), &RtaMachine::get_controls_hud);
     ClassDB::bind_method(D_METHOD("get_fill_info"), &RtaMachine::get_fill_info);
+    ClassDB::bind_method(D_METHOD("report_begin", "host_lines"), &RtaMachine::report_begin);
+    ClassDB::bind_method(D_METHOD("report_finish", "folder", "text", "keep"), &RtaMachine::report_finish);
+    ClassDB::bind_method(D_METHOD("build_line"), &RtaMachine::build_line);
+    ClassDB::bind_method(D_METHOD("report_told"), &RtaMachine::report_told);
     ClassDB::bind_method(D_METHOD("mouse", "dx", "dy", "wheel"), &RtaMachine::mouse);
     ClassDB::bind_method(D_METHOD("mouse_button", "button", "down"), &RtaMachine::mouse_button);
     ClassDB::bind_method(D_METHOD("wants_pointer"), &RtaMachine::wants_pointer);

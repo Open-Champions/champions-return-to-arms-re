@@ -12,7 +12,8 @@
     F(rtag_memory) F(rtag_fields) F(rtag_info) F(rtag_ended) F(rtag_exit_code) F(rtag_stop) F(rtag_set_option)
 
 // added after version 6 without changing it: null when the library is older
-#define RTAG_OPTIONAL_FUNCTIONS(F) F(rtag_controls_hud) F(rtag_mouse) F(rtag_mouse_button) F(rtag_fill_get) F(rtag_texture_names)
+#define RTAG_OPTIONAL_FUNCTIONS(F) F(rtag_controls_hud) F(rtag_mouse) F(rtag_mouse_button) F(rtag_fill_get) F(rtag_texture_names) \
+    F(rtag_report_begin) F(rtag_report_finish) F(rtag_build_line) F(rtag_report_told)
 
 struct RtaLibrary {
 #define RTAG_MEMBER(name) decltype(&::name) name = nullptr;
