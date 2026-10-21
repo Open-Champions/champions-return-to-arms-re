@@ -560,6 +560,9 @@ tasks. This is why the scripts test `gamePaused()` themselves (108 calls).
 
 ## 3. The built-ins
 
+Which playable subsystem should receive each command is `docs/script-composition.md`.
+The handler tables below are unchanged.
+
 Conventions for the tables:
 
 - **#** is the index in the global table 0x403370 (entry address = 0x403370 + 8 × #).
