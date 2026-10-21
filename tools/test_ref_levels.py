@@ -967,3 +967,138 @@ class Round3Arena(unittest.TestCase):
         self.assertEqual(ok, 1)
         self.assertEqual(facing, want)
 
+
+def _lattice_misses(level, centre, radius_limit, query):
+    """Integer offsets inside radius_limit. A miss is a radius-`query` height of the sentinel."""
+    cx, cy, cz = centre
+    fx, fy = W.to_float(cx), W.to_float(cy)
+    limit = int(radius_limit)
+    misses = tested = 0
+    for ix in range(-limit, limit + 1):
+        for iy in range(-limit, limit + 1):
+            if ix * ix + iy * iy > limit * limit:
+                continue
+            tested += 1
+            pos = (F(fx + ix), F(fy + iy), cz)
+            if W.terrain_height(level, query, pos) == W.NO_FLOOR:
+                misses += 1
+    return misses, tested
+
+
+class Round4ArenaEntry(unittest.TestCase):
+    """How an arena name advances, which record byte selects a table slot, and why the
+    Start marker stays in entry 0. Synthetic records only."""
+
+    def test_mode_a_step_and_the_wrap_back_to_the_saved_index(self):
+        self.assertEqual(L.arena_mode_a_next(0, 4), 1)
+        self.assertEqual(L.arena_mode_a_next(7, 4), 8)
+        self.assertEqual(L.arena_mode_a_next(11, 9), 12)
+        self.assertEqual(L.arena_mode_a_next(12, 4), 4)     # remainder 0 is replaced
+        self.assertEqual(L.arena_mode_a_next(12, 0), 0)
+        for saved in range(10):
+            seen = [saved]
+            index = saved
+            for _ in range(13):
+                index = L.arena_mode_a_next(index, saved)
+                if index == saved:
+                    break
+                seen.append(index)
+            self.assertIn(10, seen)
+            self.assertIn(12, seen)
+            self.assertEqual(8 in seen, saved <= 8)
+        with self.assertRaises(ValueError):
+            L.arena_mode_a_next(-1, 0)
+
+    def test_record_byte_keeps_the_low_nibble_times_four(self):
+        self.assertEqual(L.arena_record_table_offset(0x30), 0)
+        self.assertEqual(L.arena_record_table_offset(0x31), 4)
+        self.assertEqual(L.arena_record_table_offset(0x35), 20)
+        self.assertEqual(L.arena_record_table_offset(0x33), 12)
+        self.assertEqual(L.arena_record_table_offset(0x42), 8)
+        # Low nibble 8 sets the sign bit of the left shift. The high nibble is shifted away.
+        self.assertLess(L.arena_record_table_offset(0x08), 0)
+        self.assertEqual(L.arena_record_table_offset(0x80), 0)
+
+    def test_the_start_overwrites_entry_zero_and_alternates_append(self):
+        entries, count = L.arena_register_spawn([], 1, 0, (0.0, 0.0, 0.0), 0)
+        self.assertEqual(count, 1)
+        self.assertEqual(entries[0][0], (0.0, 0.0, 0.0))
+        start = (F(10.0), F(-4.0), F(2.0))
+        entries, count = L.arena_register_spawn(entries, count, 0, start, 0x1234)
+        self.assertEqual(count, 1)                          # Start does not increment
+        alt = (F(3.0), F(4.0), F(5.0))
+        entries, count = L.arena_register_spawn(entries, count, -1, alt, 0x10)
+        self.assertEqual(count, 2)
+        self.assertEqual(entries[0][0], start)              # still the Start, not the alternate
+        self.assertEqual(entries[1][0], alt)
+        self.assertEqual(entries[0][1], 0x1234)
+
+    def test_slot_zero_is_the_same_ring_for_every_player_count(self):
+        entry = (F(10.0), F(-4.0), F(2.0))
+        one = L.arena_ring_centre(entry, 0, 1, True)
+        self.assertEqual(one, L.arena_ring_centre(entry, 0, 2, True))
+        self.assertEqual(one, L.arena_ring_centre(entry, 0, 4, True))
+        self.assertEqual(L.arena_ring_angle(0, 1), 0)
+        ox = W.fmul(C.cos16(0), L.ARENA_RING_MODE_A)
+        oy = W.fmul(C.sin16(0), L.ARENA_RING_MODE_A)
+        self.assertEqual(ox, L.ARENA_RING_MODE_A)           # cos16(0) is exactly 1
+        self.assertEqual(one, (W.fadd(entry[0], ox), W.fadd(entry[1], oy), entry[2]))
+        self.assertNotEqual(oy, 0)                          # sin16(0) is not zero
+
+
+class Round4Ground(unittest.TestCase):
+    """A search can only return a point inside its spread, or the centre. On a disc that
+    is entirely a floor, the seed and a rejecting object still snap onto ground. On a
+    disc with a hole, an accepted sample snaps to the sentinel."""
+
+    def _search(self, level, centre, seed, with_object):
+        world = Obj.World()
+        world.shared = C.SharedRandom(seed)
+        if with_object:
+            world.construct(0x1000, centre)
+        return world.find_free_spot(
+            centre, L.ARENA_FIRST_SPREAD, L.ARENA_SEARCH_RADIUS, False,
+            lambda r, p: W.terrain_test_flag1(level, r, p),
+            lambda r, p: W.terrain_height(level, r, p))
+
+    def _snap(self, level, pos):
+        return L.player_ctor_z(tuple(pos), L.PLACEMENT_RADIUS,
+                               lambda r, p: W.terrain_height(level, r, p))
+
+    def test_a_solid_disc_keeps_ground_for_every_sampled_point(self):
+        level = _flat(-40, -40, 80, 80, 0)
+        centre = (F(0.0), F(0.0), F(0.0))
+        misses, tested = _lattice_misses(level, centre, 37, F(11.25))
+        self.assertEqual(misses, 0)
+        self.assertEqual(tested, 4293)
+        # 11.25 plus the half-unit diagonal is still under the placement radius of 12,
+        # and 37 leaves more than that diagonal outside a spread of 36.
+        self.assertLess(11.25 + (0.5 * 0.5 + 0.5 * 0.5) ** 0.5, 12.0)
+        failed = 0
+        for seed in list(range(16)) + [20973]:
+            for with_object in (False, True):
+                pos, ok = self._search(level, centre, seed, with_object)
+                if not ok:
+                    failed += 1
+                # A total failure keeps the last accepted point, or the centre. Both are
+                # inside the disc, so the radius-12 snap is still a floor.
+                self.assertNotEqual(self._snap(level, pos), W.NO_FLOOR)
+        self.assertGreater(failed, 0)
+
+    def test_a_hole_lets_one_seed_keep_ground_and_another_lose_it(self):
+        level = _flat(0, 0, 1, 1, 0)
+        centre = (F(0.0), F(0.0), F(0.0))
+        self.assertNotEqual(W.terrain_height(level, L.PLACEMENT_RADIUS, centre), W.NO_FLOOR)
+        kept = lost = 0
+        lost_ok = None
+        for seed in range(32):
+            pos, ok = self._search(level, centre, seed, False)
+            if self._snap(level, pos) == W.NO_FLOOR:
+                lost += 1
+                lost_ok = ok
+            else:
+                kept += 1
+        self.assertGreater(kept, 0)
+        self.assertGreater(lost, 0)
+        self.assertEqual(lost_ok, 1)
+

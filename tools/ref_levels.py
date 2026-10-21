@@ -1438,3 +1438,61 @@ def arena_initial_place(entry, slot, active_count, mode_a, search, table_facing=
         facing = W.s16(facing - 0x8000)
     return pos, facing & 0xFFFF, int(bool(ok))
 
+
+# =======================================================================================
+# Round 4. The arena maps whose cold origin has no floor
+# =======================================================================================
+
+ARENA_MODE_A_COUNT = 13             # pointers at 0x5037b8, then a null
+ARENA_MODE_B_COUNT = 7              # pointers at 0x503798, then a null
+ARENA_RECORD_BYTES = 6              # five records at 0x503868; count halfword at 0x503886
+
+
+def arena_mode_a_next(index, saved):
+    """The rotation byte at 0x8e7343, in arena_runTask (0x306c64-0x306c84).
+
+    The byte is loaded signed, incremented, and divided by 13. The remainder is stored.
+    When that remainder is 0, the next instruction stores what game_scanCm1Vars(0) returned,
+    which is the word at 0x4f7110. For an index in 0..12 the remainder is (index + 1) mod 13,
+    and a 0 is replaced by `saved`. A negative index is not produced by the stores found."""
+    if not 0 <= int(index) <= 12:
+        raise ValueError('arena_mode_a_next index is a byte the rotation leaves in 0..12')
+    rem = (int(index) + 1) % ARENA_MODE_A_COUNT
+    if rem == 0:
+        return int(saved)
+    return rem
+
+
+def arena_record_table_offset(first_byte):
+    """The addend at 0x304c28 and again at 0x306d08.
+
+    The record's first byte is shifted left 28 and arithmetic-shifted right 26. The high
+    nibble falls off the top of the word, and what remains is the low nibble times 4, the
+    stride of the pointer table at 0x503798. A low nibble of 8 or more sets the sign bit
+    and the addend is negative. The five records in the executable have low nibbles
+    0, 1, 5, 3 and 2, so none of them does."""
+    word = ((int(first_byte) & 0xFF) << 28) & 0xFFFFFFFF
+    if word & 0x80000000:
+        word -= 0x100000000
+    return word >> 26
+
+
+def arena_register_spawn(entries, count, index, point, angle):
+    """0x30503c. Returns (entries, count).
+
+    index -1 writes at the current count and then increments that byte (0x8e7342). Any
+    other index overwrites that slot and leaves the count alone. arena_init stores 1 and
+    then calls this with index 0 and the origin. ArenaPlayerStart passes 0, so it replaces
+    that origin. ArenaPlayerAlternate passes -1, so the first alternate is written at 1."""
+    entries = list(entries)
+    if int(index) == -1:
+        slot = int(count) & 0xFF
+        count = (int(count) + 1) & 0xFF
+    else:
+        slot = int(index)
+        count = int(count) & 0xFF
+    while len(entries) <= slot:
+        entries.append(None)
+    entries[slot] = (tuple(point), int(angle) & 0xFFFF)
+    return entries, count
+
