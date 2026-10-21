@@ -7,6 +7,8 @@ attacks, animation events or moving targets. See docs/spec/arena-goblin.md and
 arena-mummy.md for that boundary and for the full observed class layout.
 """
 
+import ref_core as C
+
 GOBLIN = 'goblin'
 MUMMY = 'mummy'
 
@@ -35,15 +37,31 @@ def next_draw(seed):
     return seed, seed >> 16
 
 
-def constructor(kind, seed):
+RARE_LIMIT = 0x3DCCCCCC     # the float 0.1 the Mummy's rare roll is compared with (0x298708)
+RARE_MODIFIER = 'rare modifier'   # key of the result's fields when the roll succeeds
+
+
+def rare_roll(draw):
+    """Mummy_ctor variant 0 (0x2986f0-0x29871c): float(draw) x 2^-16 < 0.1f."""
+    return C.lt(C.mul(C.from_int(draw), C.TWO_M16), RARE_LIMIT)
+
+
+def constructor(kind, seed, own=None):
     """Expected core fields, calls and own draws with a stubbed Creature_ctor.
 
     The zeroed pool block gives Goblin one pre-base own draw from zero. The
     base fixture then makes GameObject_ctor's one shared draw and reseeds the
     object's own generator; later class GameObject_rand calls run for real.
+    ``own`` is the own generator state the class code starts from after the base
+    constructor; the neutral fixture's default is the new shared seed itself. The
+    real chain passes the state after GameObject_ctor and Creature_setStats
+    (tools/ref_arena_creature_chain.py). There a plain Mummy can take its 10% rare
+    modifier roll: one more own draw, modifier (draw & 1) + 1, reported in the
+    fields under RARE_MODIFIER (docs/monsters-2.md, Mummy).
     """
     shared, _ = next_draw(seed)
-    own = shared
+    fixture = own is None
+    own = shared if own is None else own
     if kind == GOBLIN:
         own, role_draw = next_draw(own)
         draws = 2
@@ -65,12 +83,21 @@ def constructor(kind, seed):
     else:
         own, mask_draw = next_draw(own)
         own, rare_draw = next_draw(own)
-        assert rare_draw >= 6554  # these tested seeds do not take the rare modifier
+        draws = 2
+        modifier = 0
+        if rare_roll(rare_draw):
+            # The neutral fixture's seeds never take it; the real chain can
+            # (ref_arena_creature_chain.py models the holder slot it calls).
+            assert not fixture, 'the neutral fixture does not model the rare modifier'
+            own, pick = next_draw(own)
+            draws += 1
+            modifier = (pick & 1) + 1
         fields = {0x1C: 0x41700000, 0x28: 0x1E, 0x48: 0x516E48,
                   0xB0: 0x3F999999, 0xB8: 0, 0xE8: 1 << (mask_draw % 3),
                   0xEC: 100, 0x232: 0, 0x3C8: 0, 0x468: 0,
                   0x46C: 0, 0x470: 0}
-        draws = 2
+        if modifier:
+            fields[RARE_MODIFIER] = modifier
         calls = ([0x109D68] + [0x159C20] * 10 + [RAND, 0x11AFB0, RAND,
                  0x179550, 0x1707B0, SET_M, 0x14F2B8] +
                  [0x118378] * 12 + [0x10A230])
