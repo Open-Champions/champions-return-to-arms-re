@@ -133,6 +133,12 @@ XP remained 67 and the defeated enemy remained dead. Two independent continuatio
 also recalled to the hub and returned to `blood1`, retaining 67 XP and ending alive
 at 20.9424 and 20.9039 HP. No XP, health, inventory or position writes were used.
 
+A later natural Cleric continuation reached 268 XP after four total kobold kills.
+It recalled to the hub, saved through the normal checkpoint/overwrite UI and loaded
+in a separate process. Both the loaded hub and resumed `blood1` snapshots retain
+268 XP, a valid live Player and 34 HP / 31.5 mana. This remains level-one progress;
+it does not establish a completed mission or a fully earned first level.
+
 Earlier overwrite attempts pressed Cross while the overwrite screen required Square;
 they wrote no new checkpoint and correctly loaded the older zero-XP save. This was
 a test-input error, not an established persistence defect. Load readiness now witnesses
@@ -278,8 +284,36 @@ Both scripts completed, the driver exited zero and all owned test processes stop
 The clients had fresh separate cards; this continuation used no gameplay memory
 writes, direct calls, teleports or level/inventory fixtures. Body-collision-aware
 walking paths and read-only frame/coordinate conditions drove ordinary pad inputs.
-This establishes local mission entry and recall; co-op combat, checkpoint persistence,
-mission completion, disconnect/rejoin and cross-machine play remain unqualified.
+This establishes local mission entry and recall; co-op checkpoint persistence,
+revival, mission completion, disconnect/rejoin and cross-machine play remain unqualified.
+
+**Ran natural co-op combat on the input-fixed build:** one kobold died, the two
+player slots earned 37/55 XP, normal health/mana potions were consumed, and both
+players survived. The original driver exited zero and both scripts completed.
+All 3,477 shared confirmed frames and 20,648 valid kobold-HP observations match.
+At the last shared tick the peers agree on player HP 31.4261 / 32.8, with no
+desync or dropped-player flags. Later independent log tails are not compared as
+if they were the same simulation tick.
+
+**Observed kill and post-combat recall on the current diagnostic build:** both
+players reached the hub alive and retained their exact per-slot 55/37 XP. At the
+last shared tick (3,752), both peers agree on HP 32.8 / 12.7904, valid Player
+vtables and live state. The original invocation remains a failed receipt (driver
+and comparator exit 1): two extra actor-flag watches were incorrectly labeled as
+shared even though ownership bit `0x200000` is machine-local, as documented by
+[`Player_animStep`](../../symbols/player.tsv#L40).
+
+A corrected offline comparison uses separate copies with only those two watch
+headers labeled local; every row byte is unchanged. The public comparator then
+exits zero over all 3,752 shared ticks. An independent audit confirms every other
+actor-flag bit matches, as do 25,188 valid kobold-HP samples, class membership,
+player HP/mana/XP, potion/recall stacks and the other shared fields. Both original
+completion markers are present; individual child exit-code values were not
+persisted and are not invented. This is observed gameplay plus corrected offline
+evaluation, not a claim that the original driver invocation passed. A further
+waypoint probe timed out before combat and remains excluded from successful runs.
+No gameplay state writes were used in either combat route. Co-op checkpoint
+save/load, revival, four players, WAN and full mission completion remain unqualified.
 
 This uses the existing native rendezvous direct-launch integration: it prepares
 frontend/launch globals and calls the existing player-select and game-launch paths.
