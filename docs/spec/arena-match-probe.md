@@ -8,25 +8,29 @@ counts. This is a constructed offline one-player state, not a live match.
 The 30-entry arena class-name table at `0x5037f0` identifies the first three
 recipe-0 classes as Goblin (index 3), Mummy (index 1), and Scorpion (index 0).
 `arena_startWave` `0x305ed4`, `arena_setRingStep` `0x3065b0`,
-`arena_spawnMonster` `0x3065fc`, and `Creature_scaleStats` `0x1185d8`
-execute their original bodies. `world_createObject` `0x14f6c8` is an **authored
-factory fixture**: it allocates a creature-shaped block, selects the class's
-original vtable, and supplies known stats. Its constructor, AI tick, damage,
-and class-specific set-state do not run in this probe. Virtual slots 27 and 34
-are recording stubs; the world free-spot service supplies the requested point.
-The separately verified factory mapping (`tools/difftest_monster_build.py`)
-selects each class's pool size and constructor for all 30 names. That test does
-not execute the constructors.
+`arena_spawnMonster` `0x3065fc`, `world_createObject` `0x14f6c8`,
+`world_objectFactory` `0x159c94`, and `Creature_scaleStats` `0x1185d8`
+execute their original bodies. The original factory selects the pool size
+and constructor; the probe asserts both for each requested index. The
+**authored constructor fixture** returns a creature-shaped block with its
+original class vtable and known stats. Its AI tick, damage, and class-specific
+set-state do not run in this probe. Virtual slots 27 and 34 are recording
+stubs; the world free-spot service supplies the requested point. The factory
+mapping was separately compared for all 30 names in
+`tools/difftest_monster_build.py`. The constructor fixture is distinct from
+the neutral constructor difftests in `docs/spec/arena-goblin.md` and
+`docs/spec/arena-mummy.md`.
 
-| Wave | Factory fixtures | Original spawn calls | Original scale calls | Indices |
-|---:|---:|---:|---:|---|
-| 0 | 2 | 2 | 2 | 3, 3 |
-| 1 | 3 | 3 | 3 | 3, 3, 1 |
-| 2 | 4 | 4 | 4 | 3, 3, 1, 0 |
+| Wave | Constructor fixtures | Original factory calls | Original spawn calls | Original scale calls | Indices |
+|---:|---:|---:|---:|---:|---|
+| 0 | 2 | 2 | 2 | 2 | 3, 3 |
+| 1 | 3 | 3 | 3 | 3 | 3, 3, 1 |
+| 2 | 4 | 4 | 4 | 4 | 3, 3, 1, 0 |
 
 The first call of wave 0 reaches `world_createObject` for index 3. With the
-fixture installed, all nine requests across waves 0–2 return an object and
-scale it. The counts agree with the independently modelled wave plans in
+constructor fixture installed, all nine requests across waves 0–2 pass
+through the original factory, return an object, and scale it. The counts
+agree with the independently modelled wave plans in
 `tools/difftest_arena_modes.py`.
 
 `run_match` also executes `arena_runTask` `0x306b78`, `arena_nextWave`

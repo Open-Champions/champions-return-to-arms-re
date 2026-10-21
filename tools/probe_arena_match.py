@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Probe original mode-B recipe-0 wave builders with one offline player.
 
-The wave plan, ring placement, arena_spawnMonster, and stat scaling execute in
-ee_emu. The world factory is a labelled synthetic service because the class
-constructors require a separate object and resource fixture. This is a probe,
-not a live match or a constructor comparison; no game bytes are saved.
+The wave plan, ring placement, arena_spawnMonster, world_createObject, class
+factory, and stat scaling execute in ee_emu. The class constructors are
+labelled synthetic services because their full object/resource fixture is
+separate. This is a probe, not a live match; no game bytes are saved.
 """
 import argparse
 from collections import Counter
@@ -13,11 +13,17 @@ import difftest_arena_modes as D
 from ref_core import ZERO
 
 
-FACTORY = 0x14F6C8
+WORLD_CREATE = 0x14F6C8
+OBJECT_FACTORY = 0x159C94
+FACTORY_POINTER = 0x5F76F4
+POOL_NEW = 0x14FDB8
 SCALE = 0x1185D8
 ADD_SPELL = 0x11A838
 VTABLES = {0: 0x50FE88, 1: 0x516E48, 3: 0x510260,
            4: 0x50FFD0, 25: 0x510F30}
+CONSTRUCTORS = {0: 0x2A4D68, 1: 0x298418, 3: 0x26A624,
+                4: 0x2A0954, 25: 0x244018}
+SIZES = {0: 0x3D0, 1: 0x480, 3: 0x498, 4: 0x488, 25: 0x3D0}
 
 
 class ConstructorBoundary(Exception):
@@ -77,7 +83,7 @@ def first_constructor_boundary(path, seed):
         raise ConstructorBoundary(class_index(e.mem, e.r[4] & 0xFFFFFFFF))
 
     emu.stub(0x14ACF8, function=find_spot)
-    emu.stub(0x14F6C8, function=create)
+    emu.stub(WORLD_CREATE, function=create)
     try:
         emu.call(D.START, 1)
     except ConstructorBoundary as boundary:
@@ -86,14 +92,15 @@ def first_constructor_boundary(path, seed):
 
 
 def install_factory_fixture(emu):
-    """Install the labelled factory fixture and return its created-object list.
+    """Follow original world_createObject/factory with constructor fixtures.
 
-    The fixture retains the original class vtable and gives scaling known HP,
-    damage, armour and experience values. Slot 34 and slot 27, which need class
-    resources, are recording stubs. The factory's class mapping was separately
-    compared by difftest_monster_build.py for all 30 arena names.
+    The constructor fixture retains the original class vtable and gives scaling
+    known HP, damage, armour and experience values. Slot 34 and slot 27, which
+    need class resources, are recording stubs. The factory row is also compared
+    independently by difftest_monster_build.py for all 30 arena names.
     """
     created = []
+    pending = {'index': None, 'block': None}
 
     def find_spot(e):
         out, point, _range, _radius, ok = [e.r[k] & 0xFFFFFFFF for k in range(4, 9)]
@@ -102,11 +109,24 @@ def install_factory_fixture(emu):
         e.mem.w8(ok, 1)
         return 0
 
-    def create(e):
-        index = class_index(e.mem, e.r[4] & 0xFFFFFFFF)
+    def entering_world_create(e):
+        pending['index'] = class_index(e.mem, e.r[4] & 0xFFFFFFFF)
+
+    def pool_new(e):
+        size = e.r[4] & 0xFFFFFFFF
+        if pending['index'] is None or size == 0x18:
+            return 0  # no arena spell block in this constructed world
+        assert size == SIZES[pending['index']], (pending['index'], size)
+        pending['block'] = e.alloc(size)
+        return pending['block']
+
+    def construct(e):
+        index = pending['index']
         if index not in VTABLES:
             raise ValueError('no fixture for class-table index %d' % index)
-        obj = e.alloc(0x600)
+        assert e._fresh_call.target == CONSTRUCTORS[index], index
+        obj = e.r[4] & 0xFFFFFFFF
+        assert obj == pending['block']
         e.mem.w32(obj + 0x48, VTABLES[index])
         e.mem.w32(obj + 0xC, 0x20)
         e.mem.w16(obj + 0x312, 0)
@@ -119,10 +139,17 @@ def install_factory_fixture(emu):
             e.mem.w32(obj + 0x10 + 4 * j, e.mem.u32((e.r[5] & 0xFFFFFFFF) + 4 * j))
         e.mem.w16(obj + 0x38, e.r[6] & 0xFFFF)
         created.append((index, obj))
+        pending['index'] = None
+        pending['block'] = None
         return obj
 
+    emu.mem.w32(FACTORY_POINTER, OBJECT_FACTORY)
+    emu.follow.update({WORLD_CREATE, OBJECT_FACTORY, 0x159C20, 0x3B81A0})
     emu.stub(0x14ACF8, function=find_spot)
-    emu.stub(FACTORY, function=create)
+    emu.hook(WORLD_CREATE, entering_world_create)
+    emu.stub(POOL_NEW, function=pool_new)
+    for constructor in CONSTRUCTORS.values():
+        emu.stub(constructor, function=construct)
     emu.stub(ADD_SPELL, ret=0)
     for table in VTABLES.values():
         for slot in (27, 34):
@@ -139,6 +166,8 @@ def build_wave(path, wave, seed):
     indices = [i for i, _obj in created]
     assert indices == dry_wave(path, wave, seed), (wave, indices)
     assert len(D.calls(emu, SCALE)) == len(created), (wave, len(created))
+    assert len(D.calls(emu, WORLD_CREATE)) == len(created)
+    assert len(D.calls(emu, OBJECT_FACTORY)) == len(created)
     return emu, created
 
 
@@ -219,8 +248,9 @@ def main():
           (spawn_number, index))
     for wave in range(3):
         emu, created = build_wave(args.elf, wave, args.seed)
-        print('factory fixture: wave %d created %d objects; original spawn and scale calls %d/%d' %
-              (wave, len(created), len(D.calls(emu, D.SPAWN)), len(D.calls(emu, SCALE))))
+        print('constructor fixtures: wave %d created %d objects; original factory/spawn/scale calls %d/%d/%d' %
+              (wave, len(created), len(D.calls(emu, OBJECT_FACTORY)),
+               len(D.calls(emu, D.SPAWN)), len(D.calls(emu, SCALE))))
     for attacked in (False, True):
         emu, waves, frames = run_match(args.elf, args.seed, attacked)
         print('%s: %d run-task frames; wave/cumulative factory count %s; final wave %d, '
