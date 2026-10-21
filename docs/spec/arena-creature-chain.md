@@ -100,10 +100,10 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_arena_creature_chain.py local/S
 PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_arena_creature_chain.py local/SLUS_209.73 --seed 7 --disc <disc>/BG/DATA
 ```
 
-| Seed | balance_lookup | Creature_init | world_findFreeSpot | OniBall_ctor | Chain, empty table | Chain, disc table | Two-draw constructions |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 20973 | 360 | 448 | 480 | 640 | 1,854 | 1,854 | 0 |
-| 7 | 360 | 438 | 480 | 640 | 1,868 | 1,868 | 2 |
+| Seed | balance_lookup | Creature_init | world_findFreeSpot | OniBall_ctor | Goblin_onNearbyEvent | Chain, empty table | Chain, disc table | Two-draw constructions |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 20973 | 360 | 448 | 480 | 640 | 360 | 1,854 | 1,854 | 0 |
+| 7 | 360 | 438 | 480 | 640 | 360 | 1,868 | 1,868 | 2 |
 
 Each chain run makes 30 constructions: 5 classes (indices 3, 1, 0, 4, 25) × waves 0–2
 (the monster level `arena_startWave` stores), each built twice in one state. The comparisons cover the
@@ -167,6 +167,23 @@ against the real box query's answers.
   then `obj_runEveryFrame`.
 
 It was checked on 40 authored creatures per seed.
+
+**`Goblin_onNearbyEvent(goblin, event, position, source)`** is Goblin virtual slot 12,
+which `world_notifyObjectsNear` calls on each kill. Read from 0x26c9f4–0x26cb43:
+
+- **Event 0.** The source's type info must equal `Goblin_typeinfo` 0x3c44e8's
+  (`rtti_typeInfoEquals`), and the state (u16) must be below 2. Then slot 27
+  `(goblin, 2)` is called and the position is stored at `+0x104…+0x10c`.
+- **Event 2.** It needs `Goblin_hasShieldUp` 0x26d7e4 (holder slot 15, hand 2, answers
+  part 7, then slot 14, hand 2, is non-zero), a source, and state 3 or 5. Then
+  `b = atan2_16(source − goblin)`, and when `u32(b − s16 facing + 0x270f) < 0x4e1f`, slot
+  27 `(goblin, 0x11)` is called.
+- Nothing else happens, and there is no draw.
+
+It was checked on 120 authored Goblins per seed, against Goblin, Mummy and Player
+sources. The real type-info getters made the decisions; the holder answers and slot 27
+were recording stubs. Seed 20973 issued 21 set-state-2 and 25 set-state-`0x11` requests;
+seed 7 issued 22 and 22.
 
 ## 8. Limits
 

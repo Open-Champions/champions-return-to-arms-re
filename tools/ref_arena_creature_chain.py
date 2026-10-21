@@ -510,3 +510,36 @@ def oniball_ctor(seed, pos, frame, creature_max_hp):
               0x70: (4, C.add(C.add(z, C.from_int(d5 % 2000)), F_36)), 0x44: (4, own)}
     creature = {0xF0: (4, frame), (0x38C if (d2 & 0xFFFF) < 0x7333 else 0x394): (4, 30)}
     return shared, own, fields, creature
+
+
+# ---- 6. Goblin_onNearbyEvent 0x26c9f4 (Goblin slot 12) ---------------------------------
+GOBLIN_ON_NEARBY, GOBLIN_HAS_SHIELD = 0x26C9F4, 0x26D7E4
+GOBLIN_TYPEINFO = 0x3C44E8
+
+
+def goblin_has_shield_up(slot15_hand2, slot14_hand2):
+    """Goblin_hasShieldUp 0x26d7e4 (goblin): with a holder (+0x50), holder slot 15 (hand 2)
+    must answer part 7 and then holder slot 14 (hand 2) non-zero; else 0."""
+    return 1 if slot15_hand2 == 7 and slot14_hand2 != 0 else 0
+
+
+def goblin_on_nearby_event(state, event, source, source_is_goblin, shield, goblin_xy, facing, source_xy):
+    """Goblin_onNearbyEvent(goblin, event, position, source), read from 0x26c9f4-0x26cb43.
+    Returns (set-state request or None, store the position at +0x104).
+
+      event 0, a source whose type info equals Goblin's (rtti_typeInfoEquals) and
+        u16 state < 2: slot 27 (goblin, 2) and +0x104..+0x10c = the position.
+      event 2, Goblin_hasShieldUp and a source, state 3 or 5: b = atan2_16(source.y -
+        y, source.x - x); when u32(b - s16 facing + 0x270f) < 0x4e1f: slot 27 (goblin, 0x11).
+      Anything else: nothing.  No draw."""
+    if event == 0:
+        if source and source_is_goblin and (state & 0xFFFF) < 2:
+            return 2, True
+        return None, False
+    if event == 2 and shield and source and C.s16(state) in (3, 5):
+        dy = C.sub(source_xy[1], goblin_xy[1])
+        dx = C.sub(source_xy[0], goblin_xy[0])
+        b = C.atan2_16(dy, dx)
+        if ((b - C.s16(facing) + 0x270F) & 0xFFFFFFFF) < 0x4E1F:
+            return 0x11, False
+    return None, False

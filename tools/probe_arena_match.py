@@ -240,7 +240,7 @@ def install_factory_fixture(emu, real=False):
             block = e.alloc(size)       # a gib chunk (creature-tick.md 3.4; gut-chunk.md)
             e.chunks.append(block)
             return block
-        if real and size in LOOT_POOL and 0x100974 <= e._fresh_call.site < 0x101900:
+        if real and size in LOOT_POOL and any(lo <= e._fresh_call.site < hi for lo, hi in LOOT_SPANS):
             block = e.alloc(size)       # loot_spawnGold / loot_generateDrops objects
             e.loot.append((size, block))
             return block
@@ -337,7 +337,7 @@ def check_spell_record(e, spells, creature, spell):
 
 
 FREE_SPOT, TERRAIN_BLOCKED, TERRAIN_HEIGHT, BOX_QUERY = 0x14ACF8, 0x183B48, 0x183820, 0x14A928
-PROCESS_DAMAGE_END = 0x112948          # Creature_processDamage's body ends where Creature_run starts
+PROCESS_DAMAGE_END = 0x1124DC          # Creature_processDamage's body ends (ghidra_funcs.tsv)
 GUT_CHUNK_SIZE = 0x268
 SEVER_PART_END = 0x2A5AF4   # Scorpion_severPart body end (ghidra_funcs.tsv)
 # GutChunk_ctor, PhProp_ctor, Prop_ctorNamedLaunch, Prop_launch, PhProp_initPhysics: executed
@@ -393,7 +393,8 @@ def install_real_free_spot(emu):
 # in symbols/ with its spec): every type-info getter (rtti answers inside damage_apply and
 # the spell searches), player_getSkillRank and the Life Tap fraction (the orb roll of a
 # kill), Creature_onDeath (slot 28) with obj_delete, arena_addKill and the boss music stop.
-DEATH_PATH = {0x1BF330, 0x2F8E78, 0x10BEB8, 0x14F200, 0x3056CC, 0x1192F8}
+DEATH_PATH = {0x1BF330, 0x2F8E78, 0x10BEB8, 0x14F200, 0x3056CC, 0x1192F8,
+              CH.GOBLIN_ON_NEARBY, CH.GOBLIN_HAS_SHIELD}   # Goblin slot 12 on a kill (new, round 6)
 # The loot chain (docs/issues/kill-loot-xp.md; loot_generateDrops executed in
 # tools/difftest_items.py, Creature_dropLoot in tools/difftest_combat_monsters.py,
 # loot_spawnGold and Gold_ctor2 in tools/difftest_phprop.py).
@@ -405,6 +406,7 @@ LOOT_PATH = {0x10F2C8, 0x100D54, 0x100974, 0x157668,
                                                        # item_generateConsumable (ref_items)
              0x2A59F0}                       # Scorpion_severPart (ref_monsters_1): a gib chunk
 LOOT_POOL = {0xC0: 'gold pile', 0x248: 'item prop'}
+LOOT_SPANS = ((0x100974, 0x100BA0), (0x100D54, 0x101998))   # loot_spawnGold, loot_generateDrops (ghidra_funcs.tsv)
 
 
 # Services kept as boundaries even though some difftest executed them: animation, sound and

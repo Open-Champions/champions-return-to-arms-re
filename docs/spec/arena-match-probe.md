@@ -255,10 +255,11 @@ the original code's, on authored flat open ground (`terrain_testFlag1` 0.0,
 3. **Creature ticks.** Creatures are not ticked every frame: never in idle, and two
    scripted ticks per wave in fighting. Objects made during the match (gold piles, item
    props, gib chunks) are never ticked.
-4. **Unexecuted bodies reached in fighting.** `Goblin_onNearbyEvent` (40 calls: each kill
-   notifies nearby Goblins through `world_notifyObjectsNear`), `Goblin_hasShieldUp`,
-   `Mummy_updateSpells`, `Creature_setEffectTimer`, `fx_modelStatusEffects` and
-   `Player_onTouch`. Also round 5's player stubs: `Player_move` (dry world: its only
+4. **Unexecuted bodies reached in fighting.** `Mummy_updateSpells` (slot 17, 4 calls),
+   `Creature_setEffectTimer` (seed 20973 only), `fx_modelStatusEffects` and
+   `Player_onTouch`. `Goblin_onNearbyEvent` (40 calls: each kill notifies nearby Goblins
+   through `world_notifyObjectsNear`) and `Goblin_hasShieldUp` now run for real, with
+   their contract in `arena-creature-chain.md` §7. They left the figures above unchanged. Also round 5's player stubs: `Player_move` (dry world: its only
    draw cannot occur), `Player_recalcDamage`, `Player_interact`, `Player_slot37`,
    `player_giveExp`, `player_recalcStats` and `player_resetIdleAnim`.
 
@@ -296,5 +297,5 @@ Ranked by first dependency in the first recipe's waves 0–2, then by shared-see
    the idle-voice draw at 3,600 frames.
 6. Then the open items above: real animation stepping on clips read from the user's disc
    at run time, per-frame creature AI with real world queries, the unexecuted bodies in
-   item 4 of the list above, and runs of dropped objects. Without these, native runs can
+   item 4 of the list above (`Goblin_onNearbyEvent` is done), and runs of dropped objects. Without these, native runs can
    match the probe but not a live match.

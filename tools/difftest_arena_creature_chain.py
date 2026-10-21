@@ -435,6 +435,80 @@ def oniball_cases(path, seed):
     return count
 
 
+# ---- Goblin_onNearbyEvent on authored Goblins and sources ----------------------------
+def nearby_cases(path, seed):
+    nearby_cases.hits = {}
+    rng = random.Random(seed ^ 0x12)
+    count = 0
+    tables = {'goblin': 0x510260, 'mummy': 0x516E48, 'player': 0x511308}
+    for case in range(120):
+        e = EE(path)
+        e.follow = Follow({R.GOBLIN_ON_NEARBY, R.GOBLIN_HAS_SHIELD, 0x166798, 0x3B1250} |
+                          {e.mem.u32(t + 4) for t in tables.values()})
+        g = e.alloc(0x500)
+        e.mem.w32(g + 0x48, tables['goblin'])
+        state = rng.choice((0, 1, 2, 3, 5, 0x10, 0xFFFF))
+        e.mem.w16(g + 0x232, state)
+        facing = rng.getrandbits(16)
+        e.mem.w16(g + 0x38, facing)
+        gxy = (C.f32(rng.uniform(-300, 300)), C.f32(rng.uniform(-300, 300)))
+        e.mem.w32(g + 0x10, gxy[0])
+        e.mem.w32(g + 0x14, gxy[1])
+        answers = {15: rng.choice((7, 7, 3, 0)), 14: rng.choice((0, 1, 2))}
+        holder = 0
+        if rng.random() < 0.8:
+            holder = e.alloc(0x40)
+            htable = e.alloc(0x90)
+            e.mem.w32(holder, htable)
+            for k in (14, 15):
+                target = e.alloc(8)
+                e.mem.w32(htable + 8 * k + 4, target)
+
+                def answer(x, k=k):
+                    assert x.r[5] & 0xFFFFFFFF == 2
+                    return answers[k]
+                e.stub(target, function=answer)
+        e.mem.w32(g + 0x50, holder)
+        requests = []
+        e.stub(e.mem.u32(tables['goblin'] + 8 * 27 + 4), function=lambda x: requests.append(x.r[5] & 0xFFFFFFFF) or 0)
+        kind = 'goblin' if case % 4 == 0 else rng.choice(('goblin', 'goblin', 'mummy', 'player', None))
+        source = 0
+        sxy = (0, 0)
+        if kind:
+            source = e.alloc(0x600)
+            e.mem.w32(source + 0x48, tables[kind])
+            sxy = (C.add(gxy[0], C.f32(rng.uniform(-200, 200))), C.add(gxy[1], C.f32(rng.uniform(-200, 200))))
+            e.mem.w32(source + 0x10, sxy[0])
+            e.mem.w32(source + 0x14, sxy[1])
+        if kind and case % 2:            # aim at the shield branch: facing near the source's bearing
+            bearing = C.atan2_16(C.sub(sxy[1], gxy[1]), C.sub(sxy[0], gxy[0]))
+            facing = (bearing + rng.randint(-12000, 12000)) & 0xFFFF
+            e.mem.w16(g + 0x38, facing)
+            answers.update({15: 7, 14: 1})
+        pos = e.alloc(16)
+        point = tuple(C.f32(rng.uniform(-500, 500)) for _ in range(3))
+        for k in range(3):
+            e.mem.w32(pos + 4 * k, point[k])
+        event = 2 if kind and case % 2 and rng.random() < 0.7 else rng.choice((0, 0, 2, 2, 1, 3))
+        if case % 4 == 0:
+            event, state = 0, rng.choice((0, 1, 1, 2))
+            e.mem.w16(g + 0x232, state)
+        if event == 2 and case % 2:
+            state = rng.choice((3, 5, 3, 0))
+            e.mem.w16(g + 0x232, state)
+        e.call(R.GOBLIN_ON_NEARBY, g, event, pos, source)
+        shield = R.goblin_has_shield_up(answers[15], answers[14]) if holder else 0
+        want, store = R.goblin_on_nearby_event(state, event, source, kind == 'goblin', shield, gxy, facing, sxy)
+        tag = (seed, case, kind, event, state)
+        assert requests == ([want] if want is not None else []), (tag, requests, want)
+        nearby_cases.hits[want] = nearby_cases.hits.get(want, 0) + 1
+        stored = tuple(e.mem.u32(g + 0x104 + 4 * k) for k in range(3))
+        assert stored == (point if store else (0, 0, 0)), (tag, 'position')
+        assert e.mem.u32(R.SEED) == 0 and not any(c.target == RAND for c in e.calls), tag
+        count += 3
+    return count
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('elf')
@@ -449,6 +523,9 @@ def main():
     print('world_findFreeSpot, authored terrain and boxes: %d comparisons matched (seed %d)'
           % (free_spot_cases(args.elf, args.seed), args.seed))
     print('OniBall_ctor, authored creatures: %d comparisons matched (seed %d)' % (oniball_cases(args.elf, args.seed), args.seed))
+    count = nearby_cases(args.elf, args.seed)
+    print('Goblin_onNearbyEvent, authored Goblins: %d comparisons matched; requests %s (seed %d)'
+          % (count, dict(sorted(nearby_cases.hits.items(), key=str)), args.seed))
     count, _found, two = chain_cases(args.elf, args.seed, None, tables)
     print('creature chain, empty balance table: %d comparisons matched over %d constructions, '
           '%d with two shared draws (seed %d)' % (count, 6 * len(INDICES), two, args.seed))
