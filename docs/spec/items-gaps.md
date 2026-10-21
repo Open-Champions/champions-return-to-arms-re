@@ -117,3 +117,92 @@ draw. The per-machine part is the host's profile, and the launch makes it shared
 101 of 200 cases with the host bit; receive: 47 cases with the call). With `--cases 100
 --seed 7`: 6 suites, 0 failed. A model with the host bit moved to bit 1 and the mode-3
 flag moved fails 4 suites. `python3 -m unittest tools/test_ref_items_gaps.py`: 11 tests.
+
+## 3. `ItemProp_ctor2`, the ground drop and `givePlayerRandom` (Executed, summary)
+
+Full contract: `docs/spec/item-drops.md`.
+
+- All 7 call sites of `ItemProp_ctor2` 0x1590ec pass launch 0. A ground item then costs
+  **one shared-seed draw** and **one draw from the prop's own generator**. The shared draw
+  is made inside `GameObject_ctor` 0x14cb10 and seeds the own generator at +0x44. The own
+  draw is the facing +0x38, in `Prop_ctorNamedLaunch` 0x153e54. `Prop_launch` makes no
+  draw at launch 0. Suite `ctor`: 200 cases on seed 20973 and 100 on seed 7, 0 mismatches,
+  one shared step each.
+- The item record is copied to block +0x148 with 8-byte moves. Flags become
+  `(flags | 0x102000) & ~0x1800`, and also `& ~0x3000` when item flag bit 39 is set. The
+  vtable 0x511c38 goes at +0x48. No `PhProp_initPhysics`, no sound, nothing per machine.
+- `givePlayerRandom` 0x145f18, per player: 1 shared draw for the budget, then 1 to 10
+  tries of `item_generateWithAffixes`, each preceded by 1 shared draw (plus that
+  generator's own draws), then a give or a ground item (+1 shared draw). When all 10
+  tries fail, the record handed on is stale. Suite `random`: 40 cases on seed 20973 and 20
+  on seed 7, 0 mismatches, faults agreeing. It has 0 calls on the disc.
+
+## 4. `hideMonster` / `showMonster` and the generators on the disc (Executed, summary)
+
+Full contract: `docs/spec/hide-monster.md`.
+
+- Each command calls `world_findObjectsByName(name, buf, 0x200)` 0x14bf58, which ignores
+  case. Then, for each object:
+  - Hide: `obj_moveOffGrid` 0x14ef48 (to the front of the off-grid list 0x5f76f0), then
+    +0x0c `|= 0x8000`.
+  - Show: `obj_updateGridCell` 0x14f028 (to the front of its grid cell), then
+    `&= ~0x8000`.
+  - Only when +0x0c has 0x20 (set only by `Creature_ctor` 0x109d68): +0x231 bit 3 is set
+    or cleared.
+  - Returns 0. No seed draw. No other field.
+- Runs: 200 cases on seed 20973 and 100 on seed 7, plus 27 fixed edge steps, 0
+  mismatches.
+- Disc (120 level lumps, 18,675 records, each class decided by running the original
+  factory and constructor chain):
+  - `ScriptGenerator`: 105 records in 11 levels. 133 of the 136 `generateMonster` calls
+    find exactly one in their level.
+  - `hideMonster`, 373 calls: 100 find only creatures, 262 only non-creatures, 6 both, 5
+    no level-file object, and **0 an undecided class**.
+  - `showMonster`, 52 calls: 22, 22, 3 and 5 in the same order, 0 undecided.
+- So each of the native client's 119 `hideMonster` refusals can be decided from the class
+  of the stub: is the class a creature or not.
+
+## 5. The non-literal `generateMonster` arguments (summary)
+
+Full contract: `docs/spec/generate-monster-names.md`.
+
+- Of the 15 calls, 12 compute the class name and 3 compute the generator name. Every
+  computed argument is a row of a constant, never-written string table, indexed through
+  a `getRand` shuffle. Executed on the original script machine: 600 runs per seed, 0
+  differences, with 4 and 7 shared draws per shuffle run.
+- All 9 reachable computed names reach a non-`Skeleton` constructor.
+- **2 of the 3 computed-generator calls pass a literal class that the factory builds
+  with the `Skeleton` constructor.** So the rise (AI state 0x17) is reachable from
+  shipped scripts. This corrects `docs/script-items.md` 7. One of the two picks its
+  generator with `getRand() % 16` (1 shared draw).
+
+## 6. What the native client should implement next
+
+Ranked by what each item unblocks in the native sweep
+(`~/Projects/open-champions/worktrees/items/work/loop-items-r1-report.md`: 119
+`hideMonster` refusals and 7 `givePlayerItem` refusals), by lockstep risk, and by size.
+
+| Rank | What | Unblocks | Needs | Spec |
+|---|---|---|---|---|
+| 1 | `hideMonster` / `showMonster` on stub objects: decide flag 0x20 from the class (creature or not), keep the off-grid list with front insertion, set or clear 0x8000, and +0x231 bit 3 for creatures only | the largest refusal count (119 hide, 14 show in the sweep). All 425 disc calls have a decided class | the class of each stub (its factory row), the grid lists | `hide-monster.md` |
+| 2 | The ground item (`pool_new(0x190)` → `ItemProp_ctor2`): 1 shared draw seeding the prop's own generator, 1 own draw for the facing, the record at +0x148, the flags | the drop paths of `givePlayerItem` / `giveOnePlayerItem` and the inventory drop, which now refuse. It also keeps the shared seed in step when a reward does not fit | the prop's own generator, `GameObject_ctor`'s draw | `item-drops.md` |
+| 3 | Run the `getRand` shuffles that fill the `generateMonster` index tables (4 and 7 shared draws per run) as ordinary bytecode, with no special case | the 12 computed-class and 3 computed-generator calls, and lockstep in those 2 scripts | a bound seed in the script session | `generate-monster-names.md` |
+| 4 | Build the 105 `ScriptGenerator` records as 0x4c-byte objects (constructor 0x265f54) that keep their property list | `generateMonster` → `ScriptGenerator_spawn` in 11 levels | level records, the factory row | `hide-monster.md` |
+| 5 | The `Skeleton` rise (AI state 0x17) after `ScriptGenerator_spawn` | the 2 shipped calls that can reach it | the Skeleton constructor and its state 0x17, which stay refused natively | `generate-monster-names.md`, `docs/script-items.md` 5.1 |
+| 6 | The launch host bit: only the host (player 0) fills record +0xa0..+0xa3 and +0xf4. Every machine applies record 0, and copies +0xf4 into 0x4f7110 only in modes 2 and 3 | the arena mode-A level index in a net game | the launch records | section 2 |
+| 7 | Treat 0x4d8ae8 as a constant 0: no +5000 on the load limit | nothing in play (the word is never written). It removes one refused writer | nothing | section 1 |
+| – | `givePlayerRandom` | 0 disc calls: keep refusing it | the item generator | `item-drops.md` |
+
+## 7. Runs (2026-10-21)
+
+- `python3 tools/difftest_items_gaps.py --cases 200` and `--cases 100 --seed 7`: 6 suites
+  each, 0 failed.
+- `python3 tools/difftest_item_drops.py`: `ctor` 200 / 100 cases, `random` 40 / 20 cases
+  (seeds 20973 / 7), 0 mismatches.
+- `python3 tools/difftest_hide_monster.py --cases 200` and `--cases 100 --seed 7`: 2
+  suites each, 0 failed.
+- `python3 tools/generator_names_census.py --difftest --cases 300` on seeds 20973 and 7:
+  pass.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools -p 'test_*.py'`: 741
+  tests, OK.
+- Disc outputs (counts only) are in the untracked `local/census/`.
