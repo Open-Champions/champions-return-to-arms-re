@@ -210,6 +210,8 @@ connection flag, when more than two players).
 `slot` (−1 = all). `hud_showHelpMessage` and `hud_showPlayerNotice` open boxes that
 `help_task` draws and dismisses. The setters behind the script commands `setInfo`,
 `addHelpMessage(F)`, `showBust` and `showCompass`, their buffers and timers are in `docs/strings.md`.
+The help box's draw and confirm, the bust panel, the compass, the help chime's slot, the UI
+fade step and the button glyph byte are executed in `docs/ui-text-gaps.md`.
 
 ### Front end and game setup
 
