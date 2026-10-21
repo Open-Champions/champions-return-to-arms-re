@@ -14,7 +14,7 @@ execute their original bodies. The original factory selects the pool size
 and constructor; the probe asserts both for each requested index. The
 **authored constructor fixture** returns a creature-shaped block with its
 original class vtable and authored stats. Their scaled values are not asserted by this probe.
-Its AI tick does not run in this probe.
+The fighting scenario runs bounded class AI ticks on those fixtures.
 Virtual slots 27 and 34 run their original bodies during construction; the world
 free-spot service supplies the requested point. The factory
 mapping was separately compared for all 30 names in
@@ -55,6 +55,18 @@ collision, class AI, or the full constructors. It demonstrates arena flow and
 damage-to-death on authored objects; it cannot establish a live match or
 real-world timing.
 
+The fighting fixture gives each constructed creature a target handle to the
+player and two class AI ticks after each intro. A fixed close-range sight answer
+starts an attack; the driver moves the player fixture to each creature for the
+melee event. The original `Creature_hitTargetAtReach`, `damage_apply`,
+`Player_takeDamage`, and `Player_processDamage` bodies run. The player then deals
+authored lethal damage to clear the wave. On both seeds the three waves finish
+in 1,688 task frames: 9 enemy hits are accepted and the player's authored
+10,000 HP becomes 9,910. This exercises class attacks and player damage
+processing with scripted sight, positions and animation events. It does not
+establish world collision, player input, full creature constructors, or a live
+match.
+
 Commands, with the disc-derived executable placed only in ignored `local/`:
 
 ```text
@@ -62,24 +74,47 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/probe_arena_match.py local/SLUS_209.73 -
 PYTHONDONTWRITEBYTECODE=1 python3 tools/probe_arena_match.py local/SLUS_209.73 --seed 7
 ```
 
-The native client's first prerequisites by observed reach are: the Goblin
-constructor and its base Creature/stat chain; Goblin set-state, run and damage
-through death; the Mummy constructor and class behavior for wave 1; the already
-modelled Scorpion constructor, state/run and death path for wave 2. The arena
-helper sequence and factory row selection already have independent difftests;
-the synthetic wave proof does not replace the missing class contracts.
+The native client's prerequisites, ranked by first dependency and wave reach:
+
+1. Replace the player at `arena_startWave` with a real 0x590-byte Player
+   constructor, record link, tick and input path. The probe refuses that
+   allocation and rebinds its authored player for combat.
+2. Build the Goblin constructor with its base Creature/stat and holder chain,
+   then run/set-state, target pursuit, attack, damage and death. Wave 0 needs two.
+3. Build the Mummy constructor and class combat path for wave 1.
+4. Build the Scorpion constructor, including the sting's difficulty-dependent
+   damage write-back, for wave 2.
+5. Attach SpellArena to each creature and retain its shared-seed draw within
+   the arena wave/task lifecycle. The offline probe checks its block and draw,
+   but its add-spell service is still stubbed.
+6. Add Orc2's constructor, variants and class combat for wider recipes; the
+   first three waves of recipe 0 do not request Orc2.
+7. Run the assembled player, creatures, world and arena task in the target
+   runtime with real input and assets, then compare seeded runs. `ee_emu`
+   execution alone is not target-runtime proof.
+
+The seed stream matches the documented SpellArena draw after each constructed
+spawn. It does **not** prove a real match's final seed or placement: the Player
+replacement and class constructors are fixtures, and those missing bodies can
+draw from the shared generator.
+
+`tools/difftest_arena_match_combat.py` adds 69 comparisons per seed 20973 and 7:
+all 25 Orc2 set-state and run numbers in a neutral recruit fixture, close and
+distant chase for all four classes, four melee hits through Player damage
+processing (100 to 90 HP per isolated case), four lethal damage/death paths,
+and Scorpion sting at difficulty values 0, 2 and 3. The original bodies run;
+base activity, sight, animation and world services have fixed answers. The
+other class variants and their spell/projectile branches remain open.
 
 Of the two common later indices, index 25 is `snobadge` and uses the Badger
 contract in `tools/ref_monsters_1.py` and `docs/spec/monsters-1.md`. Its quick
 difftest was rerun on seeds 20973 and 7: 380 and 366 comparisons, respectively,
-with no mismatches. Index 4 is `orc2`; this round verified its factory row
-(size `0x488`, constructor `0x2a0954`) but did not model its class behavior.
+with no mismatches. Index 4 is `orc2`; the factory row (size `0x488`, constructor
+`0x2a0954`) and bounded recruit class behavior now have difftest coverage.
 
-2026-10-21 coordination handoff: `t3/research-arena-match` reached mode-B
+2026-10-21 coordination handoff: `t3/research-arena-match` reaches mode-B
 recipe-0 waves 0–2 through the original factory and arena task with constructor
-fixtures; seeded Goblin/Mummy neutral state difftests and reused Scorpion,
-Creature, and Badger contracts pass; authored lethal player hits execute base
-damage and class death states. Native order: Goblin, Mummy, Scorpion, then Orc2;
-remaining risk is real constructors, AI/combat interactions, and target-runtime
-execution. This line belongs in the canonical `COORDINATION.md`, which is not
-present in this research worktree.
+fixtures. The fighting fixture executes nine enemy hits and Player damage ticks;
+69 class comparisons per seed cover Orc2 neutral states and four-class melee.
+Native order and proof limits are ranked above. The canonical coordination log
+is `/Users/syndicatemike/Projects/open-champions/COORDINATION.md`.

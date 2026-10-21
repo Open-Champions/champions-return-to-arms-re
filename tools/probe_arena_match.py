@@ -3,8 +3,10 @@
 
 The wave plan, ring placement, arena_spawnMonster, world_createObject, class
 factory, and stat scaling execute in ee_emu. The class constructors are
-labelled synthetic services because their full object/resource fixture is
-separate. This is a probe, not a live match; no game bytes are saved.
+authored fixtures because their full object/resource fixture is separate.
+The fighting variant executes class attacks and Player damage processing on
+authored positions and fixed service answers. This is not a live match; no game
+bytes are saved.
 """
 import argparse
 from collections import Counter
@@ -28,8 +30,11 @@ SIZES = {0: 0x3D0, 1: 0x480, 3: 0x498, 4: 0x488, 25: 0x3D0}
 DEFINITIONS = {0: 0x502238, 1: 0x501838, 3: 0x500298}
 HOLDERS = {1: (0x3D0, 0x50CF40), 3: (0x3E8, 0x50CDA0)}
 SET_STATES = {0: 0x2A55EC, 1: 0x29A6F4, 3: 0x26CCFC}
+RUN_STATES = {0: 0x2A5068, 1: 0x298D18, 3: 0x26B27C}
 TAKE_DAMAGE = 0x116638
 PROCESS_DAMAGE = 0x110D30
+PLAYER_TAKE_DAMAGE = 0x1B5330
+PLAYER_PROCESS_DAMAGE = 0x1B2CC0
 
 
 class ConstructorBoundary(Exception):
@@ -41,9 +46,13 @@ class ConstructorBoundary(Exception):
 def setup(path, wave, seed):
     emu = D.boot(path)
     D.modes(emu, mode_a=0, mode_b=1, network=0, seed=seed, players=1)
-    player = D.put_obj(emu, 0x60)
+    player = emu.alloc(0x590)
+    emu.mem.w32(player + 0xC, 0x40)
+    emu.mem.w32(player + 0x3C8, 0)
+    emu.mem.w32(player + 0x58C, 2)
     emu.mem.w32(player + 0x48, 0x511308)  # Player's already documented vtable
     D.bind_player(emu, 0, player)
+    emu.arena_player = player
     D.put_slot(emu, 0, 0, 2, 2, 0x40000000)
     emu.mem.w32(D.PLAYERS + 0xAC, 0x41A00000)
     D.put_points(emu, [(ZERO, ZERO, ZERO, 0)])
@@ -176,6 +185,7 @@ def install_factory_fixture(emu):
         block, old_seed = spells[-1]
         new_seed = (old_seed * 0x19660D + 0x3C6EF35F) & 0xFFFFFFFF
         assert e.mem.u32(B.G_RAND_SEED) == new_seed
+        assert all(e.mem.u32(block + offset) == 0 for offset in (0, 4, 8))
         assert e.mem.u32(block + 0xC) == creature
         assert e.mem.u32(block + 0x10) == new_seed >> 16
         assert e.mem.u32(block + 0x14) == B.VT_SPELL_ARENA
@@ -202,20 +212,32 @@ def build_wave(path, wave, seed):
     return emu, created
 
 
-def run_match(path, seed, attacked, max_frames=2400):
+def run_match(path, seed, attacked, max_frames=2400, fighting=False):
     """Run original arena_runTask and nextWave on an authored object fixture.
 
     The driver injects a lethal player hit after each intro. Original base
     damage processing and the class death set-state execute on the fixture.
-    It does not model input, collision, or AI.
+    The fighting variant first executes two class AI ticks per creature, with
+    a close player at each creature's authored position, then ticks Player
+    damage processing. It does not model input or world collision.
     The world walk is an authored service over those fixture objects. This
     establishes the arena flow's next boundary, not combat or a live match.
     """
+    assert not fighting or attacked
     emu = setup(path, 0, seed)
     emu.follow = {D.TICK, D.NEXT, D.START, D.STEP, D.SPAWN, 0x3063FC,
                   0x166630, 0x1666E0, 0x3B75D0, SCALE}
     created = install_factory_fixture(emu)
     emu.mem.w32(D.PLAYERS + 0xAC, 0x41A00000)
+    if fighting:
+        emu.mem.w32(D.PLAYERS + 0xAC, 0x461C4000)  # 10,000 HP for three authored waves
+        emu.mem.write(0x41B721, b'arena\0')
+        emu.stub(0x10C0F0, ret=1)  # active creature
+        emu.stub(0x1162B0, ret=1)  # melee animation event
+        emu.stub(0x118D40, ret=1)  # close, visible player
+        emu.follow.update(set(RUN_STATES.values()) |
+                          {0x1196E8, 0x1E8230, PLAYER_TAKE_DAMAGE,
+                           PLAYER_PROCESS_DAMAGE, 0x3B8534})
     emu.mem.w32(D.ENDF, 0)
     emu.mem.w32(D.BUDGET, 100)
     emu.mem.w16(D.INTER, 0)
@@ -240,12 +262,34 @@ def run_match(path, seed, attacked, max_frames=2400):
     emu.call(D.START, 1)
     waves = [(0, len(created))]
     killed_waves = set()
+    combat_frames = {}
     hit_indices = []
     last_wave = 0
     for frame in range(max_frames):
         emu.mem.w32(D.FRAME, frame)
         wave = emu.mem.u16(D.WAVE)
-        if attacked and wave not in killed_waves and emu.mem.u16(D.INTRO) == 0xFFFF:
+        if fighting and wave not in killed_waves and emu.mem.u16(D.INTRO) == 0xFFFF:
+            phase = combat_frames.get(wave, 0)
+            if phase < 2:
+                player = emu.arena_player
+                D.bind_player(emu, 0, player)  # stand-in for the refused Player replacement
+                for index, obj in created:
+                    if (emu.mem.u32(obj + 0xC) & 0x68) != 0x20:
+                        continue
+                    if phase == 0:
+                        node = emu.alloc(0x20)
+                        emu.mem.w32(node + 0xC, player)
+                        emu.mem.w32(obj + 0x234, node)
+                        emu.call(SET_STATES[index], obj, 3)
+                    for axis in range(3):
+                        emu.mem.w32(player + 0x10 + 4 * axis,
+                                    emu.mem.u32(obj + 0x10 + 4 * axis))
+                    emu.call(RUN_STATES[index], obj)
+                if phase == 1:
+                    emu.call(PLAYER_PROCESS_DAMAGE, player)
+                combat_frames[wave] = phase + 1
+        if attacked and wave not in killed_waves and emu.mem.u16(D.INTRO) == 0xFFFF and \
+                (not fighting or combat_frames.get(wave, 0) >= 2):
             player = emu.mem.u32(D.PLAYERS + 0x43D8)
             for index, obj in created:
                 if (emu.mem.u32(obj + 0xC) & 0x68) == 0x20:
@@ -273,6 +317,10 @@ def run_match(path, seed, attacked, max_frames=2400):
     if attacked:
         assert [wave for wave, _ in waves][:3] == [0, 1, 2], waves
         assert Counter(hit_indices) == {0: 1, 1: 2, 3: 6}, hit_indices
+        if fighting:
+            emu.fighting_player_hits = len(D.calls(emu, PLAYER_TAKE_DAMAGE))
+            assert emu.fighting_player_hits == 9, emu.fighting_player_hits
+            assert emu.mem.f32(D.PLAYERS + 0xAC) == 9910.0
     else:
         assert waves == [(0, 2)], waves
     return emu, waves, frame + 1
@@ -302,6 +350,10 @@ def main():
               'intro %d, intermission %d' %
               ('attacked fixture' if attacked else 'idle fixture', frames, waves,
                emu.mem.u16(D.WAVE), emu.mem.u16(D.INTRO), emu.mem.u16(D.INTER)))
+    emu, waves, frames = run_match(args.elf, args.seed, True, fighting=True)
+    print('fighting fixture: %d frames; waves %s; Player_takeDamage calls %d; final player HP %.1f' %
+          (frames, waves, emu.fighting_player_hits,
+           emu.mem.f32(D.PLAYERS + 0xAC)))
 
 
 if __name__ == '__main__':
