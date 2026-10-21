@@ -284,7 +284,7 @@ Data, 0x90 bytes — O 0x187374, 0x1875d4, 0x1876e0:
 
 | Offset | Type | Meaning |
 |---|---|---|
-| 0x00 | s16 × 4 | chunk indices of the four neighbouring water tiles, −1 for none. Slots 0 and 2 are copied after each wave step; slots 1 and 3 are read when a block is claimed (`docs/formats/water-draw.md`) |
+| 0x00 | s16 × 4 | chunk indices of the four neighbouring water tiles, −1 for none. Slots 0 and 2 are copied after each wave step. All four are read when a block is claimed, with the weights in `docs/formats/water-draw.md` |
 | 0x08 | u32 | 0; run time pointer to the tile's simulation block |
 | 0x10 | 128 bytes | a 32 × 32 bit mask of which samples the wave may change. Halfword c is column c; bit 15 is the first row of a 16-row bank (bytes 64..127 are rows 16..31). A set bit is water. Executed, `docs/formats/water-draw.md` |
 

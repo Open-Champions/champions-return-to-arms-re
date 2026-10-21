@@ -382,6 +382,73 @@ def check_vu(elf):
            'outside ±1000, and the rest of that strip')
 
 
+def _blank_heights(fill=0):
+    return [[fill] * 32 for _ in range(33)]
+
+
+def check_claim(elf):
+    emu = new_emu(elf)
+    world = emu.alloc(0x40)
+    chunks = emu.alloc(0x3C * 5)
+    emu.mem.w32(world + 0x24, chunks)
+    payloads = [emu.alloc(0x90) for _ in range(5)]
+    blocks = [emu.alloc(0x12B0) for _ in range(5)]
+    for index in range(5):
+        emu.mem.w32(chunks + index * 0x3C, payloads[index])
+        emu.mem.w32(payloads[index] + 8, blocks[index])
+
+    def arm(indices, grids):
+        for slot in range(4):
+            emu.mem.w16(payloads[0] + 2 * slot, 0xFFFF if indices[slot] < 0 else indices[slot])
+        for index, grid in enumerate(grids, start=1):
+            if grid is None:
+                emu.mem.w32(payloads[index] + 8, 0)
+                continue
+            emu.mem.w32(payloads[index] + 8, blocks[index])
+            write_grid(emu, blocks[index], grid, [[0] * 32 for _ in range(32)], [0] * 32)
+        for col in range(32):
+            emu.mem.w16(blocks[0] + col * 2, 0x1111)
+        for row in range(32):
+            for col in range(32):
+                emu.mem.w16(blocks[0] + 0xA90 + row * 64 + col * 2, 0x2222)
+        emu.call(0x187374, world, payloads[0])
+        heights, disturb, _gap = read_grid(emu, blocks[0])
+        return heights, disturb
+
+    left = _blank_heights()
+    left[1][31] = 1001
+    left[1][0] = 7777
+    got_h, got_d = arm((1, -1, -1, -1), (left, None, None, None))
+    exp_h, exp_d = R.claim_grid((left, None, None, None))
+    report('claim-one-edge', got_h[0] == [0x1111] * 32 and got_h[1:] == exp_h[1:] and got_d == exp_d,
+           'column 31 fades across columns 0..9, row 0 stays')
+
+    left = _blank_heights()
+    right = _blank_heights()
+    far = _blank_heights()
+    near = _blank_heights()
+    for row in range(1, 33):
+        left[row][31] = 30000 if row == 1 else 1000 + row
+        right[row][0] = -30000 if row == 2 else -50
+        right[row][31] = 8888
+    for col in range(32):
+        far[32][col] = 2000 + col
+        far[1][col] = 6666
+        near[1][col] = 4000 - col
+        near[32][col] = 5555
+    slots = (left, right, far, near)
+    got_h, got_d = arm((1, 2, 3, 4), slots)
+    exp_h, exp_d = R.claim_grid(slots)
+    report('claim-four-edges', got_h[1:] == exp_h[1:] and got_d == exp_d,
+           'corners blend in slot order, and a lone edge is not normalised')
+
+    got_h, got_d = arm((-1, -1, -1, -1), (None, None, None, None))
+    absent = got_h[0] == [0x1111] * 32 and got_h[1:] == [[0] * 32 for _ in range(32)] and got_d == exp_d
+    got_h, got_d = arm((1, -1, -1, -1), (None, None, None, None))
+    null_block = got_h[1:] == [[0] * 32 for _ in range(32)] and got_d == exp_d
+    report('claim-absent', absent and null_block, 'index -1 or a null simulation pointer writes zeros')
+
+
 def check_splash(elf):
     hit = miss = None
     for seed in range(3000):
@@ -433,6 +500,7 @@ def main(argv):
     check_life(path)
     check_seams(path)
     check_vu(path)
+    check_claim(path)
     check_splash(path)
     print('%d failed' % FAILS)
     return 1 if FAILS else 0

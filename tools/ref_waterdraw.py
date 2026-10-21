@@ -3,8 +3,9 @@
 
 Pure functions. tools/test_ref_waterdraw.py checks them on authored numbers.
 tools/difftest_waterdraw.py runs the same inputs through water_setup (0x1875d4),
-world_drawWaterChunk (0x1876e0), the height step (0x196088), the simulation
-(0x186e38) and the water VU1 entries. Nothing here reads a disc file.
+water_init (0x187374), world_drawWaterChunk (0x1876e0), the height step
+(0x196088), the simulation (0x186e38) and the water VU1 entries. Nothing here
+reads a disc file.
 
 The blend, the grid and the vertex formula are docs/formats/water-draw.md.
 """
@@ -48,6 +49,10 @@ SPLASH_MODULUS = 300
 LCG_MUL = 0x0019660D
 LCG_ADD = 0x3C6EF35F
 KEEP_FRAMES = 200
+
+# water_init (0x187374). One ulp under 0.1. Ten of them stay strictly under 1.
+EDGE_WEIGHT = 0x3DCCCCCC
+CLAIM_ONE = 0x3F800000
 
 # Samples across one tile. Record 0 is the step's spare row. Records 1..32 are
 # uploaded. The first two uploads are not kicked, so 30 strips are drawn.
@@ -409,3 +414,42 @@ def splash_seed(seed):
     """The drawer's generator. The second value is true when a splash is spawned."""
     new = (int(seed) * LCG_MUL + LCG_ADD) & 0xFFFFFFFF
     return new, (new >> 16) % SPLASH_MODULUS == 0
+
+
+def _s16(word):
+    low = word & 0xFFFF
+    return low - 0x10000 if low & 0x8000 else low
+
+
+def claim_grid(neighbours):
+    """The grid water_init writes when a block is claimed.
+
+    neighbours is four height grids, or None where that slot is absent, in
+    payload order. Each grid is 33 rows of 32 signed samples. The result's
+    height row 0 is zeros: the original leaves that row untouched and writes
+    rows 1..32. Every disturbance sample is cleared.
+    """
+    slots = tuple(neighbours)
+    heights = [[0] * SAMPLES for _ in range(ROWS)]
+    disturb = [[0] * SAMPLES for _ in range(SAMPLES)]
+    for row in range(SAMPLES):
+        for col in range(SAMPLES):
+            parts = []
+            if col < 10 and slots[0] is not None:
+                parts.append((slots[0][row + 1][31], 10 - col))
+            if row < 10 and slots[2] is not None:
+                parts.append((slots[2][32][col], 10 - row))
+            if col >= 22 and slots[1] is not None:
+                parts.append((slots[1][row + 1][0], col - 21))
+            if row >= 22 and slots[3] is not None:
+                parts.append((slots[3][1][col], row - 21))
+            hsum = 0
+            wsum = 0
+            for sample, dist in parts:
+                weight = _cpu_mul(ee_emu.fp_from_int(dist, _CPU), EDGE_WEIGHT)
+                hsum = _cpu_add(hsum, _cpu_mul(ee_emu.fp_from_int(int(sample), _CPU), weight))
+                wsum = _cpu_add(wsum, weight)
+            if ee_emu.fp_cmp(wsum, CLAIM_ONE) < 0:
+                wsum = CLAIM_ONE
+            heights[row + 1][col] = _s16(ee_emu.fp_to_int(ee_emu.fp_div(hsum, wsum, _CPU)))
+    return heights, disturb

@@ -230,10 +230,36 @@ strip. The neighbour's column 31 and height row 32 are the lookahead on the far 
 and height row 32 is a kicked row, so this tile's row 2 is drawn as the neighbour's
 far row (I from the kick rule in section 4).
 
-`water_init` (0x187374) runs once, when the drawer claims a block. It reads all four
-neighbour indices and writes into the new grid. The weights of that first-frame seed
-were not executed. U for the numeric blend; the per-frame step and the two seams
-above are the ongoing surface.
+`water_init` (0x187374) runs once, when the drawer claims a block. Its arguments are
+the world and the new tile's payload (O, called at 0x187740). A neighbour index of −1,
+or a neighbour whose simulation pointer at payload+8 is 0, contributes nothing
+(Executed). Otherwise the neighbour record is `world+0x24 + index × 0x3c`, and the
+samples come from that record's simulation block.
+
+The constant is 0x3dcccccc, one ulp under 0.1. For loop row r and column c, both
+0..31, the new height row r+1, column c is a weighted blend. The parts, in this
+order, are:
+
+| Slot | When | Sample | Distance |
+|---|---|---|---|
+| 0, payload+0 | c < 10 | neighbour height row r+1, column 31 | 10 − c |
+| 2, payload+4 | r < 10 | neighbour height row 32, column c | 10 − r |
+| 1, payload+2 | c ≥ 22 | neighbour height row r+1, column 0 | c − 21 |
+| 3, payload+6 | r ≥ 22 | neighbour height row 1, column c | r − 21 |
+
+Each part adds `float(sample) × float(distance) × 0x3dcccccc` to the numerator and
+`float(distance) × 0x3dcccccc` to the denominator. Ten times the constant is
+0x3f7fffff, still strictly under 1, so a single edge always takes the replacement
+below. When the denominator compares less than 1.0 it is replaced with 1.0, and the
+stored sample is the truncation of numerator / denominator (Executed). A neighbour
+column of 1001 becomes 1000, 900, …, 100 across the ten columns. A lone 30000 becomes
+29999, and −30000 becomes −29999. Two edges are divided by their real sum only once
+that sum is at least 1: a corner with 30000 on one edge and 0 on the other stores
+14999, while the same 30000 alone stores 29999. Two distance-1 weights still sum to
+less than 1, so a pair of 30000 samples there stores 5999 (Executed).
+
+Height row 0 is not written. Every disturbance sample is cleared. The per-frame step
+and the two seams above are what happens after this seed.
 
 ## 6. Splashes
 
@@ -268,7 +294,6 @@ executed.
 
 ## 8. Open
 
-- The numeric weights `water_init` uses on the frame a block is claimed.
 - The drawer's splash point inside the chunk bounds, and the simulation's splash when
   the countdown at 0x44f200 is negative.
 - What reads the integer 4 at 0x44f06c.

@@ -149,5 +149,39 @@ class TestVertices(unittest.TestCase):
         self.assertIs(splash, (seed >> 16) % 300 == 0)
 
 
+class TestClaim(unittest.TestCase):
+    def test_one_edge_is_truncated_against_one(self):
+        ten = R._cpu_mul(R.ee_emu.fp_from_int(10, 'ps2'), R.EDGE_WEIGHT)
+        self.assertEqual(ten, 0x3F7FFFFF)
+        self.assertLess(R.ee_emu.fp_cmp(ten, R.CLAIM_ONE), 0)
+        neighbour = [[0] * 32 for _ in range(33)]
+        neighbour[1][31] = 1001
+        heights, disturb = R.claim_grid((neighbour, None, None, None))
+        self.assertEqual(heights[0], [0] * 32)
+        self.assertEqual(heights[1][:10], [1000, 900, 800, 700, 600, 500, 400, 300, 200, 100])
+        self.assertEqual(heights[1][10:], [0] * 22)
+        self.assertEqual(heights[2], [0] * 32)
+        self.assertEqual(disturb, [[0] * 32 for _ in range(32)])
+
+    def test_a_negative_sample_stays_signed(self):
+        neighbour = [[0] * 32 for _ in range(33)]
+        neighbour[1][31] = -30000
+        heights, _disturb = R.claim_grid((neighbour, None, None, None))
+        self.assertEqual(heights[1][0], -29999)
+        self.assertEqual(heights[1][9], -2999)
+
+    def test_two_edges_normalise_only_once_the_sum_reaches_one(self):
+        left = [[0] * 32 for _ in range(33)]
+        far = [[0] * 32 for _ in range(33)]
+        left[1][31] = 30000
+        left[10][31] = 30000
+        far[32][9] = 30000
+        both, _disturb = R.claim_grid((left, None, far, None))
+        left_only, _disturb = R.claim_grid((left, None, None, None))
+        self.assertEqual(left_only[1][0], 29999)
+        self.assertEqual(both[1][0], 14999)
+        self.assertEqual(both[10][9], 5999)
+
+
 if __name__ == '__main__':
     unittest.main()
