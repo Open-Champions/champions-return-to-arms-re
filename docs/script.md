@@ -1069,6 +1069,8 @@ local menu code in the same way.
 
 ### P10. HUD-only differences (Observed, cosmetic)
 
+`docs/strings.md` executes these five with the real string table and formatter: the state each
+writes, the 180-tick message, the 5-tick bust and compass lease, the one-slot help box.
 `setInfo`, `showCompass`, `showBust`, `addHelpMessage` and `addHelpMessageF` write HUD state
 only on machines where the target slot is local or where no local menu is open
 (`hud_showMessage` 0x1d92a0, `hud_setCompassTarget` 0x1df668, `hud_setBust` 0x1dfaa0,
