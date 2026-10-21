@@ -195,3 +195,4 @@
 008ab698	g_saveLevelData	per-level object state inside the save buffer (+0x16118)
 008e2d60	g_dialogData	non-zero while a dialog is open
 004fe53c	g_menuMutex
+004fe538	g_dialogBoxTex	box.tex of dlgbox.lmp: only store dialog_loadBox 0x22f960 (res_find, skipped in intro and arena mode B), only load dialog_drawTask 0x230ad8; 0 in the executable (docs/spec/dialog-gaps.md 4)
