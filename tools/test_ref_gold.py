@@ -323,5 +323,56 @@ class ItemAtRest(Fixture):
         self.assertEqual(self.model.resource_index(ITEM), 7)
 
 
+class DroppedItem(Fixture):
+    """Prop_run on an ItemProp_ctor2 item with launch 0 (every call site's)."""
+
+    def setUp(self):
+        Fixture.setUp(self)
+        self.ground = f32(0.0)
+        self.answers['terrain_heightBelow'] = lambda *a: self.ground
+        self.answers['terrain_sweepCircle'] = lambda *a: (C.ONE, (0, 0, 0))
+        self.poke(G.G_NUM_PLAYERS, 1)
+        self.poke(G.G_ALIVE_PLAYERS, 0)
+        self.poke(G.record(0) + G.REC_OBJ, PLAYER)
+        self.poke(PLAYER + 0x18, f32(0.0))
+
+    def drop(self):
+        self.poke(PROP + 0x18, f32(50.0))
+        self.poke(PROP + 0x1C, f32(4.0))
+        self.poke(PROP + 0x10E, 180, 2)
+
+    def test_falls_lands_and_rests_after_180(self):
+        self.drop()
+        for tick in range(1, 181):
+            self.model.prop_run(PROP)
+            if tick < 180:
+                self.assertEqual(self.load(PROP + 0x140, 2) & 1, 0, tick)
+        self.assertEqual(self.load(PROP + 0x18), f32(0.0))              # on the ground
+        self.assertEqual(self.load(PROP + 0x140, 2), 1)
+        self.assertEqual(len(self.calls('obj_stopRunning')), 1)
+        self.assertEqual(self.calls('obj_delete'), [])
+        self.assertEqual(self.model.draws, 0)
+
+    def test_deleted_120_below_the_first_alive_player(self):
+        self.drop()
+        self.poke(PLAYER + 0x18, f32(171.0))                            # 50 - 0.45 + 120 < 171
+        self.model.prop_run(PROP)
+        self.assertEqual(self.calls('obj_delete'), [(PROP,)])
+
+    def test_kept_running_prop_sinks_then_goes(self):
+        """Prop flag 2 keeps it running: below life -60 it sinks 0.1 a tick, below -300 slot 1."""
+        self.poke(PROP + 0x48, G.PP.VT_PROP)
+        self.poke(G.PP.VT_PROP + 8 + 4, 0x3C2D30)
+        self.poke(PROP + 0x140, 3, 2)
+        self.poke(PROP + 0x10E, (-60) & 0xFFFF, 2)
+        self.poke(PROP + 0x18, f32(10.0))
+        self.poke(PLAYER + 0x18, f32(-1000.0))
+        self.model.prop_run(PROP)                                       # life -61: first sink
+        self.assertEqual(self.load(PROP + 0x18), C.sub(f32(10.0), G.F_SINK))
+        self.poke(PROP + 0x10E, (-300) & 0xFFFF, 2)
+        self.model.prop_run(PROP)
+        self.assertEqual(self.calls('Prop_dtor'), [(PROP, 3)])
+
+
 if __name__ == '__main__':
     unittest.main()

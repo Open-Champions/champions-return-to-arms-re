@@ -16,6 +16,11 @@ docstring says otherwise.
     ItemProp_interact       0x159b38  slot 14 of ItemProp: an item at rest (same code)
     PhProp_interactPrompt   0x154d10  slot 13 of PhProp: the prompt text, +0x104 = frame
     ItemProp_interactPrompt 0x159870  slot 13 of ItemProp (same code)
+    ItemProp_ctor3          0x1592bc  (obj, pos, item, matrix): the item at rest; no run
+    ItemProp_ctor2          0x1590ec  (obj, pos, item, launch): a dropped/given item; runs
+    Prop_ctorNamed          0x153ac0  the Prop constructor under ItemProp_ctor3
+    item_getResourceIndex   0x1083f8  the item's row of the model table 0x3e9ce0
+    Prop_run                0x154514  slot 4 of Prop and ItemProp: fall, slide, life, sink
 
 Where the gold goes: player record (g_players 0x4d8af0, stride 0x4c30) +0xe4, a signed word
 capped at 99,999,999 (0x5f5e0ff) by a store-then-overwrite.  The WHOLE amount goes to the
@@ -27,7 +32,7 @@ COSMETIC draw (0x404460) per floater it fills (none on the direct credit).
 import ref_core as C
 import ref_creature as RC
 import ref_phprop as PP
-from ref_creature import Ext, M32, M64, s8, s16, s32
+from ref_creature import Ext, M32, M64, s16, s32
 
 GOLD_RUN, GOLD_ON_TOUCH = 0x157B58, 0x157A9C
 HUD_ADD_GOLD_FLOATER, HUD_TICK_GOLD, HUD_FLUSH_GOLD = 0x1DC268, 0x1DCB80, 0x1DC5F4
@@ -36,6 +41,11 @@ PHPROP_PROMPT, ITEMPROP_PROMPT = 0x154D10, 0x159870
 MAT4_TRANSFORM_POINT = 0x165EE0                     # tools/ref_core.py, executed by difftest_core
 MAT34_SET_POS_ROT_Z = 0x163B30                      # tools/ref_core.py, executed by difftest_core
 ITEMPROP_CTOR2, ITEMPROP_CTOR3, PROP_CTOR_NAMED = 0x1590EC, 0x1592BC, 0x153AC0
+PROP_RUN = 0x154514                                 # slot 4 of Prop and of ItemProp
+G_WORLD, G_ALIVE_PLAYERS = 0x44FDC8, 0x4F8440
+F_DT, F_MILLI, F_ONE_HALF = 0x3C888888, 0x3A83126E, 0x3FC00000     # 1/60, 0.001, 1.5
+F_GRAVITY, F_ROLL, F_BOUNCE_MIN, F_BOUNCE = 0x41D7FFFF, 0x3F7AE147, 0xBDCCCCCC, 0x3ECCCCCC
+F_SINK, F_120 = 0x3DCCCCCC, 0x42F00000
 ITEM_RESOURCE_INDEX = 0x1083F8                      # item_getResourceIndex (difftest_items stats-random)
 ITEM_MODELS = 0x3E9CE0                              # 16-byte rows: +0 model name, +4 texture name
 S_ITEMS_LUMP = 0x5326B0                             # "equipmnt.lmp" (0x159148/0x159160, 0x159318/0x159330)
@@ -83,6 +93,7 @@ EXECUTED = {
     'ItemProp_interact': ITEMPROP_INTERACT, 'PhProp_interactPrompt': PHPROP_PROMPT,
     'ItemProp_interactPrompt': ITEMPROP_PROMPT,
     'ItemProp_ctor2': ITEMPROP_CTOR2, 'ItemProp_ctor3': ITEMPROP_CTOR3, 'Prop_ctorNamed': PROP_CTOR_NAMED,
+    'Prop_run': PROP_RUN,
 }
 MODELLED = dict(PP.MODELLED)
 MODELLED.update(EXECUTED)
@@ -94,6 +105,7 @@ CLASS_BODIES = {
     GOLD_RUN: (4, 'gold_run'), GOLD_ON_TOUCH: (6, 'gold_on_touch'),
     PHPROP_INTERACT: (14, 'prop_interact'), ITEMPROP_INTERACT: (14, 'prop_interact'),
     PHPROP_PROMPT: (13, 'prop_interact_prompt'), ITEMPROP_PROMPT: (13, 'prop_interact_prompt'),
+    PROP_RUN: (4, 'prop_run'),
 }
 
 # Callees that stay recording callbacks (kinds as tools/ref_phprop.py: S a text pointer, a
@@ -114,8 +126,12 @@ EXTERNALS.update({
     'itemName_buildLocalizedName': Ext(0x101E48, 'pi', 0, 'i', '(item record, 1) -> wide text'),
     'PhProp_dtor': Ext(PHPROP_DTOR, 'pi', 0, 'n', '(prop, 3): slot 1, delete'),
     'ItemProp_dtor': Ext(ITEMPROP_DTOR, 'pi', 0, 'n', '(prop, 3): slot 1, delete'),
+    'Prop_dtor': Ext(0x3C2D30, 'pi', 0, 'n', '(prop, 3): slot 1 of Prop, delete'),
+    'terrain_sweepCircle': Ext(0x185A40, 'pvvpN', 1, 'f', '(world, position, step, 1, normal out; radius) '
+                               '-> the fraction of the step that is free'),
+    'terrain_heightBelow': Ext(0x1834A8, 'pv', 1, 'f', '(world, position; radius) -> ground height'),
 })
-DTORS = {PHPROP_DTOR: 'PhProp_dtor', ITEMPROP_DTOR: 'ItemProp_dtor'}
+DTORS = {PHPROP_DTOR: 'PhProp_dtor', ITEMPROP_DTOR: 'ItemProp_dtor', 0x3C2D30: 'Prop_dtor'}
 
 
 def floater(k):
@@ -140,8 +156,13 @@ class Model(PP.Model):
         if name == 'libc_sprintf' and len(args) == 1:      # a format without a value
             self.calls.append((name, args))
             return self.cstr(args[0])
-        if name == 'player_itemWeight':
-            args = tuple(a & M32 for a in args)
+        if name == 'terrain_sweepCircle':              # -> (fraction, normal written to the stack)
+            args = tuple(a & M32 if isinstance(a, int) else a for a in args)
+            self.calls.append((name, args))
+            function = self.cb.get(name)
+            return function(*args) if function is not None else (ONE, (ZERO, ZERO, ZERO))
+        if name in ('player_itemWeight', 'terrain_heightBelow'):
+            args = tuple(a & M32 if isinstance(a, int) else a for a in args)
             self.calls.append((name, args))
             function = self.cb.get(name)
             return function(*args) if function is not None else ZERO
@@ -483,6 +504,90 @@ class Model(PP.Model):
             self.w32(obj + 0xC, self.u32(obj + 0xC) | 0x4000)
         if self.u16(obj + 0x140) & 4:
             self.w32(obj + 0xC, self.u32(obj + 0xC) | 0x1000)
+
+    # ---- Prop_run ----------------------------------------------------------------------------
+    def prop_run(self, prop):
+        """Prop_run 0x154514 (prop), slot 4 of Prop and ItemProp: a launched prop's frame.
+
+        While prop flag 1 (+0x140) is clear (moving):
+          the step (vx, vy, 0) x 1/60 from +0xfc, +0x100; when 0.001 < vx^2 + vy^2 (scaled):
+            t = terrain_sweepCircle(g_world, position, step, 1, normal; radius +0x1c);
+            the position gains step x t, obj_updateGridCell; when t < 1 and d = 0.001 -
+            (n.x vx + n.y vy) > 0: vx += n.x d 1.5, vy += n.y d 1.5 (slide off the wall);
+          ground = terrain_heightBelow(g_world, position; radius); vz +0x30 -= 26.999998;
+          z += vz / 60; at or below ground + +0x108 with vz <= 0: z = that, vx, vy x 0.98,
+          vz = -vz x 0.4 when vz < -0.1, else 0; then the spin: facing +0x38 += +0x10c,
+          +0x10c -= 10 (not below 0).
+        Every tick: the life +0x10e loses one; at <= 0 a moving prop gets flag 1 and, unless
+        +0x140 has 2, obj_stopRunning (and nothing more this tick).  Below -60 it sinks
+        (+0x18 and the matrix z +0x13c lose 0.1); below -300 slot 1 (prop, 3) deletes it.
+        Otherwise, with players: obj_delete when its z + 120 is below the z of the object of
+        g_players[g_alivePlayers[0]].  No draws."""
+        u16, u32, w16, w32 = self.u16, self.u32, self.w16, self.w32
+        if not u16(prop + 0x140) & 1:
+            vx, vy = C.mul(u32(prop + 0xFC), F_DT), C.mul(u32(prop + 0x100), F_DT)
+            step = [vx, vy, ZERO]
+            vxx = C.mul(vx, vx)
+            if C.lt(F_MILLI, C.add(vxx, C.mul(vy, vy))):
+                t, normal = self.call('terrain_sweepCircle', u32(G_WORLD), self.vec(prop + 0x10), tuple(step), 1,
+                                      u32(prop + 0x1C))
+                step = [C.mul(v, t) for v in step]
+                x, y, z = self.vec(prop + 0x10)
+                w32(prop + 0x14, C.add(y, step[1]))
+                w32(prop + 0x18, C.add(z, step[2]))
+                w32(prop + 0x10, C.add(x, step[0]))
+                self.call('obj_updateGridCell', prop)
+                if C.lt(t, ONE):
+                    vx, vy = u32(prop + 0xFC), u32(prop + 0x100)
+                    d = C.sub(F_MILLI, C.add(C.mul(normal[0], vx), C.mul(normal[1], vy)))
+                    if C.lt(ZERO, d):
+                        ny = C.mul(C.mul(normal[1], d), F_ONE_HALF)
+                        nx = C.mul(C.mul(normal[0], d), F_ONE_HALF)
+                        w32(prop + 0x100, C.add(vy, ny))
+                        w32(prop + 0xFC, C.add(vx, nx))
+            ground = self.call('terrain_heightBelow', u32(G_WORLD), self.vec(prop + 0x10), u32(prop + 0x1C))
+            floor = C.add(u32(prop + 0x108), ground)
+            vz = C.sub(u32(prop + 0x30), F_GRAVITY)
+            z = C.add(u32(prop + 0x18), C.mul(vz, F_DT))
+            w32(prop + 0x30, vz)
+            w32(prop + 0x18, z)
+            if C.le(z, floor) and C.le(vz, ZERO):
+                w32(prop + 0x18, floor)
+                w32(prop + 0xFC, C.mul(u32(prop + 0xFC), F_ROLL))
+                w32(prop + 0x100, C.mul(u32(prop + 0x100), F_ROLL))
+                w32(prop + 0x30, C.mul(C.neg(vz), F_BOUNCE) if C.lt(vz, F_BOUNCE_MIN) else ZERO)
+            spin = u16(prop + 0x10C)
+            w16(prop + 0x38, u16(prop + 0x38) + spin)
+            w16(prop + 0x10C, spin - 10)
+            if s16((spin - 10) & 0xFFFF) < 0:
+                w16(prop + 0x10C, 0)
+        life = (u16(prop + 0x10E) - 1) & 0xFFFF
+        w16(prop + 0x10E, life)
+        if s16(life) <= 0:
+            bits = u16(prop + 0x140)
+            if not bits & 1:
+                w16(prop + 0x140, bits | 1)
+                if not (bits | 1) & 2:
+                    self.call('obj_stopRunning', prop)
+                    return
+        life = self.s16(prop + 0x10E)
+        if life < -60:
+            w32(prop + 0x18, C.sub(u32(prop + 0x18), F_SINK))
+            w32(prop + 0x13C, C.sub(u32(prop + 0x13C), F_SINK))
+            if life < -300:
+                if prop:
+                    self.vcall_slot(prop, 1, 3)
+                return
+        if self.s32(G_NUM_PLAYERS) <= 0:
+            return
+        alive = self.s32(G_ALIVE_PLAYERS)
+        if alive < 0:
+            return
+        obj = u32(record(alive) + REC_OBJ)
+        if not obj:
+            return
+        if C.lt(C.add(u32(prop + 0x18), F_120), u32(obj + 0x18)):
+            self.call('obj_delete', prop)
 
 
 __all__ = ['Model', 'EXECUTED', 'EXTERNALS', 'CLASS_BODIES', 'MODELLED']

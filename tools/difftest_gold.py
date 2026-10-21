@@ -77,9 +77,10 @@ BODIES = {                                      # ghidra_funcs.tsv bounds
     'ItemProp_ctor2': (0x1590EC, 0x1592BC),
     'Prop_ctorNamed': (0x153AC0, 0x153C88),
     'item_getResourceIndex': (0x1083F8, 0x108434),
+    'Prop_run': (0x154514, 0x1548BC),
 }
 # executed elsewhere, real here too (only their partial stores are hooked)
-OTHER_SPANS = [GAMEOBJECT := (0x14CB10, 0x14CF84), (0x165EE0, 0x165FC0), (0x163B30, 0x163CB8),
+OTHER_SPANS = [(0x14CB10, 0x14CF84), (0x165EE0, 0x165FC0), (0x163B30, 0x163CB8),
                (0x153E54, 0x154028), (0x1541A0, 0x154514)]
 REAL = set(G.EXECUTED.values()) | {G.MAT4_TRANSFORM_POINT, G.MAT34_SET_POS_ROT_Z, G.ITEM_RESOURCE_INDEX, 0x157668,
                                    0x14CB10, 0x1509D0, 0x153E54, 0x1541A0}
@@ -101,11 +102,13 @@ ENTRIES = {
     'itemCtor3': (G.ITEMPROP_CTOR3, 'pvpp', 'n', 'item_prop_ctor3'),
     'itemCtor2': (G.ITEMPROP_CTOR2, 'pvpi', 'n', 'item_prop_ctor2'),
     'propNamed': (G.PROP_CTOR_NAMED, 'pvpppqip', 'n', 'prop_ctor_named'),
+    'propRun': (G.PROP_RUN, 'p', 'n', 'prop_run'),
+    'dropLife': None,
     'pile': None,
     'itemLife': None,
 }
-SEQUENCES = ('goldCtor2', 'pile', 'itemLife')
-SINGLE = [k for k in ENTRIES if k not in SEQUENCES] + ['pile', 'itemLife']
+SEQUENCES = ('goldCtor2', 'pile', 'itemLife', 'dropLife')
+SINGLE = [k for k in ENTRIES if k not in SEQUENCES] + ['pile', 'itemLife', 'dropLife']
 
 
 class RealSet:
@@ -157,6 +160,16 @@ class World:
         def v():
             return rng.choice((0, 1, -1, 3, -7, 12, -12, 40, rng.randrange(-300, 300)))
         return D.Res(outs=[v() & M32 for _ in range(6)])
+
+    def on_terrain_sweepCircle(self, args, view, rng):
+        t = rng.choice((1.0, 1.0, 1.0, 0.0, 0.5, 0.999, 1.25, rng.random()))
+        normal = rng.choice(((1.0, 0.0, 0.0), (0.0, -1.0, 0.0), (0.6, 0.8, 0.0), (-0.7071, 0.7071, 0.0),
+                             (0.0, 0.0, 1.0), (rng.uniform(-1, 1), rng.uniform(-1, 1), 0.0)))
+        return D.Res(f=f32(t), outs=[[f32(v) for v in normal]])
+
+    def on_terrain_heightBelow(self, args, view, rng):
+        z = DC.fl(args[1][2])
+        return D.Res(f=f32(rng.choice((z - 40.0, z - 3.0, z - 0.4, z, z + 0.2, z + 5.0, -1.0e9, 0.0))))
 
     def on_player_itemWeight(self, args, view, rng):
         return D.Res(f=rng.choice((0, 0x80000000, f32(1.0), f32(2.5), f32(12.0), f32(400.0),
@@ -243,6 +256,10 @@ class Rig:
                     canon.append(ptr)
             elif kind == 'w':
                 outs.append(reg & M32)
+            elif kind == 'v':
+                canon.append(tuple(mem.u32((reg & M32) + 4 * j) for j in range(3)))
+            elif kind == 'N':
+                outs.append(('N', reg & M32))
             elif kind == 'M':
                 pass
             else:
@@ -258,7 +275,12 @@ class Rig:
             res = self.world.respond(name, canon, self.eview, self.script_rng)
             given = list(res.outs)
             for ptr in outs:
-                emu.mem.w32(ptr, given.pop(0) if given else 0)
+                if isinstance(ptr, tuple):              # a vector the callee fills
+                    words = given.pop(0) if given else (0, 0, 0)
+                    for j, word in enumerate(words):
+                        emu.mem.w32(ptr[1] + 4 * j, word)
+                else:
+                    emu.mem.w32(ptr, given.pop(0) if given else 0)
             if ext.ret == 'f':
                 emu.f[0] = res.f & M32
             return res.ret
@@ -291,6 +313,8 @@ class Rig:
 
             def answer(*args):
                 res = self.rig.world.respond(name, args, self.view, self.rng)
+                if 'N' in ext.ints:
+                    return res.f & M32, tuple(res.outs[0]) if res.outs else (0, 0, 0)
                 if 'w' in ext.ints:
                     n = ext.ints.count('w')
                     return tuple((list(res.outs) + [0] * n)[:n])
@@ -301,7 +325,7 @@ class Rig:
                 return res.ret & M32
             return answer
 
-    def run_steps(self, steps, call_seed):
+    def run_steps(self, steps, call_seed, key=''):
         """steps: ('poke', addr, size, value) or ('call', key, args).  Model first, then the
         original, on the same starting memory."""
         emu, mem = self.emu, self.emu.mem
@@ -393,7 +417,7 @@ class Rig:
         if problems:
             out['seed'] = '; '.join(problems)
         out['draws'], out['cosmetic'] = model.draws, model.cosmetic
-        out['outcomes'] = outcomes(model)
+        out['outcomes'] = outcomes(model, key)
         note = steps[0][1] if steps[0][0] == 'note' else None
         if note and note['clean'] and 'taken' in out['outcomes']:
             paid = sum(ee_emu.s32(mview.load(G.record(s) + G.REC_GOLD, 4) - gold_before[s]) for s in range(4))
@@ -412,19 +436,19 @@ class Rig:
         return out
 
 
-def outcomes(model):
+def outcomes(model, key=''):
     """What a case did, from the model's calls and stores (both sides agreed on them)."""
     names = [name for name, _args in model.calls]
     gold_words = {G.record(s) + G.REC_GOLD for s in range(8)}
     out = set()
     if 'obj_delete' in names:
-        out.add('taken')
+        out.add('deleted: 120 below the player' if key in ('propRun', 'dropLife') else 'taken')
     if any(a in gold_words for a, _size, _v in model.writes):
         out.add('credited')
     if any(G.FLOATERS + 0x1C <= a < G.FLOATERS + 8 * G.FLOATER_SIZE and (a - G.FLOATERS) % G.FLOATER_SIZE == 0x1C
            and v for a, size, v in model.writes if size == 4):
         out.add('floater filled')
-    if model.cosmetic == 0 and 'taken' in out:
+    if model.cosmetic == 0 and 'taken' in out and 'credited' in out:
         out.add('direct credit')
     if any(name == 'res_find' and args[1] == G.S_COIN_DROP for name, args in model.calls):
         out.add('drop sound')
@@ -438,8 +462,10 @@ def outcomes(model):
         out.add('refused: bag')
     if 'inventory_giveItem' in names:
         out.add('given x%d' % names.count('inventory_giveItem'))
-    if 'PhProp_dtor' in names or 'ItemProp_dtor' in names:
+    if 'PhProp_dtor' in names or 'ItemProp_dtor' in names or 'Prop_dtor' in names:
         out.add('prop deleted')
+    if 'terrain_sweepCircle' in names:
+        out.add('swept')
     if any(name == 'libc_sprintf' and len(args) == 2 for name, args in model.calls):
         out.add('count text')
     return out
@@ -634,7 +660,68 @@ def generate(rig, key, rng):
         return [('call', key, (obj, _pos(rng), names[0], names[1], names[2], mask, flags, w.matrix))]
     if key == 'itemLife':
         return item_life(rig, rng, frame)
+    if key == 'propRun':
+        return [('call', key, (_moving_prop(rig, rng),))]
+    if key == 'dropLife':
+        return drop_life(rig, rng, frame)
     return pile(rig, rng, frame)
+
+
+def _alive(rig, rng):
+    """g_alivePlayers[0] and the z of that record's object (the 120-below test)."""
+    w, mem = rig.world, rig.emu.mem
+    alive = rng.choice((0, 1, 2, 3, -1 & M32))
+    mem.w32(G.G_ALIVE_PLAYERS, alive)
+    for slot in range(4):
+        mem.w32(G.record(slot) + G.REC_OBJ, rng.choice((0, w.people[slot])))
+        mem.wf32(w.people[slot] + 0x18, rng.choice((0.0, 100.0, -200.0, rng.uniform(-500, 500))))
+
+
+def _moving_prop(rig, rng):
+    """A Prop or ItemProp as a launch leaves it, or one that has run a while."""
+    w, mem = rig.world, rig.emu.mem
+    _alive(rig, rng)
+    prop = rng.choice(w.props)
+    _fill(mem, prop, 0x280, rng, False)
+    mem.w32(prop + 0x48, rng.choice((G.VT_ITEMPROP, G.PP.VT_PROP)))
+    mem.w16(prop + 0x140, rng.choice((0, 0, 1, 2, 3, 4, 0x10, rng.getrandbits(16))))
+    mem.w16(prop + 0x10E, rng.choice((180, 2, 1, 0, 0xFFFF, (-60) & 0xFFFF, (-61) & 0xFFFF, (-300) & 0xFFFF,
+                                      (-301) & 0xFFFF, 0x7FFF, rng.getrandbits(16))))
+    mem.w16(prop + 0x10C, rng.choice((0, 5, 10, 11, 2000, 0x8000, rng.getrandbits(16))))
+    for off, choices in ((0xFC, (0.0, 0.01, 0.06, 40.0, -120.0)), (0x100, (0.0, -0.05, 30.0, 200.0)),
+                         (0x30, (0.0, 27.0, -0.2, -5.0, 300.0, -400.0)), (0x108, (0.0, 3.0, 12.0)),
+                         (0x1C, (4.0, 24.0))):
+        mem.wf32(prop + off, rng.choice(choices + (rng.uniform(-300, 300),)))
+    for j in range(3):
+        mem.wf32(prop + 0x10 + 4 * j, rng.uniform(-500, 500))
+    if rng.random() < 0.3:                      # the 120-below edge, on a prop at rest
+        mem.w16(prop + 0x140, mem.u16(prop + 0x140) | 1)
+        mem.w16(prop + 0x10E, rng.choice((50, 2, 0)))
+        mem.w32(G.G_NUM_PLAYERS, rng.choice((1, 2)))
+        mem.w32(G.G_ALIVE_PLAYERS, 0)
+        mem.w32(G.record(0) + G.REC_OBJ, w.people[0])
+        z = DC.fl(mem.u32(prop + 0x18))
+        mem.wf32(w.people[0] + 0x18, z + rng.choice((119.9, 120.0, 120.05, 120.5, 121.0, 122.0, 125.0)))
+    return prop
+
+
+def drop_life(rig, rng, frame):
+    """An item dropped from the bag or given at full load: ItemProp_ctor2 with launch 0 (every
+    call site's), then N ticks of Prop_run (slot 4), then the use button."""
+    w, mem = rig.world, rig.emu.mem
+    _player_records(rig, rng)
+    _alive(rig, rng)
+    obj = rng.choice(w.props)
+    _fill(mem, obj, 0x280, rng, True)
+    item = rng.choice(w.items)
+    _item(rig, rng, item)
+    mem.w32(G.PP.G_PROP_OPTIONS, rng.choice((0, 0, 0x100)))
+    steps = [('call', 'itemCtor2', (obj, _pos(rng), item, rng.choice((0, 0, 0, 0x19, 0x81))))]
+    for i in range(1, rng.choice((1, 30, 179, 180, 181, 200, 250, 400)) + 1):
+        steps.append(('poke', G.G_SIM_FRAME, 4, (frame + i) & M32))
+        steps.append(('call', 'propRun', (obj,)))
+    steps.append(('call', 'itemInteract', (obj, rng.choice((0, 1, 2, 3)))))
+    return steps
 
 
 def item_life(rig, rng, frame):
@@ -743,7 +830,7 @@ def main(argv):
         for n in range(n_cases):
             call_seed = OPTIONS['seed'] * 1000003 + total
             steps = generate(rig, key, rng)
-            result = rig.run_steps(steps, call_seed)
+            result = rig.run_steps(steps, call_seed, key)
             total += 1
             draws += result['draws']
             cosmetic += result['cosmetic']
