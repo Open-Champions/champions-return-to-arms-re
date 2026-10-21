@@ -110,6 +110,21 @@ CARD_DRAW_DISPATCH = {
 }
 
 
+# Main-list accept on row i (state 0, table 0x4f6b88), executed with the original
+# string comparison 0x3b8534 and input 0x1a01d0 followed. The selected index lives
+# in the word 0x4f6bcc (terminator entry +4). Value: (next state, next table,
+# ((call site, target), ...), music resource and flags requested by 0x2110e0).
+# Row 1 stays in state 0 and requests a card load; its slot argument is -1 + 1.
+MAIN_MENU_ACCEPT = {
+    0: (1, 0x4F6BF8, ((0x1E15B8, 0x214230),), None),
+    1: (0, 0x4F6B88, ((0x1E15B8, 0x214230), (0x1E166C, 0x2176E0)), None),
+    2: (11, 0x4F6E88, ((0x1E15B8, 0x214230), (0x1E16A0, 0x1E6428)), None),
+    3: (15, 0x4F6FB8, ((0x1E15B8, 0x214230), (0x1E16E4, 0x216130),
+                       (0x1E16F4, 0x2110E0), (0x1E16FC, 0x223C64)),
+        ("mx_endcredits_ext_l.vag", 3)),
+}
+
+
 def credits_one_line_geometry(scroll_y):
     """Two centered submissions for one authored wide-string pointer.
 

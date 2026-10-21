@@ -13,7 +13,7 @@ sys.path.append(os.path.dirname(__file__))
 from ee_emu import EE  # noqa: E402
 from ref_frontend_layout import (BOOT_CARD_CALLS, BOOT_STEP_CALLS,  # noqa: E402
                                  CARD_DRAW_DISPATCH, FRONTEND_STATES,
-                                 INTRO_CALLS, MENU_SOUND_IDS, TABLES,
+                                 INTRO_CALLS, MAIN_MENU_ACCEPT, MENU_SOUND_IDS, TABLES,
                                  credits_one_line_geometry, first_theme_queues, list_frame_calls,
                                  list_geometry, pause_geometry, publisher_logo_sprites)
 
@@ -205,8 +205,11 @@ def menu_action(path, seed, state, table, mask):
     e.follow = {0x1A01D0}
     e.mem.w32(0x4F6B78, state)
     e.mem.w32(0x4F6B7C, table)
-    # The lockstep pad's held/pressed/repeat words. In this fixture 0x4000
-    # moves down, 0x40 accepts and 0x20 cancels (observed transitions below).
+    # The lockstep pad's held/pressed/repeat words (0x41BFE0/E4/E8, from
+    # docs/spec/player-tick.md:76). Bit layout per docs/netcode.md:138: 0x4000
+    # is d-pad down; 0x40 is cross and 0x20 is circle (face buttons Inferred
+    # there). The transitions asserted below are the observed use as
+    # move / accept / cancel.
     for addr in (0x41BFE0, 0x41BFE4, 0x41BFE8):
         e.mem.w32(addr, mask)
     e.call(0x1E08F0, max_steps=100000)
@@ -216,6 +219,24 @@ def menu_action(path, seed, state, table, mask):
     sound_calls = [c for c in e.calls if c.target == 0x214230 and
                    c.site in (0x1A03FC, 0x1E15B8, 0x1E1D80)]
     return e.mem.u32(0x4F6B78), ids, len(sound_calls)
+
+
+def main_accept(path, seed, row):
+    """Accept main-list row `row` with the original string compare followed."""
+    e = emulator(path, seed)
+    e.follow = {0x1A01D0, 0x3B8534, 0x3B96A8}
+    e.mem.w32(0x4F6B78, 0)
+    e.mem.w32(0x4F6B7C, 0x4F6B88)
+    e.mem.w32(0x4F6B88 + 4 * 16 + 4, row)  # selected index: terminator entry +4
+    for addr in (0x41BFE0, 0x41BFE4, 0x41BFE8):  # lockstep pad held/pressed/repeat
+        e.mem.w32(addr, 0x40)  # accept bit, as in menu_action
+    e.call(0x1E08F0, max_steps=100000)
+    sites = {0x1E15B8, 0x1E166C, 0x1E16A0, 0x1E16E4, 0x1E16F4, 0x1E16FC}
+    calls = tuple((c.site, c.target) for c in e.calls if c.site in sites)
+    music = [(e.mem.cstr(c.args[0] & 0xFFFFFFFF), c.args[1] & 0xFFFFFFFF)
+             for c in e.calls if c.site == 0x1E16F4]
+    return (e.mem.u32(0x4F6B78), e.mem.u32(0x4F6B7C), calls,
+            music[0] if music else None)
 
 
 def main():
@@ -318,6 +339,10 @@ def main():
         checks += 5
         assert logo_draw(path, seed) == list(publisher_logo_sprites()), seed
         checks += 1
+        for row, wanted in MAIN_MENU_ACCEPT.items():
+            assert main_accept(path, seed, row) == wanted, (
+                seed, row, main_accept(path, seed, row))
+            checks += 1
         for kind, state, table, mask, next_state in (
                 ("move", 0, 0x4F6B88, 0x4000, 0),
                 ("select", 0, 0x4F6B88, 0x40, 1),
