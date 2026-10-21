@@ -284,11 +284,12 @@ Data, 0x90 bytes — O 0x187374, 0x1875d4, 0x1876e0:
 
 | Offset | Type | Meaning |
 |---|---|---|
-| 0x00 | s16 × 4 | chunk indices of the four neighbouring water tiles, −1 for none; used to continue the surface across tiles |
+| 0x00 | s16 × 4 | chunk indices of the four neighbouring water tiles, −1 for none. Slots 0 and 2 are copied after each wave step; slots 1 and 3 are read when a block is claimed (`docs/formats/water-draw.md`) |
 | 0x08 | u32 | 0; run time pointer to the tile's simulation block |
-| 0x10 | 128 bytes | a 32 × 32 bit mask; I: which cells of the tile are water. Bit order U |
+| 0x10 | 128 bytes | a 32 × 32 bit mask of which samples the wave may change. Halfword c is column c; bit 15 is the first row of a 16-row bank (bytes 64..127 are rows 16..31). A set bit is water. Executed, `docs/formats/water-draw.md` |
 
-The surface is a 32 × 32 grid generated at run time; nothing else is stored. The chunk
+The surface is a 32 × 32 grid generated at run time; nothing else is stored. Colour,
+the wave and the draw are `docs/formats/water-draw.md`. The chunk
 translation is the tile's centre (D, all 9,884 tiles) and the height it is drawn at.
 `water_test` returns the chunk's minimum z as the water height; that equals the drawn
 height in 9,035 tiles and is 5 lower or 13 higher in the rest (D). Tiles are 120 units
@@ -525,7 +526,7 @@ For online play it matters which parts of the loaded world belong to the simulat
    the texture size. Needs the texture pixel format. Blending: honour the GS state blocks
    in the packet (alpha-tested and environment-mapped batches) and chunk flags 0x200/0x400.
 7. **Moving pieces** (needed for doors and lifts, hence for most levels' scripts), then
-   **water** (a flat animated quad per tile at the chunk's z is enough to start; `water_test`
+   **water** (the grid, the slope UVs and the blend are `docs/formats/water-draw.md`; `water_test`
    matters to gameplay, the ripples do not), **model chunks** (needs the model format),
    **lights** and **emitters** (cosmetic).
 8. **Automap** last.
@@ -540,7 +541,7 @@ appear to carry the baked light; the normals are there for the dynamic lights.
   section 4.6.)
 - The bit grid's layout and purpose; header +0x74; chunk flags 0x2, 0x4, 0x20000; chunk
   +0x3a; moving piece +0x1a; why some geometry chunks have texture cell 0.
-- The emitter description beyond its size; the water mask's bit order. The automap cell
+- The emitter description beyond its size. The automap cell
   and tile coding is now `docs/formats/level-draw.md` section 4.
 - Whether the automap tile texture decodes with the rules of `docs/formats/model-texture.md`;
   not tried. (Cell textures do not; they are decoded in `docs/formats/level-texture.md`.)

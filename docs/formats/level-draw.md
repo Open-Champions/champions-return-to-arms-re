@@ -33,8 +33,8 @@ DMA `ref` of the stored packet, is Executed:
 | 0x10000 | 0x48 | | 0x587f4 | 0 |
 
 `ref_leveldraw.chunk_gs`. Flags 0x80, 0x800, 0x4000 and 0x8000 leave this function for
-water, a scenery model, an emitter or a light (O 0x1887b8); the table is the geometry
-path only.
+water (`docs/formats/water-draw.md`), a scenery model, an emitter or a light
+(O 0x1887b8). The table is the geometry path only.
 
 No `ZBUF` register is written. Two marker words placed at `g_zbufWrite` (0x44fd58) and
 `g_zbufNoWrite` (0x44fd60) did not appear in the packet (Executed). Depth test and depth
