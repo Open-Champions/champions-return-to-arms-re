@@ -3,7 +3,7 @@
 US `SLUS_209.73` v2.00. **Executed** in `tools/ee_emu.py` against
 `tools/ref_arena_match_core.py` with `tools/difftest_arena_match_core.py`,
 seeds 20973 and 7: 100 stat scales, 108 empty-wave visits, four next-wave
-calls, 32 saved-pointer visits, four saved player records and four shutdowns
+calls, 32 saved-pointer visits, four saved player records, 16 player respawns and four shutdowns
 per seed; no mismatches. The tests construct state and
 stub outside services. They do not establish a live match.
 
@@ -69,6 +69,29 @@ the original `arena_runTask` `0x306b78` while its UI, lookup, shutdown and
 string-copy callees are stubs. The saved record is the ordinary player-record
 layout in `docs/player.md` and `docs/audio-save.md`, not a small arena-specific
 struct. No seed draw occurs in this copy branch.
+
+## `player_respawn` 0x1bd040
+
+**Executed**, 16 constructed cases per seed across local/other slot, offline/network,
+mode A clear/set, and exact/free-spot placement. The old object is destroyed
+through virtual slot 1; `pool_new(0x590)` supplies the new block; `Player_ctor`
+`0x1a1d28` and `Player_startSpawnProtection` `0x1b8f28` are called, followed by
+`game_rebuildAlivePlayers` `0x1e72f8`. In the difftest those callees were stubs;
+the constructor stub updated the record's object pointer to the new block.
+
+The direct stores are dead countdown `0x4f84a8 + slot × 2 = 240`, player-record
+HP +0xac = half maximum HP +0xb0 (full maximum when mode A is set), and
+`g_forceGhostRebase` byte `0x402797 = 1`. For arena arguments (2, 3),
+`world_findFreeSpot` `0x14acf8` receives range 36 and radius 24, or in general
+12 × argument five and 12 × argument four. The exact placement arguments
+(-1, -1) skip that call. A local slot closes menus through `0x1eb000`.
+Network mode checks the local slot again after rebuilding; the local branch
+calls `0x207450`, `Camera_reset` `0x203210` and `0x207308` before `0x203400`,
+then sends screen effect 4 through `0x322954`. The wrapper itself makes no
+shared-seed draw on either tested seed. The world placement, Player constructor
+and spawn-protection bodies were stubbed; their draws and side effects require
+their own contracts. Allocation failure and nonzero slot addresses were not
+compared here.
 
 ## `arena_shutdown` 0x304fb0
 

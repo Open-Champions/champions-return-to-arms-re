@@ -15,6 +15,7 @@ LIVE_COUNT = 0x8E733E
 SAVED_COUNT = 0x8E7340
 PLAYER_RECORD_BASE = 0x4D8AF0
 PLAYER_RECORD_SIZE = 0x4C30
+PLAYER_RESPAWN = 0x1BD040
 
 
 def s16(value):
@@ -91,3 +92,37 @@ def restore_saved_player_record(saved):
     if len(saved) != PLAYER_RECORD_SIZE:
         raise ValueError('saved player record must be one full slot')
     return bytes(saved)
+
+
+def player_respawn_body(local, network, pvp_a, placement_a, placement_b,
+                        old_object, new_object, max_hp):
+    """Original player_respawn wrapper, with constructor and world services as call-outs.
+
+    Returns (call targets, direct stores, findFreeSpot range/radius or None). The
+    constructor fixture must update record +0x43d8 to the new pointer before the
+    protection and alive-list calls.
+    """
+    calls = [0x13E150]
+    if local:
+        calls.append(0x1EB000)
+    calls += [0xF00004, 0x14FDB8]  # fixture's old-object virtual slot 1, pool_new
+    find = None
+    if new_object:
+        if placement_a != -1:
+            calls.append(0x14ACF8)
+            find = (placement_b * 12, placement_a * 12)
+        calls.append(0x1A1D28)  # Player_ctor
+    calls += [0x1B8F28, 0x1E72F8]
+    if network:
+        calls.append(0x13E150)
+        if local:
+            calls += [0x207450, 0x203210, 0x207308]
+    calls.append(0x203400)
+    if network:
+        calls.append(0x13E150)
+        if local:
+            calls.append(0x322954)
+    stores = {0x4F84A8: 240, 0x4D8AF0 + 0xAC:
+              max_hp if pvp_a else C.mul(max_hp, 0x3F000000),
+              0x402797: 1}
+    return calls, stores, find

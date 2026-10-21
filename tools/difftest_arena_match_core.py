@@ -181,6 +181,65 @@ def test_player_record(path, rng):
     return 4
 
 
+def test_player_respawn(path, seed):
+    checked = 0
+    for local in (0, 1):
+        for network in (0, 1):
+            for pvp_a in (0, 1):
+                for placement in ((-1, -1), (2, 3)):
+                    emu = EE(path)
+                    old = emu.alloc(0x590)
+                    new = emu.alloc(0x590)
+                    pos = emu.alloc(0x10)
+                    vtable = emu.alloc(0x20)
+                    record = R.PLAYER_RECORD_BASE
+                    emu.mem.w32(old + 0x48, vtable)
+                    emu.mem.w32(vtable + 0xC, 0xF00004)
+                    emu.mem.w32(record + 0x43D8, old)
+                    emu.mem.w32(record + 0xB0, float_to_raw(100.0))
+                    emu.mem.w32(record + 0xAC, 0)
+                    emu.mem.w32(D.MODE_A, pvp_a)
+                    emu.mem.w32(D.MODE_B, 1)
+                    emu.mem.w32(D.NUM, 1)
+                    emu.mem.w8(D.NET, network)
+                    emu.mem.w32(D.SEED, seed)
+                    for j, value in enumerate((10.0, 20.0, 0.0)):
+                        emu.mem.wf32(pos + 4 * j, value)
+                    emu.follow = set()
+                    emu.default_ret = 0
+                    emu.stub(0x13E150, ret=local)
+                    emu.stub(0x14FDB8, ret=new)
+                    def ctor(e):
+                        e.mem.w32(record + 0x43D8, new)
+                        return new
+                    emu.stub(0x1A1D28, function=ctor)
+                    def find(e):
+                        for j in range(3):
+                            e.mem.w32(e.r[4] + 4 * j, e.mem.u32(e.r[5] + 4 * j))
+                        return 1
+                    emu.stub(0x14ACF8, function=find)
+                    expected_calls, expected_stores, expected_find = R.player_respawn_body(
+                        local, network, pvp_a, *placement, old, new,
+                        float_to_raw(100.0))
+                    emu.call(R.PLAYER_RESPAWN, 0, pos, 0, *placement)
+                    targets = [call.target for call in emu.calls]
+                    assert targets == expected_calls, (local, network, pvp_a, placement,
+                                                       targets, expected_calls)
+                    for address, value in expected_stores.items():
+                        actual = emu.mem.u16(address) if address == 0x4F84A8 else \
+                            emu.mem.u8(address) if address == 0x402797 else emu.mem.u32(address)
+                        assert actual == value, (hex(address), actual, value)
+                    finds = [call for call in emu.calls if call.target == 0x14ACF8]
+                    assert len(finds) == (0 if expected_find is None else 1)
+                    if finds:
+                        assert (finds[0].args[2] & M32, finds[0].args[3] & M32) == expected_find
+                    assert [call.args[0] & M32 for call in emu.calls
+                            if call.target == 0x322954] == ([4] if local and network else [])
+                    assert emu.mem.u32(D.SEED) == seed
+                    checked += 1
+    return checked
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('elf')
@@ -194,6 +253,7 @@ def main():
                      ('nextWave', lambda: test_next(args.elf)),
                      ('saved pointer record', lambda: test_saved_record(args.elf)),
                      ('saved player record', lambda: test_player_record(args.elf, rng)),
+                     ('player_respawn', lambda: test_player_respawn(args.elf, args.seed)),
                      ('shutdown', lambda: test_shutdown(args.elf))):
         print('%s: %d matched' % (name, fn()))
 
