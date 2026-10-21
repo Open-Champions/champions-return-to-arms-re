@@ -36,3 +36,14 @@ setting/clearing flag bit 1. Unsupported hands return 1 without writes. The
 return on a supported hand is the new flag byte. `tools/difftest_holder_attach.py`
 compared each body with this reference model on 300 authored cases for each of
 seeds 20973 and 7, with zero differences.
+
+# Nightmare construction seam
+
+`tools/difftest_nightmare_ctor.py` executes `Nightmare_ctor` at 0x270968 and
+its direct state-zero body at 0x27155c in `ee_emu.py`. It delegates the already
+researched Creature base constructor, animation, object random, event setup,
+run registration, and Creature_init bodies as recorded call-outs. The authored
+reference model compares the constructor's final bytes and the ordered callees
+on 100 fresh-pool cases for each seed 20973 and 7; both sets had zero
+differences. This establishes the bounded constructor stores and call order,
+not the mount's later tick, animation, collision, or resource behavior.
