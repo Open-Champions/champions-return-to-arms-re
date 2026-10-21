@@ -24,6 +24,11 @@ VTABLES = {0: 0x50FE88, 1: 0x516E48, 3: 0x510260,
 CONSTRUCTORS = {0: 0x2A4D68, 1: 0x298418, 3: 0x26A624,
                 4: 0x2A0954, 25: 0x244018}
 SIZES = {0: 0x3D0, 1: 0x480, 3: 0x498, 4: 0x488, 25: 0x3D0}
+DEFINITIONS = {0: 0x502238, 1: 0x501838, 3: 0x500298}
+HOLDERS = {1: (0x3D0, 0x50CF40), 3: (0x3E8, 0x50CDA0)}
+SET_STATES = {0: 0x2A55EC, 1: 0x29A6F4, 3: 0x26CCFC}
+TAKE_DAMAGE = 0x116638
+PROCESS_DAMAGE = 0x110D30
 
 
 class ConstructorBoundary(Exception):
@@ -128,6 +133,12 @@ def install_factory_fixture(emu):
         obj = e.r[4] & 0xFFFFFFFF
         assert obj == pending['block']
         e.mem.w32(obj + 0x48, VTABLES[index])
+        if index in DEFINITIONS:
+            e.mem.w32(obj + 0x24, DEFINITIONS[index])
+        if index in HOLDERS:
+            offset, table = HOLDERS[index]
+            e.mem.w32(obj + 0x50, obj + offset)
+            e.mem.w32(obj + offset, table)
         e.mem.w32(obj + 0xC, 0x20)
         e.mem.w16(obj + 0x312, 0)
         for field, value in ((0x228, 0x42C80000), (0x22C, 0x42C80000),
@@ -174,8 +185,9 @@ def build_wave(path, wave, seed):
 def run_match(path, seed, attacked, max_frames=2400):
     """Run original arena_runTask and nextWave on an authored object fixture.
 
-    The player attack is a scripted lethal outcome after an intro, because the
-    fixture has no class constructor, AI tick, collision, or damage simulation.
+    The driver injects a lethal player hit after each intro. Original base
+    damage processing and the class death set-state execute on the fixture.
+    It does not model input, collision, or AI.
     The world walk is an authored service over those fixture objects. This
     establishes the arena flow's next boundary, not combat or a live match.
     """
@@ -192,23 +204,35 @@ def run_match(path, seed, attacked, max_frames=2400):
     def walk(e):
         callback = e.r[4] & 0xFFFFFFFF
         if callback in (0x3069E8, 0x306A28):
-            alive = sum(bool(e.mem.u32(obj + 0xC) & 0x20) and
+            alive = sum((e.mem.u32(obj + 0xC) & 0x68) == 0x20 and
                         e.mem.s16(obj + 0x312) >= 0 for _index, obj in created)
             e.mem.w16(0x8E733E, alive)
         return 0
 
     emu.stub(D.WALK, function=walk)
+    if attacked:
+        for set_state in SET_STATES.values():
+            emu.unhook(set_state)
+        emu.follow.update(set(SET_STATES.values()) |
+                          {TAKE_DAMAGE, PROCESS_DAMAGE, 0x10A9C0,
+                           0x1195E0, 0x1195F0, 0x119608})
+        emu.mem.w32(D.WORD890, 0)
     emu.call(D.START, 1)
     waves = [(0, len(created))]
     killed_waves = set()
+    hit_indices = []
     last_wave = 0
     for frame in range(max_frames):
         emu.mem.w32(D.FRAME, frame)
         wave = emu.mem.u16(D.WAVE)
         if attacked and wave not in killed_waves and emu.mem.u16(D.INTRO) == 0xFFFF:
-            for _index, obj in created:
-                if emu.mem.s16(obj + 0x312) >= 0:
-                    emu.mem.w16(obj + 0x312, 0xFFFF)
+            player = emu.mem.u32(D.PLAYERS + 0x43D8)
+            for index, obj in created:
+                if (emu.mem.u32(obj + 0xC) & 0x68) == 0x20:
+                    emu.call(TAKE_DAMAGE, obj, player, 1, fargs=(1000.0,))
+                    emu.call(PROCESS_DAMAGE, obj, 0)
+                    assert emu.mem.u16(obj + 0x232) == 0x14
+                    hit_indices.append(index)
             killed_waves.add(wave)
         emu.call(D.RUN)
         wave = emu.mem.u16(D.WAVE)
@@ -228,6 +252,7 @@ def run_match(path, seed, attacked, max_frames=2400):
             previous = cumulative
     if attacked:
         assert [wave for wave, _ in waves][:3] == [0, 1, 2], waves
+        assert Counter(hit_indices) == {0: 1, 1: 2, 3: 6}, hit_indices
     else:
         assert waves == [(0, 2)], waves
     return emu, waves, frame + 1
