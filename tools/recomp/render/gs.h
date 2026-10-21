@@ -36,7 +36,7 @@ struct GsStats {
     uint64_t copies = 0, unknown_regs = 0;
     double kick_ms = 0, path3_ms = 0;   // processor time inside xgkick() and gif(2, ...), when Gs::time_paths is set
     uint64_t textures_freed = 0, textures_held = 0, texture_bytes = 0;      // held: now; bytes: RGBA bytes of the held ones
-    uint64_t copies_skipped = 0;        // local-to-local transfers that were not a copy from a surface
+    uint64_t copies_skipped = 0;        // nonempty local-to-local transfers that were not a copy from a surface
     uint64_t surface_uploads = 0;       // rectangles sent straight into a displayed buffer
     uint64_t fogged = 0;                // primitives drawn with fogging
     uint64_t targets_held = 0, targets_freed = 0;

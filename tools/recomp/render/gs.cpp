@@ -852,7 +852,7 @@ void Gs::write(uint32_t address, uint64_t value) {
                 c.copy_dst[0] = dx; c.copy_dst[1] = dy; c.copy_dst[2] = w; c.copy_dst[3] = h;
                 frame.commands.push_back(c);
                 stats.copies++;
-            } else stats.copies_skipped++;
+            } else if (w && h) stats.copies_skipped++; // empty rectangles are not unsupported
         }
         return;
     case 0x61: stats.finish++; return;
