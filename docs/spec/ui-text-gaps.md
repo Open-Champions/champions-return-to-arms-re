@@ -4,7 +4,9 @@ SLUS-20973 v2.00. This is the table form of [../ui-text-gaps.md](../ui-text-gaps
 has the evidence and the ranking.
 
 - Model: `tools/ref_ui_text_gaps.py`.
-- Difftest: `tools/difftest_ui_text_gaps.py`: 8 properties, seeds 20973 and 7, all PASS.
+- Difftest: `tools/difftest_ui_text_gaps.py`: 8 properties, seeds 20973 and 7, all PASS
+  when it was run; it needs the disc and an emulator, so the PASS is not reproducible from this
+  repository alone.
 - Status words: O observed, E executed, I inferred.
 - "Seed draws" lists reads or writes of `g_cosmeticSeed` 0x404460, `g_randSeed` 0x404464
   and 0x404468. The first 80 calls of each property were recorded (20 for the chime).
@@ -119,3 +121,6 @@ has the evidence and the ranking.
 | 0x4 \| 0x10 | voice flags stopped on free | 0x214884–0x214894 |
 | 0x2b (43), 0x20 (32) | voices, slots | 0x2148c4, 0x214980 |
 | 0x540ca8 `showName` | dialog name property | 0x22f210 |
+
+Layout byte 0 (glyph 0x7b) is never observed in game data: 0x41b69c holds only the value 1,
+so only layout 1 is observed (cross glyph 0x7e); the layout 0 row is inferred from the code.

@@ -111,25 +111,26 @@ class HudArtRound4(unittest.TestCase):
         self.assertEqual(len(bars), 22)
         self.assertTrue(all(a.upload == (104, 8) and a.used == (100, 8) for a in bars))
 
-    def test_catalogue_page_matches_the_used_crop(self):
+    def test_catalogue_page_is_upload_and_rect_is_used_crop(self):
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         text = open(os.path.join(root, 'tools/godot/project/gameart/catalogue.gd')).read()
-        # page/rect are the used crop. The old upload size stays inside name/pack.
+        # page stays the decoded upload size (gameart.gd rejects any other decode size);
+        # rect alone carries the used crop. The status frames' 160x48 is the swizzled decode.
         frozen = {
-            'bar_blue': ((100, 8), '104x8'),
-            'bar_red': ((100, 8), '104x8'),
-            'button': ((83, 38), '88x40'),
-            'statusbar': ((160, 46), '160x48'),
-            'statusbar_glow': ((160, 46), '160x48'),
+            'bar_blue': ((104, 8), (100, 8)),
+            'bar_red': ((104, 8), (100, 8)),
+            'button': ((88, 40), (83, 38)),
+            'statusbar': ((160, 48), (160, 46)),
+            'statusbar_glow': ((160, 48), (160, 46)),
         }
-        for key, ((w, h), old) in frozen.items():
+        for key, (page, used) in frozen.items():
             line = next(ln for ln in text.splitlines() if ln.startswith('\t"%s":' % key))
-            self.assertIn('"page": [%d, %d]' % (w, h), line)
-            self.assertIn('"rect": [0, 0, %d, %d]' % (w, h), line)
-            self.assertIn(old, line)
+            self.assertIn('"page": [%d, %d]' % page, line)
+            self.assertIn('"rect": [0, 0, %d, %d]' % used, line)
         green = next(ln for ln in text.splitlines() if ln.startswith('\t"bar_green":'))
         self.assertIn('"page": [104, 8]', green)
+        self.assertRegex(text, r'const VERSION := (?:[2-9]|\d\d+)\b')
 
 
 if __name__ == '__main__': unittest.main()

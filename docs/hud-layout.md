@@ -236,7 +236,7 @@ frame pieces) and missed 25.
 **Executed.** `difftest_ui_r4` runs `tex_relocate` `0x179e10`,
 `ui_drawSpriteImpl` `0x17b590` and the clipped drawer `0x17b8b0` on the five
 distinct sizes below. A private pass ran the same three functions on all 34
-real headers. Relocation leaves +0 and +2 unchanged (34/34). Both drawers
+real headers (not reproducible from this repository: the pass is not committed and needs the disc). Relocation leaves +0 and +2 unchanged (34/34). Both drawers
 pass source origin `(0, 0)` and the header width and height to
 `ui_emitSpriteQuad` `0x17ab50` (34/34). The plain drawer adds 1 to
 destination y; the clipped drawer does not. A tighter destination clip does
@@ -265,8 +265,9 @@ catalogue `page` was the 4-bit upload for the bars and the button, and
 The bar and status used sizes in the table above already matched these
 headers. `bar_green` is not one of the 34 and was not remeasured.
 
-The marked block in `tools/godot/project/gameart/catalogue.gd` sets `page`
-and `rect` to the used crop for `bar_blue`, `bar_red`, `button`, `statusbar`
+The marked block in `tools/godot/project/gameart/catalogue.gd` keeps `page` as
+the decoded upload size (`gameart.gd` rejects a decode of any other size) and sets
+only `rect` to the used crop for `bar_blue`, `bar_red`, `button`, `statusbar`
 and `statusbar_glow`. `name` and `pack` still name the older art-pack files
 and were not regenerated. Frames 00–09 are the same sizes as frame 10; this
 catalogue names frame 10.
