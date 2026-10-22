@@ -253,7 +253,9 @@ def init_cases(path, seed):
         props = {}
         keys = [b'dead', b'initscript'] + list(R.WEAPON_PROPS) + [b'change%d' % k for k in range(32)] + [b'other']
         for key in rng.sample(keys, rng.randint(0, 6)):
-            props[key] = rng.choice((b'1', b'2', b'0', b'abc')) if key in R.WEAPON_PROPS else b'x1'
+            props[key] = rng.choice((b'1', b'2', b'0', b'abc')) if key in R.WEAPON_PROPS else rng.choice((b'x1', b''))
+        if case == 0:
+            props = {b'dead': b'', b'change0': b'', b'initscript': b''}
         strings = []
         for key, value in props.items():
             s = e.alloc(64)
@@ -263,7 +265,7 @@ def init_cases(path, seed):
         for k, s in enumerate(strings):
             e.mem.w32(plist + 4 * k, s)
         e.mem.w32(c + 0x2C, plist)
-        cutscene = rng.choice((0, 0, 1))
+        cutscene = 0 if case == 0 else rng.choice((0, 0, 1))
         e.mem.w8(R.CUTSCENE, cutscene)
         bounds = rng.choice(((0, 100), (10, 50), (-20, 200), (5, 89), (0, 84), (0, 83)))
         hide = rng.getrandbits(64)

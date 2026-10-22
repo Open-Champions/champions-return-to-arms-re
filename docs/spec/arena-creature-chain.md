@@ -86,7 +86,7 @@ covering every branch. With the arena's empty list, only step 2 has an effect.
 | `Creature_init` (empty list) | 0 | 0 |
 
 So a plain arena creature costs **one** shared draw. A rare Mummy costs **two**: its
-element descriptor `(id, a, a + v, 0)` takes the second. On seed 7, 2 of the 18 test
+element descriptor `(id, a, a + v, 0)` takes the second. On seed 7, 2 of the 30 test
 constructions took it; on seed 20973, none did. The
 Goblin also resolves its family entry block `0x500448 + 0x80 × family` (`+0x490`; 0 for
 the plain type) under the same generation test as the class definition
@@ -148,8 +148,10 @@ are recorded here. There were no mismatches.
 - **Box.** The spot becomes `(x, y, height)`, and the box is `x ∓ r`, `y ∓ r`,
   `height ∓ 100000`. An object without object flag 1 blocks when
   `dx² + dy² ≤ float(radius²) + its radius²`.
-- **Result.** At most 50 tries; `ok = tries ≠ 50`. The out spot is the last accepted
-  candidate, or the centre.
+- **Result.** At most 50 attempts; `ok` is 1 on success and 0 after 50 failed
+  attempts. The reference returns the number of attempts (1–50 on success),
+  while the original's loop counter is zero-based (0–49 on success). The out spot
+  is the last accepted candidate, or the centre.
 
 It was checked on 120 authored cases per seed: open, walled, stepped, crowded and fully
 blocked ground, ranges 0–96 and radii 0–30. In the probe it is checked on every call

@@ -5,6 +5,12 @@ below with the original chain, executes `world_findFreeSpot` and the kill/loot p
 corrects round 5's placement claim. See the section "Real creature chain" at the end;
 the earlier sections describe the fixture modes, which are unchanged.
 
+**Round 7 audit correction (2026-10-22):** The remaining `pool_new` fallback is
+restricted to site `0x117e30`, size `0x248`: `creature_dropHeldPartAsProp` (`0x117d30`)
+constructs a dropped `PhProp` there (`docs/spec/weapon-holder.md` §3.3). Both seeds
+produce six such blocks in fighting and none in the three builders or idle run; the
+probe asserts those counts. These blocks are allocated but not ticked by this driver.
+
 US `SLUS_209.73` v2.00, 2026-10-21. **Executed** in `tools/ee_emu.py` by
 `tools/probe_arena_match.py` on the owner's disc executable, copied into this
 worktree's ignored `local/` folder. Seeds 20973 and 7 produced the same wave

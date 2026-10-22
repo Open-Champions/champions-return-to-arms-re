@@ -203,12 +203,12 @@ def creature_init(cflags, model, props, holder, cutscene, bounds, hide_mask):
         height, byte = creature_init_height(*bounds)
         fields[0x20] = (4, height)
         fields[0x29] = (1, byte)
-    if props.get(b'dead'):
+    if b'dead' in props:
         cflags |= DEAD_FLAG
         calls += [('slot', 27, 0x14), (ANIM_SNAP_END,)]
     mask = 0
     for k in range(CHANGE_BITS):
-        if props.get(b'change%d' % k):
+        if b'change%d' % k in props:
             mask |= 1 << k
     if mask:
         fields[0xE8] = (4, mask)
@@ -218,7 +218,7 @@ def creature_init(cflags, model, props, holder, cutscene, bounds, hide_mask):
         value = props.get(key)
         if value and atoi(value) != 0 and holder:
             calls.append(('holder', 2 + k))
-    if not cutscene and props.get(b'initscript'):
+    if not cutscene and b'initscript' in props:
         calls.append((SCRIPT_RUN,))
     fields[0xA8] = (8, cflags)
     return calls, fields
@@ -435,7 +435,9 @@ def free_spot(seed, center, rng_range, radius, any_height, blocked, height, box)
     height - cz >= 6.0 and anyHeight is 0.  Otherwise the spot becomes (x, y, height) and
     the box (x -/+ radius, y -/+ radius, height -/+ 100000) is asked; the try fails when an
     object without object flag 1 has dx^2 + dy^2 <= float(radius^2) + r^2.  The seed is
-    stored once per try, after its sample.  Returns (seed, spot, ok, tries, draws, boxes).
+    stored once per try, after its sample. Returns (seed, spot, ok, attempts, draws,
+    boxes); attempts counts samples, while the original's zero-based loop counter is
+    attempts - 1 on success and 50 on exhaustion.
     """
     frange, frad = C.from_int(C.s32(rng_range)), C.from_int(C.s32(radius))
     spot = tuple(center)

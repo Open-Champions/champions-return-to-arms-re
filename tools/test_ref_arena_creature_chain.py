@@ -92,6 +92,14 @@ class CreatureInitTests(unittest.TestCase):
     def test_atoi(self):
         self.assertEqual([R.atoi(t) for t in (b'12x', b' -3', b'+4', b'abc', b'')], [12, -3, 4, 0, 0])
 
+    def test_empty_string_is_present_property(self):
+        props = {b'dead': b'', b'change0': b'', b'initscript': b''}
+        calls, fields = R.creature_init(0, 0, props, False, 0, (0, 90), 0)
+        self.assertIn(('slot', 27, 0x14), calls)
+        self.assertIn((R.HIDE_MASK, 0, 1), calls)
+        self.assertIn((R.SCRIPT_RUN,), calls)
+        self.assertEqual(fields[0xE8], (4, 1))
+
 
 class ChainPieces(unittest.TestCase):
     def test_entry_lookups_only_when_stale(self):

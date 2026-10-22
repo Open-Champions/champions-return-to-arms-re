@@ -248,8 +248,8 @@ def install_factory_fixture(emu, real=False):
             block = e.alloc(size)       # the Life Tap orb of a kill (creature-tick.md 4 step 9)
             e.orbs.append(block)
             return block
-        if real and pending['index'] is None:
-            block = e.alloc(size)       # any other block, zero-filled as pool_new hands it out
+        if real and pending['index'] is None and (e._fresh_call.site, size) in OTHER_POOL:
+            block = e.alloc(size)       # traced dropped part prop, still not ticked
             e.other_blocks.append((e._fresh_call.site, size, block))
             return block
         if pending['index'] is None:
@@ -407,6 +407,9 @@ LOOT_PATH = {0x10F2C8, 0x100D54, 0x100974, 0x157668,
              0x2A59F0}                       # Scorpion_severPart (ref_monsters_1): a gib chunk
 LOOT_POOL = {0xC0: 'gold pile', 0x248: 'item prop'}
 LOOT_SPANS = ((0x100974, 0x100BA0), (0x100D54, 0x101998))   # loot_spawnGold, loot_generateDrops (ghidra_funcs.tsv)
+# Creature_dropHeldPartAsProp 0x117d30 allocates a 0x248-byte PhProp at 0x117e30
+# (docs/spec/weapon-holder.md 3.3; observed six times in each round-6 fighting run).
+OTHER_POOL = {(0x117E30, 0x248): 'dropped held-part prop'}
 
 
 # Services kept as boundaries even though some difftest executed them: animation, sound and
@@ -780,6 +783,7 @@ def real_creatures_report(path, seed):
     names = PF.symbol_names()
     for wave in range(3):
         emu, created = build_wave(path, wave, seed, real_creatures=True)
+        assert not emu.other_blocks, ('unexpected builder part props', wave, emu.other_blocks)
         spots = emu.free_spot_calls
         print('wave %d builder: %d objects %s; chain model matched for %d (%d comparisons, %d with two '
               'shared draws); %d free-spot calls matched the model (%d draws, %d tries)'
@@ -789,6 +793,8 @@ def real_creatures_report(path, seed):
     for label, attacked, fighting, frames in (('idle', False, False, 3700), ('fighting', True, True, 2400)):
         emu, waves, ran = run_match(path, seed, attacked, max_frames=frames, fighting=fighting,
                                     real_creatures=True)
+        assert Counter((site, size) for site, size, _block in emu.other_blocks) == \
+            ({(0x117E30, 0x248): 6} if fighting else {}), (label, emu.other_blocks)
         ledger, multi = check_ledger(emu, seed)
         print('%s: %d frames; waves %s; %d Player constructions, %d Player_run ticks (%d shared draws); '
               'states %s; final seed %#x; %d creature constructions matched the chain model'
