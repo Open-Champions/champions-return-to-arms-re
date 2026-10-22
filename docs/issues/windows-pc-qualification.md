@@ -2116,6 +2116,45 @@ NPC/mission completion, a full campaign,
 rendering fidelity, performance, physical multi-controller play or separate-PC
 multiplayer.
 
+## Separate fresh Load of the earned four-player checkpoint
+
+A separate private native process finishes the scripted frontend Load and four
+movement/release run in 26.002 seconds elapsed. It records 1,323 complete
+474-column fields and exits normally. Native card traffic is 311,272 bytes read
+and zero written. Original and copied game files, protected sources and the
+candidate retain their hashes.
+
+The loaded four-character party retains the newly earned XP values
+153/153/179/205. While the Load flag is active at fields 911–977, every recorded
+HP and mana value matches the corresponding saved float bits for all four
+characters. The flag clears at 978 with start rank three. At both RAM captures,
+the restored records match all occupied
+72-byte items across all three bags, all 20 equipment/auxiliary references,
+stored skill/ability and binding bytes, and the retained 44-byte return metadata.
+The saved 14-byte facing/position entries also match their load-entry tables;
+actual settled actor positions are reported separately.
+
+The full record comparison preserves every difference. Each character has eight
+changed bytes at each capture, all within current mana, the new actor pointer
+and the HUD selector float counter. Source review identifies the normal mana
+update, constructor assignment and HUD decrement writers. Exact per-call mana
+arithmetic and the unique intervening HUD call history remain unqualified.
+
+An independent raw reader passes 30 checks, including four current allocated
+player owners and reciprocal grid handles at both captures. The recorded input
+contains one eight-field movement hold for each character, with 30 neutral fields
+after each hold. Nonselected controls remain neutral during each hold. All 56
+input values are neutral during each release, and all four actors' XYZ values
+are stable over its final eight fields. Root viewed both captures: four living
+characters are visible at the hub savepoint before and after these movements.
+This qualifies the bounded fresh Load and software-controlled movement/release
+test for this checkpoint.
+
+The candidate remains private and uninstalled. Full campaign and NPC/quest
+completion, stored mission return from this new checkpoint, console-reference
+fidelity, performance, physical multiple-controller play and separate-PC
+multiplayer remain open.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
