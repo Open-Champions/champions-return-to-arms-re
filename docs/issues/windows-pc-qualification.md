@@ -1967,6 +1967,23 @@ existing strict rendering difference remains unresolved, and original-hardware
 fidelity, physical-controller, WAN, audio and performance coverage are
 unchanged.
 
+## NPC-directed automation timing
+
+Pure offline logging fixtures pass 143 checks across 24 groups, covering bounded
+queues, record order and failure handling. A later private four-character trial
+accepts 13 movement-only requests with eight-field leases; every acknowledgement
+reaches the unchanged two-field deadline exactly. The fourteenth request is
+rejected one field late, and owned cleanup ends the failed trial.
+
+The audit confirms movement from all four characters and 56 neutral raw/decoded
+pad values after the final accepted lease expires. The complete control journal
+is drained and closed before the failure signal. No guard or cast input is
+accepted, and NPC interaction is not reached. The timing evidence does not
+establish a single cause or reliable automation. Original and copied saves and
+installed files retain their hashes. The candidate stays private and uninstalled;
+strict rendering equivalence, NPC/mission progression and full campaigns remain
+unqualified.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
