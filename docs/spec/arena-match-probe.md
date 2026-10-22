@@ -476,6 +476,37 @@ These are independent wave builders, not one progressing match. No player
 movement, real attack timing, spawned-object run, or complete visibility and
 collision services are established by the 32-frame idle test.
 
+### Bounded player and spawned-object services; first prop boundary
+
+`tools/difftest_arena_services.py` uses `ref_arena_services` for two small
+contracts on seeds 20973 and 7. In a fresh wave-0 builder it runs 200 neutral
+`Player_run` `0x1a5030` ticks, following original `Player_move` `0x1b4020`
+on every tick. The player stays in state 2 at `+0x58c`; neither run changes
+shared seed `0x404464` (final `0xb3c33116` and `0x1d30c75a`). The no-water,
+no-input conditions are fixture answers, so this does not compare a real
+moving or attacking player. `Player_interact` `0x1b2640`, sight and touch
+services remain outside this comparison.
+
+The same script then runs the existing authored fighting fixture to make loot
+objects. It calls original `Gold_run` `0x157b58` once on the first constructed
+gold pile. Its countdown byte `+0x4c` goes from 41 to 40 on each seed,
+matching `ref_arena_services.gold_countdown`; shared seeds remain
+`0xead31674` and `0xd05bbc05`. The coin animation advance is still a service
+in this fixture. The model's countdown and no-draw rule come from
+`Gold_run` `0x157b58` (also `docs/spec/gold-run.md` §4).
+
+**The first spawned-prop tick is blocked at a concrete resource boundary.**
+Original `PhProp_run` `0x155fcc` on the first dropped held-part prop faults at
+`0x1561bc`, reading address zero, on both seeds. The authored creature part
+from `res_find` `0x17365c` has no model hull; this is consistent with
+`model_getHullPoints` `0x179320` returning zero, which `PhProp_run`
+dereferences (`docs/spec/phprop-run.md` §7).
+The script reports this as `BOUNDARY`, not as a passing physics tick. Until a
+disc-backed model and hull are supplied at run time, this combined fixture
+cannot execute its dropped props, their rest constructors, or all resulting
+seed draws. The separate `ref_phprop_run` / `difftest_phprop_run` synthetic
+contract does not fill that missing arena resource.
+
 ### Native arena-match ranking (updated after bounded round-8 transition)
 
 1. **World and object lifecycle:** the saved `0x612b` path now has an original
@@ -489,7 +520,9 @@ collision services are established by the 32-frame idle test.
 3. **Per-frame creature AI:** 32 idle ticks per creature with natural target
    scans and activity now match their scan clock. Extend through fighting and
    death in one scheduler, with real visibility, ray and movement answers.
-4. **Player and spawned objects:** replace scripted player actions and service
-   answers; tick dropped `PhProp`, gold and item objects. Then compare exact
+4. **Player and spawned objects:** neutral `Player_move` and one `Gold_run`
+   tick now execute in bounded fixtures. Supply runtime model hulls for
+   `PhProp_run`, then tick dropped props, gold and item objects; replace
+   scripted player actions and remaining service answers. Compare exact
    frame, seed, placement, object state and wave transition against a running
    match. The combined fixture currently cannot make that comparison.
