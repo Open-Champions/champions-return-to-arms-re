@@ -40,10 +40,11 @@ Tools (all take the owned executable path; none writes game bytes):
   `--print-table` regenerates the tables.
 - `tools/scan_lookup_sites.py`: constant-string call sites in a code range.
 - `tools/count_frontend_assets.py`: read-only counts on the private disc.
-- `tools/difftest_frontend_art.py` with `tools/ref_frontend_art.py`: populated
-  card rows and moving highlight, class-selection helper path, menu cursor,
-  multi-line credits and movie upload calls at seeds 20973 and 7. An optional
-  `BG/DATA` argument checks only UTF-16 line counts and MPEG sequence sizes.
+- `tools/difftest_frontend_art.py` with `tools/ref_frontend_art.py`: card row
+  submissions and selection-word rectangle, class-selection helper path, menu
+  frame call, multi-line credits and movie call sequence at seeds 20973 and 7.
+  An optional `BG/DATA` directory or private ISO argument checks UTF-16 line
+  counts and MPEG sequence headers without writing resource bytes.
 - `tools/test_ref_frontend_layout.py`: unit tests of the tables, no game file.
 
 Texture lookup, localization, text width and GPU packet generation are stubbed,
@@ -56,8 +57,10 @@ are draw API coordinates; the plain sprite primitive adds one to y when making
 its GPU packet (`research-ui/tools/ref_ui_layout.py`). No screenshot or audio
 playback was captured. **Executed**, not Ran.
 
-For `ui_drawFrameImpl` (0x17c118), the first row of a list uses a style-0
-`ctile*.tex` cursor frame with tint `0x300000ff`. The backing frame uses
+For `ui_drawFrameImpl` (0x17c118), the first row of a list submits a style-0
+frame call with tint `0x300000ff` (**Executed**). The `ctile*.tex` expansion
+is **Inferred** here from the literal `%s…tex` strings and prior frame research.
+The backing frame uses
 style 2 `tile*.tex` and tint `0x80808080`; the front overlay uses style 0
 and tint `0x3f000000`. All nine frame pieces are separate textures in
 `INTERFAC.LMP`; their source sizes, clipping and assembly order are the
@@ -72,18 +75,19 @@ can enlarge them.
 
 ## Art follow-up: five former unknowns
 
-The new difftest uses authored card headers and UTF-16 test tokens in emulator
-memory. It does not save private resource data. A blank cell in the table means
-the function makes no such UI submission in the stated fixture, not that the
-retail screen lacks an image. All coordinates are draw-call arguments.
+The new difftest plants distinct nonzero 16-byte card records, a zero-record
+control and authored UTF-16 test tokens in emulator memory. These records are
+not validated card headers. It does not save private resource data. A blank
+cell means the function makes no such UI submission in the stated fixture,
+not that the retail screen lacks an image. All coordinates are draw-call arguments.
 
 | Item | Result and source | Texture / dimensions / clip / tint / layer |
 |---|---|---|
-| Class art in creation | **Executed** `class_draw`, phase 1 of `playerSel_task` 0x225478, class bytes 0, 1, 2, 5, 11: 0x2257ac calls 0x22a968 and 0x2258c8 calls 0x22a83c. Following both yields no `ui_drawSprite` 0x17fb68, no resource lookup 0x17365c and no UI clip 0x1803e0. Only the footer frames at 0x2297b8 `(21,18,0,355)` style 1 and 0x229958 `(300,402,40,32)` style 0 submit, both layer 6/tint `0x08000000`. **Inferred** from the helpers' transforms at 0x22a83c–0x22a940 and the missing sprite that the class figure is rendered through the 3D scene, outside this UI draw task. The model/pose/animation resource mapping is still **Unknown**. | No class `.tex` lookup or UI image rectangle in this path. `SELECT.LMP` and `SELECT2.LMP` have 263 and 297 `.tex` entries respectively, but their count does not associate an entry with a class. |
-| Cursors | **Executed** `menu_cursor`: selected main row zero calls `ui_drawFrameImpl` at 0x1a1104 with `(300,259,40,33)`, layer 7, tint `0x300000ff`, style 0. **Observed** 0x17c198 names `interfac.lmp`; 0x17c1e8–0x17c2a8 formats nine `ctile` pieces: top-left/right, bottom-left/right, left/right, bottom/top and center (`.tex`; full piece assembly is the `research-ui` frame contract). **Executed** `slot_draw`: selected card row `r=0…4` submits rectangle `(66,133+17r)–(574,152+17r)` at 0x21e508, layer 6, colour `0x366876`; it requests no text clip. | Menu frame: `INTERFAC.LMP/ctile*.tex`, 40×33 wrapper at row zero, no explicit clip in this fixture. Card cursor: colour rectangle, no `.tex`, 508×19 endpoints. These are distinct cursors; the name-entry insertion caret remains fixture-dependent. |
-| Populated card rows | **Executed** `slot_draw`, `memcard_slotList` 0x21c3a4 state 4 with synthetic count 0, 1, 2 or 5 at 0x4f9238 and 16-byte records at 0x88d300. Up to five visible rows: y `128+17r`, `r=0…4`. Populated rows submit ASCII `(77,y)` at 0x21d99c, wide `(100,y)` at 0x21da8c, ASCII `(365,y)` at 0x21db24 and `(487,y)` at 0x21dbe8. Absent rows after a nonzero count submit only the `(77,y)` marker. **Observed** loop bound at 0x21dc48–0x21dc68, record reads at 0x21da24 and 0x21dab4–0x21dac0. | Small-font layer-6 batch; no per-row sprite or clip. The existing title/frame/highlight calls remain as in the state sweep. Text content and widths need real card files. |
-| Intro picture | **Executed** `intro_draw`: `splash_introMovie` 0x321788 requests `porko_l.vag` at 0x3217bc and `porko.lmp` at 0x3217c8. `movie_update` 0x3205ec reaches the GPU path at 0x320d44–0x320d90, including picture upload 0x3201b0 at 0x320d68; it submits no UI sprite, resource lookup or text clip. 0x320d44 passes colour `0x80808080` to the GPU setup. **Observed** the MPEG sequence header at `PORKO.LMP/porko0.m2v` offset 0 gives 640×448; the other lump entry, `porko000.m2v`, gives 640×480 but this fixture does not select it. | Movie stream in `PORKO.LMP`, zero standalone `.tex`. GPU upload has no UI layer/rectangle/clip arguments; onscreen crop and timing still need a displayed run. |
-| Credits layout | **Executed** `credit_draw`, `credits_run` 0x223d3c: a pointer array beginning at 0x4fb5e8 submits each authored UTF-16 line twice, shadow `(322,scroll+19r+2)` at 0x22401c and main `(320,scroll+19r)` at 0x224044, for line index `r`; 0x224060 advances the loop by 19. At scroll 224, normal-line colours are `0x20000000` (0x224004) and `0x5e405e5e` (0x22402c). A `\b` prefix at 0x223eb4–0x223f30 changes the main colour to `0x5b1a444c` and is skipped in the submitted pointer. The scroll drops by 1 per call. **Observed** read-only structure of `CREDITS.LMP`: four UTF-16 BOM/CRLF `.txt` entries have 360, 360, 362 and 361 lines (English, German, French, Spanish), each with one terminal marker. The four line counts include blank lines; no text is reproduced here. | `CREDITS.LMP` has zero `.tex`; medium font, layer 7, no sprite or explicit clip in this path. Full locale typography and onscreen timing remain unverified. |
+| Class art in creation | **Executed** `class_draw`, phase 1 of `playerSel_task` 0x225478, class bytes 0, 1, 2, 5, 11 planted for slot 0: 0x2257ac calls 0x22a968 and 0x2258c8 calls 0x22a83c. Following those two helpers yields no `ui_drawSprite` 0x17fb68, resource lookup 0x17365c or UI clip 0x1803e0. The footer frames at 0x2297b8 `(21,18,0,355)` style 1 and 0x229958 `(300,402,40,32)` style 0 submit, both layer 6/tint `0x08000000`. **Inferred:** the class figure may use a 3D scene path, outside these followed callees. **Unknown:** the model, pose and animation mapping; other class values and the complete call tree. | No class `.tex` lookup or UI image rectangle among the followed callees. `SELECT.LMP` and `SELECT2.LMP` entry counts do not associate an entry with a class. |
+| Cursors | **Executed** `menu_cursor`: main row zero calls `ui_drawFrameImpl` at 0x1a1104 with `(300,259,40,33)`, layer 7, tint `0x300000ff`, style 0. **Observed** `interfac.lmp` at 0x534090 and nine `%s…tex` format strings at 0x5340b8–0x534138. **Inferred:** style 0 supplies the `ctile` prefix; the formatting callee 0x17c118 is not followed here. **Executed** `slot_draw`: varying 0x879e28 from 0 through 5 moves the rectangle to `(66,133+17r)–(574,152+17r)` at 0x21e508, layer 6, colour `0x366876`; changing 0x879e24 alone does not move it. No text clip is requested. **Inferred:** this rectangle is a list-row highlight. | Menu frame: 40×33 wrapper at row zero; nine formatted textures are not traced by this fixture. Card rectangle: 508×19 endpoints, including an out-of-count position at r=5 with count 1. Its use as a selection cursor remains **Inferred**. |
+| Card rows | **Executed** `slot_draw`, `memcard_slotList` 0x21c3a4 state 4 with planted count 0–6 at 0x4f9238 and five authored 16-byte records at 0x88d300. The fixture reads record bytes at offsets +2, +3, +5, +6 and +7 for rows below the count; both nonzero and all-zero records reach the same draw call sites when count is 1. At most five rows submit: y `128+17r`, `r=0…4`. Rows below the count submit ASCII `(77,y)` at 0x21d99c, wide `(100,y)` at 0x21da8c, ASCII `(365,y)` at 0x21db24 and `(487,y)` at 0x21dbe8. Rows above a nonzero count submit only `(77,y)`; count 0 submits none. **Unknown:** whether a planted nonzero record is a valid card header or how real card data changes text. | Small-font layer-6 batch; no per-row sprite or clip in this fixture. The count is a list bound, not proof of populated or valid cards. |
+| Intro calls | **Executed** `intro_draw`: `splash_introMovie` 0x321788 requests `porko_l.vag` at 0x3217bc and `porko.lmp` at 0x3217c8. A separate `movie_update` 0x3205ec call with zeroed decode state reaches `FlushCache` 0x352c60, `sceGsSyncPath` 0x34fe78 and `movie_startGifChain` 0x3201b0 at 0x320d68. Calls to 0x3502e8 and 0x350618, and the 0x8eb0e0 argument, are **Unknown**. The recorded 0x80808080 second argument of `FlushCache` is stale register state, not a colour. No UI sprite, resource lookup or text clip is submitted. **Observed** by optional private-ISO structure check: `PORKO.LMP/porko0.m2v` has a 640×448 MPEG header; `porko000.m2v` has a 640×480 header (also noted in `docs/issues/native-app.md`). **Unknown:** which entry `movie_open` selects; the intro fixture stops before that call. | These call submissions have no UI layer/rectangle/clip arguments. The GS upload chain is built by 0x31fdf4 (`docs/mainloop.md:25`); neither a decoded picture nor displayed crop/timing is established by this fixture. |
+| Credits layout | **Executed** `credit_draw`, `credits_run` 0x223d3c: a pointer array beginning at 0x4fb5e8 submits each authored UTF-16 line twice, shadow `(322,scroll+19r+2)` at 0x22401c and main `(320,scroll+19r)` at 0x224044, for line index `r`. At scroll 224, all three tested normal lines use colours `0x20000000` (0x224004) and `0x5e405e5e` (0x22402c). At scroll 400, two lines have different colours: first `0x07000000`/`0x14405e5e`, second `0x02000000`/`0x06405e5e`; colour can vary by line position. A two-character backslash-plus-`b` prefix in the authored UTF-16 test line changes the main colour to `0x5b1a444c`; both submitted text pointers advance four bytes past the prefix. The scroll word drops by 1 per call. **Observed** by optional private-ISO structure check: four UTF-16 BOM/CRLF `.txt` entries in `CREDITS.LMP` have 360, 360, 362 and 361 lines (English, German, French, Spanish). The counter includes a final nonempty line without LF. No text is reproduced. | `CREDITS.LMP` has zero `.tex`; medium font, layer 7, no sprite or explicit clip in this followed path. Full locale typography and onscreen timing remain **Unknown**. |
 
 ## Fonts
 
@@ -285,19 +289,23 @@ Implement in this order; each item names its evidence level.
    (four rows from y=106, 17 apart) and the **character summary** (six rows from
    y=130). **Executed** positions; glyphs and the name-entry insertion cursor
    remain Unknown.
-7. **Populated slot list and card prompts**: five rows at y=128–196 in steps of 17,
-   four columns at x=77/100/365/487, moving 508×19 highlight, title `(320,110)`,
-   body `(320,230)`, prompt `(320,320)`. **Executed** with synthetic card records;
-   verify content and widths with real card files later.
+7. **Slot list and card prompts**: up to five rows at y=128–196 in steps of 17,
+   four columns at x=77/100/365/487, rectangle 508×19 driven by 0x879e28,
+   title `(320,110)`, body `(320,230)`, prompt `(320,320)`. **Executed** with
+   authored record bytes and counts 0–6; calling it a highlight is **Inferred**.
+   Real card validity, content and widths remain **Unknown**.
 8. **Credits**: UTF-16 line pointers, 19-unit spacing, two-pass shadow offset
    (+2,+2), one-unit scroll and music handoff. **Executed** with authored lines;
    resource line counts **Observed**. Check displayed typography later.
-9. **Intro movie**: route its 640×448 MPEG picture through direct GPU upload
-   0x3201b0; it is not a `.tex` sprite. **Executed** upload call and **Observed**
-   source header. Check crop, timing and audio in a displayed run.
-10. **Class figure and animation mapping**: preserve the 3D scene path and avoid
-    selecting a `HEADPIC` sprite from its count alone. The no-sprite result is
-    **Executed**; the 3D art route is **Inferred** and exact model/pose remain open.
+9. **Intro movie**: retain the movie path rather than treating it as a `.tex`
+   sprite. **Executed** `movie_startGifChain` 0x3201b0 in a zeroed decode
+   fixture; **Observed** two MPEG headers, 640×448 and 640×480, in the private
+   lump. The chosen entry, decoded-picture upload, crop, timing and audio are
+   **Unknown** until the entry argument and displayed run are captured.
+10. **Class figure and animation mapping**: investigate the inferred 3D scene
+    path and avoid selecting a `HEADPIC` sprite from its count alone. No UI
+    sprite among the two followed helpers is **Executed**; the 3D art route
+    is **Inferred** and exact model/pose remain **Unknown**.
 
 Do not copy any coordinate not marked Executed in this document into the native
 client, and do not remove the native `HOST LAYOUT` label on screens whose exact

@@ -16,22 +16,23 @@ CLASS_FRAMES = ((0x2297B8, 21, 18, 0, 355, 6, 0x08000000, 1),
 # Each call is (site, x, y, width, height, layer, tint, style).
 MENU_CURSOR = (0x1A1104, 300, 259, 40, 33, 7, 0x300000FF, 0)
 CURSOR_LUMP = "interfac.lmp"
-CURSOR_PIECES = ("ctiletopleft.tex", "ctiletopright.tex",
-                 "ctilebotleft.tex", "ctilebotright.tex",
-                 "ctileleft.tex", "ctileright.tex", "ctilebot.tex",
-                 "ctiletop.tex", "ctilecenter.tex")
+# Format strings read at 0x5340b8–0x534138. The style-0 prefix is not executed here.
+CURSOR_PIECES = ("%stopleft.tex", "%stopright.tex",
+                 "%sbotleft.tex", "%sbotright.tex",
+                 "%sleft.tex", "%sright.tex", "%sbot.tex",
+                 "%stop.tex", "%scenter.tex")
 
 
 def slot_rows(count):
-    """Five visible rows from memcard_slotList 0x21c3a4, state 4.
+    """At most five rows from memcard_slotList 0x21c3a4, state 4.
 
-    The fixture supplies `count` synthetic 16-byte card headers at 0x88d300.
-    For absent slots the screen submits only the first column's marker.
+    `count` is the planted list count; record validity is not established.
+    For rows past a nonzero count only the first column's marker is submitted.
     """
     out = []
+    if count == 0:
+        return ()
     for row in range(5):
-        if row >= count and count == 0:
-            continue
         y = 128 + 17 * row
         out.append((0x21D99C, 0x181AA0, 77, y))
         if row < count:
@@ -42,7 +43,7 @@ def slot_rows(count):
 
 
 def slot_highlight(row):
-    """Selected card row rectangle at 0x21e508; x2/y2 are endpoints."""
+    """Rectangle at 0x21e508 driven by word 0x879e28; x2/y2 are endpoints."""
     y = 133 + 17 * row
     return (0x21E508, 66, y, 574, y + 19, 6, 0x366876)
 
@@ -54,8 +55,10 @@ def credits_lines(scroll_y, count):
         (0x224044, 320, scroll_y + 19 * row)))
 
 
-# movie_update 0x3205ec, zeroed decode fixture: GPU submission path, not a
-# ui_drawSprite path. The picture itself is uploaded in 0x3201b0.
+# movie_update 0x3205ec, zeroed decode fixture. 0x352c60 is FlushCache,
+# 0x34fe78 is sceGsSyncPath, and 0x3201b0 starts a GIF DMA chain. The
+# 0x80808080 second argument at 0x320d44 is stale, not a colour. Targets
+# 0x3502e8 and 0x350618 and argument 0x8eb0e0 remain unknown here.
 MOVIE_DRAW_CALLS = ((0x320D44, 0x352C60, 0, 0x80808080),
                     (0x320D4C, 0x3502E8, 2, 0x80808080),
                     (0x320D5C, 0x34FE78, 0, 0),
