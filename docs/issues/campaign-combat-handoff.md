@@ -346,3 +346,122 @@ only; no game asset bytes or level-record derivatives are tracked.
 
 **Status:** these are bounded original-code contracts and a Gold-capable source.
 The requested real `valor` fight and actual route equipment remain Unknown.
+
+## Research round 5: exact loader boundary for play-enemies-r3 (2026-10-22)
+
+**Executed** by `tools/difftest_campaign_combat_r5.py` on SLUS-20973 US v2.00,
+seeds 20973 and 7. The original `world_loadRecords` 0x14e808 consumed 7,196
+bytes of the private `VALOR.GOB` object stream and handed all 201 records to
+the installed factory callback in file order, with bit-identical positions,
+angles and matching property strings. This callback returned no object, so
+this test does **not** claim a populated grid or successful actor construction.
+The original factory 0x159c94 independently selected a 0x3d8 allocation and
+`WarBoar_ctor` 0x2ba03c for all 34 `WarBoar` and 44 `WarBoarSmall` records,
+and a 0x470 allocation and `Minotaur_ctor` 0x288fdc for all six Minotaurs.
+The two supplied seeds are repeatable test controls, not a measured campaign
+seed after the hub-to-valor load.
+
+**Observed** in the executable's definitions: 0x502f80 names 20 entries in
+`warboar.lmp`; 0x501200 names 26 entries in `minotaur.lmp`. All 46 named
+entries exist in the corresponding private archives. Archive presence is not
+an `res_find` 0x17365c result. `GameObject_ctor` 0x14cb10 resolves definition
+entries only when +4 differs from `g_lumpGeneration` 0x41bf78. **Executed**:
+with an `res_find` recording stub, the original base ctor asks for all 46
+`(lump, entry)` pairs in definition order at generation 1, makes zero repeat
+lookups in the same generation, and asks for all 46 again at generation 2.
+The stub returned zero on every lookup. The actual
+generation, allocation addresses and decoded model handles of a valor session
+were not captured.
+
+**Executed with real record inputs and refused downstream services:** all 84
+class constructors received each record's actual position, angle and property
+list. The class direct-call sequences agree with `ref_campaign_combat_r5.py`
+(1,200 calls). Each constructor passes `(object, typeName, stack copy of
+position, angle, classDef, properties)` to `Creature_ctor` 0x109d68. The
+test stubs that base function and therefore supplies a synthetic definition
+pointer. The entries below state argument values **at the class call sites**;
+the zero model/clip pointers and zero returns in the test are stub effects,
+not observed valor return values. Unused register contents are not arguments.
+
+| Class call sites | Arguments established on every record | Return boundary |
+|---|---|---|
+| Boar 0x2ba138 → name test 0x159c20 | type name; literal pointer 0x54d7b0 | Original string helper ran. |
+| Boar 0x2ba184 → `model_buildHideMask` 0x179550 | resolved model at definition slot 0; variant 0 | Model pointer and 64-bit mask Unknown. |
+| Boar 0x2ba19c / 0x2ba1bc → `anim_clear` 0x1707b0 / `anim_push` 0x170838 | animation state `object+0x114`; push clip from definition, mode 1 | Loaded clip pointer and state Unknown. |
+| Boar 0x2ba1cc → `obj_runEvery60` 0x14f2b8 | object | Actual list link requires the base object and shared world. |
+| Boar 0x2ba1f8–0x2ba308 → `creature_setDefEntryParams` 0x118378 | indexes 4, 5, 6, 7, 10, 11, 12; all four integer masks and raw float times are asserted in `ref_campaign_combat_r5.py` | Round 4 executed the seven boar event writes on relocated clips; loaded-resource addresses Unknown. |
+| Boar 0x2ba310 → `Creature_init` 0x10a230 | object | Terrain, scripts, animation and final placement path unexecuted here. |
+| Minotaur 0x28914c → string helper 0x3b81a0 | type name; literal pointer 0x548f38 | Original string helper ran. |
+| Minotaur 0x2891d0 / 0x2891f8 → WeaponShield hand setup 0x11bc18 | holder `object+0x3c8`, then `(1,0x15,0x20)` and `(2,0x19,0x20)` | Held-part writes Unknown. The holder is shared combat state. |
+| Minotaur 0x289200 / 0x289224 → own draw 0x1509d0 / hide mask 0x179550 | object; then resolved model slot 0 and a variant derived from the own draw (1 under the test stub) | Real draw, variant and mask result Unknown. |
+| Minotaur 0x28923c / 0x289254 / 0x28925c → `anim_clear` 0x1707b0 / `Minotaur_setState` 0x28a16c / `obj_runEvery60` 0x14f2b8 | `object+0x114`; then `(object,0)`; then object | All three bodies were stubbed in this test. |
+| Minotaur 0x289288–0x2893cc → `creature_setDefEntryParams` 0x118378 | indexes 5, 6, 7, 8, 9, 13, 3, 4; integer masks and raw float times asserted in the reference | Loaded animation and final writes Unknown. |
+| Minotaur 0x2893d4 → `Creature_init` 0x10a230 | object | Terrain, scripts and final placement path unexecuted. |
+
+The boar call starts at 0x2ba0a8; the Minotaur base call starts at 0x289038.
+Their constructor argument orders differ at the factory boundary: boar takes
+`(block, position, angle, properties, typeName)`; Minotaur takes
+`(block, typeName, position, angle, properties)`. Both call the base with the
+six-argument order above. The Minotaur branch for the `Minotaur` name uses
+hand-2 type 0x19; its own random bit chooses the hidden-part variant, so the
+stubbed variant is not a real valor answer. **Unknown:** every actual resource/model/animation,
+terrain and shared-combat return on a complete valor load. `ee_emu.py` here
+does not boot `game_loadLevel` 0x1e55c0, establish the real lump manager,
+resident `hud.lmp`, player record, shared world and model state, then execute
+the base and derived constructors together. The private archives alone cannot
+reconstruct allocation-specific returned pointers or the resulting hide mask.
+There is consequently no honest 78+6 table of real service return values yet.
+
+**Production actor binding:** **Observed** at `GameObject_ctor` 0x14cb10:
+the constructor inserts the one allocated block into grid A (or the off-grid
+list) at its position and gives it the shared-seed-derived object seed.
+`WarBoar_ctor` 0x2ba1cc and `Minotaur_ctor` 0x28925c choose the 60-frame run
+list by calling 0x14f2b8. `world_loadRecords` then stores the record's class
+name at object +0x34 and can invoke save-state slot 8. Both grid and run
+lists prepend; within a cell or list, file-order creations appear in reverse
+order. `runObjects` 0x14b910 dispatches virtual slot 4 from active, 15- and
+60-frame lists; targeting walks the same grid at 0x14a928, with target handles
+at creature +0x234 through 0x1a1738. There is no separate post-constructor
+combat registration in the original. The native `Host::build` still refuses
+boars before `built_` insertion; `Session::bind_hp` requires the live
+`objects::World` address and serial. The direct constructor probe does not
+establish the native binding, tick, targeting, deletion or restore path.
+
+**Player and item gate:** `Player1_ctor` 0x158928 makes a start *marker*, not
+the equipped player. The native marker currently requires the caller's
+previous level, entrance, gate-travel and loaded-save inputs; it also refuses
+when item-load seed accounting or other constructor draws are unmodelled.
+`game_loadLevel` 0x1e5690–0x1e56bc runs `item_loadResources` 0x108434 only
+outside `intro` when `hud.lmp` is absent. That loader parses 607 definitions
+and makes 223 shared draws; the native host has a 223-draw gate but no
+observed `hud.lmp` residency for this strict route. A new character needs
+`player_initNewCharacter` 0x1b1d70 (model +0x54 determines class +0x50),
+`player_giveStartingItems` 0x1acc78, real descriptor parse 0x1069b8,
+`inventory_giveItem` 0x1c1868 and `inventory_equipItem` 0x1c27c0.
+Alternatively a saved character needs the real import record at 0x1bdb0c.
+Only then can the active weapon at +0x4434 indexed by +0x4a7c and damage
+from `Player_recalcDamage` 0x1b7158 be known. Round 4's 12 valid-model
+grant routes used parser/inventory/equip stubs; the native report's model 0,
+class 0, imported false is a created placeholder, not evidence of a real
+equipped axe. **Unknown:** the strict route's creation/import choice, player
+record, debug switches, actual item bytes and active weapon.
+
+### Ordered native port list after round 5
+
+1. Supply the actual hub-to-valor level-entry state, `hud.lmp` residency and
+   shared seed. Execute the conditional item loader and all prior constructor draws
+   in record order; retain counted refusals until those inputs are measured.
+2. Resolve the 20 boar and 26 Minotaur definition slots through the real
+   resource manager. Complete base `Creature_ctor`, hide-mask, animation,
+   terrain, shared-combat and `Creature_init` services and compare their
+   actual returned values and writes for all 84 records.
+3. Register each constructed block once in `objects::World`; bind its address
+   and live serial into `Session` combat, and route grid queries, run-list
+   ticks, target handles, damage, deletion and restore through that owner.
+4. Create or import the real player record, run parser/inventory/equip,
+   read its active item and recalculate damage. Then rerun strict step 4 to
+   prove target, damage, death, drop, Gold pickup and balance credit.
+
+**Status: MORE.** The original record path and class call contracts are
+measured, but play-enemies-r3's real service returns, native binding and
+equipped player remain blocked by the explicit inputs and runtime paths above.
