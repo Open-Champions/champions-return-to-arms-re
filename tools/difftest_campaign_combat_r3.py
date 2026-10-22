@@ -178,6 +178,7 @@ def check_gold_credit(executable, seed):
     emu.call(0x1DC268, 0, pos, 42, max_steps=100000)
     floater, pending, credited = 42, 0, 0
     first_credit = None
+    previous_observed_floater = emu.mem.u32(0x86A900 + 0x1C)
     for frame in range(101, 171):
         emu.mem.w32(0x44FDCC, frame)
         emu.call(0x1DCB80, max_steps=100000)
@@ -185,8 +186,10 @@ def check_gold_credit(executable, seed):
         assert emu.mem.u32(0x86A900 + 0x1C) == floater, frame
         assert emu.mem.u32(0x86ACE8) == pending, frame
         assert emu.mem.u32(0x4D8AF0 + 0xE4) == credited, frame
-        if first_credit is None and credited:
+        observed_floater = emu.mem.u32(0x86A900 + 0x1C)
+        if first_credit is None and previous_observed_floater and not observed_floater:
             first_credit = frame - 100
+        previous_observed_floater = observed_floater
     assert credited == 42 and pending == 0
     assert first_credit is not None
     return first_credit
