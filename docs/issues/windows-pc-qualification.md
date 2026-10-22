@@ -2455,6 +2455,45 @@ acknowledgement, mission completion, the full campaign, reference
 fidelity/performance, physical four-pad play and separate-PC/WAN play remain
 open. The diagnostic candidate remains private and uninstalled.
 
+## Expanded diagnostic snapshot stops at input expiry
+
+**Ran on Windows, 2026-10-22:** one new private continuation tested a larger
+read-only diagnostic snapshot covering all three allocation pools, handles and
+grid links. Its native atomic read limit is 1.5 MiB, while the existing request
+deadlines, input guards and global quotas remain unchanged. Separate CPU and
+synthetic component checks passed before this run; they do not establish live
+input timing or gameplay correctness. The candidate remains private and
+uninstalled.
+
+Normal Load and the free hub return completed from the accepted checkpoint.
+Eight complete replies contained approximately 1.24 million bytes each in 27 to
+30 spans. Root decoded the current four-owner party and complete object census
+at two actual reply anchors, fields 1427 and 1446. These two anchors establish
+snapshot readability at those points.
+
+Both ordinary control requests expired before acceptance. Their source fields
+were 1431 and 1446, deadlines 1433 and 1448, and rejection fields 1434 and 1449.
+The driver stopped at its two-consecutive-expiry boundary. There were no
+accepted ordinary pad requests, passage overrides, route observations, Confirm,
+Use or Start requests. This attempt did not exercise passage prevention or add
+campaign coverage. The precise timing bottleneck remains unknown.
+
+The native application and control client exited normally after the fixed
+diagnostic tail. The trace contains 7296 complete offline rows with 480 columns.
+All 56 watched raw and decoded pad cells remained neutral throughout the armed
+period, including all 5846 rows from cancel through the final trace row.
+Nonpositive health was subsequently observed during the unpaused tail; the
+original expiry partial remains distinct from that later outcome. Full
+recovery-barrier and control-lease replay remain unqualified.
+
+Game-card traffic was 311272 bytes read and zero written. The four original save
+files, four private copies, installed build and protected inputs remained
+unchanged. No new checkpoint or durable progress was created. The next step is
+to measure the diagnostic read, decode, decision and send path before another
+bounded attempt, preserving the existing deadlines. Passage traversal, Natasla
+dialogue, full Save acknowledgement, campaign completion, reference fidelity and
+performance, physical multiplayer and separate-PC/WAN multiplayer remain open.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
