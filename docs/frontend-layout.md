@@ -1,9 +1,9 @@
 # Frontend layout and sound, US v2.00 (SLUS-20973)
 
-**Status: MORE.** This is a function-level capture of the menu list, the publisher
-logo, the pause list, the main-menu row destinations and, state by state, the draw
-calls of the character-creation, memory-card and import screens. It does not yet
-establish pixel-exact finished screens.
+**Status: MORE.** This is a function-level capture of the menu list, publisher
+logo, pause list, main-menu destinations, character and card screens, and the
+five art questions revisited below. It does not establish pixel-exact finished
+screens or the class model's rendered pose.
 The executable SHA-256 is `292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675`.
 The previous flow contract is `t3/research-menus` `099900e`; the primitive
 frame/font contract is `t3/research-ui` `3e39392`; the music contract is
@@ -18,11 +18,12 @@ described in `open-champions/worktrees/menus/work/loop-menus-r2-report.md`.
 | **Static** | Decoded from the instruction words by `tools/scan_lookup_sites.py`. A candidate only: a branch may reach the call with another register value (see the sound note below). |
 | **Inferred** | A reading of names or identifiers, not traced. |
 | **Unknown** | Not captured. |
+| **Observed** | Read from executable or private-disc structure at the stated address or resource offset; execution is identified separately. |
 
-No value below is labelled Observed: every number that was once recorded from an
-untracked probe is now either reproduced by a tool or listed as Unknown. The
-seeds (word 0x404460) do not change any record in these fixtures; they are kept
-because the earlier contract used them.
+Draw-call numbers are reproduced by a difftest; the new **Observed** disc
+structure and instruction facts identify their own source. The seeds (word
+0x404460) do not change any record in these fixtures; they are kept because the
+earlier contract used them.
 
 ## Method and limits
 
@@ -39,6 +40,10 @@ Tools (all take the owned executable path; none writes game bytes):
   `--print-table` regenerates the tables.
 - `tools/scan_lookup_sites.py`: constant-string call sites in a code range.
 - `tools/count_frontend_assets.py`: read-only counts on the private disc.
+- `tools/difftest_frontend_art.py` with `tools/ref_frontend_art.py`: populated
+  card rows and moving highlight, class-selection helper path, menu cursor,
+  multi-line credits and movie upload calls at seeds 20973 and 7. An optional
+  `BG/DATA` argument checks only UTF-16 line counts and MPEG sequence sizes.
 - `tools/test_ref_frontend_layout.py`: unit tests of the tables, no game file.
 
 Texture lookup, localization, text width and GPU packet generation are stubbed,
@@ -64,6 +69,21 @@ call `(293,252,54,114,layer 7,0x80808080)`. The selected-row frame's height
 is 32 at an even y, 33 at an odd y. Only selected row zero is covered by the
 frame model. The exact per-table calls are asserted by the difftest; text width
 can enlarge them.
+
+## Art follow-up: five former unknowns
+
+The new difftest uses authored card headers and UTF-16 test tokens in emulator
+memory. It does not save private resource data. A blank cell in the table means
+the function makes no such UI submission in the stated fixture, not that the
+retail screen lacks an image. All coordinates are draw-call arguments.
+
+| Item | Result and source | Texture / dimensions / clip / tint / layer |
+|---|---|---|
+| Class art in creation | **Executed** `class_draw`, phase 1 of `playerSel_task` 0x225478, class bytes 0, 1, 2, 5, 11: 0x2257ac calls 0x22a968 and 0x2258c8 calls 0x22a83c. Following both yields no `ui_drawSprite` 0x17fb68, no resource lookup 0x17365c and no UI clip 0x1803e0. Only the footer frames at 0x2297b8 `(21,18,0,355)` style 1 and 0x229958 `(300,402,40,32)` style 0 submit, both layer 6/tint `0x08000000`. **Inferred** from the helpers' transforms at 0x22a83c–0x22a940 and the missing sprite that the class figure is rendered through the 3D scene, outside this UI draw task. The model/pose/animation resource mapping is still **Unknown**. | No class `.tex` lookup or UI image rectangle in this path. `SELECT.LMP` and `SELECT2.LMP` have 263 and 297 `.tex` entries respectively, but their count does not associate an entry with a class. |
+| Cursors | **Executed** `menu_cursor`: selected main row zero calls `ui_drawFrameImpl` at 0x1a1104 with `(300,259,40,33)`, layer 7, tint `0x300000ff`, style 0. **Observed** 0x17c198 names `interfac.lmp`; 0x17c1e8–0x17c2a8 formats nine `ctile` pieces: top-left/right, bottom-left/right, left/right, bottom/top and center (`.tex`; full piece assembly is the `research-ui` frame contract). **Executed** `slot_draw`: selected card row `r=0…4` submits rectangle `(66,133+17r)–(574,152+17r)` at 0x21e508, layer 6, colour `0x366876`; it requests no text clip. | Menu frame: `INTERFAC.LMP/ctile*.tex`, 40×33 wrapper at row zero, no explicit clip in this fixture. Card cursor: colour rectangle, no `.tex`, 508×19 endpoints. These are distinct cursors; the name-entry insertion caret remains fixture-dependent. |
+| Populated card rows | **Executed** `slot_draw`, `memcard_slotList` 0x21c3a4 state 4 with synthetic count 0, 1, 2 or 5 at 0x4f9238 and 16-byte records at 0x88d300. Up to five visible rows: y `128+17r`, `r=0…4`. Populated rows submit ASCII `(77,y)` at 0x21d99c, wide `(100,y)` at 0x21da8c, ASCII `(365,y)` at 0x21db24 and `(487,y)` at 0x21dbe8. Absent rows after a nonzero count submit only the `(77,y)` marker. **Observed** loop bound at 0x21dc48–0x21dc68, record reads at 0x21da24 and 0x21dab4–0x21dac0. | Small-font layer-6 batch; no per-row sprite or clip. The existing title/frame/highlight calls remain as in the state sweep. Text content and widths need real card files. |
+| Intro picture | **Executed** `intro_draw`: `splash_introMovie` 0x321788 requests `porko_l.vag` at 0x3217bc and `porko.lmp` at 0x3217c8. `movie_update` 0x3205ec reaches the GPU path at 0x320d44–0x320d90, including picture upload 0x3201b0 at 0x320d68; it submits no UI sprite, resource lookup or text clip. 0x320d44 passes colour `0x80808080` to the GPU setup. **Observed** the MPEG sequence header at `PORKO.LMP/porko0.m2v` offset 0 gives 640×448; the other lump entry, `porko000.m2v`, gives 640×480 but this fixture does not select it. | Movie stream in `PORKO.LMP`, zero standalone `.tex`. GPU upload has no UI layer/rectangle/clip arguments; onscreen crop and timing still need a displayed run. |
+| Credits layout | **Executed** `credit_draw`, `credits_run` 0x223d3c: a pointer array beginning at 0x4fb5e8 submits each authored UTF-16 line twice, shadow `(322,scroll+19r+2)` at 0x22401c and main `(320,scroll+19r)` at 0x224044, for line index `r`; 0x224060 advances the loop by 19. At scroll 224, normal-line colours are `0x20000000` (0x224004) and `0x5e405e5e` (0x22402c). A `\b` prefix at 0x223eb4–0x223f30 changes the main colour to `0x5b1a444c` and is skipped in the submitted pointer. The scroll drops by 1 per call. **Observed** read-only structure of `CREDITS.LMP`: four UTF-16 BOM/CRLF `.txt` entries have 360, 360, 362 and 361 lines (English, German, French, Spanish), each with one terminal marker. The four line counts include blank lines; no text is reproduced here. | `CREDITS.LMP` has zero `.tex`; medium font, layer 7, no sprite or explicit clip in this path. Full locale typography and onscreen timing remain unverified. |
 
 ## Fonts
 
@@ -102,7 +122,7 @@ mission choices, and so on) are **Inferred** and not traced to a research file.
 |---|---|---|
 | Boot/card check | **Executed** (`shallow_screen_calls`) 0x32396c requests config load at 0x323974 and installs modal callback 0x3238f4 at 0x323988; the callback calls `save_daemonDraw` 0x2189e0 at 0x3238fc. It submits no UI primitive itself. The screen it shows is the card screens below. | Populated card state to reach real prompts and the spinner (`memcard_tickSpinner` 0x222e10 draws nothing in a zeroed run). |
 | Publisher logo | **Executed** (`logo_draw`) `splash_soeLogo` submits `SOELOGO.LMP/soe_splash_url.tex` at `(192,330)` and `soe_splash.tex` at `(64,50)`, both layer 3, tint `0x80808080`, no explicit clip. | Texture sizes and animation/fade across frames. |
-| Intro | **Executed** `splash_introMovie` 0x321788: display-rate mode 1 at 0x321790, `stream_playGlobal` at 0x3217bc, `lump_load` at 0x3217c8, stream-ready check 0x3217d0, `movie_isFinished` 0x32180c. **Static** (`scan_lookup_sites`): the stream and lump identifiers are `porko_l.vag` and `porko.lmp` (the lump holds zero `.tex`, below); stream slot 0 matches `docs/audio-save.md` ("stream 0 was seen only for the intro movie's soundtrack"). The shallow fixture submits no UI sprite; picture decode and upload happen in `movie_update` (`docs/mainloop.md:499-503`). | MPEG picture size, timing, fade and the soundtrack's playback. |
+| Intro | **Executed** `splash_introMovie` 0x321788: display-rate mode 1 at 0x321790, `stream_playGlobal` at 0x3217bc, `lump_load` at 0x3217c8, stream-ready check 0x3217d0, `movie_isFinished` 0x32180c. **Static** (`scan_lookup_sites`): `porko_l.vag` and `porko.lmp`. GPU upload calls and the disc picture size are in the art follow-up above. | Displayed crop, timing, fade and soundtrack playback. |
 | Main menu, state 0 | Four rows at `x=320`, `y=259,281,303,325`. **Executed** title: lookup 0x1e0aac is `FRONTEND.LMP/title.tex`; sprite call 0x1e0ac8 submits `(141,15)`, layer 5, tint `0x80808080`, for states 0–4 and not for state 11 (`frontend_details`). **Executed** row destinations (`main_accept`): selected index lives in the word at table+4·16+4 (0x4f6bcc); accepting row 0 enters state 1 (the table at 0x4f6bf8), row 1 calls `memcard_requestLoad` 0x2176e0 at 0x1e166c and stays in state 0, row 2 calls the options setup 0x1e6428 and enters state 11 (table 0x4f6e88), row 3 enters state 15 and requests the credits music (`mx_endcredits_ext_l.vag`, flags 3) and `credits_load`. Every accept first plays `menu_main_accept.anm`. The dispatch compares the row's entry key to constants with the original string comparison 0x3b8534, so a native port must dispatch by key, not by index assumption. | Exact title size, background movie/frame, localized glyphs, text-width frame expansion, fade alpha. |
 | Game type, state 1 | Two rows at `x=320`, `y=281,303`. Same title submission. | Same unresolved art/font details. |
 | Players, state 2 | Four rows at `x=320`, `y=259,281,303,325`. Same title submission. | Same. |
@@ -112,7 +132,7 @@ mission choices, and so on) are **Inferred** and not traced to a research file.
 | Character creation | See the next section. | |
 | Name entry | **Executed** `nameEntry_draw` 0x22c920 submits centered text calls at `(163,98)` (0x22cba4) and `(233,98)` (0x22ccec), sets layer 6 at `text_begin` 0x22c9c0, draws a rectangle `(0,−9)`–`(0,11)` on layer 6 with colour `0x1e3053` at 0x22d084 and requests text clip `(41,0,640,480)` at 0x22d20c, in the zeroed fixture. Three wide-text calls `(81,138)`, `(81,158)`, `(81,178)` (0x22ce4c, 0x22ceb0, 0x22cf14), one wrapped call `(41,38)` (0x22d12c) and one ASCII call `(41,72)` (0x22d26c). Batches: medium 0x585e5d (0x22c9c0), small 0x316864 (0x22d0e4), medium 0x585e5d (0x22d198), all layer 6. `text_setClip` 0x1803e0 clamps to 640×447 (`symbols/engine.tsv:166`). The rectangle is zero width in this fixture; a visible cursor cannot be inferred. Static menu sounds in `nameEntry_run` (0x22be68): toggle sites 0x22bff0, 0x22c0bc, 0x22c150, 0x22c1fc, back 0x22c3b8, accept 0x22c474 (**Static**). | Grid glyphs, accepted-name colours, executed sounds. |
 | Load/save | See the card section. | |
-| Credits, state 15 | **Executed** `credits_load` 0x223c64 then `credits_run` 0x223d3c opens a medium-font batch at 0x223e40 on layer 7, colour `0x80000000`. With one authored wide-string line (`credits_authored_line`) at scroll value y the code submits two centered calls: `(322,y+2)` at 0x22401c after a colour call at 0x224004, and `(320,y)` at 0x224044 after a colour call at 0x22402c; the scroll value drops by 1 per call. Colour values: y=448 gives `0` and `0x00405e5e`; y=400 gives `0x07000000` and `0x14405e5e`; y=224 gives `0x20000000` and `0x5e405e5e` (the alpha byte rises as the line scrolls up; the three y values are the asserted points, the curve between them is not). End: a zero return from `credits_run` runs `0x211338(2)`, requests the frontend theme again with flags 1 and returns to state 0 (`credits_exit`); nonzero keeps state 15. Lumps loaded: `credits.lmp` at 0x223d10 and 0x223e20 (**Static**). | Real credits data layout and line spacing, any imagery, exit input and sound. |
+| Credits, state 15 | **Executed** `credits_load` 0x223c64 then `credits_run` 0x223d3c opens a medium-font batch at 0x223e40 on layer 7, colour `0x80000000`. With one authored wide-string line (`credits_authored_line`) at scroll value y the code submits two centered calls: `(322,y+2)` at 0x22401c after a colour call at 0x224004, and `(320,y)` at 0x224044 after a colour call at 0x22402c; the scroll value drops by 1 per call. Colour values: y=448 gives `0` and `0x00405e5e`; y=400 gives `0x07000000` and `0x14405e5e`; y=224 gives `0x20000000` and `0x5e405e5e` (the three y values are asserted points, the curve between them is not). End: a zero return from `credits_run` runs `0x211338(2)`, requests the frontend theme again with flags 1 and returns to state 0 (`credits_exit`); nonzero keeps state 15. Lumps loaded: `credits.lmp` at 0x223d10 and 0x223e20 (**Static**). Multi-line spacing and resource structure are in the art follow-up. | Displayed typography, exit input and sound. |
 | Pause | Normal offline `pauseMenu_open` 0x18e334 and `pauseMenu_task` 0x18cc08 enabled table rows 0,1,2,5,8 in the synthetic no-level fixture. Five centered calls: `x=320`, `y=179,201,223,245,267`. Backing-frame call `(292,168,56,144)`, layer 7, style 2, tint `0x80808080`; cursor `(300,179,40,33)`, layer 7, style 0, tint `0x300000ff`; front overlay `(301,180,54,136)`, layer 6, style 0, tint `0x3f000000`. A subsequent `text_begin` uses the medium font, layer 7, colour `0x80464646`. | Game-scene background, glyph placement, conditional net/debug rows, fade and prompts. |
 
 ### Character creation (class, appearance, ability points, name)
@@ -142,11 +162,12 @@ are never stored) and from the helper calls:
 The common footer (every phase that reaches 0x2297b8): frame `(21,18,w,355)` layer
 6, tint `0x08000000`, style 1; a prompt line centered at `(320,404)` (0x229cb4)
 and a small frame `(300,402,40,32)` style 0 with a centered line at `(320,374)`.
-**Class selection** has no phase of its own in this sweep (no key names it); class
-art, the 3D model pose, the cursor and highlight, and the per-race animation
-resources (**Static**: `%s_intro1/2/4.anm` format names at 0x22556c, 0x226e0c,
-0x228524, 0x228aa0, 0x228ee0, 0x229584, 0x22968c, 0x229f24) draw no UI primitive in
-the fixture and remain **Unknown**. **Executed** menu sounds in the selection task
+**Class selection** has no phase of its own in this sweep (no key names it).
+The figure's UI-sprite absence and footer frames are in the art follow-up; its
+3D model pose remains **Unknown**. Per-race animation resources (**Static**:
+`%s_intro1/2/4.anm` format names at 0x22556c, 0x226e0c, 0x228524, 0x228aa0,
+0x228ee0, 0x229584, 0x22968c, 0x229f24) have no mapped model/pose here.
+**Executed** menu sounds in the selection task
 (`PLAYERSEL_SOUNDS`, lockstep pad words 0x41bfe0+0x58·slot set to one mask): phase 1
 accept `menu_main_accept.anm` 0x226120/0x226130 and back `menu_main_back.anm`
 0x226178/0x22618c; phase 3 accept 0x227ba4/0x227bc0 and 0x227ca8/0x227cbc, back
@@ -197,8 +218,9 @@ text lookup and call `memcard_browser` 0x219b90 (**Executed**, zeroed direct cal
   212, wide lines at `x=451` and ASCII values at `x=472`, both at `y=264,281,298,315,332`,
   and a lump lookup at 0x221378. State 23 calls
   `hud_stepFade`.
-- Slot cursor, per-row text positions with real file data, spinner and card sounds
-  are **Unknown**. Static sounds in the slot list: toggle 0x21ca0c, accept 0x21caec
+- Slot highlight and populated-row anchors are in the art follow-up above;
+  text content and widths with real file data, spinner and card sounds remain
+  **Unknown**. Static sounds in the slot list: toggle 0x21ca0c, accept 0x21caec
   (**Static**).
 - The card sweeps do not play sounds; no error sound identifier is established.
 
@@ -261,16 +283,23 @@ Implement in this order; each item names its evidence level.
    widths.
 6. **Name entry** anchors, batch colours and clip, then the **ability-point** screen
    (four rows from y=106, 17 apart) and the **character summary** (six rows from
-   y=130). **Executed** positions; glyphs, cursor and highlight Unknown.
-7. **Slot list and card prompts** (title `(320,110)`, body `(320,230)`, prompt
-   `(320,320)`, highlight rectangle `(66,133)–(574,152)`). **Executed** fixture
-   positions; real row layout with file data Unknown.
-8. **Credits**: scroll one unit per frame, two-pass shadow offset (+2,+2), music
-   handoff. **Executed** for one authored line; the real data layout is Unknown.
-9. **Intro movie** presentation after its decode/upload path yields frame size,
-   timing and audio synchronization evidence (resource identifiers are **Static**).
+   y=130). **Executed** positions; glyphs and the name-entry insertion cursor
+   remain Unknown.
+7. **Populated slot list and card prompts**: five rows at y=128–196 in steps of 17,
+   four columns at x=77/100/365/487, moving 508×19 highlight, title `(320,110)`,
+   body `(320,230)`, prompt `(320,320)`. **Executed** with synthetic card records;
+   verify content and widths with real card files later.
+8. **Credits**: UTF-16 line pointers, 19-unit spacing, two-pass shadow offset
+   (+2,+2), one-unit scroll and music handoff. **Executed** with authored lines;
+   resource line counts **Observed**. Check displayed typography later.
+9. **Intro movie**: route its 640×448 MPEG picture through direct GPU upload
+   0x3201b0; it is not a `.tex` sprite. **Executed** upload call and **Observed**
+   source header. Check crop, timing and audio in a displayed run.
+10. **Class figure and animation mapping**: preserve the 3D scene path and avoid
+    selecting a `HEADPIC` sprite from its count alone. The no-sprite result is
+    **Executed**; the 3D art route is **Inferred** and exact model/pose remain open.
 
 Do not copy any coordinate not marked Executed in this document into the native
 client, and do not remove the native `HOST LAYOUT` label on screens whose exact
 assets, font layout, values or state-specific drawings remain Unknown (class
-selection, appearance art, card rows, intro picture).
+model pose, appearance art, card text and movie presentation).
