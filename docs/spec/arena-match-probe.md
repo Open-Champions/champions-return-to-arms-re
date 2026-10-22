@@ -375,3 +375,71 @@ transition while death animation/AI and object lifecycle are absent.
    and player-service answers. Then rerun the combined idle/fighting probe and
    compare exact seed, placement, object state and wave transitions. Until then,
    recipe 1 waves 0–2 pass only in the scripted world-walk fixture.
+
+## Round 8: bounded original world transition (2026-10-22)
+
+`tools/difftest_arena_lifecycle.py` builds recipe 0's wave-1 Goblin, Goblin,
+Mummy through the original constructors. It then **authors** the observed
+post-hit flags: one Goblin `0x612b`, the other two objects `0x6129`. This is a
+controlled transition, not a natural kill or a frame schedule. The original
+`world_forEachGridObject` `0x14a610` calls the original empty-wave callback
+`0x3069e8`, then the original save callback `0x306a28`. The first counts zero
+living creatures; the second saves exactly the `0x612b` Goblin in pointer table
+`0x50388c` and leaves the shared seed unchanged. Its byte `+0x231` becomes
+`0xff`; `obj_moveOffGrid` `0x14ef48` runs. The two `0x6129` objects take the
+virtual destructor path. This matches `ref_arena_lifecycle.save_actions` on
+both seeds. The authored flags matter: this check does not establish when or
+whether a running corpse reaches these exact values.
+
+With saved count `0x8e7340` set to one as `arena_prepareWave` `0x3063fc`
+would do, original `arena_startWave` `0x305ed4` advances the wave halfword to 2.
+It calls `arena_setRingStep` `0x3065b0`, then `arena_spawnMonster` `0x3065fc`
+with a null class-name argument and the saved Goblin pointer. No new
+`world_createObject` `0x14f6c8` call occurs. The saved object is placed again
+through `world_findFreeSpot` `0x14acf8` and `obj_updateGridCell` `0x14f028`.
+The latter free-spot result and the player free-spot result are independently
+checked by `ref_arena_creature_chain.free_spot`. The saved branch consumes one
+shared draw each at `GameObject_ctor` `0x14cd7c`, the ring step store
+`0x3065ec`, the reused-creature spawn store `0x306924`, and the start-wave
+store `0x3061ac`, plus the draws from the two free-spot calls. The
+`ref_arena_lifecycle.reuse_seed` model compares the final value.
+
+| Seed | Free-spot draws (player, reused creature) | Shared seed before → after | Saved creature placement, raw x/y/z |
+|---:|---:|---|---|
+| 20973 | 6, 6 | `0x05b7dae3` → `0x7896d3f3` | `0x4319a520`, `0x4271ea66`, `0x00000000` |
+| 7 | 30, 15 | `0x50112cb9` → `0x5a2e0ab4` | `0x43429667`, `0xc07bb910`, `0x00000000` |
+
+After this bounded transition, the existing recipe-0 combined probe was rerun
+for both seeds with `--real-creatures`. Its **authored world-walk** idle case
+remained at wave 0 for 3,700 frames; the fighting case reached cumulative
+construction counts 2, 5, 9 after 1,688 frames. Final idle/fighting seeds
+were `0xee0d357d` / `0xead31674` for seed 20973 and `0x9f20eef1` /
+`0xd05bbc05` for seed 7. The new native save/reuse branch instead has three
+constructions at wave 2 in this bounded case, so those fixture final seeds
+and wave-2 placements are **not** evidence of a real match seed or placement.
+
+**Distance to a real match:** this establishes the original saved-creature
+branch and its placement under authored corpse flags. The combined probe still
+uses the authored world walk, scripted attack timing and targets, fixed
+visibility/activity answers, and no per-frame death animation or spawned prop
+ticks. Its ordinary four-new-creature wave-2 branch is therefore a different
+execution. A seed or placement agreement with that probe is not a live-match
+fidelity claim. The first unresolved dependency is scheduling the death clip
+and class/base corpse run before `arena_nextWave` `0x305e9c` saves objects.
+
+### Native arena-match ranking (updated after bounded round-8 transition)
+
+1. **World and object lifecycle:** the saved `0x612b` path now has an original
+   walker and start-wave comparison. Load the level's objects, run their normal
+   list and deletion lifecycle, and determine the corpse state at the actual
+   transition. The authored `0x612b` input is the remaining boundary.
+2. **Continuous animation:** schedule original `Creature_stepAnim` `0x1162b0`
+   and `anim_advance` `0x16d748` on disc clips through the death animation,
+   including the event and final-track state read by `Creature_deadUpdate`
+   `0x1108a0`.
+3. **Per-frame creature AI:** run Goblin `0x26b27c`, Mummy `0x298d18`, and
+   Scorpion `0x2a5068` with natural target, activity, ray and movement answers.
+4. **Player and spawned objects:** replace scripted player actions and service
+   answers; tick dropped `PhProp`, gold and item objects. Then compare exact
+   frame, seed, placement, object state and wave transition against a running
+   match. The combined fixture currently cannot make that comparison.
