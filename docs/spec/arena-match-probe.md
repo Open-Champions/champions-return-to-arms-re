@@ -421,11 +421,37 @@ and wave-2 placements are **not** evidence of a real match seed or placement.
 **Distance to a real match:** this establishes the original saved-creature
 branch and its placement under authored corpse flags. The combined probe still
 uses the authored world walk, scripted attack timing and targets, fixed
-visibility/activity answers, and no per-frame death animation or spawned prop
-ticks. Its ordinary four-new-creature wave-2 branch is therefore a different
-execution. A seed or placement agreement with that probe is not a live-match
-fidelity claim. The first unresolved dependency is scheduling the death clip
-and class/base corpse run before `arena_nextWave` `0x305e9c` saves objects.
+visibility/activity answers, and no spawned prop ticks. Its ordinary
+four-new-creature wave-2 branch is therefore a different execution. A seed or
+placement agreement with that probe is not a live-match fidelity claim.
+
+### Bounded death-clip continuation
+
+`tools/difftest_arena_death_animation.py` repeats the wave-1 construction on
+seeds 20973 and 7, reading `goblin.lmp/death.anm` from the owner's disc only at
+run time. An **authored lethal hit** reaches original `Creature_takeDamage`
+`0x116638`, `Creature_processDamage` `0x110d30`, and `Goblin_setState`
+`0x26ccfc`. The death branch calls original `anim_jumpTopToEnd` `0x170bc8`;
+the top death track starts at its clip length, 109 ticks. The independent
+`ref_anim.Clip` parser and `ref_arena_death_animation.ended_track` model its
+held clock and status. With activity answered active, 151 successive calls to
+original `Goblin_run` `0x26b27c` each execute `Creature_stepAnim` `0x1162b0`,
+`anim_advance` `0x16d748`, and `Creature_deadUpdate` `0x1108a0`. The top track
+holds at 109 ticks with ended bits `0x480`; the lower tracks fall away, leaving
+one track. The object stays in state `0x14` with flags `0x612b`, and the shared
+seed stays at `0x892dfabc` (seed 20973) or `0xebb0d645` (seed 7). The corpse
+helper receives event 0 and hold 0 on all 151 ticks, so its non-sinking
+deletion rule does not request `obj_delete` `0x14f200`.
+The tested deletion condition is the one at `0x1108a0`: creature-flag
+`0x1000000` selects a different sinking branch; otherwise a one-track ended
+animation deletes only when hold is nonzero. The status bits `0x80` and
+`0x400` come from `anim_advance` `0x16d748`.
+
+This bounded result reverses the earlier working hypothesis that simply
+finishing the death clip would clear the `0x2` flag before wave 2. The original
+reuse branch is a plausible normal path here. Exact match behavior still needs
+the real scheduler and input, because the lethal hit, activity and frame calls
+above were supplied by the driver.
 
 ### Native arena-match ranking (updated after bounded round-8 transition)
 
@@ -433,10 +459,10 @@ and class/base corpse run before `arena_nextWave` `0x305e9c` saves objects.
    walker and start-wave comparison. Load the level's objects, run their normal
    list and deletion lifecycle, and determine the corpse state at the actual
    transition. The authored `0x612b` input is the remaining boundary.
-2. **Continuous animation:** schedule original `Creature_stepAnim` `0x1162b0`
-   and `anim_advance` `0x16d748` on disc clips through the death animation,
-   including the event and final-track state read by `Creature_deadUpdate`
-   `0x1108a0`.
+2. **Continuous animation:** the bounded Goblin death clip and 151 corpse ticks
+   are executed, but schedule all creature and player clips every frame in the
+   match, including attack events and movement. Death completion alone did not
+   remove the `0x612b` corpse in the bounded test.
 3. **Per-frame creature AI:** run Goblin `0x26b27c`, Mummy `0x298d18`, and
    Scorpion `0x2a5068` with natural target, activity, ray and movement answers.
 4. **Player and spawned objects:** replace scripted player actions and service
