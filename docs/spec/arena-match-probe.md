@@ -305,3 +305,73 @@ Ranked by first dependency in the first recipe's waves 0–2, then by shared-see
    at run time, per-frame creature AI with real world queries, the unexecuted bodies in
    item 4 of the list above (`Goblin_onNearbyEvent` is done), and runs of dropped objects. Without these, native runs can
    match the probe but not a live match.
+
+## Round 7: disc terrain, clip advance and target selection (2026-10-22)
+
+The new `--disc-terrain ISO` mode reads `BG/DATA/PVPARENA.GOB` from the owner's
+disc at run time. Mode B's recipe-0 map comes from the table at `0x503798`
+(`docs/arena-modes.md`). It passes `pvparena.world` to original `world_fixup`
+`0x181d30`, sets world pointer `0x44fdc8`, and follows original
+`terrain_collectElements` `0x183248`, `terrain_testFlag1` `0x183b48`, and
+`terrain_height` `0x183820` inside original `world_findFreeSpot` `0x14acf8`.
+`ref_world.Level`, `terrain_test_flag1`, and `terrain_height` provide the
+independent reference; `difftest_world.py` compared the disc map on seeds 20973
+and 7 (300 height, 300 height-below, 150 point-height, and 200 flag cases per
+seed, zero mismatches). The probe also compares every free-spot result, success
+flag, and shared seed with `ref_arena_creature_chain.free_spot`. The tested arena
+spots give the same placements and seeds as round 6's flat-ground answers.
+World raycasts, slides, water, full level object loading, and the match's world
+walk are still services; this mode establishes only the terrain queries above.
+
+The `--disc-animation ISO` mode additionally reads 214 `.anm` clips from the
+owner's `RAGNAR2`, `GOBLIN`, `GOBLIN_Z`, `MUMMY`, and `SCORPION` lumps, without
+writing game bytes. It runs original `anim_init` `0x16f9a8`, `anm_relocate`
+`0x1707b8`, resolves clips for `res_find` `0x17365c`, and gives each constructed
+actor one original `Creature_stepAnim` `0x1162b0` tick with its active flag
+authored for this bounded check. Original `anim_advance` `0x16d748` and its
+callees run. `ref_anim.py` and `difftest_anim.py` are the independent animation
+model/comparison (event bits, track state, decoder slots, root motion and yaw).
+Quick advance difftests on the disc's Ragnar, Goblin, Mummy, and Scorpion clip
+families passed 12 properties each with zero failures across seeds 20973 and 7.
+On both seeds the constructors resolve 133, 179, and 195 clips in waves 0–2;
+all 2, 3, and 4 actors have two tracks that advance. The single tick makes no
+shared-seed draw. The full match still does not schedule these animation ticks.
+
+In the regular `--real-creatures` fighting probe, the driver now invokes
+original `Creature_pickTarget` `0x10ded0` once per living creature; that body
+queries the real object grid through `world_collectObjectsInBox` `0x14a928`
+and links the selected player's handle. `ref_creature.pick_target` and
+`difftest_creature.py` compare the decision, writes, calls and seed on both
+seeds (31 and 38 pick-target calls in the quick monster/base runs, zero
+mismatches). The original class run-state bodies still receive scripted
+activity, sight, player position, and animation-event answers. Per-frame AI
+and target scans do not yet run.
+
+Attempting original `world_forEachGridObject` `0x14a610` with arena callback
+`0x306a28` in the match exposed a real boundary: after the driver's lethal
+wave-1 hits, one creature has object flags `0x612b` and AI state `0x14`.
+Original `0x306a28` saves it in pointer table `0x50388c` and sets saved count
+`0x8e7340` to one. The next `arena_startWave` `0x305ed4` takes its reuse branch
+instead of spawning wave 2. The corrected model in `ref_arena_match_core` and
+`difftest_arena_match_core` covers the `0x2` flag's precedence over the `0x8`
+death bit on both seeds. The regular probe retains the authored world walk so
+that its scripted waves remain comparable. It cannot claim a native world
+transition while death animation/AI and object lifecycle are absent.
+
+### Native arena-match ranking (round 7)
+
+1. Run the actual world/object lifecycle: load map objects and execute
+   `world_forEachGridObject` `0x14a610` plus `0x306a28` without the saved
+   wave-1 creature blocking the next recipe. The `0x612b` state is the first
+   observed divergence in the combined flow.
+2. Schedule real animation on disc clips through `Creature_stepAnim` `0x1162b0`
+   and `anim_advance` `0x16d748`, including death and player clips. The bounded
+   one-tick check proves clip loading, not death completion or hit timing.
+3. Schedule Goblin, Mummy and Scorpion AI every frame with natural target scans
+   (`0x10ded0`), activity, visibility/raycasts, movement, spell/status paths,
+   and player input. The current two scripted ticks and forced target scan
+   are insufficient for native timing or seed order.
+4. Tick spawned drops and props, and remove the remaining authored presentation
+   and player-service answers. Then rerun the combined idle/fighting probe and
+   compare exact seed, placement, object state and wave transitions. Until then,
+   recipe 1 waves 0–2 pass only in the scripted world-walk fixture.

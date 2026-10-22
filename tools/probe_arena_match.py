@@ -13,6 +13,7 @@ game bytes are saved.
 import argparse
 from collections import Counter
 
+import gob
 import difftest_arena_creature_chain as DCH
 import difftest_arena_modes as D
 import difftest_player as DP
@@ -21,7 +22,9 @@ import ref_arena_match_core as MC
 import ref_arena_player as RA
 import ref_monster_build as B
 import ref_player as RP
+import ref_world as RW
 from ref_core import ZERO
+from recomp import disc as Disc
 
 
 WORLD_CREATE = 0x14F6C8
@@ -39,6 +42,7 @@ DEFINITIONS = {0: 0x502238, 1: 0x501838, 3: 0x500298}
 HOLDERS = {1: (0x3D0, 0x50CF40), 3: (0x3E8, 0x50CDA0)}
 SET_STATES = {0: 0x2A55EC, 1: 0x29A6F4, 3: 0x26CCFC}
 RUN_STATES = {0: 0x2A5068, 1: 0x298D18, 3: 0x26B27C}
+PICK_TARGET = 0x10DED0
 TAKE_DAMAGE = 0x116638
 PROCESS_DAMAGE = 0x110D30
 PLAYER_TAKE_DAMAGE = 0x1B5330
@@ -125,7 +129,82 @@ class ConstructorBoundary(Exception):
         self.index = index
 
 
-def setup(path, wave, seed, real_creatures=False):
+def disc_file(iso, name):
+    entry = iso.find(name)
+    if entry is None:
+        raise ValueError('%s absent from disc' % name)
+    iso.f.seek(entry['lba'] * Disc.SECTOR)
+    return iso.f.read(entry['size'])
+
+
+def recipe0_world_from_disc(path):
+    """Read the first mode-B map's .world at run time; keep no extracted game bytes."""
+    iso = Disc.Iso(path)
+    try:
+        archive = disc_file(iso, 'BG/DATA/PVPARENA.GOB')
+        lump = next((archive[off:off + size] for name, off, size in gob.gob_entries(archive)
+                     if name.lower() == 'pvparena.lmp'), None)
+        if lump is None:
+            raise ValueError('pvparena.lmp absent from PVPARENA.GOB')
+        world = next((lump[off:off + size] for name, off, size in gob.lmp_entries(lump)
+                      if name.lower() == 'pvparena.world'), None)
+        if world is None:
+            raise ValueError('pvparena.world absent from pvparena.lmp')
+        return world
+    finally:
+        iso.f.close()
+
+
+def recipe0_clips_from_disc(path):
+    """Read all recipe-0 actor clips at run time, without writing them to the tree."""
+    iso = Disc.Iso(path)
+    clips = {}
+    try:
+        for actor in ('RAGNAR2', 'GOBLIN', 'GOBLIN_Z', 'MUMMY', 'SCORPION'):
+            lump = disc_file(iso, 'BG/DATA/%s.LMP' % actor)
+            for name, off, size in gob.lmp_entries(lump):
+                if name.lower().endswith('.anm'):
+                    clips[(actor.lower() + '.lmp', name.lower())] = lump[off:off + size]
+    finally:
+        iso.f.close()
+    return clips
+
+
+def install_disc_animation(emu, clips):
+    """Original animation pool and clip relocation; clips exist only in probe memory."""
+    import probe_full_placement as PF
+    emu.call(0x16F9A8, max_steps=200_000_000)
+    addresses = {}
+    for key, blob in clips.items():
+        pointer = emu.alloc(len(blob) + 0x40, align=0x40)
+        emu.mem.write(pointer, blob)
+        emu.call(0x1707B8, pointer, max_steps=1_000_000)
+        addresses[key] = pointer
+    emu.clip_addresses = addresses
+
+
+def follow_disc_animation(emu):
+    import probe_full_placement as PF
+    names = PF.symbol_names()
+    emu.follow.update({address for address, name in names.items()
+                       if name.startswith('anim_') or name.startswith('anm_')})
+    emu.follow.add(0x1162B0)  # Creature_stepAnim
+
+
+def install_disc_terrain(emu, data):
+    """Run world_fixup on the disc's pvparena.world and retain its independent model."""
+    # world_fixup's presentation/I/O edges are the same bounded stubs as difftest_world.Rig.
+    for address in (0x3B7EF0, 0x14A4F0, 0x195318, 0x18F118, 0x179E10, 0x168894):
+        emu.stub(address, ret=0)
+    emu.stub(0x172AD0, function=lambda e: e.mem.write(e.r[5] & 0xFFFFFFFF, bytes(0x40)) or 0)
+    base = emu.alloc(len(data) + 0x40, align=0x40)
+    emu.mem.write(base, data)
+    emu.call(0x181D30, base, max_steps=200_000_000)
+    emu.mem.w32(0x44FDC8, base)
+    emu.world_model = RW.Level(data)
+
+
+def setup(path, wave, seed, real_creatures=False, world_data=None, clips=None):
     emu = D.boot(path)
     emu.elf_path = path
     if real_creatures:
@@ -152,6 +231,10 @@ def setup(path, wave, seed, real_creatures=False):
     emu.default_ret = 0
     emu.stub(D.NET_COUNT, ret=1)
     emu.stub(D.ACTIVE, ret=1)
+    if world_data is not None:
+        install_disc_terrain(emu, world_data)
+    if clips is not None:
+        install_disc_animation(emu, clips)
     return emu
 
 
@@ -347,9 +430,9 @@ GUT_CHUNK_CHAIN = {0x201958, 0x155A0C, 0x153E54, 0x1541A0, 0x155110}
 
 def install_real_free_spot(emu):
     """world_findFreeSpot 0x14acf8 runs for real (docs/spec/arena-creature-chain.md): its
-    unit-ball sampling makes three shared draws per sample.  The terrain is AUTHORED flat
-    open ground: terrain_testFlag1 answers 0.0 (not blocked) and terrain_height 0.0.  The
-    box query world_collectObjectsInBox runs over the real grid the constructors link."""
+    unit-ball sampling makes three shared draws per sample. With disc terrain,
+    original terrain_testFlag1 and terrain_height execute; otherwise they answer
+    authored flat ground. The box query runs over the real object grid."""
     emu.unhook(FREE_SPOT)
     emu.follow.update({FREE_SPOT, BOX_QUERY})
     emu.free_spot_calls = []
@@ -357,8 +440,12 @@ def install_real_free_spot(emu):
     def flat(e):
         e.f[0] = 0
         return 0
-    emu.stub(TERRAIN_BLOCKED, function=flat)
-    emu.stub(TERRAIN_HEIGHT, function=flat)
+    if hasattr(emu, 'world_model'):
+        # terrain_collectElements is a callee of both original terrain queries.
+        emu.follow.update({TERRAIN_BLOCKED, TERRAIN_HEIGHT, 0x183248})
+    else:
+        emu.stub(TERRAIN_BLOCKED, function=flat)
+        emu.stub(TERRAIN_HEIGHT, function=flat)
 
     def entering(e):
         center = tuple(e.mem.u32((e.r[5] & 0xFFFFFFFF) + 4 * k) for k in range(3))
@@ -377,8 +464,14 @@ def install_real_free_spot(emu):
     def leaving(e):                 # 0x14b100: ok stored, the spot still at sp + 0x10
         call = e.free_spot_calls[-1]
         answers = iter(call['boxes'])
+        if hasattr(e, 'world_model'):
+            radius = RW.i2f(RW.s32(call['radius']))
+            blocked = lambda point: RW.terrain_test_flag1(e.world_model, radius, point)
+            height = lambda point: RW.terrain_height(e.world_model, radius, point)
+        else:
+            blocked = height = lambda point: 0
         want = CH.free_spot(call['seed'], call['center'], call['range'], call['radius'], call['any'],
-                            lambda point: 0, lambda point: 0, lambda lo, hi: next(answers))
+                            blocked, height, lambda lo, hi: next(answers))
         got_spot = tuple(e.mem.u32(e.r[29] + 0x10 + 4 * k) for k in range(3))
         assert e.mem.u32(B.G_RAND_SEED) == want[0], ('free spot seed', call)
         assert got_spot == want[1], ('free spot', got_spot, want[1])
@@ -501,8 +594,16 @@ def install_real_creatures(emu, created, spells):
 
     def res_find(e):
         site = e._fresh_call.site if e._fresh_call is not None else 0
+        if hasattr(e, 'clip_addresses'):
+            lump = CH.cstr(e.mem.u8, e.r[4] & 0xFFFFFFFF).decode('latin1').lower()
+            name = CH.cstr(e.mem.u8, e.r[5] & 0xFFFFFFFF).decode('latin1').lower()
+            clip = e.clip_addresses.get((lump, name))
+            if clip is not None:
+                e.clip_resolutions += 1
+                return clip
         return player_part if RA.CTOR <= site < 0x1A24B8 else e.creature_part
     emu.stub(RA.RES_FIND, function=res_find)
+    emu.clip_resolutions = 0
 
     def bounds(e):
         outs = [e.r[k] & 0xFFFFFFFF for k in range(6, 12)]
@@ -523,12 +624,14 @@ def install_real_creatures(emu, created, spells):
     return created
 
 
-def build_wave(path, wave, seed, real_player=False, real_creatures=False):
+def build_wave(path, wave, seed, real_player=False, real_creatures=False, world_data=None, clips=None):
     """Run the original wave builder through every spawn, with factory fixtures
     (or, with real_creatures, the original constructors)."""
     real_player = real_player or real_creatures
-    emu = setup(path, wave, seed, real_creatures)
+    emu = setup(path, wave, seed, real_creatures, world_data, clips)
     emu.follow = {D.STEP, D.SPAWN, 0x166630, 0x1666E0, 0x3B75D0, SCALE}
+    if clips is not None:
+        follow_disc_animation(emu)
     emu.replacements = []
     if real_player:
         install_real_player(emu)
@@ -542,8 +645,36 @@ def build_wave(path, wave, seed, real_player=False, real_creatures=False):
     return emu, created
 
 
+def disc_animation_report(path, seed, iso_path):
+    """Bounded original clip advance for every recipe-0 actor class, not a match tick."""
+    world_data = recipe0_world_from_disc(iso_path)
+    clips = recipe0_clips_from_disc(iso_path)
+    for wave in range(3):
+        emu, created = build_wave(path, wave, seed, real_creatures=True,
+                                  world_data=world_data, clips=clips)
+        assert emu.clip_resolutions, ('no disc clips resolved', wave)
+        start_seed = emu.mem.u32(B.G_RAND_SEED)
+        results = []
+        for index, obj in created:
+            # The surrounding object scheduler is still authored. Activate this
+            # isolated actor so Creature_stepAnim accepts a one-frame tick.
+            emu.mem.w64(obj + 0xA8, emu.mem.u64(obj + 0xA8) | (1 << 63))
+            tracks = emu.mem.u8(obj + 0x118)
+            before = tuple(emu.mem.u32(obj + 0x114 + 8 + 0x20 * slot + 0x18)
+                           for slot in range(tracks))
+            emu.call(0x1162B0, obj, fargs=(1.0,), max_steps=10_000_000)
+            after = tuple(emu.mem.u32(obj + 0x114 + 8 + 0x20 * slot + 0x18)
+                          for slot in range(tracks))
+            assert tracks and before != after, ('clip did not advance', wave, index)
+            results.append((index, tracks, before, after))
+        print('wave %d: %d original clips resolved, %d actors advanced, seed %#x -> %#x; tracks %s'
+              % (wave, emu.clip_resolutions, len(results), start_seed,
+                 emu.mem.u32(B.G_RAND_SEED), [(index, count) for index, count, _, _ in results]))
+    return 0
+
+
 def run_match(path, seed, attacked, max_frames=2400, fighting=False,
-              real_player=False, real_creatures=False):
+              real_player=False, real_creatures=False, world_data=None):
     """Run original arena_runTask and nextWave on an authored object fixture.
 
     The driver injects a lethal player hit after each intro. Original base
@@ -556,7 +687,7 @@ def run_match(path, seed, attacked, max_frames=2400, fighting=False,
     """
     assert not fighting or attacked
     real_player = real_player or real_creatures
-    emu = setup(path, 0, seed, real_creatures)
+    emu = setup(path, 0, seed, real_creatures, world_data)
     emu.follow = {D.TICK, D.NEXT, D.START, D.STEP, D.SPAWN, 0x3063FC,
                   0x166630, 0x1666E0, 0x3B75D0, SCALE}
     emu.replacements = []
@@ -573,7 +704,7 @@ def run_match(path, seed, attacked, max_frames=2400, fighting=False,
         emu.stub(0x10C0F0, ret=1)  # active creature
         emu.stub(0x1162B0, ret=1)  # melee animation event
         emu.stub(0x118D40, ret=1)  # close, visible player
-        emu.follow.update(set(RUN_STATES.values()) |
+        emu.follow.update(set(RUN_STATES.values()) | ({PICK_TARGET} if real_creatures else set()) |
                           {0x1196E8, 0x1E8230, PLAYER_TAKE_DAMAGE,
                            PLAYER_PROCESS_DAMAGE, 0x3B8534})
     emu.mem.w32(D.ENDF, 0)
@@ -616,9 +747,16 @@ def run_match(path, seed, attacked, max_frames=2400, fighting=False,
                     if (emu.mem.u32(obj + 0xC) & 0x68) != 0x20:
                         continue
                     if phase == 0:
-                        node = emu.alloc(0x20)
-                        emu.mem.w32(node + 0xC, player)
-                        emu.mem.w32(obj + 0x234, node)
+                        if real_creatures:
+                            # Driver requests a scan once; the original chooses through
+                            # the real grid and links the target handle.
+                            emu.call(PICK_TARGET, obj, 1, max_steps=steps)
+                            node = emu.mem.u32(obj + 0x234)
+                            assert node and emu.mem.u32(node + 0xC) == player, (index, obj, node)
+                        else:
+                            node = emu.alloc(0x20)
+                            emu.mem.w32(node + 0xC, player)
+                            emu.mem.w32(obj + 0x234, node)
                         emu.call(SET_STATES[index], obj, 3)
                     for axis in range(3):
                         emu.mem.w32(player + 0x10 + 4 * axis,
@@ -664,7 +802,7 @@ def run_match(path, seed, attacked, max_frames=2400, fighting=False,
     for wave, cumulative in waves:
         if wave <= 2:
             made = cumulative - previous
-            assert made == expected[wave], (wave, made)
+            assert made == expected[wave], (wave, made, waves)
             previous = cumulative
     if attacked:
         assert [wave for wave, _ in waves][:3] == [0, 1, 2], waves
@@ -697,9 +835,22 @@ def main():
     parser.add_argument('--real-creatures', action='store_true',
                         help='also the real creature constructor chain, SpellArena attachment, free-spot '
                              'search and every executed body on the path (implies --real-player)')
+    parser.add_argument('--disc-terrain', metavar='ISO',
+                        help='with --real-creatures, read pvparena.world from this disc at run time '
+                             'and execute its original terrain queries')
+    parser.add_argument('--disc-animation', metavar='ISO',
+                        help='with --real-creatures, load recipe-0 .anm clips from this disc at run '
+                             'time and execute one original animation tick per constructed actor')
     args = parser.parse_args()
+    if (args.disc_terrain or args.disc_animation) and not args.real_creatures:
+        parser.error('--disc-terrain and --disc-animation require --real-creatures')
+    if args.disc_animation:
+        if args.disc_terrain and args.disc_terrain != args.disc_animation:
+            parser.error('both disc options must name the same ISO')
+        return disc_animation_report(args.elf, args.seed, args.disc_animation)
     if args.real_creatures:
-        return real_creatures_report(args.elf, args.seed)
+        world_data = recipe0_world_from_disc(args.disc_terrain) if args.disc_terrain else None
+        return real_creatures_report(args.elf, args.seed, world_data)
     if args.real_player:
         return real_player_report(args.elf, args.seed)
     for wave in range(3):
@@ -777,12 +928,12 @@ def census(emu):
     return {k: v for k, v in st.items() if k not in KEPT_SERVICES}
 
 
-def real_creatures_report(path, seed):
+def real_creatures_report(path, seed, world_data=None):
     """Recipe 0 (the first record), waves 0-2, with the real creature chain."""
     import probe_full_placement as PF
     names = PF.symbol_names()
     for wave in range(3):
-        emu, created = build_wave(path, wave, seed, real_creatures=True)
+        emu, created = build_wave(path, wave, seed, real_creatures=True, world_data=world_data)
         assert not emu.other_blocks, ('unexpected builder part props', wave, emu.other_blocks)
         spots = emu.free_spot_calls
         print('wave %d builder: %d objects %s; chain model matched for %d (%d comparisons, %d with two '
@@ -792,7 +943,7 @@ def real_creatures_report(path, seed):
                  len(spots), sum(c['draws'] for c in spots), sum(c['tries'] for c in spots)))
     for label, attacked, fighting, frames in (('idle', False, False, 3700), ('fighting', True, True, 2400)):
         emu, waves, ran = run_match(path, seed, attacked, max_frames=frames, fighting=fighting,
-                                    real_creatures=True)
+                                    real_creatures=True, world_data=world_data)
         assert Counter((site, size) for site, size, _block in emu.other_blocks) == \
             ({(0x117E30, 0x248): 6} if fighting else {}), (label, emu.other_blocks)
         ledger, multi = check_ledger(emu, seed)
