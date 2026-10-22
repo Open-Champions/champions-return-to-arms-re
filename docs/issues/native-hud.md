@@ -407,6 +407,11 @@ not paced, sound on the machine's clock into a WAV; tones made here with ffmpeg,
 | `boss-off`: the tone there, `--boss-music off` | `sound.wav` the same file as `none-solo` and the program before (md5 `301beaad...`); 0 frames mixed |
 | the rig comparison (`rig.sh`: `fight3.rig` replayed against the rig's log, the unpatched translation built as `rta_app_music_orig`) without music, and with the tones and `music.boss_engage=on` (a track mixed and the game's music at 0 from the first blanks to the end) | both the same file as `merge/rig-final-compare.txt`, line for line |
 
+**2026-10-21, a real folder** (`er-real`: the owner's own 82 `.ogg` tracks, Vorbis, 1.3 to 5
+minutes each, in `<data>/music/boss/`; `rta_app`, the boss route, `music.boss_engage=on`):
+`82 track(s)` read, none left out; the first track decoded in 136 ticks of machine time and
+played looped, held at level 1.00 with the game's music at 0 to the end of the route.
+
 The decoders and the mixer were compiled for Windows as well (`x86_64-w64-mingw32-g++`,
 objects only, no warning); the Windows and Linux programs were **not** built or run with
 them. **Not run**: the souls-mode lock-on path (no real rank-2 boss reached: the test's boar

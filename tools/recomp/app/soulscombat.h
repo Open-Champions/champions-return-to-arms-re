@@ -67,7 +67,7 @@ struct Tuning {
     int32_t sprint_hold = 14;           // ticks L3 is held before it is a sprint (a shorter press is a dodge)
     int32_t dodge_iframe_first = 1;     // ticks of the dodge (state 0xb) in which no hit lands
     int32_t dodge_iframe_last = 24;
-    int32_t dodge_cooldown = 10;        // ticks after a dodge has ended before the next
+    int32_t dodge_cooldown = 0;         // ticks after a dodge has ended before the next (the hop is the recovery)
     int32_t dodge_stick_ignored = 47;   // the game's own (Player_tryBlockMove)
     int32_t guard_break_ticks = 60;     // no block after a broken guard
     int32_t sprint_speed_percent = 135; // the run speed while sprinting
@@ -76,7 +76,7 @@ struct Tuning {
     int32_t poise_heavy = 220;
     int32_t poise_ranged = 60;
     int32_t poise_normal = 300;         // what breaks a creature's poise, by its boss rank 0 / 1 / 2
-    int32_t poise_miniboss = 650;
+    int32_t poise_miniboss = 800;
     int32_t poise_boss = 1100;
     int32_t poise_reset_ticks = 300;    // poise damage is forgotten after this long without a hit
     int32_t stagger_ticks = 50;         // the creature's stun (its own slot 30) when its poise breaks

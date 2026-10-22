@@ -29,6 +29,8 @@ either is in the repository.
   (mode off: the rig byte for byte; a Linux + Mac room with the mode through the drunare fight,
   5,016 ticks in step: `docs/issues/native-linux.md`), on Windows Built only.
 - **2026-10-20, later**: wired into the Godot library and the portal's room screen, Ran in a Godot room (part 6b).
+- **2026-10-21**: benched against the owner's own copy of the reference game (3.1): `dodge_cooldown` 10 -> 0,
+  `poise_miniboss` 650 -> 800, the rest kept; Ran after it: the rig with the mode off byte for byte, a two-copy room in step.
 - **Not done**: Windows run (built, never started); the emulator application (the mode is native C++ only, no pnach
   section); an online game through the old lobby (the mode stays off there by design, 2.2);
   nobody has played it with hands; the Godot HUD part was parsed by Godot 4.5.2
@@ -172,13 +174,42 @@ fetched is under `local/souls-ref/`): **soulsmods/Paramdex** (`ER/Defs`: `Behavi
 **sovietspaceship/elden-ring-frame-data-explorer-data** (regulation 1.08: `data-bundle.json`
 i-frame and cancel ranges of the roll animations, `weapon-attack-data.json` motion values and
 poise damage); **vawser/Smithbox** and **JKAnderson/SoulsFormats** for what TAE time-acts are
-(invulnerability and cancel windows by animation frame). The owner's own copy of the game was
-not on this Mac; a later bench against its regulation changes only the struct.
+(invulnerability and cancel windows by animation frame).
+
+**2026-10-21: benched against the owner's copy.** The owner's own regulation file was read on
+this Mac (decrypted and decoded with the public Paramdex definitions, by scripts kept under
+`local/souls-ref/`; nothing of it is in the repository): the player behaviour stamina of the
+straight-sword moveset, the weapon's stamina and guard figures, the attack corrections (motion
+value and stance damage of light, heavy and charged heavy), the stance threshold of the enemies
+by kind, and the base toughness recovery time. The roll's and back-step's frames are not in the
+regulation (they are in the animation time-acts, not on this Mac); for them the frame-data
+explorer stays the reference. Outcome, in our units:
+
+| What | Bench (the owner's copy) | Our value | Changed |
+|---|---|---|---|
+| light attack cost | an eighth of a low-level bar | `cost_light` 1300 (13 %) | no - matches |
+| heavy attack cost | between an uncharged heavy (about a fifth of the bar) and a charged one (about a third) | `cost_heavy` 2600 (26 %) | no - inside the range |
+| heavy damage | motion value 1.25 x light uncharged, 1.6 x charged | `heavy_damage_percent` 130 | no |
+| heavy poise damage | 2 x light uncharged (6 x charged) | `poise_heavy` / `poise_light` = 2.2 | no |
+| poise thresholds by kind | ordinary : mini-boss : boss = 1 : 2.7 : about 4 (the bosses spread 2.7 to 6.7); every field mini-boss looked at has the same threshold | `poise_normal` 300, **`poise_miniboss` 650 -> 800**, `poise_boss` 1100 | **yes**: 650 was 2.2 x the ordinary threshold, the bench is 2.7 x |
+| dodge to dodge | roll: the next dodge may start 0.70 s after the first (back-step 0.57 s) | **`dodge_cooldown` 10 -> 0**: the next dodge as soon as the 45-tick hop ends (0.75 s) | **yes**: with 10 it was 0.92 s, a third slower than the reference |
+| dodge invulnerability | roll about 0.43 s from the start | `dodge_iframe_*` 1-24 (0.40 s) | no |
+| hyper-armour on heavies | only some weapon classes' heavies have it (mostly the large weapons) | the game's own heavy keeps it (not a figure of the struct) | no - the game's rule stays |
+| stamina refill, its delay, guarding refill, roll cost | not figures of the regulation for the player | as before | no |
+| poise forgetting | the player's toughness recovers after a long base time; the enemies' stance recovery scales with their threshold | `poise_reset_ticks` 300 (5 s) | no - kept short for the game's short fights |
+
+After the change: the mode-off rig comparison again byte for byte in both views
+(`local/souls-combat/rig/off-over3`, `off-first3`), and a two-copy room with the mode
+(`local/souls-combat/net/two4`: hub > drunare, the arena fight, 2 deaths and the reload)
+**5,733 ticks in step, no shared column differs** (4 / 6 dodges, 36 / 30 light, 0 / 2 heavy,
+0 / 5 presses refused, 3 hits not landed, 1 blocked hit paid).
+
+The table below is the first reference pass (2026-10-20); the two rows the bench changed say so.
 
 | Elden Ring (reference, approximate) | Our value | Why it differs |
 |---|---|---|
 | roll: invulnerable from its first frame for about 13 frames at 30 fps (0.43 s); attack-cancel from 18-22, move from 22 (0.73 s) | `dodge_iframe_first` 1, `dodge_iframe_last` 24 (0.40 s) of a 45-tick hop | the game's hop is 45 ticks long, near the roll's recovery; the window ends a little before the reference's, the hop being a back-step and not a roll |
-| a second dodge only after the recovery | `dodge_cooldown` 10 after the hop has ended (about 0.92 s between dodges) | |
+| a second dodge only after the recovery | `dodge_cooldown` 0 after the hop has ended (0.75 s between dodges; was 10, 0.92 s, before the bench) | |
 | stamina refills at about 45 a second, after a short delay; slower while guarding | `regen_per_tick` 75 (45 a second), `regen_delay` 36 (0.6 s), `regen_block_percent` 35 | |
 | base stamina about 80-100 at low Endurance | `stamina_max` 10000 (100) | one value for every character (no Endurance) |
 | a straight-sword light attack costs about an eighth of a low-level bar, a heavy about twice that | `cost_light` 1300, `cost_heavy` 2600 | a light combo of 7 empties a full bar |
@@ -187,7 +218,7 @@ not on this Mac; a later bench against its regulation changes only the struct.
 | guard: stamina damage of a blocked hit, less the guard's "guard boost"; at 0 a guard break | `cost_block_base` 800 + `cost_block_per_hp_percent` 60 x damage % of maximum hp; `guard_break_ticks` 60 | the game's hits are not in the reference's units: the cost goes with the hit's share of the bar |
 | hold for a heavy: separate button (R2); charged R2 by holding | `heavy_hold` 18 (0.3 s) | one button for both |
 | motion value of R2 about 1.25 x R1 (longsword 100 / 125); poise damage of R2 about 2 x R1 (57.5 / 115) | `heavy_damage_percent` 130; `poise_light` 100, `poise_heavy` 220, `poise_ranged` 60 | |
-| poise ("toughness"): a damage threshold per enemy; broken = stagger; recovers after some seconds without being hit | `poise_normal` 300 (3 light hits), `poise_miniboss` 650, `poise_boss` 1100; `poise_reset_ticks` 300 (5 s) | by the game's own boss rank |
+| poise ("toughness"): a damage threshold per enemy; broken = stagger; recovers after some seconds without being hit | `poise_normal` 300 (3 light hits), `poise_miniboss` 800 (650 before the bench), `poise_boss` 1100; `poise_reset_ticks` 300 (5 s) | by the game's own boss rank |
 | a stagger lasts about a second | `stagger_ticks` 50 (0.83 s), the creature's own stun | |
 | heavy attacks have hyper-armour | the game's own heavy attack already has it (1) | |
 | lock-on: nearest to the middle of the view, switch with the stick | `lock_range` 600, `lock_turn` 0.30, `lock_turn_max` 9, `lock_flick` 7 (controls settings) | |
