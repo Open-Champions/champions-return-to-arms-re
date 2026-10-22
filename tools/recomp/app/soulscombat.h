@@ -36,6 +36,9 @@
 //   block held + L3 pressed = parry (the L3 press is then neither a dodge nor a sprint)
 //   attack pressed within the guard-counter window after a paid block = guard counter (the game's heavy attack at once)
 //   potion A (the health potion button, the game's table 0x41ba10) = drink a flask; the game's health potions are not used
+//   L3 held + attack pressed = the weapon art (the attack press and the L3 press are then spent)
+//   L3 held + swap (the other weapon set) pressed = two-handing on / off (the swap is not given to the game)
+//   L3 held + use pressed near a save point = upgrade the weapon in hand by one level (the use is not given to the game)
 //
 // State: a block of guest memory at SOULS_BASE (0xE0800, in the first megabyte, where the game
 // has nothing: tools/recomp/soak uses 0xE0000-0xE004F) - the per-player numbers, written in the
@@ -111,7 +114,61 @@ struct Tuning {
     int32_t flask_refill_radius = 120;  // units from a save point
     int32_t drop_percent = 50;          // of the carried gold, left where the player died
     int32_t drop_radius = 60;           // units from the spot that pick it up again
+    // ---- weapons (2026-10-21, third round; docs/issues/native-souls-combat.md 2.8 and 3.3) ----
+    // equip load: the weight of what is equipped (the game's own item_getWeight of each equipped item) against a
+    // capacity from the character's statistics, in hundredths: base + per_stamina x stamina + per_strength x strength
+    int32_t load_base = 2000;
+    int32_t load_per_stamina = 100;
+    int32_t load_per_strength = 25;
+    int32_t load_light = 30;            // percent of the capacity: below it light, below load_medium medium,
+    int32_t load_medium = 70;           // up to 100 heavy, above 100 overloaded
+    // by tier (light, medium, heavy, overloaded), percent: the dodge's movement, its invulnerable ticks, the stamina
+    // refill, the sprint's extra speed (0: no dodge / no sprint)
+    int32_t tier_dodge_move[4] = {115, 100, 75, 0};
+    int32_t tier_iframes[4] = {100, 100, 75, 0};
+    int32_t tier_regen[4] = {110, 100, 85, 60};
+    int32_t tier_sprint[4] = {100, 100, 70, 0};
+    // by weapon class (WC_*: none, dagger, sword, axe, mace, great, spear, staff, bow)
+    int32_t wc_stamina[9] = {100, 75, 100, 110, 100, 135, 120, 100, 100};   // percent of cost_light / cost_heavy / cost_ranged
+    int32_t wc_poise[9] = {70, 70, 100, 100, 150, 260, 200, 70, 100};       // percent of poise_light / heavy / ranged
+    int32_t wc_recovery[9] = {0, 0, 4, 8, 10, 16, 6, 8, 0};                // ticks after a swing before the next swing starts
+    int32_t wc_cancel[9] = {18, 16, 20, 24, 26, -1, 22, 24, -1};           // ticks into a swing from which a dodge cancels it (-1 never)
+    int32_t wc_str[9] = {0, 30, 35, 44, 50, 48, 36, 12, 19};               // scaling coefficients (the grade letters come from them)
+    int32_t wc_dex[9] = {0, 50, 32, 33, 33, 30, 41, 0, 26};
+    int32_t wc_int[9] = {0, 0, 0, 0, 0, 0, 0, 90, 0};
+    int32_t wc_guard[9] = {300, 300, 175, 165, 175, 120, 145, 300, 300};    // block cost (percent) guarding with the weapon (two-handed or no shield)
+    int32_t wc_crit[9] = {100, 110, 100, 100, 100, 100, 100, 100, 100};     // percent on a riposte and a backstab
+    int32_t wc_art[9] = {0, 1, 2, 2, 3, 3, 1, 4, 4};                       // the weapon art (ART_*): lunge, spin, slam, bolt
+    // stat scaling: the bonus in percent of the hit's damage = sum over strength, dexterity, intelligence of
+    // coefficient x (100 + upgrade_correct_percent x level) / 100 x curve(stat) / 100; the curve is linear between
+    // these points (statistic -> percent)
+    int32_t scale_stat[7] = {0, 20, 40, 80, 120, 160, 200};
+    int32_t scale_value[7] = {0, 12, 28, 54, 75, 90, 95};
+    int32_t twohand_strength_percent = 150;
+    int32_t twohand_poise_percent = 125;
+    int32_t heavy_interrupt_hp_percent = 6;  // a heavy without hyper-armour (not a great weapon) is staggered by a hit of this share of the bar
+    int32_t spear_chip_percent = 20;         // of a blocked spear hit that still lands (a player's spear against a blocking player)
+    // upgrades +1..+10: damage, scaling, cost (gold and the upgrade material)
+    int32_t upgrade_max = 10;
+    int32_t upgrade_damage_tenths = 145;     // +14.5 % of the damage per level
+    int32_t upgrade_correct_percent = 8;     // the scaling coefficients +8 % per level
+    int32_t upgrade_gold_base = 300;         // gold for level n: base x (100 + step x (n - 1)) / 100
+    int32_t upgrade_gold_step = 50;
+    int32_t upgrade_material_every = 3;      // materials for level n: 1 + (n - 1) / every
+    int32_t material_drop_normal = 8;        // percent, by the creature's boss rank, decided by the game's shared generator state
+    int32_t material_drop_miniboss = 50;
+    int32_t material_drop_boss = 100;
+    int32_t save_reach = 120;                // units from a save point at which the upgrade can be made
+    // weapon arts (the game's own skills cast at the level 1 + upgrade)
+    int32_t art_mana_percent = 20;           // of the maximum mana
+    int32_t art_stamina_percent = 100;       // of cost_heavy
+    int32_t art_cooldown = 60;
+    int32_t art_slam_percent = 160;          // a slam's shove: this share of the weapon's top damage
+    int32_t art_fixed_percent = 30;          // the lunge's and the bolt's own fixed damage (the skills') is scaled by this
+    int32_t art_bolt_ticks = 90;             // how long after a bolt its projectile's hits count as the art's
 };
+enum : int32_t { WC_NONE = 0, WC_DAGGER, WC_SWORD, WC_AXE, WC_MACE, WC_GREAT, WC_SPEAR, WC_STAFF, WC_BOW, WC_COUNT };
+enum : int32_t { ART_NONE = 0, ART_LUNGE, ART_SPIN, ART_SLAM, ART_BOLT };
 const Tuning& tuning();
 
 // ---- the block in guest memory ----------------------------------------------------------
@@ -132,8 +189,23 @@ const uint32_t SOULS_MAGIC = 0x4c554f53;        // "SOUL"
 //   +0x10 drink tick (-1 none)   +0x14 gold at the death spot   +0x18 x, +0x1c y, +0x20 z of the spot (f32)
 //   +0x24 the spot's level (FNV-1a of the level name)   +0x28 gold to take at the respawn   +0x2c parries
 //   +0x30 criticals   +0x34 guard counters   +0x38 flasks drunk   +0x3c gold picked up again
+// header (version 3, the weapons) +0x320 weapon arts, +0x324 upgrades, +0x328 materials dropped, +0x32c two-hand toggles,
+//   +0x330 spear chips, +0x334 heavies interrupted, +0x338 swings cancelled by a dodge, +0x33c a test aid (slot + 1 | count << 8:
+//   that player is given `count` upgrade materials in its next tick); +0x340..+0x37f scratch the game is handed (a position,
+//   a clip name); +0x380 the level's save points (count, then x, y, z each, at most 8), +0x3fc their level; +0x5a0..+0x5e7 an
+//   item record handed to the game (the test aid)
+// per player, weapons, at +0x400 + slot x 0x60 (s32 each):
+//   +0x00 weapon class (WC_*)   +0x04 equip load   +0x08 capacity (hundredths)   +0x0c tier (0 light .. 3 overloaded)
+//   +0x10 upgrade of the weapon in hand   +0x14 grades (letters: strength, dexterity, intelligence in bytes 0..2)
+//   +0x18 scaling bonus (percent)   +0x1c two-handed   +0x20 weapon-art tick (-1 none)   +0x24 its kind (ART_*)
+//   +0x28 upgrade materials carried   +0x2c near a save point (1)   +0x30 arts   +0x34 upgrades made
+//   +0x38 recovery ticks left   +0x3c ticks into the swing (-1 none)   +0x40 art cooldown   +0x44 buffered swing
+//   +0x48 damage percent (100 + upgrade + scaling)   +0x4c gold for the next level   +0x50 materials for it   +0x54 refused upgrades
+// upgrades are kept on the weapon's own item record, in bytes the game never writes nor reads (+0x06, +0x44): the record
+// is on the memory card with the character and goes to every machine at a net game's launch
 // local, per machine (presentation; not simulation): +0x180 lock on, +0x184 locked object,
-//   +0x188 x, +0x18c y, +0x190 z, +0x194 hp, +0x198 hp max (f32), +0x19c this player's drop is on this level
+//   +0x188 x, +0x18c y, +0x190 z, +0x194 hp, +0x198 hp max (f32), +0x19c this player's drop is on this level,
+//   +0x1a0 the name of this player's weapon (32 bytes)
 enum : uint32_t { FL_DODGE = 1, FL_IFRAMES = 2, FL_SPRINT = 4, FL_BLOCK = 8, FL_HEAVY = 16, FL_BROKEN = 32, FL_EMPTY = 64,
                   FL_PARRY = 128, FL_RIPOSTE = 256, FL_COUNTER = 512, FL_DRINK = 1024, FL_COUNTER_HEAVY = 2048 };
 

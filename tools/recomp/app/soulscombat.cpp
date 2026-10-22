@@ -1,6 +1,7 @@
 // soulscombat.cpp - the souls-style combat mode (soulscombat.h; docs/issues/native-souls-combat.md).
 #include "soulscombat.h"
 #include "fpcontrols.h"
+#include "testerkit.h"
 #include "rt.h"
 #include "backend.h"
 #include "../net2/hooks.h"
@@ -10,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstddef>
 #include <cstring>
 #include <iterator>
 #include <mutex>
@@ -37,6 +39,14 @@ const u32 PEND_STAGGER = 0x4000000;     // pending-damage flag that makes Player
 const u32 HIT_UNBLOCKABLE = 0x40;       // damage flag: Player_takeDamage does not block it
 const u32 L3 = 0x200;                   // the row's L3 bit (the held word of g_pads)
 const u32 F_ONE_TENTH = 0x3dcccccc, F_POINT_3 = 0x3e999999, F_2_8 = 0x40333333, F_HEAVY_LENGTH = 0x3f5b645a;
+// the weapons round (docs/issues/native-souls-combat.md 2.8): items (docs/spec/items.md, docs/player.md), skills (docs/spec/skills-35-68.md)
+const u32 G_BTN_USE = 0x41b9c0, G_BTN_SWAP = 0x41ba30;
+const u32 ITEM_GET_WEIGHT = 0x103e08, G_ITEM_DEFS = 0x3f7650, G_SKILL_TABLE = 0x41b170, CREATURE_ADD_SPELL = 0x11a838;
+const u32 LOOT_SPAWN_NAMED = 0x100ba0, INVENTORY_REMOVE = 0x1c1cb0, INVENTORY_GIVE = 0x1c1868, RES_FIND = 0x17365c, G_RAND_SEED = 0x404464;
+const u32 REC_STR = 0x90, REC_INT = 0x94, REC_DEX = 0x98, REC_STA = 0x9c, REC_MANA = 0xc0, REC_MANA_MAX = 0xc4, REC_DMG_MAX = 0xd4;
+const u32 REC_EQUIP = 0x43f0, REC_SETS = 0x4434, REC_SET = 0x4a7c, REC_BAGS = 0x130, BAG_STRIDE = 0x1208, BAG_COUNT = 0x1200, ITEM = 0x48;
+const u32 FLAG_KNOCK_LIGHT = 0x40000;   // the lightest knock bit: the ground pound's shoves carry it
+const s32 SKILL_OF_ART[5] = {0, 35, 41, 38, 37};   // charge (a lunge), cyclone (a spin), ground pound (a slam), shock (a bolt)
 
 bool ok(u32 a, u32 size = 4) { a &= 0x1FFFFFFF; return a >= 0x80000 && a <= RAM_SIZE - size; }
 u32 W(u32 a) { u32 v = 0; if (ok(a)) memcpy(&v, g_ram + (a & 0x1FFFFFFF), 4); return v; }
@@ -58,7 +68,7 @@ enum : u32 { S_STAMINA = 0, S_DELAY = 4, S_FLAGS = 8, S_DODGE = 0xc, S_COOL = 0x
              S_AVOIDED = 0x38, S_BLOCKS = 0x3c };
 enum : u32 { H_MAGIC = 0, H_VERSION = 4, H_MODE = 8, H_UPDATES = 0xc, H_BREAKS = 0x10, H_POISE = 0x14, H_AVOIDED = 0x18, H_BLOCKS = 0x1c,
              H_PARRIES = 0x20, H_RIPOSTES = 0x24, H_STANCE = 0x28, H_BACKSTABS = 0x2c, H_COUNTERS = 0x30, H_REFILLS = 0x34,
-             H_GOLD_BACK = 0x38, H_GOLD_LOST = 0x3c, H_DROPS = 0x300, H_PICKUPS = 0x304, H_DRUNK = 0x308, H_DEAD = 0x30c, H_TEST_GO = 0x31c, BLOCK_SIZE = 0x320,
+             H_GOLD_BACK = 0x38, H_GOLD_LOST = 0x3c, H_DROPS = 0x300, H_PICKUPS = 0x304, H_DRUNK = 0x308, H_DEAD = 0x30c, H_TEST_GO = 0x31c, BLOCK_SIZE = 0x600,
              L_LOCK = 0x180, L_OBJECT = 0x184, L_X = 0x188, L_Y = 0x18c, L_Z = 0x190, L_HP = 0x194, L_HP_MAX = 0x198, L_DROP = 0x19c };
 // the second per-player part (soulscombat.h): kept over a death and a level change
 u32 ext_off(int slot, u32 field) { return 0x200 + (u32)slot * 0x40 + field; }
@@ -67,6 +77,15 @@ enum : u32 { E_FLASKS = 0, E_PARRY = 4, E_RIPOSTE = 8, E_COUNTER = 0xc, E_DRINK 
              E_GOLD_BACK = 0x3c };
 s32 ER(int slot, u32 f) { return SR(ext_off(slot, f)); }
 void EW(int slot, u32 f, s32 v) { SW(ext_off(slot, f), v); }
+// the weapons part (soulscombat.h, version 3)
+u32 wpn_off(int slot, u32 field) { return 0x400 + (u32)slot * 0x60 + field; }
+enum : u32 { W_CLASS = 0, W_LOAD = 4, W_CAP = 8, W_TIER = 0xc, W_UPG = 0x10, W_GRADES = 0x14, W_SCALE = 0x18, W_TWOHAND = 0x1c,
+             W_ART_T = 0x20, W_ART_KIND = 0x24, W_MATS = 0x28, W_NEAR = 0x2c, W_ARTS = 0x30, W_UPGRADES = 0x34, W_RECOVER = 0x38,
+             W_SWING = 0x3c, W_ART_CD = 0x40, W_BUFFER = 0x44, W_DMG = 0x48, W_GOLD_NEXT = 0x4c, W_MATS_NEXT = 0x50, W_UP_REFUSED = 0x54 };
+enum : u32 { H_ARTS = 0x320, H_UPGRADES = 0x324, H_MAT_DROPS = 0x328, H_TWOHANDS = 0x32c, H_CHIPS = 0x330, H_INTERRUPTS = 0x334,
+             H_CANCELS = 0x338, H_TEST_MAT = 0x33c, H_SCRATCH = 0x340, H_SAVES = 0x380, H_SAVES_LEVEL = 0x3fc, H_ITEM_SCRATCH = 0x5a0, L_NAME = 0x1a0 };
+s32 WR(int slot, u32 f) { return SR(wpn_off(slot, f)); }
+void WW(int slot, u32 f, s32 v) { SW(wpn_off(slot, f), v); }
 void bump(u32 off, s32 by = 1) { SW(off, SR(off) + by); }
 
 // ---- state ----
@@ -87,7 +106,9 @@ std::unordered_map<u32, Poise> g_poise; // by creature object (soulscombat.h)
 // presentation
 Camera g_camera;
 struct Shown { bool valid = false; int slot = -1; float stamina = 1, max = 1; u32 flags = 0; bool lock = false; float x = 0, y = 0, z = 0, hp = 0, hp_max = 0;
-               int flasks = 0, flask_max = 0; bool drop = false; float dx = 0, dy = 0, dz = 0; } g_shown;
+               int flasks = 0, flask_max = 0; bool drop = false; float dx = 0, dy = 0, dz = 0;
+               int cls = 0, level = 0, tier = 0, load = 0, cap = 1, mats = 0, gold_next = 0, mats_next = 0, art_cd = 0, damage = 100;
+               u32 grades = 0; bool two = false, near = false; char name[32] = ""; } g_shown;
 // counters (per machine)
 uint64_t g_runs = 0, g_ptd_calls = 0, g_ctd_calls = 0, g_staggers = 0, g_iframe_skips = 0, g_save_calls = 0;
 bool g_log = false;                     // SOULS_LOG: a line for each parry, critical, guard counter, drink, drop
@@ -97,10 +118,11 @@ u32 frame_now() { return W(G_SIM_FRAME); }
 // A game function called the way its own code calls it, on the context that is running (its registers put
 // back afterwards); returns v0.
 u32 g_f0 = 0;                           // f0 of the last call()
-u32 call(Ctx* c, u32 address, u32 a0, u32 a1 = 0, u32 a2 = 0, u32 f12 = 0, u32 f13 = 0) {
+u32 call(Ctx* c, u32 address, u32 a0, u32 a1 = 0, u32 a2 = 0, u32 f12 = 0, u32 f13 = 0, u32 a3 = 0, u32 t0 = 0) {
     Ctx saved = *c;
     c->r[29] = (u64)(s64)(s32)((((u32)saved.r[29]) - 0x600) & ~15u);
     c->r[4] = (u64)(s64)(s32)a0; c->r[5] = (u64)(s64)(s32)a1; c->r[6] = (u64)(s64)(s32)a2;
+    c->r[7] = (u64)(s64)(s32)a3; c->r[8] = (u64)(s64)(s32)t0;
     c->f[12] = f12; c->f[13] = f13;
     rt_call(c, address);
     u32 v = (u32)c->r[2];
@@ -134,8 +156,11 @@ void reset_ext(int slot) {
 void reset_all() {
     for (u32 a = 0; a < BLOCK_SIZE; a += 4) PW(SOULS_BASE + a, 0);
     SW(H_MAGIC, (s32)SOULS_MAGIC);
-    SW(H_VERSION, 2);
-    for (int k = 0; k < 4; k++) { reset_slot(k); reset_ext(k); g_last_object[k] = 0; g_riposte_target[k] = 0; }
+    SW(H_VERSION, 3);
+    for (int k = 0; k < 4; k++) {
+        reset_slot(k); reset_ext(k); g_last_object[k] = 0; g_riposte_target[k] = 0;
+        WW(k, W_ART_T, -1); WW(k, W_SWING, -1);
+    }
     g_poise.clear();
     g_ghost = Ghost();
 }
@@ -226,6 +251,208 @@ bool start_drink(Ctx* c, u32 P, int cls) {
     return true;
 }
 
+// ---- the weapons (docs/issues/native-souls-combat.md 2.8) ------------------------------------------------------
+// The name of an item definition contains `word` (lower case; the game's names are lower case).
+bool name_has(u32 def, const char* word) {
+    u32 name = W(def);
+    char text[40];
+    size_t n = 0;
+    for (; n < sizeof text - 1 && ok(name + (u32)n, 1); n++) { text[n] = (char)B(name + (u32)n); if (!text[n]) break; }
+    text[n] = 0;
+    return strstr(text, word) != nullptr;
+}
+// The class of a weapon, from its definition row: the weapon animation class (+0x1e), the damage kind (+0x20), the weight
+// (+0x08) and, for the one-handed edged weapons, the name's own word.
+s32 weapon_class(u32 def) {
+    if (!ok(def, 0x40) || B(def + 0x1d) != 0) return WC_NONE;
+    u32 sub = B(def + 0x1e), kind = W(def + 0x20);
+    if (sub == 4 || sub == 6) return WC_BOW;            // bows and thrown weapons
+    if (sub == 1 || sub == 2) return WC_GREAT;          // the two-handed swords, axes, hammers and maces
+    if (sub == 3) return (kind & 1) ? WC_STAFF : WC_SPEAR;   // long weapons: blunt ones are the staves, edged ones the polearms
+    if (kind & 1) return WC_MACE;                       // one-handed blunt: clubs, maces, morning stars, hammers, rods
+    if (F(def + 8) <= 1.0f) return WC_DAGGER;           // the lightest edged weapons
+    if (name_has(def, "axe") || name_has(def, "pick") || name_has(def, "cleaver") || name_has(def, "hatchet")) return WC_AXE;
+    return WC_SWORD;
+}
+const char* class_name(s32 cls) {
+    static const char* const NAMES_OF[WC_COUNT] = {"unarmed", "dagger", "sword", "axe", "mace", "great weapon", "spear", "staff", "bow"};
+    return cls >= 0 && cls < WC_COUNT ? NAMES_OF[cls] : "?";
+}
+// the weapon in hand: the active set's primary, else the one-hand or two-hand equipment slot
+u32 weapon_item(u32 record) {
+    u32 it = W(record + REC_SETS + 4 * (u32)(B(record + REC_SET) & 1));
+    if (!ok(it, ITEM)) it = W(record + REC_EQUIP);
+    if (!ok(it, ITEM)) it = W(record + REC_EQUIP + 8);
+    return ok(it, ITEM) && ok(W(it), 0x40) ? it : 0;
+}
+// The upgrade level kept on the item record, in two places the game never writes or reads (docs/spec/items.md 2: +0x06 and
+// +0x44 are left as they lay in the parser's frame): +0x06 = 0x4800 | level, +0x44 = "HC" | level << 8 | a check of the
+// definition and the level.  Anything else there (the parser's leftovers) is level 0.
+u32 tag_check(u32 it, s32 level) {
+    u32 h = 2166136261u, d = W(it);
+    for (int k = 0; k < 4; k++) h = (h ^ ((d >> (8 * k)) & 0xff)) * 16777619u;
+    h = (h ^ (u32)level) * 16777619u;
+    return h & 0xff;
+}
+s32 upgrade_of(u32 it) {
+    if (!it) return 0;
+    u32 t = W(it + 0x44);
+    s32 level = (s32)((t >> 8) & 0xff);
+    if ((t >> 16) != 0x4843 || level < 1 || level > 20 || (t & 0xff) != tag_check(it, level) || H(it + 6) != (u16)(0x4800 | level)) return 0;
+    return level;
+}
+void set_upgrade(u32 it, s32 level) {
+    PH(it + 6, (u16)(0x4800 | level));
+    PW(it + 0x44, 0x48430000u | ((u32)level << 8) | tag_check(it, level));
+}
+// the statistic curve (percent), linear between the tuning's points
+s32 curve(s32 stat) {
+    const Tuning& t = g_tuning;
+    if (stat <= t.scale_stat[0]) return t.scale_value[0];
+    for (int k = 1; k < 7; k++)
+        if (stat <= t.scale_stat[k]) {
+            s32 span = std::max(1, t.scale_stat[k] - t.scale_stat[k - 1]);
+            return t.scale_value[k - 1] + (t.scale_value[k] - t.scale_value[k - 1]) * (stat - t.scale_stat[k - 1]) / span;
+        }
+    return t.scale_value[6];
+}
+char grade(s32 coefficient) {
+    return coefficient >= 175 ? 'S' : coefficient >= 140 ? 'A' : coefficient >= 90 ? 'B' : coefficient >= 60 ? 'C' : coefficient >= 25 ? 'D' : coefficient > 0 ? 'E' : '-';
+}
+bool can_two_hand(s32 cls, u32 record) { return cls != WC_NONE && cls != WC_BOW && (int8_t)B(record + REC_WEAPON_CLASS) != 7; }
+// The upgrade material: the lowest-level reagent of the game's item table whose name says it is a whetstone (a per-machine
+// cache of a static table: the same row on every machine).
+u32 g_material = 1;                     // 1: not looked for yet
+u32 material_def() {
+    if (g_material != 1) return g_material;
+    g_material = 0;
+    s32 best = 1 << 30;
+    for (u32 row = G_ITEM_DEFS; ok(row, 0x40) && W(row); row += 0x40) {
+        bool reagent = (W(row + 0x28 + 4) & 0x8) != 0;       // definition flag bit 35: the reagent group
+        s32 level = (s16)H(row + 4);
+        if (reagent && name_has(row, "whetstone") && level < best) { best = level; g_material = row; }
+        if (row > G_ITEM_DEFS + 0x40 * 2000) break;
+    }
+    return g_material;
+}
+s32 materials(u32 record) {
+    u32 m = material_def();
+    if (!m) return 0;
+    s32 n = 0;
+    for (u32 b = 0; b < 3; b++) {
+        u32 bag = record + REC_BAGS + b * BAG_STRIDE;
+        s32 count = std::min<s32>(64, (s32)W(bag + BAG_COUNT));
+        for (s32 i = 0; i < count; i++) if (W(bag + (u32)i * ITEM) == m) n += std::max<s32>(1, (s16)H(bag + (u32)i * ITEM + 4));
+    }
+    return n;
+}
+// spends `n` of the material, from the last stacks first; a stack used up leaves the bag through the game's own removal
+void spend_materials(Ctx* c, int slot, u32 record, s32 n) {
+    u32 m = material_def();
+    for (s32 b = 2; b >= 0 && n > 0; b--) {
+        u32 bag = record + REC_BAGS + (u32)b * BAG_STRIDE;
+        for (s32 i = std::min<s32>(64, (s32)W(bag + BAG_COUNT)) - 1; i >= 0 && n > 0; i--) {
+            u32 it = bag + (u32)i * ITEM;
+            if (W(it) != m) continue;
+            s32 have = std::max<s32>(1, (s16)H(it + 4));
+            s32 take = std::min(have, n);
+            n -= take;
+            if (have > take) PH(it + 4, (u16)(s16)(have - take));
+            else call(c, INVENTORY_REMOVE, (u32)slot, (u32)i, (u32)b, 0);
+        }
+    }
+}
+// within save_reach of one of this level's save points (the block's list, filled by Savepoint_run)
+bool near_save(u32 P) {
+    if ((u32)SR(H_SAVES_LEVEL) != level_figure()) return false;
+    float r = (float)g_tuning.save_reach;
+    for (s32 k = 0, n = std::max(0, std::min(8, SR(H_SAVES))); k < n; k++) {
+        float dx = F(P + O_POS) - F(SOULS_BASE + H_SAVES + 4 + 12 * (u32)k), dy = F(P + O_POS + 4) - F(SOULS_BASE + H_SAVES + 8 + 12 * (u32)k);
+        if (dx * dx + dy * dy <= r * r) return true;
+    }
+    return false;
+}
+s32 upgrade_gold(s32 level) { return g_tuning.upgrade_gold_base * (100 + g_tuning.upgrade_gold_step * (level - 1)) / 100; }
+s32 upgrade_materials(s32 level) { return 1 + (level - 1) / std::max(1, g_tuning.upgrade_material_every); }
+// the equip load, in hundredths: the game's item_getWeight of each equipped item, once each (per unit for a stack;
+// the ammunition slot is not counted)
+s32 equip_load(Ctx* c, u32 record) {
+    u32 seen[17];
+    int n = 0;
+    float sum = 0;
+    for (u32 k = 0; k < 17; k++) {
+        u32 it = W(record + REC_EQUIP + 4 * k);
+        if (k == 8 || !ok(it, ITEM) || !ok(W(it), 0x40)) continue;
+        bool again = false;
+        for (int j = 0; j < n; j++) again |= seen[j] == it;
+        if (again) continue;
+        seen[n++] = it;
+        call(c, ITEM_GET_WEIGHT, it);
+        float w = flt(g_f0);
+        s32 count = (s16)H(it + 4);
+        if (count > 1) w = w / (float)count;
+        if (w > 0 && w < 10000.0f) sum = sum + w;
+    }
+    return (s32)(sum * 100.0f);
+}
+// Everything about the weapon in hand, written to the weapons part of the block (each player tick, every machine alike).
+struct Weapon { u32 item = 0; s32 cls = WC_NONE, level = 0, damage = 100, scale = 0; bool two = false; };
+Weapon weapon_now(int slot) {
+    Weapon w;
+    u32 record = G_PLAYERS + (u32)slot * REC;
+    w.item = weapon_item(record);
+    w.cls = w.item ? weapon_class(W(w.item)) : WC_NONE;
+    w.level = upgrade_of(w.item);
+    w.two = WR(slot, W_TWOHAND) != 0 && can_two_hand(w.cls, record);
+    const Tuning& t = g_tuning;
+    s32 corr = 100 + t.upgrade_correct_percent * w.level;
+    s32 str = (s32)W(record + REC_STR), dex = (s32)W(record + REC_DEX), in = (s32)W(record + REC_INT);
+    if (w.two) str = str * t.twohand_strength_percent / 100;
+    w.scale = (t.wc_str[w.cls] * corr / 100 * curve(str) + t.wc_dex[w.cls] * corr / 100 * curve(dex) + t.wc_int[w.cls] * corr / 100 * curve(in)) / 100;
+    w.damage = 100 + w.level * t.upgrade_damage_tenths / 10 + w.scale;
+    return w;
+}
+void weapon_numbers(Ctx* c, int slot, u32 record) {
+    const Tuning& t = g_tuning;
+    Weapon w = weapon_now(slot);
+    s32 load = equip_load(c, record);
+    s32 cap = t.load_base + t.load_per_stamina * (s32)W(record + REC_STA) + t.load_per_strength * (s32)W(record + REC_STR);
+    if (cap < 100) cap = 100;
+    s32 share = (s32)((int64_t)load * 100 / cap);
+    s32 tier = share < t.load_light ? 0 : share < t.load_medium ? 1 : share <= 100 ? 2 : 3;
+    s32 corr = 100 + t.upgrade_correct_percent * w.level;
+    u32 grades = (u32)(u8)grade(t.wc_str[w.cls] * corr / 100) | (u32)(u8)grade(t.wc_dex[w.cls] * corr / 100) << 8 | (u32)(u8)grade(t.wc_int[w.cls] * corr / 100) << 16;
+    WW(slot, W_CLASS, w.cls); WW(slot, W_LOAD, load); WW(slot, W_CAP, cap); WW(slot, W_TIER, tier); WW(slot, W_UPG, w.level);
+    WW(slot, W_GRADES, (s32)grades); WW(slot, W_SCALE, w.scale); WW(slot, W_DMG, w.damage);
+    WW(slot, W_MATS, materials(record));
+    s32 next = std::min(w.level + 1, t.upgrade_max);
+    WW(slot, W_GOLD_NEXT, w.level < t.upgrade_max ? upgrade_gold(next) : 0);
+    WW(slot, W_MATS_NEXT, w.level < t.upgrade_max ? upgrade_materials(next) : 0);
+}
+// The weapon art: the game's own skill of the art's kind cast at the level 1 + upgrade, as Player_castSkill casts it
+// (the skill's slot 2, then creature_addSpell) - without the player's rank of it and without its mana price (the mode's
+// own cost is taken).  The spin and the slam play clips that a character's animation lump may not have: then the lunge.
+bool has_clip(Ctx* c, u32 P, const char* name) {
+    u32 table = W(P + O_ANIM_TABLE), lump = table ? W(table) : 0;
+    if (!lump) return false;
+    u32 at = SOULS_BASE + H_SCRATCH + 0x10;
+    size_t n = strlen(name);
+    for (size_t k = 0; k <= n && k < 0x2f; k++) PB(at + (u32)k, (u8)name[k]);
+    return call(c, RES_FIND, lump, at) != 0;
+}
+s32 cast_art(Ctx* c, u32 P, s32 kind, s32 level) {
+    if ((kind == ART_SPIN && !has_clip(c, P, "cyclone1.anm")) || (kind == ART_SLAM && !has_clip(c, P, "dha_quake.anm"))) kind = ART_LUNGE;
+    u32 skill = W(G_SKILL_TABLE + 4 * (u32)SKILL_OF_ART[kind]);
+    u32 vt = ok(skill, 0x68) ? W(skill + 0x60) : 0;
+    u32 fn = ok(vt, 0x20) ? W(vt + 2 * 8 + 4) : 0;
+    if (!fn) return ART_NONE;
+    u32 pos = SOULS_BASE + H_SCRATCH;
+    PW(pos, W(P + O_POS)); PW(pos + 4, W(P + O_POS + 4)); PF(pos + 8, F(P + O_POS + 8) + 40.0f);
+    u32 spell = call(c, fn, skill, (u32)level, P, 0, 0, pos, (u32)(s32)(s16)H(P + O_FACING));
+    if (spell && ok(spell, 0x18)) call(c, CREATURE_ADD_SPELL, P, spell);
+    return kind;
+}
+
 // ---- Player_run (slot 4) ----------------------------------------------------------------------
 void w_player_run(Ctx* c) {
     u32 P = (u32)c->r[4];
@@ -244,25 +471,56 @@ void w_player_run(Ctx* c) {
             if (ER(slot, E_FLASKS) < t.flask_count) { EW(slot, E_FLASKS, t.flask_count); bump(H_REFILLS); }
             EW(slot, E_PARRY, -1); EW(slot, E_DRINK, -1); EW(slot, E_RIPOSTE, 0); EW(slot, E_COUNTER, 0);
             g_riposte_target[slot] = 0;
+            WW(slot, W_ART_T, -1); WW(slot, W_ART_KIND, 0); WW(slot, W_RECOVER, 0); WW(slot, W_SWING, -1); WW(slot, W_ART_CD, 0); WW(slot, W_BUFFER, 0);
         }
         SW(H_UPDATES, SR(H_UPDATES) + 1);
+        // a test aid for the runs (0 outside a test): the word H_TEST_MAT = slot + 1 | count << 8, written by every copy in
+        // the same lockstep tick (a room's tick-do; a poke offline), gives that player `count` upgrade materials through
+        // the game's own inventory_giveItem, as a pick-up would
+        u32 aid = (u32)SR(H_TEST_MAT);
+        if ((aid & 0xff) == (u32)slot + 1 && material_def()) {
+            u32 m = material_def(), it = SOULS_BASE + H_ITEM_SCRATCH;
+            for (u32 k = 0; k < ITEM; k += 4) PW(it + k, 0);
+            PW(it, m); PH(it + 4, (u16)std::max<u32>(1, (aid >> 8) & 0xff)); PW(it + 8, W(m + 0x28)); PW(it + 12, W(m + 0x2c) );
+            PH(it + 0x20, 0xffff);
+            for (u32 k = 0; k < 4; k++) PH(it + 0x24 + 8 * k, 0xffff);
+            s32 got = (s32)call(c, INVENTORY_GIVE, (u32)slot, it, 0);
+            SW(H_TEST_MAT, 0);
+            if (g_log) fprintf(stderr, "souls: tick %u: p%d given %u upgrade materials (bag index %d)\n", frame_now(), slot, (aid >> 8) & 0xff, got);
+        }
+        weapon_numbers(c, slot, record);    // the weapon in hand, the equip load and its tier (every machine alike)
+        WW(slot, W_NEAR, near_save(P) ? 1 : 0);
     } else if (g_ghost.object != P) { g_ghost = Ghost(); g_ghost.object = P; }
     s32 stamina = SR(slot_off(slot, S_STAMINA));
     s32 state = (s32)W(P + P_STATE);
     int cls = (int8_t)B(record + REC_WEAPON_CLASS);
     bool ranged = cls == 4 || cls == 6;
+    s32 wc = WR(slot, W_CLASS);
+    if (wc < 0 || wc >= WC_COUNT) wc = WC_NONE;
+    s32 tier = std::max(0, std::min(3, WR(slot, W_TIER)));
     u32 pad = G_PADS + (u32)slot * PAD;
     u32 held = W(pad + PAD_HELD), pressed = W(pad + PAD_PRESSED), nh = held, np = pressed;
     u32 attack = W(G_BTN_ATTACK + (u32)slot * 4) & 0xffff, block = W(G_BTN_BLOCK + (u32)slot * 4) & 0xffff;
     u32 potion = W(G_BTN_POTION_A + (u32)slot * 4) & 0xffff;
+    u32 swap = W(G_BTN_SWAP + (u32)slot * 4) & 0xffff, use = W(G_BTN_USE + (u32)slot * 4) & 0xffff;
     s32 atk = copy ? g_ghost.atk : SR(slot_off(slot, S_ATK)), l3 = copy ? g_ghost.l3 : SR(slot_off(slot, S_L3));
     bool light = false, heavy = false, dodge = false, refused = false, counter = false, parry = false, drink = false;
+    bool art = false, toggle_two = false, upgrade = false;
     bool broken_guard = SR(slot_off(slot, S_BROKEN)) > 0;
     // the health potion button drinks a flask; the game's own potions are not used in the mode
     if (potion) {
         if (pressed & potion) drink = true;
         nh &= ~potion; np &= ~potion;
     }
+    // L3 held and another button pressed: the weapon art (attack), two-handing (swap), an upgrade (use); the presses are
+    // spent (L3 is then neither a dodge nor a sprint, and the button is not given to the game)
+    if ((held & L3) && l3 >= 0) {
+        if (attack && (pressed & attack)) { art = true; atk = -100000; nh &= ~attack; np &= ~attack; }
+        else if (swap && (pressed & swap)) { toggle_two = true; nh &= ~swap; np &= ~swap; }
+        else if (use && (pressed & use)) { upgrade = true; nh &= ~use; np &= ~use; }
+        if (art || toggle_two || upgrade) l3 = -100000;
+    }
+    if (l3 < 0 && (held & L3) && swap) { nh &= ~swap; np &= ~swap; }   // the swap stays the game's only without L3 spent
     // attack: a tap is the game's swing, a hold its heavy attack; pressed in the guard-counter window it is a guard counter
     if (attack && !ranged) {
         if ((held & attack) && atk == 0 && ER(slot, E_COUNTER) > 0 && (state == 2 || state == 8)) {
@@ -277,6 +535,12 @@ void w_player_run(Ctx* c) {
             if (atk > 0 && atk < t.heavy_hold) light = true;
             atk = 0;
         }
+        // the class's recovery after a swing: a tap in it waits (buffered) until the recovery is over
+        if (!copy) {
+            s32 recover = WR(slot, W_RECOVER), buffered = WR(slot, W_BUFFER);
+            if (light && recover > 0 && state == 2) { light = false; WW(slot, W_BUFFER, 1); }
+            else if (!light && buffered > 0 && recover == 0 && state == 2 && !(held & attack)) { light = true; WW(slot, W_BUFFER, 0); }
+        }
         if (light) { if (stamina > 0) { nh |= attack; np |= attack; } else { light = false; refused = true; } }
         if (heavy && stamina <= 0) { heavy = false; refused = atk == t.heavy_hold; }
         if (counter && stamina <= 0) { counter = false; refused = true; }
@@ -288,15 +552,15 @@ void w_player_run(Ctx* c) {
     if ((held & L3) && l3 == 0 && block && (held & block) && !broken_guard && (state == 2 || state == 8)) {
         l3 = -100000;
         parry = true;
-    } else if (held & L3) l3++;
+    } else if (held & L3) { if (l3 >= 0) l3++; }
     else { if (l3 > 0 && l3 < t.sprint_hold) dodge = true; l3 = 0; }
     float lx = F(pad + PAD_LX), ly = F(pad + PAD_LY);
-    bool sprint = (held & L3) && l3 >= t.sprint_hold && state == 2 && stamina > 0 && lx * lx + ly * ly > 0.25f;
+    bool sprint = (held & L3) && l3 >= t.sprint_hold && state == 2 && stamina > 0 && lx * lx + ly * ly > 0.25f && t.tier_sprint[tier] > 0;
     if (broken_guard && block) { nh &= ~block; np &= ~block; }
     if (nh != held) PW(pad + PAD_HELD, nh);
     if (np != pressed) PW(pad + PAD_PRESSED, np);
     u32 speed_bits = W(record + REC_SPEED);
-    if (sprint) PF(record + REC_SPEED, flt(speed_bits) * ((float)t.sprint_speed_percent / 100.0f));
+    if (sprint) PF(record + REC_SPEED, flt(speed_bits) * ((float)(100 + (t.sprint_speed_percent - 100) * t.tier_sprint[tier] / 100) / 100.0f));
     bool heavy_started = false, counter_started = false, parry_started = false;
     bool can_attack = B(P + P_ON_GROUND) && W(P + P_ATTACK_REQUEST) == 0 && (int8_t)B(P + O_TRACKS) < 6 && !B(P + C_INERT) && F(record + REC_HP) > 0;
     if (heavy && state == 2 && can_attack)
@@ -318,6 +582,7 @@ void w_player_run(Ctx* c) {
             PB(P + P_BLOCKING, 0);              // the game raises the guard again (state 8: its own clip anim(0x84))
         } else refused = true;
     }
+    float x0 = F(P + O_POS), y0 = F(P + O_POS + 4);
 
     g_orig_run(c);
 
@@ -327,11 +592,24 @@ void w_player_run(Ctx* c) {
     s32 now = (s32)W(P + P_STATE);
     bool dodged = false;
     s32 dodge_t = copy ? g_ghost.dodge : SR(slot_off(slot, S_DODGE));
+    // a dodge may cancel a light swing of the class once it is `wc_cancel` ticks in (after its hit)
+    s32 swing_t = WR(slot, W_SWING);
+    bool cancel = now == 1 && t.wc_cancel[wc] >= 0 && swing_t >= t.wc_cancel[wc] && W(P + P_ATTACK_REQUEST) != 2 && !copy;
     if (dodge) {
-        bool can = (now == 2 || now == 8) && B(P + P_ON_GROUND) && !B(P + C_INERT) && F(record + REC_HP) > 0 && dodge_t < 0 &&
+        bool can = (now == 2 || now == 8 || cancel) && B(P + P_ON_GROUND) && !B(P + C_INERT) && F(record + REC_HP) > 0 && dodge_t < 0 &&
                    (copy || SR(slot_off(slot, S_COOL)) == 0) && !(W(G_LEVEL_FLAGS) & 0x10000000);
-        if (can && stamina > 0) dodged = start_dodge(c, P, slot, cls);
-        else if (can) refused = true;
+        if (can && t.tier_dodge_move[tier] <= 0) { can = false; refused = true; }   // overloaded: no dodge
+        if (can && stamina > 0) {
+            if (now == 1) { PW(P + P_ATTACK_REQUEST, 0); bump(H_CANCELS); }
+            dodged = start_dodge(c, P, slot, cls);
+        } else if (can) refused = true;
+    }
+    // the equip load's tier scales the dodge's movement (the hop's own steps this tick, made longer or shorter)
+    if ((dodged || (dodge_t >= 0 && now == 0xb)) && t.tier_dodge_move[tier] != 100) {
+        float k = (float)(t.tier_dodge_move[tier] - 100) / 100.0f;
+        float dx = F(P + O_POS) - x0, dy = F(P + O_POS + 4) - y0;
+        PF(P + O_POS, F(P + O_POS) + dx * k);
+        PF(P + O_POS + 4, F(P + O_POS + 4) + dy * k);
     }
     if (copy) {
         g_ghost.atk = atk; g_ghost.l3 = l3;
@@ -348,6 +626,57 @@ void w_player_run(Ctx* c) {
         else if (can) refused = true;
         if (drank) { now = 3; drink_t = 0; if (g_log) fprintf(stderr, "souls: tick %u: p%d drinks (%d flasks)\n", frame_now(), slot, ER(slot, E_FLASKS)); }
     }
+    // the weapons: two-handing, an upgrade at a save point, the weapon art
+    bool art_started = false;
+    if (toggle_two) {
+        Weapon w = weapon_now(slot);
+        if (can_two_hand(w.cls, record)) {
+            WW(slot, W_TWOHAND, WR(slot, W_TWOHAND) ? 0 : 1);
+            bump(H_TWOHANDS);
+            if (g_log) fprintf(stderr, "souls: tick %u: p%d two-handing %s (%s)\n", frame_now(), slot, WR(slot, W_TWOHAND) ? "on" : "off", class_name(w.cls));
+        } else refused = true;
+    }
+    if (upgrade) {
+        Weapon w = weapon_now(slot);
+        bool near = near_save(P);
+        s32 next = w.level + 1, gold = upgrade_gold(next), need = upgrade_materials(next), have = materials(record);
+        s32 money = (s32)W(record + REC_GOLD);
+        if (w.item && w.cls != WC_NONE && near && alive && next <= t.upgrade_max && money >= gold && have >= need) {
+            spend_materials(c, slot, record, need);
+            PW(record + REC_GOLD, (u32)(money - gold));
+            set_upgrade(w.item, next);
+            WW(slot, W_UPGRADES, WR(slot, W_UPGRADES) + 1);
+            bump(H_UPGRADES);
+            if (g_log) fprintf(stderr, "souls: tick %u: p%d upgraded its %s to +%d: %d gold, %d materials (%d left), damage %d %% -> %d %%\n", frame_now(), slot,
+                               class_name(w.cls), next, gold, need, materials(record), w.damage, weapon_now(slot).damage);
+        } else {
+            WW(slot, W_UP_REFUSED, WR(slot, W_UP_REFUSED) + 1);
+            if (g_log) fprintf(stderr, "souls: tick %u: p%d upgrade refused: near a save point %d, level %d, gold %d of %d, materials %d of %d\n", frame_now(), slot,
+                               near, w.level, money, gold, have, need);
+        }
+    }
+    if (art) {
+        Weapon w = weapon_now(slot);
+        s32 kind = t.wc_art[w.cls];
+        float mana = F(record + REC_MANA), cost = F(record + REC_MANA_MAX) * ((float)t.art_mana_percent / 100.0f);
+        if (cost < 1.0f) cost = 1.0f;
+        bool can = kind != ART_NONE && (now == 2 || now == 8) && B(P + P_ON_GROUND) && !B(P + C_INERT) && alive && W(P + P_ATTACK_REQUEST) == 0 &&
+                   WR(slot, W_ART_CD) == 0 && WR(slot, W_ART_T) < 0 && !dodged && !drank;
+        if (can && stamina > 0 && mana >= cost) {
+            if (now == 8) { PB(P + P_BLOCKING, 0); PW(record + REC_BLOCK_TIMER, 0); }
+            s32 done = cast_art(c, P, kind, 1 + w.level);
+            if (done != ART_NONE) {
+                art_started = true;
+                PF(record + REC_MANA, mana - cost);
+                WW(slot, W_ART_T, 0); WW(slot, W_ART_KIND, done); WW(slot, W_ART_CD, t.art_cooldown);
+                WW(slot, W_ARTS, WR(slot, W_ARTS) + 1);
+                bump(H_ARTS);
+                now = (s32)W(P + P_STATE);
+                if (g_log) fprintf(stderr, "souls: tick %u: p%d weapon art %d (%s, level %d): %.1f mana, state %d\n", frame_now(), slot, done, class_name(w.cls), 1 + w.level, cost, now);
+            } else refused = true;
+        } else if (can || kind == ART_NONE) refused = true;
+        else if (g_log) fprintf(stderr, "souls: tick %u: p%d weapon art not taken: state %d mana %.1f of %.1f cooldown %d\n", frame_now(), slot, now, mana, cost, WR(slot, W_ART_CD));
+    }
     SW(slot_off(slot, S_ATK), atk);
     SW(slot_off(slot, S_L3), l3);
     u32 flags = (u32)SR(slot_off(slot, S_FLAGS)) & (FL_HEAVY | FL_COUNTER_HEAVY);
@@ -359,6 +688,7 @@ void w_player_run(Ctx* c) {
     }
     s32 last = SR(slot_off(slot, S_LAST_STATE)), combo = (int8_t)B(P + P_COMBO);
     bool spent = false;
+    s32 per = t.wc_stamina[wc];
     if (refused) SW(slot_off(slot, S_REFUSED), SR(slot_off(slot, S_REFUSED)) + 1);
     if (dodged) {
         charge(slot, t.cost_dodge); spent = true;
@@ -369,10 +699,12 @@ void w_player_run(Ctx* c) {
         if (now != 0xb || dodge_t > 120) { dodge_t = -1; SW(slot_off(slot, S_COOL), t.dodge_cooldown); }
     } else if (SR(slot_off(slot, S_COOL)) > 0) SW(slot_off(slot, S_COOL), SR(slot_off(slot, S_COOL)) - 1);
     SW(slot_off(slot, S_DODGE), dodge_t);
+    s32 iframe_last = t.dodge_iframe_last * t.tier_iframes[tier] / 100;
     if (dodge_t >= 0) flags |= FL_DODGE;
-    if (dodge_t >= t.dodge_iframe_first && dodge_t <= t.dodge_iframe_last) flags |= FL_IFRAMES;
+    if (dodge_t >= t.dodge_iframe_first && dodge_t <= iframe_last) flags |= FL_IFRAMES;
+    if (art_started) { charge(slot, t.cost_heavy * t.art_stamina_percent / 100 * per / 100); spent = true; }
     if (heavy_started || counter_started) {
-        charge(slot, t.cost_heavy); spent = true; flags |= FL_HEAVY;
+        charge(slot, t.cost_heavy * per / 100); spent = true; flags |= FL_HEAVY;
         SW(slot_off(slot, S_HEAVIES), SR(slot_off(slot, S_HEAVIES)) + 1);
         if (counter_started) {
             flags |= FL_COUNTER_HEAVY;
@@ -382,10 +714,28 @@ void w_player_run(Ctx* c) {
             if (g_log) fprintf(stderr, "souls: tick %u: p%d guard counter\n", frame_now(), slot);
         }
     } else if (now == 1 && W(P + P_ATTACK_REQUEST) != 2 && (last != 1 || combo != SR(slot_off(slot, S_LAST_COMBO)))) {
-        charge(slot, t.cost_light); spent = true; flags &= ~(FL_HEAVY | FL_COUNTER_HEAVY);
+        charge(slot, t.cost_light * per / 100); spent = true; flags &= ~(FL_HEAVY | FL_COUNTER_HEAVY);
         SW(slot_off(slot, S_LIGHTS), SR(slot_off(slot, S_LIGHTS)) + 1);
-    } else if (now == 0 && last != 0) { charge(slot, t.cost_ranged); spent = true; }
+    } else if (now == 0 && last != 0) { charge(slot, t.cost_ranged * per / 100); spent = true; }
     if (now != 1) flags &= ~(FL_HEAVY | FL_COUNTER_HEAVY);
+    // the swing's own clock (for the dodge cancel) and the class's recovery after it
+    if (now == 1) swing_t = (last != 1 || combo != SR(slot_off(slot, S_LAST_COMBO))) ? 0 : swing_t + 1;
+    else swing_t = -1;
+    WW(slot, W_SWING, swing_t);
+    s32 recover = WR(slot, W_RECOVER);
+    if (last == 1 && now != 1 && now != 0xb) recover = t.wc_recovery[wc];
+    else if (recover > 0) recover--;
+    WW(slot, W_RECOVER, recover);
+    if (WR(slot, W_BUFFER) > 0) WW(slot, W_BUFFER, WR(slot, W_BUFFER) >= 30 ? 0 : WR(slot, W_BUFFER) + 1);   // a buffered tap waits at most half a second
+    // the weapon art's own clock: it ends when the character leaves the art's state
+    s32 art_t = WR(slot, W_ART_T);
+    if (art_t >= 0 && !art_started) {
+        art_t++;
+        bool over = WR(slot, W_ART_KIND) == ART_BOLT ? art_t > t.art_bolt_ticks : (now != 6 && now != 9 && now != 10 && art_t > 2);
+        if (over || art_t > 600 || !alive) { art_t = -1; WW(slot, W_ART_KIND, 0); }
+    }
+    WW(slot, W_ART_T, art_t);
+    if (WR(slot, W_ART_CD) > 0 && art_t < 0) WW(slot, W_ART_CD, WR(slot, W_ART_CD) - 1);
     if (sprint) { charge(slot, t.cost_sprint_per_tick); spent = true; flags |= FL_SPRINT; }
     if (now == 8) flags |= FL_BLOCK;
     s32 broken = SR(slot_off(slot, S_BROKEN));
@@ -484,6 +834,7 @@ void w_player_run(Ctx* c) {
         if (delay > 0) SW(slot_off(slot, S_DELAY), delay - 1);
         else {
             s32 add = now == 8 ? t.regen_per_tick * t.regen_block_percent / 100 : t.regen_per_tick;
+            add = add * t.tier_regen[tier] / 100;
             SW(slot_off(slot, S_STAMINA), std::min(t.stamina_max, SR(slot_off(slot, S_STAMINA)) + add));
         }
     }
@@ -509,7 +860,9 @@ void w_player_take_damage(Ctx* c) {
     u32 attacker = (u32)c->r[5], flags = (u32)c->r[6];
     float amount = flt(c->f[12]);
     s32 dodge_t = SR(slot_off(slot, S_DODGE));
-    if (amount > 0 && amount < 100000.0f && dodge_t >= t.dodge_iframe_first && dodge_t <= t.dodge_iframe_last) {
+    s32 tier = std::max(0, std::min(3, WR(slot, W_TIER)));
+    s32 iframe_last = t.dodge_iframe_last * t.tier_iframes[tier] / 100;      // the equip load's tier shortens them
+    if (amount > 0 && amount < 100000.0f && dodge_t >= t.dodge_iframe_first && dodge_t <= iframe_last) {
         // the dodge's invulnerable ticks: the hit does not land
         g_iframe_skips++;
         SW(slot_off(slot, S_AVOIDED), SR(slot_off(slot, S_AVOIDED)) + 1);
@@ -537,15 +890,37 @@ void w_player_take_damage(Ctx* c) {
     bool blocking = (state == 8 || state == 0xb) && !(flags & HIT_UNBLOCKABLE) && attacker && amount > 0 && amount < 100000.0f;
     float before = F(P + C_PENDING);
     g_orig_ptd(c);
-    if (!blocking) return;
-    float added = F(P + C_PENDING) - before;
-    if (added >= amount * 0.25f) return;            // from behind: the game did not block it
     u32 record = G_PLAYERS + (u32)slot * REC;
     float most = F(record + REC_HP_MAX);
     if (!(most > 1.0f)) most = 1.0f;
+    float added = F(P + C_PENDING) - before;
+    // a heavy without hyper-armour: only a great weapon's heavy keeps the game's own; any other class's heavy is
+    // staggered (the game's forced stagger) by a hit of heavy_interrupt_hp_percent of the bar or more
+    s32 wc = std::max(0, std::min(WC_COUNT - 1, WR(slot, W_CLASS)));
+    if (state == 1 && W(P + P_ATTACK_REQUEST) == 2 && (SR(slot_off(slot, S_FLAGS)) & FL_HEAVY) && wc != WC_GREAT && amount > 0 && amount < 100000.0f &&
+        added * 100.0f >= most * (float)t.heavy_interrupt_hp_percent) {
+        PW(P + C_PENDING_FLAGS, W(P + C_PENDING_FLAGS) | PEND_STAGGER);
+        bump(H_INTERRUPTS);
+        if (g_log) fprintf(stderr, "souls: tick %u: p%d heavy (%s) interrupted by a hit of %.1f\n", frame_now(), slot, class_name(wc), added);
+    }
+    if (!blocking) return;
+    if (added >= amount * 0.25f) return;            // from behind: the game did not block it
+    // a player's spear thrust partly goes through a block
+    if (ok(attacker, 0x590) && W(attacker + O_VTABLE) == VT_PLAYER && !(W(attacker + O_FLAGS) & FLAG_COPY)) {
+        s32 aslot = (s32)W(attacker + P_SLOT);
+        if (aslot >= 0 && aslot < 4 && WR(aslot, W_CLASS) == WC_SPEAR) {
+            float chip = amount * ((float)t.spear_chip_percent / 100.0f);
+            PF(P + C_PENDING, F(P + C_PENDING) + chip);
+            bump(H_CHIPS);
+            if (g_log) fprintf(stderr, "souls: tick %u: p%d blocked a spear: %.1f of %.1f goes through\n", frame_now(), slot, chip, amount);
+        }
+    }
     float share = amount * 100.0f / most;
     if (share > 1000.0f) share = 1000.0f;
     s32 cost = t.cost_block_base + (s32)(share * (float)t.cost_block_per_hp_percent);
+    // guarding with the weapon (two-handed, or no shield in the shield slot) costs the class's own share
+    bool shield = ok(W(record + REC_EQUIP + 12), ITEM);
+    if (weapon_now(slot).two || !shield) cost = cost * t.wc_guard[wc] / 100;
     s32 stamina = SR(slot_off(slot, S_STAMINA));
     SW(slot_off(slot, S_BLOCKS), SR(slot_off(slot, S_BLOCKS)) + 1);
     SW(H_BLOCKS, SR(H_BLOCKS) + 1);
@@ -573,6 +948,23 @@ bool from_behind(Ctx* c, u32 V, u32 A) {
     return along < 0 && along * along >= d2 * (limit * limit);
 }
 
+// A creature killed by a player may leave the upgrade material, by its boss rank: the chance is decided by the game's
+// shared generator state as it is at the kill (read, not drawn), the item made by the game's own loot_spawnNamedItem.
+void drop_material(Ctx* c, u32 V, int slot) {
+    const Tuning& t = g_tuning;
+    u32 m = material_def();
+    if (!m || !ok(V, 0x3c8)) return;
+    u32 rank = call(c, CREATURE_BOSS_RANK, V) & 0xff;
+    s32 chance = rank >= 2 ? t.material_drop_boss : rank == 1 ? t.material_drop_miniboss : t.material_drop_normal;
+    s32 roll = (s32)((W(G_RAND_SEED) >> 16) % 100);
+    if (roll >= chance) return;
+    u32 pos = SOULS_BASE + H_SCRATCH;
+    PW(pos, W(V + O_POS)); PW(pos + 4, W(V + O_POS + 4)); PW(pos + 8, W(V + O_POS + 8));
+    call(c, LOOT_SPAWN_NAMED, pos, W(m));
+    bump(H_MAT_DROPS);
+    if (g_log) fprintf(stderr, "souls: tick %u: p%d's kill (rank %u, roll %d of %d) left an upgrade material\n", frame_now(), slot, rank, roll, chance);
+}
+
 // ---- Creature_takeDamage (slot 2 of most creatures) -------------------------------------------------------------
 void w_creature_take_damage(Ctx* c) {
     u32 V = (u32)c->r[4], A = (u32)c->r[5];
@@ -581,7 +973,7 @@ void w_creature_take_damage(Ctx* c) {
     if (slot < 0 || slot > 3) { g_orig_ctd(c); return; }
     g_ctd_calls++;
     const Tuning& t = g_tuning;
-    float amount = flt(c->f[12]);
+    float amount = flt(c->f[12]), raw = amount;
     s32 state = (s32)W(A + P_STATE);
     u32 pflags = (u32)SR(slot_off(slot, S_FLAGS));
     bool heavy = state == 1 && W(A + P_ATTACK_REQUEST) == 2 && (pflags & FL_HEAVY);
@@ -596,13 +988,28 @@ void w_creature_take_damage(Ctx* c) {
         else if (heavy && it != g_poise.end() && it->second.broken && tick + 1 - it->second.broken <= (u32)t.stance_crit_window) kind = 2;
         else if (!heavy && (it == g_poise.end() || !it->second.crit || tick + 1 - it->second.crit > (u32)t.backstab_cooldown) && from_behind(c, V, A)) kind = 3;
     }
+    s32 wc = std::max(0, std::min(WC_COUNT - 1, WR(slot, W_CLASS)));
     s32 percent = kind == 1 ? t.crit_riposte_percent : kind == 2 ? t.crit_stance_percent : kind == 3 ? t.crit_backstab_percent : 0;
-    if (kind && amount > 0) c->f[12] = bits(amount * ((float)percent / 100.0f));
-    else if (counter && amount > 0) c->f[12] = bits(amount * ((float)t.guard_counter_damage_percent / 100.0f));
-    else if (heavy && amount > 0) c->f[12] = bits(amount * ((float)t.heavy_damage_percent / 100.0f));
+    if (kind == 1 || kind == 3) percent = percent * t.wc_crit[wc] / 100;   // daggers: better ripostes and backstabs
+    // a slam (the ground pound's shoves, one point each with the lightest knock bit): the weapon's own top damage instead
+    bool slam = WR(slot, W_ART_T) >= 0 && WR(slot, W_ART_KIND) == ART_SLAM && state == 10 && (((u32)c->r[6]) & FLAG_KNOCK_LIGHT) && amount >= 0 && amount <= 2.0f;
+    s32 art_kind = WR(slot, W_ART_KIND);
+    bool art_hit = WR(slot, W_ART_T) >= 0 && (art_kind == ART_BOLT ? state != 1 && state != 0 : (state == 6 || state == 9 || state == 10));
+    // the lunge's and the bolt's hits are the skills' own fixed damage (made for characters of a higher level): scaled down
+    if (art_hit && (art_kind == ART_LUNGE || art_kind == ART_BOLT) && amount > 0 && amount < 100000.0f) amount = amount * ((float)t.art_fixed_percent / 100.0f);
+    if (slam) amount = F(G_PLAYERS + (u32)slot * REC + REC_DMG_MAX) * ((float)t.art_slam_percent / 100.0f);
+    if (kind && amount > 0) amount = amount * ((float)percent / 100.0f);
+    else if (counter && amount > 0) amount = amount * ((float)t.guard_counter_damage_percent / 100.0f);
+    else if (heavy && amount > 0) amount = amount * ((float)t.heavy_damage_percent / 100.0f);
+    // the weapon's upgrade and the character's statistics (the scaling of its class), every hit of the player
+    s32 dmg = WR(slot, W_DMG);
+    if (amount > 0 && amount < 100000.0f && dmg > 0 && dmg != 100) amount = amount * ((float)dmg / 100.0f);
+    if (amount > 0 && amount < 100000.0f) c->f[12] = bits(amount);
     float hp_before = F(V + C_HP);
     g_orig_ctd(c);
-    if (g_log) fprintf(stderr, "souls: tick %u: p%d hits %08x: %.1f%s, its hit points %.1f -> %.1f\n", tick, slot, V, amount, heavy ? " (heavy)" : "", hp_before, F(V + C_HP));
+    if (hp_before > 0 && !(F(V + C_HP) > 0)) drop_material(c, V, slot);
+    if (g_log) fprintf(stderr, "souls: tick %u: p%d hits %08x: %.1f -> %.1f (%s, weapon %d %%)%s%s, its hit points %.1f -> %.1f\n", tick, slot, V, raw, amount,
+                       class_name(wc), dmg, heavy ? " (heavy)" : "", slam ? " (slam)" : art_hit ? " (weapon art)" : "", hp_before, F(V + C_HP));
     if (!(amount > 0)) return;
     if (kind) {
         if (kind == 1) { EW(slot, E_RIPOSTE, 0); g_riposte_target[slot] = 0; bump(H_RIPOSTES); }
@@ -622,7 +1029,10 @@ void w_creature_take_damage(Ctx* c) {
         stun(c, V, t.crit_stun_ticks);
     }
     if (tick - p.last > (u32)t.poise_reset_ticks) p.poise = 0;
-    p.poise += counter ? t.poise_guard_counter : heavy ? t.poise_heavy : state == 0 ? t.poise_ranged : t.poise_light;
+    s32 poise = counter ? t.poise_guard_counter : (heavy || art_hit) ? t.poise_heavy : state == 0 ? t.poise_ranged : t.poise_light;
+    poise = poise * t.wc_poise[wc] / 100;
+    if (weapon_now(slot).two) poise = poise * t.twohand_poise_percent / 100;
+    p.poise += poise;
     p.last = tick;
     u32 rank = call(c, CREATURE_BOSS_RANK, V) & 0xff;
     s32 limit = rank >= 2 ? t.poise_boss : rank == 1 ? t.poise_miniboss : t.poise_normal;
@@ -646,6 +1056,18 @@ void w_savepoint_run(Ctx* c) {
     if (!g_on || !ok(S, 0x118)) return;
     g_save_calls++;
     const Tuning& t = g_tuning;
+    // the level's save points, kept in the block (each machine runs them alike): where an upgrade can be made
+    u32 level = level_figure();
+    if ((u32)SR(H_SAVES_LEVEL) != level) { for (u32 a = H_SAVES; a < H_SAVES + 4 + 12 * 8; a += 4) SW(a, 0); SW(H_SAVES_LEVEL, (s32)level); }
+    s32 n = std::max(0, std::min(8, SR(H_SAVES)));
+    bool known = false;
+    for (s32 k = 0; k < n; k++)
+        known |= W(SOULS_BASE + H_SAVES + 4 + 12 * (u32)k) == W(S + O_POS) && W(SOULS_BASE + H_SAVES + 8 + 12 * (u32)k) == W(S + O_POS + 4);
+    if (!known && n < 8) {
+        for (u32 k = 0; k < 3; k++) PW(SOULS_BASE + H_SAVES + 4 + 12 * (u32)n + 4 * k, W(S + O_POS + 4 * k));
+        SW(H_SAVES, n + 1);
+        if (g_log) fprintf(stderr, "souls: tick %u: a save point at %.1f %.1f %.1f\n", frame_now(), F(S + O_POS), F(S + O_POS + 4), F(S + O_POS + 8));
+    }
     float r = (float)t.flask_refill_radius;
     for (int slot = 0; slot < 4; slot++) {
         u32 record = G_PLAYERS + (u32)slot * REC, P = W(record + REC_OBJECT);
@@ -707,7 +1129,7 @@ const Named NAMES[] = {
     {"heavy_damage_percent", &Tuning::heavy_damage_percent}, {"poise_light", &Tuning::poise_light}, {"poise_heavy", &Tuning::poise_heavy},
     {"poise_ranged", &Tuning::poise_ranged}, {"poise_normal", &Tuning::poise_normal}, {"poise_miniboss", &Tuning::poise_miniboss},
     {"poise_boss", &Tuning::poise_boss}, {"poise_reset_ticks", &Tuning::poise_reset_ticks}, {"stagger_ticks", &Tuning::stagger_ticks},
-    {"parry_last", &Tuning::parry_last},
+    {"parry_first", &Tuning::parry_first}, {"parry_last", &Tuning::parry_last},
     {"parry_recovery", &Tuning::parry_recovery},
     {"cost_parry", &Tuning::cost_parry},
     {"parry_reach", &Tuning::parry_reach},
@@ -731,7 +1153,31 @@ const Named NAMES[] = {
     {"flask_heal_spread", &Tuning::flask_heal_spread},
     {"flask_refill_radius", &Tuning::flask_refill_radius},
     {"drop_percent", &Tuning::drop_percent},
-    {"drop_radius", &Tuning::drop_radius}};
+    {"drop_radius", &Tuning::drop_radius},
+    {"load_base", &Tuning::load_base}, {"load_per_stamina", &Tuning::load_per_stamina}, {"load_per_strength", &Tuning::load_per_strength},
+    {"load_light", &Tuning::load_light}, {"load_medium", &Tuning::load_medium}, {"twohand_strength_percent", &Tuning::twohand_strength_percent},
+    {"twohand_poise_percent", &Tuning::twohand_poise_percent}, {"heavy_interrupt_hp_percent", &Tuning::heavy_interrupt_hp_percent},
+    {"spear_chip_percent", &Tuning::spear_chip_percent}, {"upgrade_max", &Tuning::upgrade_max}, {"upgrade_damage_tenths", &Tuning::upgrade_damage_tenths},
+    {"upgrade_correct_percent", &Tuning::upgrade_correct_percent}, {"upgrade_gold_base", &Tuning::upgrade_gold_base},
+    {"upgrade_gold_step", &Tuning::upgrade_gold_step}, {"upgrade_material_every", &Tuning::upgrade_material_every},
+    {"material_drop_normal", &Tuning::material_drop_normal}, {"material_drop_miniboss", &Tuning::material_drop_miniboss},
+    {"material_drop_boss", &Tuning::material_drop_boss}, {"save_reach", &Tuning::save_reach}, {"art_mana_percent", &Tuning::art_mana_percent},
+    {"art_stamina_percent", &Tuning::art_stamina_percent}, {"art_cooldown", &Tuning::art_cooldown}, {"art_slam_percent", &Tuning::art_slam_percent},
+    {"art_fixed_percent", &Tuning::art_fixed_percent}, {"art_bolt_ticks", &Tuning::art_bolt_ticks}};
+// the tuning's arrays: combat.<name>.<label> (a tier, a weapon class or a curve point's index)
+const char* const TIER_LABELS[] = {"light", "medium", "heavy", "over"};
+const char* const CLASS_LABELS[] = {"none", "dagger", "sword", "axe", "mace", "great", "spear", "staff", "bow"};
+const char* const POINT_LABELS[] = {"0", "1", "2", "3", "4", "5", "6"};
+struct NamedArray { const char* name; size_t offset; int count; const char* const* labels; };
+const NamedArray ARRAYS[] = {
+    {"tier_dodge_move", offsetof(Tuning, tier_dodge_move), 4, TIER_LABELS}, {"tier_iframes", offsetof(Tuning, tier_iframes), 4, TIER_LABELS},
+    {"tier_regen", offsetof(Tuning, tier_regen), 4, TIER_LABELS}, {"tier_sprint", offsetof(Tuning, tier_sprint), 4, TIER_LABELS},
+    {"wc_stamina", offsetof(Tuning, wc_stamina), 9, CLASS_LABELS}, {"wc_poise", offsetof(Tuning, wc_poise), 9, CLASS_LABELS},
+    {"wc_recovery", offsetof(Tuning, wc_recovery), 9, CLASS_LABELS}, {"wc_cancel", offsetof(Tuning, wc_cancel), 9, CLASS_LABELS},
+    {"wc_str", offsetof(Tuning, wc_str), 9, CLASS_LABELS}, {"wc_dex", offsetof(Tuning, wc_dex), 9, CLASS_LABELS},
+    {"wc_int", offsetof(Tuning, wc_int), 9, CLASS_LABELS}, {"wc_guard", offsetof(Tuning, wc_guard), 9, CLASS_LABELS},
+    {"wc_crit", offsetof(Tuning, wc_crit), 9, CLASS_LABELS}, {"wc_art", offsetof(Tuning, wc_art), 9, CLASS_LABELS},
+    {"scale_stat", offsetof(Tuning, scale_stat), 7, POINT_LABELS}, {"scale_value", offsetof(Tuning, scale_value), 7, POINT_LABELS}};
 
 }  // namespace
 
@@ -778,6 +1224,16 @@ void blank(uint64_t number) {
         s.drop = ER(h.slot, E_DROP) > 0 && (u32)ER(h.slot, E_DROP_LEVEL) == level_figure();
         s.dx = F(SOULS_BASE + ext_off(h.slot, E_DROP_X)); s.dy = F(SOULS_BASE + ext_off(h.slot, E_DROP_Y)); s.dz = F(SOULS_BASE + ext_off(h.slot, E_DROP_Z));
         SW(L_DROP, s.drop ? 1 : 0);
+        // the weapon card (the weapons part of the block, and the name of the weapon in hand for the HUDs)
+        s.cls = WR(h.slot, W_CLASS); s.level = WR(h.slot, W_UPG); s.tier = WR(h.slot, W_TIER); s.load = WR(h.slot, W_LOAD);
+        s.cap = std::max(1, WR(h.slot, W_CAP)); s.mats = WR(h.slot, W_MATS); s.gold_next = WR(h.slot, W_GOLD_NEXT);
+        s.mats_next = WR(h.slot, W_MATS_NEXT); s.art_cd = WR(h.slot, W_ART_CD); s.damage = WR(h.slot, W_DMG);
+        s.grades = (u32)WR(h.slot, W_GRADES); s.two = WR(h.slot, W_TWOHAND) != 0 && s.cls != WC_BOW && s.cls != WC_NONE;
+        s.near = WR(h.slot, W_NEAR) != 0;
+        u32 it = weapon_item(G_PLAYERS + (u32)h.slot * REC), name = it ? W(W(it)) : 0;
+        for (u32 k = 0; k < 31; k++) { char ch = name && ok(name + k, 1) ? (char)B(name + k) : 0; s.name[k] = ch; if (!ch) break; }
+        s.name[31] = 0;
+        for (u32 k = 0; k < 32; k += 4) { u32 v = 0; memcpy(&v, s.name + k, 4); PW(SOULS_BASE + L_NAME + k, v); }
     }
     std::lock_guard<std::mutex> hold(g_lock);
     g_shown = s;
@@ -823,6 +1279,27 @@ void overlay(render::FrameList& frame) {
     }
     if (s.flags & FL_PARRY) quad(bx, by - bh * 0.8f, bx + bw, by - bh * 0.4f, 0xf0, 0xe8, 0x80, 0x78);   // the parry's window: a gold line over the bar
     if (s.flags & (FL_RIPOSTE | FL_COUNTER)) quad(bx, by + bh * 1.4f, bx + bw, by + bh * 1.8f, 0xf0, 0x60, 0x40, 0x70);   // a riposte or guard counter is open
+    // the weapon card: our own text over the bar - the weapon, its upgrade, class and grades, the equip load and its tier;
+    // near a save point what the next upgrade costs
+    if (s.cls != WC_NONE || s.load > 0) {
+        static const char* const TIERS[4] = {"LIGHT", "MEDIUM", "HEAVY", "OVERLOADED"};
+        char line[160];
+        float px = std::max(1.0f, std::floor(Ht / 448.0f + 0.25f));
+        char g[3] = {(char)(s.grades & 0xff), (char)((s.grades >> 8) & 0xff), (char)((s.grades >> 16) & 0xff)};
+        snprintf(line, sizeof line, "%s +%d  %s  STR %c DEX %c%s%c  %d%%%s", s.name[0] ? s.name : "-", s.level, class_name(s.cls), g[0] ? g[0] : '-', g[1] ? g[1] : '-',
+                 s.cls == WC_STAFF ? " INT " : "", s.cls == WC_STAFF ? (g[2] ? g[2] : '-') : ' ', s.damage, s.two ? "  2H" : "");
+        float ty = by - bh - 2 - 9 * px * 2;
+        testerkit::text(frame, bx, ty, px, line, 0xf0, 0xe8, 0xd0, 0x80);
+        int tier = std::max(0, std::min(3, s.tier));
+        snprintf(line, sizeof line, "LOAD %.1f/%.1f %s  WHETSTONES %d%s", s.load / 100.0, s.cap / 100.0, TIERS[tier], s.mats, s.art_cd > 0 ? "  ART ..." : "");
+        uint8_t lr = tier == 3 ? 0xf0 : tier == 2 ? 0xf0 : 0xc0, lg = tier == 3 ? 0x50 : tier == 2 ? 0xb0 : 0xe0, lb = tier >= 2 ? 0x50 : 0xc0;
+        testerkit::text(frame, bx, ty + 9 * px, px, line, lr, lg, lb, 0x80);
+        if (s.near) {
+            if (s.gold_next > 0) snprintf(line, sizeof line, "UPGRADE TO +%d: %d GOLD, %d WHETSTONE%s  (HOLD L3 + USE)", s.level + 1, s.gold_next, s.mats_next, s.mats_next == 1 ? "" : "S");
+            else snprintf(line, sizeof line, "FULLY UPGRADED");
+            testerkit::text(frame, bx, ty - 9 * px, px, line, 0xa0, 0xe8, 0xff, 0x80);
+        }
+    }
     auto project = [&](float wx, float wy, float wz, float& cx, float& cy) {
         if (!cam.valid) return false;
         float v[3] = {wx - cam.eye[0], wy - cam.eye[1], wz - cam.eye[2]};
@@ -895,6 +1372,13 @@ bool setting(const char* key, const char* value) {
     std::lock_guard<std::mutex> hold(g_lock);
     for (const Named& n : NAMES)
         if (name == n.name) { g_tuning.*(n.field) = (int32_t)atol(text.c_str()); return true; }
+    for (const NamedArray& a : ARRAYS)
+        for (int k = 0; k < a.count; k++)
+            if (name == std::string(a.name) + "." + a.labels[k]) {
+                int32_t* field = (int32_t*)((char*)&g_tuning + a.offset) + k;
+                *field = (int32_t)atol(text.c_str());
+                return true;
+            }
     return false;
 }
 
@@ -905,14 +1389,16 @@ std::string settings_text() {
 }
 
 std::string figures() {
-    char text[640];
+    char text[1024];
     snprintf(text, sizeof text, "souls: %s, wrappers %s; player ticks %llu, player hits %llu (dodged %llu), creature hits by players %llu, staggers %llu, "
              "parries %d, ripostes %d, stance criticals %d, backstabs %d, guard counters %d, flasks drunk %d, refills %d, save point runs %llu, "
-             "drops %d, picked up %d (gold %d), gold lost %d, tuning %08x",
+             "drops %d, picked up %d (gold %d), gold lost %d, weapon arts %d, upgrades %d, materials dropped %d, two-hand toggles %d, "
+             "spear chips %d, heavies interrupted %d, swings cancelled %d, tuning %08x",
              g_on ? "on" : "off", g_installed ? "in place" : "not installed", (unsigned long long)g_runs, (unsigned long long)g_ptd_calls,
              (unsigned long long)g_iframe_skips, (unsigned long long)g_ctd_calls, (unsigned long long)g_staggers,
              SR(H_PARRIES), SR(H_RIPOSTES), SR(H_STANCE), SR(H_BACKSTABS), SR(H_COUNTERS), SR(H_DRUNK), SR(H_REFILLS), (unsigned long long)g_save_calls,
-             SR(H_DROPS), SR(H_PICKUPS), SR(H_GOLD_BACK), SR(H_GOLD_LOST), tuning_figure());
+             SR(H_DROPS), SR(H_PICKUPS), SR(H_GOLD_BACK), SR(H_GOLD_LOST), SR(H_ARTS), SR(H_UPGRADES), SR(H_MAT_DROPS), SR(H_TWOHANDS),
+             SR(H_CHIPS), SR(H_INTERRUPTS), SR(H_CANCELS), tuning_figure());
     return text;
 }
 
@@ -928,6 +1414,10 @@ std::string help_text() {
            "  Guard counter         attack just after a blocked hit\n"
            "  Backstab              light attack from behind; a heavy attack on a staggered enemy is a critical\n"
            "  Flask                 the health potion button (R2): heals, refilled at save points and on a new level\n"
+           "  Weapon art            hold L3 and press attack: a lunge, a spin, a slam or a bolt by the weapon's class (mana)\n"
+           "  Two-handing           hold L3 and press the other-weapon-set button (L1, Q, mouse wheel)\n"
+           "  Upgrade               near a save point hold L3 and press use (Square, J, Space): gold and whetstones\n"
+           "  Equip load            what is equipped against strength and stamina: light, medium, heavy dodge; overloaded, none\n"
            "  Lock on               R3 (Tab, mouse button 5); flick the mouse or the right stick to change target\n";
 }
 
@@ -946,6 +1436,12 @@ std::string command(const std::string& text) {
             snprintf(one, sizeof one, " flasks=%d parry=%d riposte=%d counter=%d drink=%d drop=%d pending=%d crits=%d counters=%d drunk=%d back=%d gold=%d",
                      ER(k, E_FLASKS), ER(k, E_PARRY), ER(k, E_RIPOSTE), ER(k, E_COUNTER), ER(k, E_DRINK), ER(k, E_DROP), ER(k, E_PENDING),
                      ER(k, E_CRITS), ER(k, E_COUNTERS), ER(k, E_DRUNK), ER(k, E_GOLD_BACK), (s32)W(G_PLAYERS + (u32)k * REC + REC_GOLD));
+            out += one;
+            snprintf(one, sizeof one, " class=%s upg=%d grades=%c%c%c scale=%d dmg=%d load=%d/%d tier=%d 2h=%d mats=%d art=%d/%d arts=%d upgrades=%d recover=%d swing=%d",
+                     class_name(WR(k, W_CLASS)), WR(k, W_UPG), (char)(WR(k, W_GRADES) & 0xff) ? (char)(WR(k, W_GRADES) & 0xff) : '.',
+                     (char)((WR(k, W_GRADES) >> 8) & 0xff) ? (char)((WR(k, W_GRADES) >> 8) & 0xff) : '.', (char)((WR(k, W_GRADES) >> 16) & 0xff) ? (char)((WR(k, W_GRADES) >> 16) & 0xff) : '.',
+                     WR(k, W_SCALE), WR(k, W_DMG), WR(k, W_LOAD), WR(k, W_CAP), WR(k, W_TIER), WR(k, W_TWOHAND), WR(k, W_MATS), WR(k, W_ART_KIND), WR(k, W_ART_T),
+                     WR(k, W_ARTS), WR(k, W_UPGRADES), WR(k, W_RECOVER), WR(k, W_SWING));
             out += one;
         }
         char tail[96];

@@ -826,6 +826,24 @@ bool command(const std::string& text) {
 }
 
 // ---- the overlay ---------------------------------------------------------------------------------------------
+float text(render::FrameList& frame, float x, float y, float px, const std::string& s, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    float x0 = x;
+    render::Vertex v{};
+    v.z = 1; v.q = 1; v.r = r; v.g = g; v.b = b; v.a = a;
+    auto put = [&](float vx, float vy) { v.x = vx; v.y = vy; frame.vertices.push_back(v); };
+    for (unsigned char c : s) {
+        const uint8_t* rows = glyph(c);
+        for (int row = 0; row < 7; row++)
+            for (int col = 0; col < 5; col++)
+                if (rows[row] & (0x10 >> col)) {
+                    float qx0 = x + col * px, qy0 = y + row * px, qx1 = qx0 + px, qy1 = qy0 + px;
+                    put(qx0, qy0); put(qx1, qy0); put(qx0, qy1); put(qx1, qy0); put(qx1, qy1); put(qx0, qy1);
+                }
+        x += 6 * px;
+    }
+    return x - x0;
+}
+
 void overlay(render::FrameList& frame) {
     if (!g_setup.person || !frame.show_target || frame.show_rect[2] <= 0 || frame.show_rect[3] <= 0) return;
     bool box;

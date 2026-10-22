@@ -73,6 +73,9 @@ bool command(const std::string& text);
 
 // The drawing thread: the line, the box and the notes, drawn into the shown surface after the game's picture.
 void overlay(render::FrameList& frame);
+// The overlay's letters (5 x 7, `px` the size of one letter pixel) added to the frame's vertices as triangles; the caller
+// adds the draw command (another overlay's text: Hardcore mode's weapon card, soulscombat.cpp).  Returns the width.
+float text(render::FrameList& frame, float x, float y, float px, const std::string& s, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
 
 // For a host that draws its own box (Godot): take a report (returns its folder; shot_path is where the
 // picture should go, "" for none), then finish it with the text (keep false: drop it).  finish returns the

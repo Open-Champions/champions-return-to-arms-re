@@ -3,8 +3,10 @@ extends Control
 # docs/issues/native-souls-combat.md): the stamina bar under the middle of the picture, a frame
 # round it during a dodge's invulnerable ticks, red while the guard is broken, a gold line over it in
 # the parry's window and a red one under it while a riposte or guard counter is open; the flasks
-# (pips and a count) left of it; the lock-on marker on the locked creature with its health; and a
-# marker over this player's death drop when it is on this level.
+# (pips and a count) left of it; the lock-on marker on the locked creature with its health; a
+# marker over this player's death drop when it is on this level; and the weapon card over the bar
+# (the weapon, its upgrade, class, scaling grades, damage percent, two-handing, the equip load and
+# its tier, the upgrade materials; near a save point the next upgrade's price).
 #
 # It reads the mode's block in the game's memory (0xE0800: "SOUL", then the numbers) through the
 # machine's peek_u32 / peek_f32 - nothing else of the game or the library.  With a library that
@@ -27,6 +29,9 @@ const FL_COUNTER := 512
 const FL_DRINK := 1024
 const EXT := 0x200                  # the second per-player part (kept over a death): flasks, the death drop
 const STAMINA_MAX := 10000.0        # soulscombat::Tuning::stamina_max
+const WPN := 0x400                  # the weapons part (soulscombat.h, version 3): 0x60 a player
+const CLASSES := ["unarmed", "dagger", "sword", "axe", "mace", "great weapon", "spear", "staff", "bow"]
+const TIERS := ["LIGHT", "MEDIUM", "HEAVY", "OVERLOADED"]
 
 var hud: Node
 var on := false
@@ -41,6 +46,12 @@ var flasks := 0
 var flask_max := 4                  # soulscombat::Tuning::flask_count (the most seen: the count is full at a level's start)
 var drop := false
 var drop_at := Vector3.ZERO
+# the weapon card: the weapon in hand, its upgrade, class, grades and damage, the equip load and its tier, the materials,
+# and near a save point what the next upgrade costs (our own text)
+var card := ""
+var load_line := ""
+var upgrade_line := ""
+var tier := 0
 
 
 func _ready() -> void:
@@ -77,6 +88,34 @@ func _process(_delta: float) -> void:
 	if drop:
 		var e := BASE + EXT + slot * 0x40
 		drop_at = Vector3(hud.machine.peek_f32(e + 0x18), hud.machine.peek_f32(e + 0x1c), hud.machine.peek_f32(e + 0x20) + 20.0)
+	var w := WPN + slot * 0x60
+	var cls: int = clampi(_peek(w), 0, CLASSES.size() - 1)
+	var level: int = _peek(w + 0x10)
+	var grades: int = _peek(w + 0x14)
+	var two: bool = _peek(w + 0x1c) != 0 and cls != 0 and cls != 8
+	var name := ""
+	for k in range(8):
+		var v: int = hud.machine.peek_u32(BASE + 0x1a0 + k * 4)
+		for b in range(4):
+			var ch: int = (v >> (8 * b)) & 0xff
+			if ch == 0:
+				break
+			name += char(ch)
+		if name.length() < (k + 1) * 4:
+			break
+	var g := func(shift: int) -> String:
+		var ch: int = (grades >> shift) & 0xff
+		return char(ch) if ch != 0 else "-"
+	card = "%s +%d  %s  STR %s DEX %s%s  %d%%%s" % [name if name != "" else "-", level, CLASSES[cls], g.call(0), g.call(8),
+		("  INT " + g.call(16)) if cls == 7 else "", _peek(w + 0x48), "  2H" if two else ""]
+	tier = clampi(_peek(w + 0xc), 0, 3)
+	load_line = "LOAD %.1f/%.1f %s  WHETSTONES %d%s" % [_peek(w + 4) / 100.0, maxi(1, _peek(w + 8)) / 100.0, TIERS[tier], _peek(w + 0x28),
+		"  ART ..." if _peek(w + 0x40) > 0 else ""]
+	upgrade_line = ""
+	if _peek(w + 0x2c) != 0:
+		var gold: int = _peek(w + 0x4c)
+		var mats: int = _peek(w + 0x50)
+		upgrade_line = ("UPGRADE TO +%d: %d GOLD, %d WHETSTONE%s  (HOLD L3 + USE)" % [level + 1, gold, mats, "" if mats == 1 else "S"]) if gold > 0 else "FULLY UPGRADED"
 	lock = _peek(0x180) != 0
 	if lock:
 		lock_at = Vector3(hud.machine.peek_f32(BASE + 0x188), hud.machine.peek_f32(BASE + 0x18c), hud.machine.peek_f32(BASE + 0x190))
@@ -142,6 +181,15 @@ func _draw() -> void:
 	var label := "%d" % flasks
 	var lx := rect.position.x - 10.0 * s - float(flask_max) * (pw + 3.0 * s) - font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x - 4.0 * s
 	draw_string(font, Vector2(lx, rect.end.y), label, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(1, 0.85, 0.6, a))
+	# the weapon card over the bar (and the upgrade's price near a save point)
+	var cs := int(maxf(9.0, 10.0 * s))
+	var line_h := float(cs) + 3.0 * s
+	var ty := rect.position.y - 6.0 * s - line_h
+	var tier_colour := Color(0.95, 0.35, 0.3, a) if tier == 3 else (Color(0.95, 0.72, 0.3, a) if tier == 2 else Color(0.8, 0.88, 0.8, a))
+	draw_string(font, Vector2(rect.position.x, ty), load_line, HORIZONTAL_ALIGNMENT_LEFT, -1, cs, tier_colour)
+	draw_string(font, Vector2(rect.position.x, ty - line_h), card, HORIZONTAL_ALIGNMENT_LEFT, -1, cs, Color(0.95, 0.92, 0.82, a))
+	if upgrade_line != "":
+		draw_string(font, Vector2(rect.position.x, ty - 2.0 * line_h), upgrade_line, HORIZONTAL_ALIGNMENT_LEFT, -1, cs, Color(0.63, 0.9, 1.0, a))
 	# the death drop: a pale green upright diamond over the spot
 	if drop and hud.gs != null:
 		var dc: Vector3 = hud.gs.project(drop_at)

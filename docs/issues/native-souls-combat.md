@@ -18,6 +18,23 @@ either is in the repository.
 
 ## STATE (rewritten at every step; read this first after a stop)
 
+**2026-10-21, third round - weapons (equip load, weapon classes, stat scaling with grades, upgrades +1..+10 with the game's
+own whetstones, weapon arts from the game's own skills, two-handing); built, run offline and in rooms. Not committed.**
+
+- Program: `local/recomp-out/bin/rta_app_next` (fix set, the mode), `rta_app_next_orig` (for the rig). `bin/rta_app` was not
+  touched.
+- **Ran**: mode off, the rig byte for byte in overhead and first person with the final sources (`off-over9`, `off-first9`);
+  offline every weapons mechanic with its numbers, several classes (4.7); a two-copy (`weap2b`, 5,734 ticks) and a
+  three-copy room (`weap3a`, 5,703 ticks, all pairs) with Hardcore on through the drunare fight, upgrades at valor's save
+  point, weapon arts, deaths and the level change valor > drunare, every pair of tick logs equal in every column (4.8).
+- Built: Windows (`build_win.py --no-game`), Linux aarch64 in the container, the Godot library (snapshot `--refresh` +
+  `lib`); `hud/souls.gd` parsed by Godot 4.5.2 `--check-only`.
+- Design 2.8, numbers 3.3 (benched against the owner's copy), runs 4.7 / 4.8.
+- **Not done this round**: the spear's chip (player against player only: no PvP run); in a room a two-handing toggle and a
+  player's hit on a creature (scaled hit, material drop, interrupt: offline only); a weapon art or an upgrade seen by a
+  person or in a running Godot build; the game's own shop / workshop screen (not hooked: the upgrade is the mode's own
+  action at save points, 2.8); an upgraded save loaded by the unmodified program; a Windows or Linux run.
+
 **2026-10-21, second round - Elden Ring mechanics added (parry and riposte, stance-break critical, guard counter,
 backstab, flasks, the death drop), renamed Hardcore mode; built, run offline and in rooms. Not committed.**
 
@@ -215,11 +232,83 @@ Test aids (they change the simulation; never used outside tests): `app souls tur
 (offline only, refused online), and the block word +0x31c: slot + 1 puts that player on its drop in its next tick -
 written by every copy in one lockstep tick through n2party's `--tick-do`, so a room stays in step.
 
+### 2.8 The third round (2026-10-21): weapons
+
+Everything below is in the same wrappers, only with the mode in force; every number is in `soulscombat::Tuning` (3.3). The
+block's version is 3: a weapons part per player at +0x400 + slot x 0x60, header words +0x320..+0x33c, the level's save
+points at +0x380 (`soulscombat.h` lists the words). All of it is written in the tick by every machine alike and is a tick-log
+column of 4.8. Nothing of the game's or Elden Ring's data is in the repository: the classes are decided at run time from the
+game's own item records, and every figure is ours ("benched against the owner's copy", 3.3).
+
+| Mechanic | Input (lockstep row) | Rule | The game's own pieces used |
+|---|---|---|---|
+| **Equip load** | - | the sum of the game's `item_getWeight` 0x103e08 of every equipped item (the 17 equipment pointers `R+0x43f0`, each item once, per unit for a stack, not the ammunition slot) against a capacity `load_base + load_per_stamina x stamina + load_per_strength x strength` (the effective statistics `R+0x90`, `R+0x9c`); below `load_light` % light, below `load_medium` % medium, up to 100 % heavy, above it overloaded. By tier: the dodge's movement (the hop's own steps of each tick lengthened or shortened by `tier_dodge_move`; overloaded: no dodge), its invulnerable ticks (`tier_iframes`), the stamina refill (`tier_regen`) and the sprint's extra speed (`tier_sprint`; overloaded: no sprint) | item_getWeight; the block move (2.6) |
+| **Weapon classes** | - | from the definition row of the weapon in hand (the active set's primary `R+0x4434`, else equipment slot 0 or 2): animation class (`+0x1e`) 4 / 6 bow (thrown weapons too); 1 / 2 great weapon; 3 staff when blunt (damage bit 1), else spear / polearm; one-handed blunt mace; one-handed edged of weight 1 or less dagger; one-handed edged whose name has "axe", "pick", "cleaver" or "hatchet" axe; any other sword. Per class: stamina of light / heavy / shots (`wc_stamina`), poise damage (`wc_poise`), the recovery after a swing before the next swing starts (`wc_recovery`: a tap inside it is held and given when it ends, at most half a second), the tick of a swing from which a dodge cancels it (`wc_cancel`; never for great weapons and bows) - the attack speed is these windows, the animation's playback rate is not touched (sync) | the swing's own state 1 and combo |
+| **Hyper-armour** | - | only a great weapon's heavy keeps the game's own hyper-armour (`Player_processDamage` skips the stagger for request 2); any other class's heavy hit by `heavy_interrupt_hp_percent` of the bar or more is staggered (the game's forced stagger, pending flag 0x4000000) | 0x1b3718 |
+| **Spear chip** | - | a player's spear hit on a blocking player still lands `spear_chip_percent` of it (the game's creatures do not block, so this is the player-against-player case) | `Player_takeDamage` |
+| **Dagger criticals** | - | ripostes and backstabs x `wc_crit` (daggers 110 %) | 2.7 |
+| **Stat scaling** | - | every hit of the player on a creature x (100 + upgrade + scaling) %: scaling = sum over strength, dexterity, intelligence of the class's coefficient (`wc_str`, `wc_dex`, `wc_int`, +`upgrade_correct_percent` per upgrade level) x curve(statistic) / 100, the curve linear between `scale_stat` / `scale_value`. Grade letters from the coefficient: S 175, A 140, B 90, C 60, D 25, E above 0 | `R+0x90`, `+0x94`, `+0x98` |
+| **Two-handing** | L3 held + swap (L1; keys hold X, press Q / the mouse wheel) | toggles; not for bows, thrown weapons and dual wielding. While on: strength x `twohand_strength_percent` for the scaling, poise damage x `twohand_poise_percent`, and the guard uses the weapon (below). The shield stays equipped (its weight counts) but is not used. The swap press is not given to the game | |
+| **Guard with the weapon** | - | a blocked hit costs x `wc_guard` % when two-handing or with no shield in the shield slot | 2.6 |
+| **Upgrades** | L3 held + use (Square; keys hold X, press J / Space) near a save point | +1..+`upgrade_max` for the weapon in hand: `upgrade_gold(n) = upgrade_gold_base x (100 + upgrade_gold_step x (n - 1)) / 100` gold and `1 + (n - 1) / upgrade_material_every` upgrade materials; each level +`upgrade_damage_tenths` / 10 % damage and +`upgrade_correct_percent` % to the scaling coefficients. "Near a save point": within `save_reach` of one of the level's save points, which `Savepoint_run` writes into the block (each machine alike). The use press is not given to the game. The game's own shop / workshop screens were not hooked: their input is per machine (menus) and reaches the simulation through messages (`docs/ui.md`), so the upgrade is the mode's own action at save points, made in the tick from the lockstep row | `Savepoint_run` 0x28cdd0 |
+| **Upgrade material** | - | the game's own item: the lowest-level reagent (definition flag bit 35) of the game's table whose name has "whetstone" (found at run time). A creature killed by a player leaves one with `material_drop_normal` / `_miniboss` / `_boss` % by its boss rank; the roll is the game's shared generator state at the kill, **read, not drawn** (`(g_randSeed >> 16) mod 100`), the item made by the game's `loot_spawnNamedItem` 0x100ba0 (which draws as for any drop, on every machine alike); picked up like any item. Spent from the bags (stack count, or the game's `inventory_removeItem` for the last of a stack) | the game's item, loot and inventory |
+| **Weapon arts** | L3 held + attack (keys hold X, press K / the left mouse button) | one per class (`wc_art`): **lunge** (daggers, spears: the game's skill 35 `charge`), **spin** (swords, axes: skill 41 `cyclone`), **slam** (maces, great weapons: skill 38 `groundpound`, its three shoves hit for `art_slam_percent` of the weapon's top damage), **bolt** (staves, bows: skill 37 `shock`, a projectile). Cast as `Player_castSkill` casts (the skill's slot 2 with the level 1 + upgrade, the player, a position and the facing; `creature_addSpell` 0x11a838 when a spell comes back) - not the player's rank and not its mana price: the mode's own cost, `art_mana_percent` of the maximum mana and `art_stamina_percent` of the heavy's stamina; `art_cooldown` after it. The lunge's and the bolt's damage is the skill's own fixed figure (made for higher levels), x `art_fixed_percent`. The spin and the slam play clips by name from the character's animation lump (`cyclone1.anm`, `dha_quake.anm`): a character without them (`res_find` 0x17365c asked first) gets the lunge. States 6, 9 and 10 of the skills are free of stagger by the game | skills 35, 37, 38, 41 |
+
+**Where an upgrade is kept.** On the weapon's own item record, in two places the game never writes and no reader of it is
+known (`docs/spec/items.md` 2: +0x06 and +0x44 are left as they lay in the parser's frame): +0x06 = 0x4800 | level, +0x44 =
+0x4843 << 16 | level << 8 | a check (FNV-1a of the definition pointer and the level). Anything else there (the parser's
+leftovers) reads as level 0; a check of 8 bits behind a 16-bit tag and the 16-bit word at +0x06 makes a false level from
+leftovers about one in 2^40. So the upgrade **is on the memory card with the character** (the save holds the whole record,
+`docs/audio-save.md`), **goes to every machine at a net game's launch** (`player_packRecord` sends the whole record,
+`docs/player.md`), and follows the item when the game copies it whole (`inventory_giveItem` copies 0x48 bytes: a dropped
+and picked-up weapon keeps it). It is lost where the game copies only the mutable fields (`item_copyMutableFields` leaves
++0x06 and +0x44 of the destination alone). The unmodified game ignores both places (Read: no reader; not run with an
+upgraded save on the unmodified program). No sidecar file.
+
+Test aid (changes the simulation; never used outside tests): the block word +0x33c = slot + 1 | count << 8 gives that player
+`count` upgrade materials in its next tick through the game's own `inventory_giveItem` (a room's `--tick-do` writes it on
+every copy in one lockstep tick; a poke offline).
+
+Presentation (our own text): the native overlay writes the weapon card over the stamina bar with the overlay's own 5 x 7
+letters (`testerkit::text`, new): the weapon's name, +level, class, the grade letters (STR, DEX, INT for staves), the damage
+percent, "2H"; the equip load against the capacity and its tier (amber heavy, red overloaded), the whetstones carried, the
+art's cooldown; near a save point the next upgrade's price. `hud/souls.gd` draws the same three lines in Godot from the
+block (the weapon's name from the local words +0x1a0).
+
 ## 3. The numbers
 
 All of them are one struct, `soulscombat::Tuning` (`soulscombat.h`); `combat.<name> = value`
 in the settings file or `app souls set NAME VALUE` changes one offline; online the room's figure
 holds them equal. Stamina in hundredths, ticks of 60 a second.
+
+### 3.3 The third round's numbers: weapons (2026-10-21)
+
+**Benched against the owner's copy** where its regulation has the figure: weapon rows by weapon type (median over the base
+weapons of each type: weight, the four scaling coefficients, stamina guard, critical bonus), the player behaviour stamina of
+each type's moveset (the first light and the first heavy), the equip-load curve of the stat correction graphs, the
+reinforcement rows (the one-material-per-level kind: damage and scaling per level, price rate) and the weapon-art point costs
+- read by local scripts beside the earlier ones (`bench_weapons*.py` under the local reference folder; output under
+`local/weapons-round/`), nothing of it in the repository. The poise ratios come from the frame-data explorer's motion data
+(the reference of 3.1) joined to the owner's weapon rows by name. Our values are our own, rounded near the ratios; the
+statistics are mapped as our stat = 2 x the reference's (our characters start at 20-40 and gain 3 points a level to 80).
+
+| What | Reference (the owner's copy unless said) | Our value |
+|---|---|---|
+| capacity | the equip-load curve: about 48 at endurance 10, 64 at 20, 91 at 40, 120 at 60, 160 at 99 | `load_base` 20.00 + 1.00 a stamina point + 0.25 a strength point: a new character 55-70, loads of the starting gear 17-31 (light or medium) |
+| tiers | light below 30 %, medium below 70 %, heavy to 100 %, over it no roll (the game's fixed thresholds, not in the regulation: reference) | `load_light` 30, `load_medium` 70; dodge movement 115 / 100 / 75 / none, invulnerable ticks 100 / 100 / 75 %, refill 110 / 100 / 85 / 60 %, sprint 100 / 100 / 70 % / none (our own: the reference's rolls differ in distance and recovery) |
+| light-attack stamina by type (straight sword = 100) | dagger 9, sword 12, axe 13, hammer 12, greatsword 15, greataxe 16, great hammer 16, colossal 15-20, spear 14, halberd 15, staff 12 | `wc_stamina` dagger 75, sword 100, axe 110, mace 100, great 135, spear 120, staff 100, bow 100 (of `cost_light` / `cost_heavy` / `cost_ranged`) |
+| poise damage of the first one-handed light (straight sword 57.5 = 100) | dagger 40.5, axe 57.5, hammer 87.75, greatsword / greataxe 137, great hammer 175, colossal 194-243, spear 57.5, halberd 125, staff 40.5 (reference) | `wc_poise` dagger 70, sword 100, axe 100, mace 150, great 260, spear 200 (the game's long edged weapons are halberds, bardiches, voulges, poleaxes), staff 70, bow 100 |
+| scaling coefficients (strength / dexterity / intelligence) | dagger 30 / 50, straight sword 34.5 / 31.5, axe 44 / 33, hammer 50.5 / 33, greatsword 35 / 34.5, greataxe 52.5 / 30.5, great hammer 55 / 26, colossal 45-47.5 / 28-36, spear 34 / 41.5, halberd 38 / 40.5, staff 12 / 0 / 90, bow 19 / 26 | `wc_str` / `wc_dex` / `wc_int`: dagger 30 / 50, sword 35 / 32, axe 44 / 33, mace 50 / 33, great 48 / 30, spear 36 / 41, staff 12 / 0 / 90, bow 19 / 26 |
+| the statistic curve | the default correction graph: 11.7 % at 10, 27.8 at 20, 54.5 at 40, 75 at 60, 90 at 80, 95.4 at 99 | `scale_stat` 0 20 40 80 120 160 200 -> `scale_value` 0 12 28 54 75 90 95 (our stat = 2 x) |
+| guard with the weapon | stamina guard: dagger 15, sword 30, axe 32, hammer 30, greatsword 44, great hammer 44, spear 33, halberd 45, staff 15; medium shield 53 | `wc_guard` (block cost, %, = 100 x 53 / the weapon's, at most 300): dagger 300, sword 175, axe 165, mace 175, great 120, spear 145, staff 300, bow 300, unarmed 300 |
+| critical | the critical bonus: daggers +10 % (median), others 0 | `wc_crit` dagger 110, others 100 |
+| upgrades | one-material-per-level reinforcement: +1..+10, damage x 2.45 at +10 (+14.5 % a level), scaling x 1.8 (+8 % a level), poise unchanged, price rate 1.0 .. 6.0; one material a level | `upgrade_max` 10, `upgrade_damage_tenths` 145, `upgrade_correct_percent` 8; gold 300 x (1 + 0.5 (n - 1)) (+1 300 .. +10 1650); materials 1 + (n - 1) / 3 (1, 1, 1, 2, 2, 2, 3, 3, 3, 4: more than one a level because every creature can leave one) |
+| weapon art cost | median art point cost 15 (a starting character has about 60-80) | `art_mana_percent` 20 of the maximum mana; `art_stamina_percent` 100 of a heavy; `art_cooldown` 60 |
+| not in the regulation (our own) | attack speed and cancels (animation time-acts), hyper-armour per class (time-acts), chip | `wc_recovery` 0 / 0 / 4 / 8 / 10 / 16 / 6 / 8 / 0, `wc_cancel` 18 / 16 / 20 / 24 / 26 / never / 22 / 24 / never (unarmed, dagger, sword, axe, mace, great, spear, staff, bow; every cancel after the offline hit tick 16), `heavy_interrupt_hp_percent` 6, `spear_chip_percent` 20, `twohand_strength_percent` 150 (the reference's two-handing rule), `twohand_poise_percent` 125, `art_slam_percent` 160, `art_fixed_percent` 30, `art_bolt_ticks` 90, material drops 8 / 50 / 100 % by boss rank, `save_reach` 120 (the flasks' save-point radius) |
+
+Named for `combat.<name>` / `app souls set`: the plain numbers by their names; the arrays as `<name>.<label>` with the
+labels light / medium / heavy / over (tiers), none / dagger / sword / axe / mace / great / spear / staff / bow (classes), 0-6
+(curve points), e.g. `combat.wc_poise.great = 260`. (`parry_first` was missing from the names and is there now.)
 
 ### 3.2 The second round's numbers (2026-10-21)
 
@@ -404,6 +493,49 @@ tick on every copy: pending damage on every player at 2600 and 3400, the test-ai
 Not reached in a room: a parry, riposte, backstab, stance-break critical or guard-counter hit (no player hit landed
 on a creature in the drawn input), "dying again loses it".
 
+### 4.7 Offline, the weapons (Ran)
+
+`local/souls-combat/t4.py RIGHTS` (the valor route; at valor's start, by its save point: the material test aid gives 6,
+gold poked to 5000, four upgrade presses, two-handing on and off; at the boar: light taps, weapon arts with mana topped up,
+swings cancelled by a dodge, a dodge in each equip-load tier with the statistics poked, heavies under the boar's hits with a
+300-point bar, then the record's definition set to a great weapon's row (a test only) and the heavies again; drops set to
+100 %) and `t5.py` (the weapon record's definition set in turn to eleven rows of the game's table, a test only: the class,
+grades and scaling of each and its weapon art cast). `SOULS_LOG=1`, `--combat hardcore`. Final runs with the final sources:
+`t4/g2` (character 2, an axe), `t4/g0` (character 0, a mace), `t5/out.log`; earlier runs `t4/r0`-`r6` (every character:
+maces, axes, bows), `t4/f0`, `f2`, `b`.
+
+| What | Seen |
+|---|---|
+| classes from the game's records | characters: mace (0, 6), axe (1, 2, 3), bow (4, 5); `t5`: the rows of a dagger, a longsword, an axe, a mace, a greatsword and a two-handed hammer (great weapon), a halberd and a trident (spear), a staff, a bow and a throwing axe (bow) came out as those classes, the grades (strength / dexterity / intelligence) D D -, D D -, D D -, D D -, D D -, D D -, D D -, D D -, E - B, E D -, E D - |
+| equip load | from the game's own weights: the axe character 20.84 of 68.75 (30 %, medium), the mace character 18.84 of 59.50; the same character with a dagger 16.84, a longsword 19.84, a greatsword 30.84, a halberd 31.53 |
+| tiers (axe, statistics poked) | a dodge of 44 ticks moved 67.3 units light, 55.2 medium, 43.7 heavy; overloaded: no dodge (refused) |
+| scaling and upgrades | the axe character: scaling +21 %, damage 121 %; the upgrades at the save point +1 300 gold 1 whetstone -> 136 %, +2 450 -> 153 %, +3 600 -> 169 %, +4 750 gold 2 whetstones -> 186 % (1 left); two-handed +38 % scaling -> 196 %; statistics poked to 400: scaling +61 % (219 %) |
+| light hits with it | the boar: 6.8 -> 12.7, 6.6 -> 12.2, 5.6 -> 10.5 (axe +4, 186 %); the mace +4: 4.1 -> 7.5 (184 %) |
+| grades with upgrades | the mace's strength C at +3 and above (50 x 1.24 = 62), D before |
+| weapon arts | the axe: the spin (cyclone, state 6) at level 5, 3.2 mana, hits of 2.9 -> 5.5 on the boar and the creature beside it, the boar's poise broken; the mace character (its lump has no ground-pound clip): the lunge (charge, state 9), 7.3 mana, 185.1 x 30 % x 184 % = 102.2; `t5`: lunge for the dagger and the spears, spin for the sword and the axe, slam (state 10) for the mace and the great weapons with the barbarian, bolt (shock) for the staff and the bows |
+| dodge cancel | the axe's swing cancelled by a dodge 27 ticks in (state 1 -> 0xb), 1 / 2 per run |
+| hyper-armour | the axe's heavy staggered by the boar's hits of 37.1, 42.1, 22.1 ... (6 of the heavies); the same character with the great weapon's row: 6 heavies hit the boar, none staggered |
+| material drops | the boar killed by a light hit: "rank 0, roll 96 of 100" (drops set to 100 %), a whetstone left; the mace character: roll 23 |
+
+### 4.8 Rooms with the weapons (Ran)
+
+`local/souls-combat/net/weaproom.sh OUT N PORT` (`n2weap.py`: the drawn input of 4.6 plus weapon-art presses (L3 held,
+cross), two-handing presses (L3 held, L1) and three upgrade presses (L3 held, Square) at the start of every phase; the
+weapons part of the block, the save-point count, every player's mana and the upgrade tag of its weapon record as tick-log
+columns - 222 columns with two copies, 231 with three; only the host given `--combat hardcore`; `--level-option valor`, so
+the game starts by valor's save point; `--tick-do`: 5000 gold and the material test aid (3) for every player at ticks
+140-175, the kills and the drop aid of 4.6).
+
+| Run | Copies | Result | What happened |
+|---|---|---|---|
+| `weap2a` | 2 | 5,734 ticks in step | an earlier build (found the test aid's item record overlapping the save-point list: moved) |
+| `weap2b` | 2 | **5,734 ticks in step**, no column differs | valor > drunare; p0 upgraded its mace to +1 at valor's save point (300 gold, 1 whetstone; the record's tag word 0x484301da on both machines; damage 120 % -> 135 %), p1 refused (not near enough: 3 refusals); 8 weapon arts (lunges, state 9), arts refused in a swing and while dead; 19 hits on players in the drunare fight, both died (drops, the reload after everybody died, a drop picked up) |
+| `weap3a` | 3 | **5,703 ticks in step, all three pairs** | valor > drunare; p0 and p2 upgraded to +1 at the save point (tag 0x484301da on all three), 12 weapon arts, 2 swings cancelled by a dodge, 13 hits on players, 3 deaths, the reload |
+
+Not reached in a room: a two-handing toggle (none drawn through), a player hit landing on a creature (so no scaled hit, no
+material drop and no interrupt online: they are computed from words every machine has - the tick's own columns - and were
+Ran offline, 4.7), the spear's chip (player against player).
+
 ## 5. Files
 
 | File | What |
@@ -418,6 +550,8 @@ on a creature in the drawn input), "dying again loses it".
 | `tools/godot/project/hud/souls.gd`, `hud/hud.gd` | new file; three lines in `_ready` |
 | `docs/issues/native-souls-combat.md` | this |
 | second round (2026-10-21) | `soulscombat.{h,cpp}` (the mechanics of 2.7, the Tuning fields of 3.2, the block's version 2, the test aids, Hardcore names), `hud/souls.gd` (flasks, parry / riposte lines, drop marker); the name in `app_main.cpp`, `win_main.cpp`, `linux_main.cpp` (`--combat hardcore`), `testerkit_app.h`, `net2/session.cpp`, `net2/launch.cpp`, `godot/lib/rtag.cpp`, `godot/project/main.gd`, `portal/screens/room.gd`, `portal/gameflow.gd` |
+
+| third round (2026-10-21) | `soulscombat.{h,cpp}` (the weapons of 2.8, the Tuning fields and arrays of 3.3, `parry_first` named, the block's version 3, the material test aid, the weapon card in the overlay), `testerkit.{h,cpp}` (`testerkit::text`: the overlay's letters for another overlay), `hud/souls.gd` (the weapon card) |
 
 ## 6b. In the Godot library (2026-10-20, Ran)
 
@@ -462,6 +596,9 @@ python3 local/souls-combat/rig/check.py off-over7 rta_app_next_orig overhead
 python3 local/souls-combat/rig/check.py off-first7 rta_app_next_orig first
 # second round offline: cd local/souls-combat && python3 t3.py && SOULS_LOG=1 PROG=rta_app_next ./run.sh t3 t3/t3.rig --combat hardcore
 # second round rooms:   cd local/souls-combat/net && ./hardroom.sh hard2c 2 41987; EXTRA="--level-option valor" ./hardroom.sh hard3a 3 41988
+# third round offline: cd local/souls-combat && python3 t4.py 2 t4/g2.rig && SOULS_LOG=1 PROG=rta_app_next ./run.sh t4/g2 t4/g2.rig --combat hardcore
+#                      python3 t5.py t5.rig && SOULS_LOG=1 PROG=rta_app_next ./run.sh t5 t5.rig --combat hardcore
+# third round rooms:   cd local/souls-combat/net && EXTRA="--level-option valor" ./weaproom.sh weap2b 2 41991   (and 3 copies)
 python3 local/souls-combat/rig/check.py off-over rta_app_combat_orig overhead
 python3 local/souls-combat/rig/check.py off-first rta_app_combat_orig first
 # offline: local/souls-combat/t1.py, t2.py (scripts from the valor route), run.sh DIR RIG --combat souls
@@ -478,4 +615,5 @@ python3 local/souls-combat/rig/check.py off-first rta_app_combat_orig first
 | SC2 | `Player_processDamage` skips the stagger roll for a player whose attack request is 2 (the heavy attack) and staggers on pending flag 0x4000000 | Read | 0x1b3718-0x1b37e8 |
 | SC3 | `Player_takeDamage` blocks a hit from the front in states 8 and 0xb unless flag 0x40; the blocked hit still ORs its flags into the pending ones | Read | 0x1b5440-0x1b5698 |
 | SC5 | Hardcore mode's parry, riposte, guard counter, backstab, stance-break critical, flasks and death drop work offline with the numbers of 3.2; two and three copies in a room stay in step with them on through deaths, drops, recoveries, the reload and save point refills | Ran | this document 4.5, 4.6 |
+| SC6 | Hardcore mode's weapons (equip load from the game's item weights, classes from its item records, scaling with grades, upgrades kept in the item record's unused bytes +0x06 / +0x44, the game's whetstones as the material, weapon arts from skills 35 / 37 / 38 / 41, two-handing) work offline with the numbers of 3.3; copies in a room stay in step with them through fights, an upgrade and a level change | Ran | this document 4.7, 4.8 |
 | SC4 | With the souls mode (L3 the dodge bit of the row; the mode's numbers in guest memory at 0xE0800, written in the tick by every machine), two and three native copies in one room stay in step through a level change, the arena fight, deaths and a reload, the mode's numbers equal in every tick; a room whose copies differ in the mode is not started | Ran | this document 4.3 |
