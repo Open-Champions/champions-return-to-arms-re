@@ -49,7 +49,7 @@ from ref_creature import Ext, M32, s16, s32    # noqa: E402
 VT_NIGHTMARE = 0x5155E8                         # virtual table (39 entries)
 DEF_NIGHTMARE = 0x500680                        # class definition
 # The mount's property lists Horsemen_ctor hands over: 12 bytes per variant at
-# 0x500848 + 12 v: 12-byte property list, used here as a pointer only (contents not decoded)
+# 0x500848 + 12 v: decoded contents and constructor effects are in ref_horsemen_props.py.
 MOUNT_PROPS = AM.NIGHTMARE_DATA
 G_SIM_FRAME, G_WORLD = RC.G_SIM_FRAME, RC.G_WORLD
 G_PLAYERS, REC_SIZE, REC_OBJ, G_NUM_PLAYERS = RC.G_PLAYERS, RC.REC_SIZE, RC.REC_OBJ, RC.G_NUM_PLAYERS

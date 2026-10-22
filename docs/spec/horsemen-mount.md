@@ -1,10 +1,10 @@
 # Mounted Horsemen: the Nightmare mount, the rider–mount link and its lifecycle
 
-Status (2026-10-21): **Executed** in `tools/ee_emu.py` against the reference model
+Status (2026-10-22): **Executed** in `tools/ee_emu.py` against the reference model
 `tools/ref_horsemen_mount.py` by `tools/difftest_horsemen_mount.py`, seeds 20973 and 7, no
 mismatch (section 9). Nothing here has run on a console or a full emulator. Addresses are
-SLUS_209.73 US v2.00 (SHA-256 `292f6f48…d7`). No game bytes, strings or decoded data are
-in this document; class and property identifiers are named, values are described.
+SLUS_209.73 US v2.00 (SHA-256 `292f6f48…d7`). No raw game bytes are in this document;
+the two decoded property fields and their addresses are recorded below.
 
 This document is the prose version of `tools/ref_horsemen_mount.py`. The rider side of the
 class (`Horsemen_ctor`, `Horsemen_run`, `Horsemen_setState` with its mounted branches) is
@@ -36,9 +36,9 @@ constructor stubbed). **Executed here end to end** (section 9.2): each rider row
 name compare through the real `Horsemen_ctor`, which allocates and builds the real mount
 with the real `Nightmare_ctor`; and the `Nightmare` row through the real `Nightmare_ctor`.
 
-The native client counts these four rider records as unbuilt ("mounted Horsemen needs
-Nightmare_ctor", open-champions creature-stats round 3 report: 4 records over the disc's
-111 levels; disc counts only).
+The current native-horsemen checkout counts these four rider records as unbuilt at its
+mount property-list refusal (round 2 report: four records over the disc's 111 levels;
+disc counts only). Section 11 gives the remaining native work after this decode.
 
 ### 1.1 What one rider record consumes (Executed, section 9.2)
 
@@ -97,17 +97,33 @@ clearing of creature flag 0x200, for **every request below 0x19** (0x272f7c–0x
 | +0x318 | s16 | attack cooldown 60 on entering 0x10 | set-state 0x2718cc |
 | +0xd0/+0xd2/+0xd4 | s16 | damage min/max/rating from `Creature_setStats`; kicks and trampling use **twice** min and max | run, slot 11 |
 
-The property list the rider hands over is a 12-byte list per variant at `0x500848 + 12 v`
-(Executed only as a pointer: the difftest compares the pointer passed to `Creature_ctor`
-and `GameObject_ctor`, `difftest_horsemen_mount.py`, and never reads the list). **Unknown:**
-what the entries are. An earlier draft said "a MiniBoss flag and a name"; nothing in this
-branch decodes or checks the contents, so that is **Inferred at most** (from the list being
-the same kind of argument a placed record passes) and is not used below. In particular,
-whether the mount gets creature flag 1 (the boss-meter block of `Creature_run`,
-`docs/creatures.md` C3) or a per-variant object name (`docs/spec/object-system.md` 2.2
-step 7) is **not established**. A native port must read the list from the image, must not
-assume a MiniBoss flag, and must refuse to hard-code either until the 12-byte lists are
-decoded and difftested (section 10). `Nightmare_ctor` then
+The property list the rider hands over is a 12-byte, null-terminated pointer array per
+variant at `0x500848 + 12 v`. **Observed** in SLUS_209.73 US v2.00:
+
+| Variant | Pointer slot → text | Field | Value | Status |
+|---|---|---|---|---|
+| 0 | 0x500848 → 0x547320 | `miniboss` | 1 | Observed |
+| 0 | 0x50084c → 0x547330 | `name` | `horsedisease` | Observed |
+| 1 | 0x500854 → 0x547320 | `miniboss` | 1 | Observed |
+| 1 | 0x500858 → 0x547348 | `name` | `horsewar` | Observed |
+| 2 | 0x500860 → 0x547320 | `miniboss` | 1 | Observed |
+| 2 | 0x500864 → 0x547358 | `name` | `horsepestilence` | Observed |
+| 3 | 0x50086c → 0x547320 | `miniboss` | 1 | Observed |
+| 3 | 0x500870 → 0x547370 | `name` | `horsedeath` | Observed |
+
+The null slots at 0x500850, 0x50085c, 0x500868 and 0x500874 are **Observed**.
+
+There are no other entries before each null pointer. `obj_getPropInt` 0x14c880 reads
+`miniboss` as 1. `Creature_ctor` 0x109d68 reads it at 0x10a0e8 and sets creature
+flag bit 0 at `+0xa8` at 0x10a100. `GameObject_ctor`
+0x14cb10 stores the list pointer at `+0x2c` (0x14cd64), parses `name` in
+0x14cd84–0x14cf58 and calls `objNames_add` at 0x14cf4c (target 0x14bce0).
+Each name resolves back to its
+mount through `world_findObjectByName` 0x14f498. `obj_getPropStr` 0x14f4c0 returns
+the name value; `ShowName` is absent, so `+0x368` and object flag 0x100000 stay clear.
+The two constructor effects and parser results were **Executed** against the original
+code for all four lists with seeds 20973 and 7 by `difftest_horsemen_props.py` (section 9.3).
+`Nightmare_ctor` then
 overwrites three fields such a list could have set: HomeRange `+0x3c0 = 2400.0`,
 visualrange `+0x3ae = 2400` and scale `+0xdc = 1.2`. (Earlier documents called this
 argument "variant data"; it is the constructor's property-list argument, passed through to
@@ -372,11 +388,22 @@ in memory only) to the instruction after the constructor call, with the real con
 underneath; then calls, writes and seed are compared with `pool_new` + the model's
 constructor, and the link is checked on the original's memory (both handles, rider state
 0x1b and variant, mount state 0, the property list the mount's `GameObject_ctor` received,
-rider flags 9). 5 / 5 pass on both seeds.
+rider flags 9). 5 / 5 pass on both seeds. This older factory test passes the list pointer
+through a stubbed `GameObject_ctor`; section 9.3 separately executes that constructor,
+the property parser and `Creature_ctor` on the actual lists.
 
-### 9.3 Unit tests
+### 9.3 Property-list execution and unit tests
 
-`tools/test_ref_horsemen_mount.py`, 13 tests, no game files: the push table, the rider's
+`PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_horsemen_props.py <owner SLUS_209.73>
+--seed N` for N=20973 and N=7: 4/4 variants, zero mismatches on each seed. The reference
+is `tools/ref_horsemen_props.py`. The difftest asserts all 12-byte pointer arrays and the
+decoded two-entry contents against the executable, then runs the original `Creature_ctor`
+and its real `GameObject_ctor`, `obj_getPropInt`, `obj_getPropStr`, name registration and
+lookup. It checks MiniBoss flag bit 0, stored list pointer, registered name, absence of
+`ShowName`, and absent-key parser results. The test's pool and world are synthetic; it is
+function execution, not a game run.
+
+`tools/test_ref_horsemen_mount.py`, 14 tests, no game files: the addressed property model, the push table, the rider's
 swing choice, the stranded rider, the factory construction, the constructor constants, the
 picker, trampling, the dead mount's run-off. They compute expected values from the model's
 own formulas and constants, so they are a regression guard on the model and are **not
@@ -388,32 +415,34 @@ evidence** about the original; the comparison with the original is the difftest 
 - Who requests mount states 0x19 / 0x1a (section 6).
 - Whether a mounted rider can carry a stun, root or cooldown in the game (section 6).
 - Slot 1 of the mount table (0x3cae50) was not read (`docs/monsters-2.md`).
-- The contents of the four 12-byte mount property lists (`0x500848 + 12 v`) were never
-  decoded or compared: whether they hold a MiniBoss flag and/or a name is Unknown
-  (Inferred at most). To settle it, decode the lists from the image in the difftest and
-  assert the entries, with seeds 20973 and 7, citing the entry addresses. Until then the
-  mount's creature flag 1 and any per-variant object name are unestablished, and so is
-  which script, if any, addresses a mount by a name.
+- Which shipped scripts, if any, look up the four observed mount names is not established
+  by the property-list difftest.
 - Table capacity / maximum player count for the charge-target picker (section 4).
 
 ## 11. What the native client should implement, ranked
 
-For open-champions-godot `native/` (state read on 2026-10-21 from the creature-stats
-worktree: `script_commands_objects.cpp` refuses the four rider records as "mounted Horsemen
-needs Nightmare_ctor"; `arena_monsters.cpp` already has the rider's mounted set-state and
-head from `tools/ref_arena_monsters.py`, and treats `Nightmare_ctor` as an external).
+For open-champions-godot `native/` (state read on 2026-10-22 from
+`worktrees/native-horsemen`): the four rider records already allocate two blocks and
+account for two shared draws, but `script_commands_objects.cpp::build_mounted` refuses at
+the first mount property read. A placed `Nightmare` is built. This research now supports
+the exact property list for each of the four rider variants; it does not change the
+native branch. Its current callbacks also explicitly refuse `Creature_init MiniBoss` and
+`handle_link`, and its completed-rider path throws, so the four rider records are **not
+yet built** in that checkout. Native can now implement and verify the following exact
+objects: `RiderDisease` (variant 0) plus MiniBoss mount named `horsedisease`;
+`RiderWar` (1) plus `horsewar`; `RiderPestilence` (2) plus `horsepestilence`;
+`RiderDeath` (3) plus `horsedeath`. Every mount
+gets creature flag bit 0 and a registered object name; no `ShowName` property is present.
 
-1. **Account a rider record as two blocks and two shared draws** (section 1.1), even
-   while it stays refused: `pool_new(0x478)` then `pool_new(0x3d8)` (only when the first
-   succeeded), and two `GameObject_ctor` draws, rider first. Today the refused record
-   counts one block and one unmodelled draw, so the pool and the draw count after it are
-   short by one each. Small, and it keeps later pool exhaustion right.
-2. **`Nightmare_ctor` and the mounted tail of `Horsemen_ctor`** (sections 1.1, 2.3): this
-   alone turns the four records into built objects. It reuses what the native already has
-   (`Creature_ctor` with the property list, `Creature_setStats` from the object's own
-   generator, `creature_setDefEntryParams`), plus the two `handle_link`s, the direct
-   `Nightmare_setState(0)` (one own draw) and `Horsemen_setState(0x1b)`, in the order of
-   1.1. Test vectors: `tools/difftest_horsemen_mount.py` factory rows (section 9.2).
+1. **Apply the four addressed mount property lists** (section 2.2) in the mount's
+   `GameObject_ctor` and `Creature_ctor`: register the name, return 1 for `MiniBoss`, set
+   flag bit 0 and handle the MiniBoss path of `Creature_init`. Verify each against
+   `tools/difftest_horsemen_props.py`. The paired allocations and draws are already
+   accounted for in the native branch.
+2. **Finish `Nightmare_ctor` and the mounted tail of `Horsemen_ctor`** (sections 1.1,
+   2.3): implement the two `handle_link`s and completed-rider host path; retain the direct
+   `Nightmare_setState(0)` (one own draw) and `Horsemen_setState(0x1b)` in their observed
+   order. Test vectors: `tools/difftest_horsemen_mount.py` factory rows (section 9.2).
 3. **The mount's tick and set-state** (sections 3.2, 4, 5): `Nightmare_run`,
    `Nightmare_setState` with the rider push table, slots 10 and 11, the charge-target picker
    and `Creature_angleToTarget`. No shared-seed draws; every random choice is the mount's own

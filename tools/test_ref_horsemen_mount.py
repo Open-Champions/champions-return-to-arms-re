@@ -14,6 +14,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import ref_creature as RC                       # noqa: E402
 import ref_arena_monsters as AM                 # noqa: E402
 import ref_horsemen_mount as HM                 # noqa: E402
+import ref_horsemen_props as HP                 # noqa: E402
 
 RIDER, MOUNT, PLAYERS, DEF, NODES = 0x10000, 0x11000, 0x12000, 0x20000, 0x70000
 NODE_RIDER, NODE_MOUNT = NODES, NODES + 0x20
@@ -161,6 +162,15 @@ class MountLink(unittest.TestCase):
 
 
 class Construction(unittest.TestCase):
+    def test_mount_property_reference_addresses_and_values(self):
+        self.assertEqual([p.list_addr for p in HP.MOUNT_PROPERTIES],
+                         [HM.MOUNT_PROPS + 12 * v for v in range(4)])
+        self.assertEqual([p.name for p in HP.MOUNT_PROPERTIES],
+                         [b'horsedisease', b'horsewar', b'horsepestilence', b'horsedeath'])
+        self.assertTrue(all(p.miniboss == 1 and p.miniboss_text_addr == 0x547320
+                            and p.terminator_addr == p.list_addr + 8
+                            for p in HP.MOUNT_PROPERTIES))
+
     def test_mounted_horsemen_builds_a_nightmare_with_the_variants_property_list(self):
         def link(head, obj, _again):
             rig.poke(head, 4, {RIDER: NODE_RIDER, MOUNT: NODE_MOUNT}[obj])
