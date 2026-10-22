@@ -48,14 +48,17 @@ bodies are outside this comparison. Neither function draws the shared seed.
 ### Saved monster pointer record
 
 The pointer at `0x50388c` is an array of four-byte creature pointers. The
-callback `0x306a28` uses signed halfword `0x8e733e` as the next index. A living
-non-player creature (flags +0xc masked by `0x68` equal `0x20`, signed halfword
-+0x312 nonnegative) gets byte +0x231 set to `0xff`, moves off the grid through
+callback `0x306a28` uses signed halfword `0x8e733e` as the next index. A creature
+with object flag `0x20`, without flag `0x40`, and with signed halfword +0x312
+nonnegative is saved when flag `0x8` is clear **or** flag `0x2` is set. Thus
+`0x612b` is saved despite its death bit. A saved creature gets byte +0x231 set
+to `0xff`, moves off the grid through
 `obj_moveOffGrid` `0x14ef48`, and its pointer is stored at array[count]. The
-count increments with 16-bit wrap. An alive player is skipped. A hidden or dead
-creature calls its virtual slot 1 instead; this call was stubbed in the
-comparison. The callback's original body was executed for 32 combinations of
-flags, state and count per seed. Array bounds at a negative or excessive count
+count increments with 16-bit wrap. An alive player is skipped. Other hidden or
+dead creatures call virtual slot 1 instead; this call was stubbed in the
+comparison. The callback's original body was compared for `0x2a`, `0x2b` and
+the observed `0x612b` on both seeds, in addition to the earlier combinations.
+Array bounds at a negative or excessive count
 are not established. The saved count at `0x8e7340` then controls the next
 `arena_startWave` reuse path.
 

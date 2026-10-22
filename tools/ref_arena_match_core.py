@@ -57,7 +57,10 @@ def save_wave_visit(flags, state, count):
     """
     if not flags & 0x20:
         return 'skip', count
-    if flags & 0x68 == 0x20 and s16(state) >= 0:
+    # Bit 0x2 keeps a dying creature in the saved array even when death bit
+    # 0x8 is set. The next-wave path encounters 0x612b on a killed wave-1
+    # creature when the probe has not advanced its death animation.
+    if flags & 0x60 == 0x20 and (not flags & 0x8 or flags & 0x2) and s16(state) >= 0:
         return 'save', (count + 1) & 0xFFFF
     if flags & 0x40 and not flags & 0x08 and s16(state) >= 0:
         return 'skip', count

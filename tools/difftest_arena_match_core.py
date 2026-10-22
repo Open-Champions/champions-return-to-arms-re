@@ -95,7 +95,8 @@ def test_next(path):
 
 def test_saved_record(path):
     checked = 0
-    for flags in (0, 0x20, 0x21, 0x22, 0x28, 0x40, 0x60, 0x40020):
+    for flags in (0, 0x20, 0x21, 0x22, 0x28, 0x2A, 0x2B, 0x612B,
+                  0x40, 0x60, 0x40020):
         for state in (0, 0xFFFF):
             for count in (0, 3):
                 emu = EE(path)
