@@ -2195,6 +2195,50 @@ candidate remains private and uninstalled. NPC/quest completion, full campaign,
 console-reference fidelity, performance, physical multiple-controller play and
 separate-PC multiplayer remain open.
 
+## North-route combat before the first story dialogue
+
+One new private four-character attempt completes normal Load and stored mission
+return, then advances north through combat. Both the native application and its
+input driver exit zero. The run retains 7,296 complete 474-column fields over
+127.512 seconds, with no timeout. Card traffic is 311,272 bytes read and zero
+written. Source and copied game files, protected sources and the private
+candidate retain their hashes.
+
+The party starts with XP 153/153/179/205. At field 3,297, all four characters have
+32.799995 HP and XP 510/562/614/614, with each more than 800 world units north of
+its position when live input was armed. The controller reaches its declared
+32-cast limit while living threats remain. All 32 accepted spell inputs have
+watched cast-animation and mana-decrease witnesses before their recorded response
+windows close. These are bounded input/resource observations; individual target
+hits and kill attribution are not qualified by this audit.
+
+The independent control reader verifies digital control timing, required neutral
+values and inclusive input leases in its declared subset. Two expired requests
+are rejected; each is followed by
+a current full neutral observation and a later distinct source observation before
+new input. The first evaluator incorrectly overwrote its earliest neutral
+witness and reused a session/ID pair that collided after rejection. Its result
+is retained. A corrected reader checks the same original recording using unique
+request sequences and preserves all failed story predicates.
+
+No dialogue choice or Save occurs. Gameplay input ends at the cast limit, and
+the scheduled neutral observation period continues. Player deaths occur in that
+later interval; both late RAM captures contain the original saved XP values.
+The unsaved combat gains therefore do not establish a new durable checkpoint.
+Root viewed all four captured images: the hub, initial mission return, and two
+later mission views with empty or partly filled health bars and nearby enemies.
+
+Natasla dialogue, the Good decision, its cutscene and mission completion remain
+unqualified. Source analysis distinguishes the Good dialogue action and door
+cutscene from the separate mission-completion state; an observed dialogue choice
+would require its own progression and persistence checks. The next planned
+attempt will try to preserve earned route progress through an ordinary hub Recall and
+normal four-player Save, followed by separate fresh Load/return verification.
+The candidate remains private and uninstalled; full campaign, fidelity,
+performance, physical multiple-controller play and separate-PC multiplayer remain
+open.
+
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
