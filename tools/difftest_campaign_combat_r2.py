@@ -18,6 +18,7 @@ from ee_emu import EE
 from difftest_campaign_combat import EXPECTED_SHA256, RealCalls, original, put_string
 from ref_campaign_combat import classify
 import ref_campaign_combat_r2 as R
+from ref_combat import Exe, Tables, level_scale
 
 BALANCE_LOOKUP = 0x223A4C
 BALANCE_HASH = 0x223914
@@ -88,7 +89,7 @@ def check_balance(executable, blob):
         expected = R.balance_factors(matching[0][1:])
         assert found == 1 and actual == expected, (name, actual, expected)
         print("PASS balance %s hash %#06x percentages %s" %
-              (name, matching[0][0], matching[0][1:]))
+              (name, balance_hash(name), matching[0][1:]))
 
 
 def check_tick_and_death(executable, name):
@@ -152,6 +153,18 @@ def check_gold_touch(executable):
             assert floater.args[2] == amount
 
 
+def check_valor_level(executable):
+    exe = Exe(executable)
+    tables = Tables.load(exe)
+    row = 0x4F7210 + 50 * 0x30
+    name = exe.cstr(exe.u32(row))
+    level_byte = exe.u8(row + 4)
+    assert name == "valor" and level_byte == 20, (name, level_byte)
+    assert name not in tables.fixed_levels, (name, tables.fixed_levels)
+    assert level_scale(tables, level_byte, 1, 0, name) == 0x41B00000
+    return level_byte
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("executable")
@@ -178,8 +191,8 @@ def main():
     for name in ("WarBoar", "WarBoarSmall"):
         check_tick_and_death(args.executable, name)
     check_gold_touch(args.executable)
-    assert R.valor_monster_level(20) == 22.0
-    print("PASS seed %d: 78 valor factory and constructor cases; 10 tick, 4 setState, 3 Gold run and 5 touch cases; level scale 22" % args.seed)
+    level_byte = check_valor_level(args.executable)
+    print("PASS seed %d: 78 valor factory and constructor cases; 10 tick, 4 setState, 3 Gold run and 5 touch cases; ELF level byte %d, model scale 22" % (args.seed, level_byte))
 
 
 if __name__ == "__main__":

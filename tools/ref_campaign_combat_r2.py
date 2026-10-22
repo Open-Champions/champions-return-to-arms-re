@@ -40,14 +40,6 @@ def balance_factors(percentages):
     return tuple(fp_mul(float_to_raw(float(p)), 0x3C23D70A) for p in percentages)
 
 
-def valor_monster_level(level_byte, difficulty=1):
-    """game_loadLevel's level scale for the non-special valor row."""
-    base = level_byte + 2
-    if difficulty == 1:
-        return float(base)
-    return base * 0.75 + {2: 34, 3: 61, 4: 88, 5: 115}[difficulty]
-
-
 def tick_services(state, hit_event=False):
     """A bounded active tick with no target and scripted animation event bits."""
     calls = [0x110D30, 0x112948, 0x10C0F0, 0x1162B0,

@@ -159,14 +159,16 @@ including 34 `WarBoar` and 44 `WarBoarSmall`; all 78 take the factory's
 0x3d8-byte, 0x2ba03c constructor branch. The factory receives the class string,
 but the ctor receives `(block, position, angle, properties, type name)`; this
 argument order matters to a port. The class's own writes and service calls were
-compared for every boar record. The test stubs `Creature_ctor`, so it does not
+compared for both class names across all 78 record angles, using zero positions
+and empty properties. The test stubs `Creature_ctor`, so it does not
 claim full placement, grid membership or initialized stats.
 
 **Observed** at `WarBoar_ctor` 0x2ba03c: both names use vtable 0x517cf0 and
 definition 0x502f80. After the base ctor, the class writes radius +0x1c = 30,
 half-width +0x28 = 40, speed +0xb8 = 0, turn +0xb0 = 1, kind +0xb4 = 3,
-flags +0xa8 |= 0x200040000, forward offset +0xe0 = -15, scale +0xdc =
-0.75, and small marker +0x3d0 = 0. `WarBoarSmall` changes the forward offset
+flags +0xa8 |= 0x200040000, +0x5c = -0.2, forward offset +0xe0 = -15,
+scale +0xdc = 0.75, and small marker +0x3d0 = 0. It clears state +0x232,
++0xec, +0xe8 and +0x220. `WarBoarSmall` changes the forward offset
 to -10, scale to 0.6 and marker to 1, while radius remains 30. The ctor
 calls `Creature_ctor` 0x109d68, prefix test 0x159c20, model hide-mask
 0x179550, animation clear/push 0x1707b0/0x170838, `obj_runEvery60`
@@ -184,20 +186,26 @@ State 3 hands a transition to `WarBoar_setState` 0x2bac60. State 6's
 hit event calls `Creature_hitAllEnemiesInArc` 0x119b58 with damage flags 8,
 and writes the hit-frame marker +0x3c8 = 1. The no-target state 0x14 calls
 `Creature_deadUpdate` 0x1108a0. Direct setState execution confirms attack
-state 6 clears +0x3c8, stores +0x3cc = 6 and starts a blend; state 0x14
+state 6 clears +0x3c8, stores +0x3cc = 6 and calls `Creature_filterState`
+0x10a9c0 before starting a blend; state 0x14
 calls `Creature_dropLoot` 0x10f2c8, draws once from the object's own seed
 0x1509d0 for a death clip, starts animation and calls `Creature_onDeath`
 0x10beb8. **Unknown:** actual target selection, damage dealt, animation event
 schedule and a full kill in this level. Those answers were stubbed or absent.
+The state-6 no-hit transition in the ten tick cases follows the stubbed
+animation-end answer, not an observed combat animation finishing.
 
 **Observed** in `BALANCE.LMP` and **Executed** at `balance_lookup` 0x223a4c:
-the first rows matching name hashes 0xfe90 (`WarBoar`) and 0x270c
-(`WarBoarSmall`) are found. The difftest extracts their five signed percentages
+the single row matching each name's computed hash (`WarBoar`,
+`WarBoarSmall`) is found. The difftest prints the hashes and extracts the five signed percentages
 at run time and checks the original's single-precision multiplication by
 0.01 against `ref_campaign_combat_r2.py`; no balance file data is committed.
-The `valor` level table row is at 0x4f7b70. Its level byte +4 is 20, so
-`game_loadLevel` 0x1e5b70 gives monster level 22 at difficulty 1; at
-difficulties 2–5 it applies the formula in `docs/spec/combat.md` 4.1.
+The difftest reads the `valor` level table row at 0x4f7b70 from the ELF,
+asserts its level byte +4 is 20 and its name differs from both fixed-scale
+names at 0x52fb70/0x52fb80. The existing `ref_combat.level_scale` model,
+previously compared bit for bit with the original `game_loadLevel` 0x1e5b70
+stretch, gives monster level 22 at difficulty 1. Difficulties 2–5 follow
+`docs/spec/combat.md` 4.1; this test does not execute their level-load stretch.
 `Creature_setStats` 0x10a620 then uses these factors, player count,
 difficulty and the object's own HP roll as documented there. This round did
 not run the combined balance, level load and constructor chain in one
@@ -256,3 +264,52 @@ for this level, the player's initial equipped weapon on this route, an
 integrated hostile tick/target path, loot outcome for a particular seed, and
 the native world's transfer API. The reference difftest isolates the class
 edges; it is not proof of a playable fight.
+
+## Research round 3: bounded `valor` service and shared-world probes (2026-10-22)
+
+**Executed** by `tools/difftest_campaign_combat_r3.py` in `tools/ee_emu.py`
+with seeds 20973 and 7, the pinned US v2.00 executable, private `VALOR.GOB`,
+its `valor.world`, and `WARBOAR.LMP`. The two seeds select probe order and
+start the independent loot and synthetic combat cases. All references to
+assets below are identifiers or counts; no asset bytes are tracked.
+
+| Boundary | Observed or executed result | Portable now | Still Unknown |
+|---|---|---|---|
+| Model and animation resources | **Observed**: class definition 0x502f80 names `warboar.lmp` and 20 entries (model, two textures, 17 clips), all present in that private archive. **Executed**: `GameObject_ctor` 0x14cb10 calls `res_find` 0x17365c in those 20-slot order at generation 1, makes no second lookup in that generation, and resolves all 20 again when `g_lumpGeneration` 0x41bf78 becomes 2. The test supplies synthetic nonzero handles. | Definition names, slot order, generation invalidation, archive presence and animation entry IDs. | The resource manager's loaded pointer values, decoded model/clip content, hide-mask result 0x179550, clip events and root motion in the native renderer. Presence in an archive is not a loaded resource answer. |
+| `valor` ground | **Executed**: the original `world_fixup` 0x181d30 loads the private `valor.world`; `terrain_height` 0x183820 agrees bit for bit with `ref_world.terrain_height` at all 78 boar record positions for radii 12 and 30 (156 queries, 12 distinct float answers). Record 7, the first `WarBoar`, has height 5 at radius 12 and 6 at radius 30, versus its placed z near 3.6443. | Load and query this level's actual height field through the existing world-query contract. Use the queried value and requested radius, not the record z as ground. | Boar movement's full terrain service sequence, water/root-motion interaction, and gold scatter landing in a running level. |
+| Starting player gear and melee state | **Executed**: `player_giveStartingItems` 0x1acc78, with parser/inventory/equip stubs, selects different grant routes by class byte at player record +0x50. The first weapon identifiers by class 0–6 are `axe`, `mace`, `shortsword`, `shortsword` plus `shortbow`, `quarterstaff`, `throwingaxe` plus `axe`, and `club`. Parser/grant/equip call counts are 7/10/4 except class 3 at 10/13/5 and class 5 at 8/11/5. **Observed earlier**: `Player_run` state 1 (0x1a5030) queries grid A at swing start and calls `Player_meleeHit` 0x1b6a98 at its hit frame; `Player_recalcDamage` 0x1b7158 reads the active weapon set at record +0x4434/+0x4a7c. | Class-dependent grant routing and the state-1 target/hit timing already modelled in `ref_player.py`. | Which class and saved or newly granted item is actually equipped on the client's route; parser, inventory and equip results; actual weapon damage/attack rating and swing animation in that session. The round-3 call counts are not equipped-record evidence. |
+| One-grid targeting and damage | **Executed** on two synthetic base GameObjects at record 7's location, given the original Player and WarBoar vtables: the original grid query 0x14a928 returns both. The player's team byte at record +0x4c24 differs from the boar's +0x310. `Creature_pickTarget` 0x10ded0, its enemy slot 20 at 0x119328 and handle service 0x1a1738 link the player at boar +0x234 (node +0xc). The original normal `Player_meleeHit` with a clear-ray stub calls `damage_apply` 0x1e8230 then boar slot 2 / `Creature_takeDamage` 0x116638; with a fixed synthetic 15–15 unarmed range and attack rating 200, HP +0x228 goes 100→55, pending +0xc8 becomes 45, damage flags +0x2dc gain bit 1, and attacker handle +0x2e4 links the player. A prediction-copy player (flag 0x20000) makes no second hit. | The same address, grid and target-handle contract can drive both AI and player melee; the original entry points and damage order are pinned. | A level-loaded boar with initialized stats and resources, actual player gear, line-of-sight terrain answer, hit-frame animation, counterattack, full kill and client fight. The 45 damage is a synthetic-input result, not `valor` balance. |
+| Loot and gold | **Observed/Executed**: `WarBoar_setState` 0x2bac60 passes zero gold chance to `Creature_dropLoot` 0x10f2c8. On a synthetic boar with the base property service stubbed and the original boss-rank function executed, the original dispatcher calls `loot_generateDrops` 0x100d54 once and forwards that zero. In a bounded one-player/class-0, difficulty-1, level-22 generator call with its other boar arguments, seed 20973 produces one consumable after ten shared draws; seed 7 produces no item after seven. The original and `ref_items.loot_generate_drops` agree on kind, defined item fields and ending seed. Neither produces Gold, and none of the 78 boar placement properties says `dropitem`. **Executed separately**: a synthetic 42-gold floater added at frame 100 by `hud_addGoldFloater` 0x1dc268 begins credit at frame 143; `hud_tickGold` 0x1dcb80 pays the full 42 into player record +0xe4 by frame 160, matching `ref_campaign_combat_r3.gold_credit` every frame. | Boar drop parameters, seeded roll order, zero-gold outcome from this call, and the delayed floater credit rule. | Actual shared seed at a campaign kill, whether another source on the route spawns Gold, a real Gold pickup and its terrain landing. The boar drop cannot satisfy a test requiring a Gold object from this call alone. |
+| Shared world | **Executed**: one original `GameObject_ctor`/pool/grid world holds synthetic Player and WarBoar objects. `world_collectObjectsInBox` sees both and `runObjects` 0x14b910 invokes their slot-4 bodies from the same every-frame list, player then boar after front insertion; the virtual bodies are recording stubs. **Observed** at 0x14b910: active, 15 and 60 lists dispatch slot 4 before the script run task (priority 125, `docs/spec/object-system.md` 6.2). In the read-only `play-enemies` client checkout, `Session::bind_hp` exists for a World-owned address and serial, but the level factory's `kPorted` still omits WarBoar, `kNotCopied` still excludes HP/stat fields, and `combat_creature::Adapter` still owns its own `combat::World`. | Preserve one factory object identity and original grid/run-list order, use address plus live generation for binding, route target handles and damage through that identity, and snapshot/deletion through the same owner. The existing `bind_hp` is a possible integration seam. | A production script-host-to-combat binding and dispatch path for level-created boars and players, resource-backed animation, save/restore of the combined state, and a strict client fight. A two-object ee_emu case does not establish that implementation. |
+
+### Updated native port order
+
+1. Select and load an enemy-bearing route, recording whether the client enters
+   `valor` or the first mission's `blood1`; do not infer a story choice from this
+   bounded `valor` case.
+2. Add the WarBoar family to the factory using its 0x3d8 allocation, original
+   ctor argument order, class definition and 20 resource slots. Resolve the
+   actual archive through the resource manager, use `valor.world` queries for
+   ground and animation/root-motion services, and refuse construction when
+   those required answers are absent.
+3. Bind each factory-created creature and actual player to the one
+   `objects::World` identity by address and live serial. Reuse or extend
+   `Session::bind_hp` so combat reads and writes that same position, flags,
+   grid, run list, handles and seed. Remove the `kNotCopied` stat gap only
+   when production `Creature_ctor`/`Creature_setStats` and resource results
+   supply those fields. Verify deletion and restore before declaring a bound
+   actor live.
+4. Run the class-dependent starting grants through parser, inventory and
+   equip, then the real active weapon's `Player_recalcDamage`, state-1 target
+   acquisition and hit-frame call. Run WarBoar AI and its attack/death states
+   in the same tick scheduler. The synthetic 15–15 melee case is a path test,
+   not a player damage preset.
+5. Port the class loot call with its zero gold chance and test the seeded item
+   outcome. For Gold credit, choose and verify an actual Gold-producing source
+   on the route; run its spawn, terrain placement, countdown, touch and HUD
+   credit in one client session. Keep a drop, a touched Gold object and the
+   later +0xe4 balance increase as distinct assertions.
+
+**Current status:** these services and call contracts are portable research.
+The native real enemy fight, actual starter equipment, runtime resource
+answers, full boar/player tick and Gold-producing playthrough remain Unknown.

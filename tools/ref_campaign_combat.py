@@ -24,7 +24,6 @@ FACTORY = {
     "scorpion": (0x3D0, 0x2A4D68, "hostile creature"),
     "badger": (0x3D0, 0x244018, "hostile creature"),
     "warboar": (0x3D8, 0x2BA03C, "hostile creature"),
-    "warboarsmall": (0x3D8, 0x2BA03C, "hostile creature"),
 }
 
 
