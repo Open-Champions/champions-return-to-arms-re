@@ -80,7 +80,7 @@ NICE = ['nice', '-n', '10']
 EXPORTS = ['rtag_api_version', 'rtag_has', 'rtag_start', 'rtag_set_pad', 'rtag_step', 'rtag_poll', 'rtag_run', 'rtag_audio_pull',
            'rtag_memory', 'rtag_fields', 'rtag_info', 'rtag_ended', 'rtag_exit_code', 'rtag_stop', 'rtag_set_option',
            'rtag_controls_hud', 'rtag_mouse', 'rtag_mouse_button', 'rtag_fill_get', 'rtag_texture_names',
-           'rtag_report_begin', 'rtag_report_finish', 'rtag_build_line', 'rtag_report_told']
+           'rtag_report_begin', 'rtag_report_finish', 'rtag_build_line', 'rtag_report_told', 'rtag_skeletons_get']
 # A room of our own (tools/recomp/net2/session.h, game.h): the fix-set library carries the one copy of net2 in the
 # process - the session client, the carrier of the game's datagrams and the direct launch - and hands out its plain-C
 # functions under their own names, for the portal (docs/issues/native-rendezvous.md 5.1).
@@ -322,6 +322,8 @@ def build_lib(args):
         lib_flags.append('-DRTAG_HAVE_NET2')
     jobs.append((os.path.join(LIB, 'rtag.cpp'), lib_flags, 'g_'))
     jobs.append((os.path.join(LIB, 'scene_export.cpp'), lib_flags, 'g_'))
+    # the skeletons of the frame (skeleton_export.h): the runtime's DMA tag hook and the tap's frame
+    jobs.append((os.path.join(LIB, 'skeleton_export.cpp'), rt_flags + ['-I', LIB, '-I', render, '-I', app], 'g_'))
     jobs.append((os.path.join(LIB, 'gl_offscreen_mac.cpp'), lib_flags, 'g_'))
     objects = compile_all(jobs, os.path.join(OUT, 'obj-' + game), [LIB, app, render, rt, sound, game_dir, vu, os.path.join(SNAP, 'net'), os.path.join(SNAP, 'net2')], args.jobs)
     if objects is None:

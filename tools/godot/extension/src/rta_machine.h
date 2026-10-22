@@ -83,6 +83,11 @@ class RtaMachine : public RefCounted {
     bool fill(rtag_fill& out) const;
     // the same as figures: level, serial, vertices, meshes, ceilings, skirts ({} when there is none)
     Dictionary get_fill_info() const;
+    // The frame's skeletons (rtag_skeletons_get): a pose stream a Skeleton3D takes as it is - per skeleton its parents,
+    // the bind-pose joint origins (rest = T(bind[j] - bind[parent])), the posed joint frames in the world (global poses)
+    // and the skin matrices; per scene piece its skeleton, object and sources.  with_mesh: also the bind-pose sources and
+    // the drawn corners (to re-skin and compare, or to draw the game's own mesh re-posed).
+    Dictionary get_skeletons(bool with_mesh) const;
     // the tester's kit (tools/recomp/app/testerkit.h, rtag.h): "" when the library has none
     String report_begin(const String& host_lines);
     String report_finish(const String& folder, const String& text, bool keep);

@@ -205,6 +205,7 @@ def build(args):
         lib_flags.append('-DRTAG_HAVE_NET2')
     sources.append((os.path.join(LIB, 'rtag.cpp'), lib_flags, 'g_'))
     sources.append((os.path.join(LIB, 'scene_export.cpp'), lib_flags, 'g_'))
+    sources.append((os.path.join(LIB, 'skeleton_export.cpp'), rt_flags + ['-I', LIB, '-I', render, '-I', app], 'g_'))     # skeleton_export.h
     sources.append((os.path.join(LIB, 'gl_offscreen_linux.cpp'), lib_flags + ['-I', LSRC], 'g_'))
     search = [LIB, LSRC, app, render, rt, sound, net, net2, GEN, vu]
     jobs = bw.source_jobs(sources, objdir, search)

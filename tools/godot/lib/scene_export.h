@@ -3,6 +3,7 @@
 #pragma once
 #include "rtag.h"
 #include "renderer.h"
+#include "skeleton_export.h"
 
 #include <cstdint>
 #include <vector>
@@ -16,10 +17,11 @@ struct Frame {
     std::vector<rtag_scene_piece> pieces;
     std::vector<rtag_scene_full> full;
     std::vector<uint32_t> piece_first, piece_count;     // per draw: its pieces
+    skel::Frame skeletons;                      // the skeletons the pieces were posed with (skeleton_export.h)
     bool valid = false;
     float world_to_view[16], view_to_clip[16], world_to_screen[16], camera_position[3];
     float fov_y = 0, near_plane = 0, far_plane = 0;
-    void clear() { vertices.clear(); normals.clear(); known.clear(); pieces.clear(); full.clear(); piece_first.clear(); piece_count.clear(); valid = false; }
+    void clear() { vertices.clear(); normals.clear(); known.clear(); pieces.clear(); full.clear(); piece_first.clear(); piece_count.clear(); skeletons.clear(); valid = false; }
 };
 
 void install(render::Renderer& renderer);               // before the game starts: the tap (core/render/scene_tap.h)

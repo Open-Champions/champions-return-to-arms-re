@@ -786,6 +786,7 @@ void RtaDrawer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_scene_option", "name", "value"), &RtaDrawer::set_scene_option);
     ClassDB::bind_method(D_METHOD("get_scene_info"), &RtaDrawer::get_scene_info);
     ClassDB::bind_method(D_METHOD("get_world_scenario"), &RtaDrawer::get_world_scenario);
+    ClassDB::bind_method(D_METHOD("set_hidden_objects", "objects"), &RtaDrawer::set_hidden_objects);
     ClassDB::bind_method(D_METHOD("get_world_camera"), &RtaDrawer::get_world_camera);
     ClassDB::bind_method(D_METHOD("get_world_viewport"), &RtaDrawer::get_world_viewport);
     ClassDB::bind_method(D_METHOD("get_world_environment"), &RtaDrawer::get_world_environment);

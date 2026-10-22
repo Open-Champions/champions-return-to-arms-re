@@ -385,6 +385,58 @@ uint32_t rtag_texture_names(rtag_texture_name* out, uint32_t max);
  * room starts).  docs/issues/native-rendezvous.md 5.1.  The stand-alone way: rtag_start with the runtime arguments
  * "--opt net2=host | join:CODE" (and net2-name, net2-service) takes the machine into a room by itself from power-on. */
 
+/* ---- the skeletons of the frame (optional: rtag_has("skeletons"); added after version 6 without changing it) --------
+ * With the scene tap (config.scene3d): for every animated model drawn this frame, the skeleton the game's own animation
+ * code posed it with, and the bind-pose mesh its packets were made from - what a host needs to draw the figure itself,
+ * re-posed (a Godot Skeleton3D, Skin and ArrayMesh), or something else in its place.  tools/godot/lib/skeleton_export.h
+ * says where each number comes from.  Matrices are row-major 3 x 4 [R | t] for column vectors (p' = R p + t), in the
+ * game's world (z up, its units).
+ *   skin[j]   bind-pose model space -> world: what the game's vertex program transformed the joint's vertices with
+ *             (its joint matrix taken back through the inverse of the view-projection).
+ *   bind[j]   the joint's origin in the bind pose, model space (the clip's bind offset, negated); the bind pose has
+ *             every joint's axes along the model's.
+ *   joint[j]  the posed joint in the world: skin[j] with the origin moved to bind[j] (= skin[j] x T(bind[j])).
+ * So a Skeleton3D with bone j's rest T(bind[j] - bind[parent[j]]), a Skin with bind pose T(-bind[j]), and bone j's
+ * global pose joint[j] skins the sources exactly as the game did. */
+typedef struct rtag_skeleton {
+    uint32_t object;            /* the first rtag_scene_piece::object drawn with this pose (a figure may be several objects) */
+    uint32_t pose;              /* the pose's number this frame (the game's pose buffer, drawn); objects with one pose are one figure */
+    uint32_t state, clip;       /* guest addresses: the animation state the pose belongs to, the clip whose skeleton it has */
+    uint32_t buffer;            /* guest address of the pose buffer */
+    int32_t joint_count;        /* 1 .. 64; 0: the structure was not found (skin[] is still valid for 64 joints) */
+    int8_t parent[64];          /* -1: a root */
+    uint8_t depth[64];          /* the clip's depth list */
+    float bind[64][3];
+    float skin[64][12];
+    float joint[64][12];
+    float scale;                /* the figure's scale in the world (the length of skin[0]'s first column) */
+    float pose_error;           /* largest difference between the skin matrices and the pose buffer through one object
+                                   matrix, in world units (the check that joint j of the buffer is matrix j of the program) */
+} rtag_skeleton;
+typedef struct rtag_skin_source {   /* one vertex of a packet as the program was given it (render::TapSource) */
+    float position[3];          /* bind-pose model space */
+    float normal[3];
+    uint8_t joint[4];           /* 0 .. 63 */
+    uint8_t weight[4];          /* of 255 */
+} rtag_skin_source;
+typedef struct rtag_skin_piece {    /* parallel to rtag_scene::pieces */
+    int32_t skeleton;           /* index into rtag_skeletons::skeletons, -1: none */
+    uint32_t source_first, source_count;
+    float slot0[12];            /* joint matrix 0 of the piece in the world (a rigid model's own matrix: a weapon in a hand) */
+} rtag_skin_piece;
+typedef struct rtag_skeletons {
+    uint32_t struct_size;       /* sizeof(rtag_skeletons), set by the caller */
+    uint32_t skeleton_count, piece_count, source_count, full_count;
+    const rtag_skeleton* skeletons;
+    const rtag_skin_piece* pieces;      /* piece_count == rtag_scene::piece_count */
+    const rtag_skin_source* sources;
+    const uint16_t* full_source;        /* per rtag_scene::full corner: which source of its piece (source_first + this) */
+    uint32_t poses_seen, poses_matched; /* figures: poses uploaded / found again in the program's joint matrices */
+} rtag_skeletons;
+/* 1: filled for the frame taken last (pointers valid until the next frame is taken); 0: none (no scene, an older library).
+ * Same thread as rtag_poll. */
+int rtag_skeletons_get(rtag_skeletons* out);
+
 /* ---- sound --------------------------------------------------------------------------- */
 /* Exactly `frames` frames of interleaved 16-bit stereo at 48 kHz (silence where there is nothing).  With
  * RTAG_SOUND_PULL this call is the sound side's clock: call it from the device's thread, at the device's rate. */

@@ -694,7 +694,7 @@ func _host_command(text: String) -> void:
 		print("[blank %d] rta_godot: controller %s; port 1 holds buttons %04x, sticks %d %d %d %d; %d key events" % [blanks,
 			"made by the script" if test_pad else (Input.get_joy_name(Input.get_connected_joypads()[0]) if Input.get_connected_joypads().size() > 0 else "none"),
 			last_buttons, last_sticks[0], last_sticks[1], last_sticks[2], last_sticks[3], key_events])
-	elif w.size() >= 1 and (w[0] == "light" or w[0] == "camera" or w[0] == "scene" or w[0] == "look" or w[0] == "card") and scene_view != null:
+	elif w.size() >= 1 and (w[0] == "light" or w[0] == "camera" or w[0] == "scene" or w[0] == "look" or w[0] == "card" or w[0] == "er") and scene_view != null:
 		scene_view.call("command", w)
 	elif w.size() >= 2 and w[0] == "hold":
 		hold_input(w[1] == "on")            # test aid: as the portal does while it is in front

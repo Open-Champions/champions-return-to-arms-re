@@ -102,6 +102,8 @@ void SceneTap::camera(const uint32_t* words, size_t count) {
     memcpy(camera_world, f + 30, sizeof camera_world);
     for (int k = 0; k < 16; k++) vpw[k] = k % 4 == 2 ? f[30 + k] * DEPTH_SCALE : f[30 + k];
     frame.have_camera = invert4(vp, inverse) && invert4(vpw, inverse_world);
+    memcpy(frame.clip_to_world, inverse, sizeof frame.clip_to_world);
+    frame.batch = count >= CAMERA_WORDS + 3 ? words[CAMERA_WORDS + 2] : 0;
     stats.camera_blocks++;
 }
 
@@ -373,6 +375,7 @@ void SceneTap::kicked(uint32_t qword, size_t before, size_t after) {
             out.uv[0] = (float)(uv[0] & 0x3FFF) * (1.0f / 16.0f); out.uv[1] = (float)(uv[1] & 0x3FFF) * (1.0f / 16.0f);
             out.rgba[0] = (uint8_t)colour[0]; out.rgba[1] = (uint8_t)colour[1]; out.rgba[2] = (uint8_t)colour[2]; out.rgba[3] = (uint8_t)colour[3];
             frame.full.push_back(out);
+            frame.full_source.push_back((uint16_t)slot[p]);
         };
         for (uint32_t p = 2; p < nloop; p++)
             if (!hidden[p] && slot[p] >= 0 && slot[p - 1] >= 0 && slot[p - 2] >= 0) { corner(p - 2); corner(p - 1); corner(p); }
@@ -390,7 +393,10 @@ void SceneTap::take(TapFrame& out) {
     std::swap(out.sources, frame.sources);
     std::swap(out.full, frame.full);
     std::swap(out.joints, frame.joints);
+    std::swap(out.full_source, frame.full_source);
     out.have_camera = frame.have_camera;
+    memcpy(out.clip_to_world, frame.clip_to_world, sizeof out.clip_to_world);
+    out.batch = frame.batch;
     memcpy(out.world_to_view, frame.world_to_view, sizeof out.world_to_view);
     memcpy(out.view_projection, frame.view_projection, sizeof out.view_projection);
     out.proj_scale = frame.proj_scale;

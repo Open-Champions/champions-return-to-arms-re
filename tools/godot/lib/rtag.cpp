@@ -686,6 +686,12 @@ const char* rtag_build_line(void) {
 }
 const char* rtag_report_told(void) { return g_report_told.c_str(); }
 
+int rtag_skeletons_get(rtag_skeletons* out) {
+    if (!g_m || !out || out->struct_size < sizeof(rtag_skeletons) || !g_m->scene3d || !g_m->held) return 0;
+    skel::fill(g_m->held->scene.skeletons, *out);
+    return 1;
+}
+
 uint32_t rtag_texture_names(rtag_texture_name* out, uint32_t max) {
     if (!g_m || !out) return 0;
     uint32_t n = (uint32_t)std::min<size_t>(max, g_m->texture_names.size());
@@ -706,6 +712,7 @@ int rtag_has(const char* feature) {
     if (f == "picture") return 1;
     if (f == "scene3d") return 1;
     if (f == "texture_names") return 1;
+    if (f == "skeletons") return 1;
     if (f == "views") return 1;
     if (f == "world") {
 #ifdef RTAG_HAVE_WORLD

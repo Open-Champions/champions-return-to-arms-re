@@ -59,7 +59,7 @@ float g_k = 1.0f;               // widescreen factor: (4/3) / aspect
 std::unordered_map<uint32_t, int> g_target_width;
 // the game's thread
 bool g_first_after_blank = true, g_have_drawn = false;
-uint32_t g_block[render::SceneTap::CAMERA_WORDS + 2];
+uint32_t g_block[render::SceneTap::CAMERA_WORDS + 3];     // + near, far, the skeletons' batch (skeleton_export.h)
 // figures
 uint64_t g_frames = 0, g_frames_with_camera = 0, g_exact_draws = 0, g_depth_draws = 0, g_exact_vertices = 0, g_depth_vertices = 0;
 uint64_t g_grid_n = 0, g_grid_hit = 0;
@@ -97,6 +97,7 @@ void install(render::Renderer& renderer) {
     // output (scene_tap.h: the check); what that costs on the decoder's thread
     if (getenv("RTA_SCENE_CHECK")) g_tap.check = atoi(getenv("RTA_SCENE_CHECK")) != 0;
     g_tap.install(renderer);
+    skel::install();
 }
 
 void set_aspect(double aspect) { g_k = (float)((4.0 / 3.0) / (aspect > 0 ? aspect : 4.0 / 3.0)); }
@@ -111,8 +112,9 @@ void before_transfer(const uint8_t* ram, std::vector<uint32_t>& codes) {
         memcpy(g_block, ram + render::SceneTap::CAMERA_ADDRESS, render::SceneTap::CAMERA_WORDS * 4);
         float range[2] = {NEAR_PLANE, FAR_PLANE};
         memcpy(g_block + render::SceneTap::CAMERA_WORDS, range, 8);
+        g_block[render::SceneTap::CAMERA_WORDS + 2] = skel::drawn(ram);
     }
-    render::SceneTap::camera_notes(g_block, render::SceneTap::CAMERA_WORDS + 2, codes);
+    render::SceneTap::camera_notes(g_block, render::SceneTap::CAMERA_WORDS + 3, codes);
 }
 
 void drawn(const uint8_t* ram, float near_plane, float far_plane) {
@@ -120,6 +122,7 @@ void drawn(const uint8_t* ram, float near_plane, float far_plane) {
     memcpy(g_block, ram + render::SceneTap::CAMERA_ADDRESS, render::SceneTap::CAMERA_WORDS * 4);
     float range[2] = {near_plane, far_plane};
     memcpy(g_block + render::SceneTap::CAMERA_WORDS, range, 8);
+    g_block[render::SceneTap::CAMERA_WORDS + 2] = skel::drawn(ram);     // the poses this draw pass drew
     g_have_drawn = true;
 }
 
@@ -155,8 +158,10 @@ void take(render::FrameList& list, Frame& out) {
     uint32_t last_object = ~0u;
     uint8_t last_pass = 0;
     out.pieces.reserve(tap.pieces.size());
+    std::vector<uint8_t> kept(tap.pieces.size(), 0);
     for (const render::TapPiece& p : tap.pieces) {
         if ((size_t)p.list_first + p.list_count > count) continue;
+        kept[&p - tap.pieces.data()] = 1;
         for (uint32_t k = 0; k < p.list_count; k++) {
             const render::TapVertex& v = tap.vertices[p.first + k];
             const uint32_t i = p.list_first + k;
@@ -194,6 +199,7 @@ void take(render::FrameList& list, Frame& out) {
                 g_grid_n++; if (on) g_grid_hit++;
             }
     }
+    skel::build(tap, kept, out.skeletons);
     // ---- per draw: from the inputs, or by the depth, or not part of the scene ----
     for (size_t k = 0; k < list.commands.size(); k++) {
         const render::DrawCmd& c = list.commands[k];
@@ -275,6 +281,7 @@ void fill(const Frame& frame, rtag_scene& view, rtag_draw* draws, size_t count) 
 }
 
 void report() {
+    skel::report();
     double n = g_frames_with_camera ? (double)g_frames_with_camera : 1;
     const render::TapStats& s = g_tap.stats;
     printf("rtag: scene: %llu lists, %llu with a camera; per list %.1f draws and %.0f vertices from the programs' inputs (with normals), %.1f draws and %.0f vertices put back "

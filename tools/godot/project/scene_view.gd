@@ -41,6 +41,10 @@ extends Node
 #             (shaders/backdrop.gdshader), fading into the haze
 #   contact   contact shadows (0..1, 0 = none): a soft dark patch on the level under every standing figure, from the
 #             figures' feet the drawer finds in the frame (get_sky_info().contacts)
+#   er_models off | on | self: the local player drawn as another figure posed by the game's own skeleton (er_layer.gd):
+#             on = the owner's own converted Elden Ring models, when their local folder is there (nothing changes
+#             otherwise); self = the game's own bind-pose mesh re-skinned in Godot (the skeleton stream's check)
+#   er_set    which of the local outfits (a folder of er-models: default, barbarian, cleric, ...)
 #
 # Each of sky, fog, sun, lamp, bloom, grade, foliage, fill is  off | on | auto.  auto - the default - means: in the views that look
 # along the ground (chase, shoulder, first person: tools/recomp/app/fpview.h), not in the game's own overhead view
@@ -81,6 +85,7 @@ var look := {
 	"fill_light": 0.36, "fill_scale": 1.0, "light_energy": 1.0, "light_shadows": 2.0, "light_max": 8.0,
 	"sun_gain": 1.0, "saturation": 1.10, "contrast": 1.06, "brightness": 1.0, "preset": "on", "balance": "0.6",
 	"backdrop": "auto", "models": "on", "model_smooth": 2.0, "model_crease": 0.35, "model_near": 520.0, "model_rim": 0.35, "model_form": 0.7, "model_sharp": 0.6, "contact": 0.55,
+	"er_models": "off", "er_set": "default",
 }
 # Per level presets (tools/godot/presets.py): the look keys above, by level, picked from what the level's own colours
 # are (its clear colour, its dome, its light level, the game's light nodes, the picture the game's own camera gives) by
@@ -98,6 +103,7 @@ var look_defaults := {}
 var preset_applied := ""
 var fill_sent := {}
 var card: Node                          # card.gd: the character card (the portal's Portrait.texture)
+var er: Node                            # er_layer.gd: figures posed by the game's skeletons (look.er_models)
 var torches: Array = []                 # [{light, instance, address, shadow}] Godot's lights at the game's
 var torch_clock := 0.0
 var lamp_share := 0.0                   # the carried lamp, eased: 1 where none of the game's lights reaches
@@ -208,6 +214,11 @@ func _ready() -> void:
 	card.set("main", main)
 	card.set("drawer", drawer)
 	add_child(card)
+	er = Node.new()
+	er.set_script(load("res://er_layer.gd"))
+	er.set("main", main)
+	er.set("view", self)
+	add_child(er)
 	_camera_options()
 
 
@@ -278,6 +289,8 @@ func _free_torches() -> void:
 
 
 func release() -> void:
+	if er != null:
+		er.call("release")
 	_free_torches()
 	for rid in [sun_instance, lamp_instance, sky_instance, sun, lamp, backdrop_instance]:
 		if rid.is_valid():
@@ -311,6 +324,8 @@ func _camera_options() -> void:
 func before_frame() -> void:
 	if card != null:
 		card.call("before_frame")
+	if er != null:
+		er.call("before_frame", String(look.er_models))
 	var view: Dictionary = machine.get_view()
 	var ground := bool(view.get("valid", false)) and bool(view.get("active", false)) and not bool(view.get("fallback", false)) \
 			and int(view.get("shown", 0)) >= VIEW_CHASE
@@ -366,6 +381,8 @@ func frame() -> void:
 	_post()
 	if card != null:
 		card.call("frame", 1.0 / 60.0)
+	if er != null:
+		er.call("frame", scenario)
 
 
 func _make(to: RID) -> void:
@@ -803,6 +820,8 @@ func command(w: PackedStringArray) -> void:
 			if file != null:
 				file.store_string(str(drawer.call("describe_frame", w[2].to_int())))
 				file.close()
+	elif w[0] == "er" and er != null:
+		er.call("command", w)
 	elif w[0] == "card" and w.size() >= 2 and card != null:
 		# app card info | app card shot FILE: the character card's picture as it is now (after this frame is drawn)
 		if w[1] == "info":

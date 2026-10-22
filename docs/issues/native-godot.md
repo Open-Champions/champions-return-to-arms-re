@@ -9,6 +9,13 @@ Nothing derived from the game is in the repository. `tools/godot/` holds glue, b
 scripts, the Godot project's scripts and shaders. The translated code, the libraries, the
 staged project, exported applications, pictures and logs are under `local/godot-spike/`.
 
+## TENTH ROUND (2026-10-22): the skeletons of the frame, another game's figures on them
+
+Built into `local/godot-r10/`. The library hands over each drawn animated model's skeleton (the game's own pose buffers,
+parents, bind pose) and its bind-pose mesh (`rtag_skeletons_get`, `RtaMachine.get_skeletons`); the "real re-posing needs
+object-space verts/joints" of the fourth round is done that way. The Elden Ring layer (`look.er_models`) draws the owner's
+own converted models on it. All of it: `native-er-layer.md`.
+
 ## NINTH ROUND (2026-10-21, evening): the tester's kit, rims, the shop's Buy list, the Windows setup with Godot
 
 Built into `local/godot-r9/` (`RTA_GODOT_OUT=local/godot-r9`; snapshot of `tools/recomp` taken this round; `run.py

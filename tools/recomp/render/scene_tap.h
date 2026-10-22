@@ -102,12 +102,16 @@ struct TapFrame {
     std::vector<TapSource> sources;
     std::vector<TapFull> full;
     std::vector<float> joints;              // 16 floats each: object -> clip, rows as the program holds them
+    std::vector<uint16_t> full_source;      // parallel to `full`: which TapSource of its piece the corner is
     bool have_camera = false;
+    double clip_to_world[16];               // the inverse of view_projection (rows as the programs hold them, depth column x 2^-50)
+    uint32_t batch = 0;                     // a number the game side put after the camera block (word 64), 0 none: what it
+                                            // knew of the draw pass these packets came from (tools/godot/lib/skeleton_export.h)
     float world_to_view[12];                // g_cameraMatrix: four rows of three (camera = p.x r0 + p.y r1 + p.z r2 + r3)
     float view_projection[16];              // world -> clip, the depth column x 2^-50
     float proj_scale = 0;                   // g_projScale
     float near_plane = 0, far_plane = 0;    // of the projection, when the game side said (words 62 and 63 of the block); else 0
-    void clear() { pieces.clear(); vertices.clear(); sources.clear(); full.clear(); joints.clear(); }
+    void clear() { pieces.clear(); vertices.clear(); sources.clear(); full.clear(); joints.clear(); full_source.clear(); }
 };
 
 struct TapStats {
@@ -129,7 +133,8 @@ class SceneTap {
     void install(Renderer& renderer);
     // The game's camera, as the game holds it when the packets that follow were made: the 62 words at
     // 0x44f108 (g_projScale, g_cameraMatrix, g_viewProj, g_viewProjWorld, g_viewProjModel), and optionally two
-    // more: the projection's near and far plane as floats (a view may have its own).  Either
+    // more: the projection's near and far plane as floats (a view may have its own), and a third: a number for the host's
+    // own use (TapFrame::batch).  Either
     // called directly, or carried in the VIF1 stream as notes (camera_notes() makes them).
     void camera(const uint32_t* words, size_t count);
     // The frame's pieces so far; the caller swaps them out at a vertical blank (after the FrameList's

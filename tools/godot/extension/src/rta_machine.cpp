@@ -6,6 +6,12 @@
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/vector3.hpp>
+#include <godot_cpp/variant/transform3d.hpp>
+#include <godot_cpp/variant/packed_vector3_array.hpp>
+#include <godot_cpp/variant/packed_vector2_array.hpp>
+#include <godot_cpp/variant/packed_color_array.hpp>
+#include <godot_cpp/variant/packed_int32_array.hpp>
+#include <godot_cpp/variant/packed_float32_array.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include <algorithm>
@@ -172,6 +178,108 @@ String RtaMachine::build_line() const {
 String RtaMachine::report_told() const {
     const RtaLibrary& lib = rta_library();
     return lib.loaded && lib.rtag_report_told ? String::utf8(lib.rtag_report_told()) : String();
+}
+
+static Transform3D rows34(const float* m) {
+    return Transform3D(Basis(m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]), Vector3(m[3], m[7], m[11]));
+}
+
+Dictionary RtaMachine::get_skeletons(bool with_mesh) const {
+    Dictionary d;
+    const RtaLibrary& lib = rta_library();
+    if (!started || !frame || !frame->scene || !lib.rtag_skeletons_get) return d;
+    rtag_skeletons k;
+    memset(&k, 0, sizeof k);
+    k.struct_size = sizeof k;
+    if (!lib.rtag_skeletons_get(&k) || k.piece_count != frame->scene->piece_count) return d;
+    const rtag_scene& sc = *frame->scene;
+    Array skeletons;
+    for (uint32_t i = 0; i < k.skeleton_count; i++) {
+        const rtag_skeleton& s = k.skeletons[i];
+        Dictionary e;
+        e["object"] = (int64_t)s.object;
+        e["pose"] = (int64_t)s.pose;
+        e["state"] = (int64_t)s.state;
+        e["clip"] = (int64_t)s.clip;
+        e["buffer"] = (int64_t)s.buffer;
+        e["joint_count"] = s.joint_count;
+        e["scale"] = s.scale;
+        e["pose_error"] = s.pose_error;
+        PackedInt32Array parent;
+        PackedVector3Array bind;
+        Array joints, skins;
+        const int n = s.joint_count > 0 ? s.joint_count : 0;
+        for (int j = 0; j < n; j++) {
+            parent.push_back(s.parent[j]);
+            bind.push_back(Vector3(s.bind[j][0], s.bind[j][1], s.bind[j][2]));
+            joints.push_back(rows34(s.joint[j]));
+            skins.push_back(rows34(s.skin[j]));
+        }
+        e["parent"] = parent;
+        e["bind"] = bind;
+        e["joints"] = joints;
+        e["skins"] = skins;
+        skeletons.push_back(e);
+    }
+    d["skeletons"] = skeletons;
+    PackedInt32Array piece_skeleton, piece_object, piece_kind, piece_flags, piece_full_first, piece_full_count, piece_source_first, piece_source_count;
+    Array slot0;
+    for (uint32_t i = 0; i < k.piece_count; i++) {
+        const rtag_skin_piece& p = k.pieces[i];
+        const rtag_scene_piece& q = sc.pieces[i];
+        piece_skeleton.push_back(p.skeleton);
+        piece_object.push_back((int32_t)q.object);
+        piece_kind.push_back(q.kind);
+        piece_flags.push_back(q.flags);
+        piece_full_first.push_back((int32_t)q.full_first);
+        piece_full_count.push_back((int32_t)q.full_count);
+        piece_source_first.push_back((int32_t)p.source_first);
+        piece_source_count.push_back((int32_t)p.source_count);
+        slot0.push_back(rows34(p.slot0));
+    }
+    d["piece_skeleton"] = piece_skeleton;
+    d["piece_object"] = piece_object;
+    d["piece_kind"] = piece_kind;
+    d["piece_flags"] = piece_flags;
+    d["piece_full_first"] = piece_full_first;
+    d["piece_full_count"] = piece_full_count;
+    d["piece_source_first"] = piece_source_first;
+    d["piece_source_count"] = piece_source_count;
+    d["piece_slot0"] = slot0;
+    d["poses_seen"] = (int64_t)k.poses_seen;
+    d["poses_matched"] = (int64_t)k.poses_matched;
+    if (with_mesh) {
+        PackedVector3Array position, normal, full_position, full_normal;
+        PackedInt32Array joints, full_source;
+        PackedFloat32Array weights;
+        PackedVector2Array full_uv;
+        PackedColorArray full_colour;
+        for (uint32_t i = 0; i < k.source_count; i++) {
+            const rtag_skin_source& v = k.sources[i];
+            position.push_back(Vector3(v.position[0], v.position[1], v.position[2]));
+            normal.push_back(Vector3(v.normal[0], v.normal[1], v.normal[2]));
+            for (int c = 0; c < 4; c++) { joints.push_back(v.joint[c]); weights.push_back(v.weight[c] / 255.0f); }
+        }
+        const uint32_t corners = std::min(k.full_count, sc.full_count);
+        for (uint32_t i = 0; i < corners; i++) {
+            const rtag_scene_full& f = sc.full[i];
+            full_position.push_back(Vector3(f.x, f.y, f.z));
+            full_normal.push_back(Vector3(f.nx, f.ny, f.nz));
+            full_uv.push_back(Vector2(f.u, f.v));
+            full_colour.push_back(Color(f.r / 128.0f, f.g / 128.0f, f.b / 128.0f, f.a / 128.0f));
+            full_source.push_back(k.full_source[i]);
+        }
+        d["source_position"] = position;
+        d["source_normal"] = normal;
+        d["source_joints"] = joints;
+        d["source_weights"] = weights;
+        d["full_position"] = full_position;
+        d["full_normal"] = full_normal;
+        d["full_uv"] = full_uv;
+        d["full_colour"] = full_colour;
+        d["full_source"] = full_source;
+    }
+    return d;
 }
 
 Dictionary RtaMachine::get_fill_info() const {
@@ -363,6 +471,7 @@ void RtaMachine::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_option", "key", "value"), &RtaMachine::set_option);
     ClassDB::bind_method(D_METHOD("get_controls_hud"), &RtaMachine::get_controls_hud);
     ClassDB::bind_method(D_METHOD("get_fill_info"), &RtaMachine::get_fill_info);
+    ClassDB::bind_method(D_METHOD("get_skeletons", "with_mesh"), &RtaMachine::get_skeletons);
     ClassDB::bind_method(D_METHOD("report_begin", "host_lines"), &RtaMachine::report_begin);
     ClassDB::bind_method(D_METHOD("report_finish", "folder", "text", "keep"), &RtaMachine::report_finish);
     ClassDB::bind_method(D_METHOD("build_line"), &RtaMachine::build_line);

@@ -24,12 +24,16 @@
 //   --view NAME         the camera view (overhead, action, chase, shoulder, first); scripts: app view NAME
 //   --no-game-hud       the game's own HUD layer is left out; scripts: app gamehud off|on
 //   --stop-after N      end after N vertical blanks
+//   --skeleton-check    (with --scene3d) re-skin every posed packet's bind-pose sources with the frame's skeletons
+//                       (rtag_skeletons_get) two ways - the skin matrices, and joint frames x inverse rest as a
+//                       Skeleton3D does - and compare with the corners the game's programs drew; figures at the end
 //   --unpaced, --offscreen   accepted and ignored (rta_app's options, so that the same wrappers start both)
 // After "--": what rta_app takes there ([boot|resume] --opt key=value --fields N ...).
 // The exit code is the runtime's (0 done, 3 a script condition timed out, ...).
 #include "rtag.h"
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -61,6 +65,9 @@ int main(int argc, char** argv) {
     std::string here = ".";
     if (_NSGetExecutablePath(self, &self_size) == 0) { char real[4096]; if (realpath(self, real)) here = dirname(real); }
     std::string lib, disc = getenv("RTA_DISC") ? getenv("RTA_DISC") : "", data = here + "/host-data", workspace, script, sound = "machine";
+    bool skeleton_check = false;
+    std::set<uint32_t> dump_ticks;          // --skeleton-dump TICK PREFIX: the skeletons of the first frame at or after TICK as JSON
+    std::string dump_prefix;
     int width = 640, height = 448, samples = 0, anisotropy = 1, mipmaps = 0, every = 0, lists = 0, scene3d = 0;
     double aspect = 0;
     bool paced = false, stats = false, no_hud = false;
@@ -94,6 +101,8 @@ int main(int argc, char** argv) {
         else if (a == "--paced") paced = true;
         else if (a == "--view") view = next();
         else if (a == "--no-game-hud") no_hud = true;
+        else if (a == "--skeleton-check") skeleton_check = true;
+        else if (a == "--skeleton-dump") { dump_ticks.insert((uint32_t)strtoul(next().c_str(), nullptr, 10)); dump_prefix = next(); skeleton_check = true; }
         else if (a == "--stop-after") stop_after = strtoull(next().c_str(), nullptr, 10);
         else if (a == "--unpaced" || a == "--offscreen" || a == "--plain") {}
         else { fprintf(stderr, "rtag_host: unknown option %s (the head of tools/godot/lib/host_main.cpp lists them)\n", a.c_str()); return 2; }
@@ -151,14 +160,119 @@ int main(int argc, char** argv) {
     if (no_hud) api.rtag_set_option("game_hud", "off");
     if (paced) api.rtag_run(59.94);
     unsigned long long frames = 0, vertices = 0, draws = 0, textures = 0, scene_vertices = 0, scene_frames = 0, scene_pieces = 0;
+    auto skeletons_get = (int (*)(rtag_skeletons*))dlsym(handle, "rtag_skeletons_get");
+    struct SkelFigures { unsigned long long frames = 0, skeletons = 0, corners = 0, over_001 = 0, over_01 = 0; double worst_skin = 0, worst_joint = 0, sum_skin = 0;
+                         double bone_worst = 0; unsigned long long bones = 0; std::set<uint32_t> states, clips; } sk;
     for (;;) {
         const rtag_frame* frame = nullptr;
+        (void)0;
         int got = paced ? api.rtag_poll(-1, &frame) : api.rtag_step(nullptr, -1, &frame);
         if (got < 0) break;
         if (got == 0) continue;
         frames++;
         vertices += frame->vertex_count; draws += frame->draw_count; textures += frame->texture_count;
         if (frame->scene && frame->scene->valid) { scene_frames++; scene_vertices += frame->scene->vertex_count; scene_pieces += frame->scene->piece_count; }
+        rtag_skeletons skel;
+        memset(&skel, 0, sizeof skel);
+        skel.struct_size = sizeof skel;
+        if (skeleton_check && skeletons_get && frame->scene && frame->scene->valid && skeletons_get(&skel) && skel.piece_count == frame->scene->piece_count) {
+            const rtag_scene* sc = frame->scene;
+            sk.frames++;
+            if (getenv("RTA_SKEL_TRACE") && frame->sim_tick % 50 == 0) {
+                unsigned posed = 0, models = 0;
+                for (uint32_t k = 0; k < sc->piece_count; k++) if (sc->pieces[k].kind == 2) { models++; if (skel.pieces[k].skeleton >= 0) posed++; }
+                fprintf(stderr, "skel-trace: tick %u skeletons %u (poses seen %u) model pieces %u posed %u\n", frame->sim_tick, skel.skeleton_count, skel.poses_seen, models, posed);
+            }
+            if (!dump_ticks.empty() && frame->sim_tick >= *dump_ticks.begin()) {
+                const uint32_t tick = *dump_ticks.begin();
+                dump_ticks.erase(dump_ticks.begin());
+                std::string path = dump_prefix + "-" + std::to_string(tick) + ".json";
+                if (FILE* o = fopen(path.c_str(), "w")) {
+                    fprintf(o, "{\"tick\": %u, \"player\": [%.4f, %.4f, %.4f], \"skeletons\": [", frame->sim_tick, frame->view.player[0], frame->view.player[1], frame->view.player[2]);
+                    for (uint32_t k = 0; k < skel.skeleton_count; k++) {
+                        const rtag_skeleton& s = skel.skeletons[k];
+                        fprintf(o, "%s\n {\"object\": %u, \"pose\": %u, \"state\": %u, \"clip\": %u, \"joints\": %d, \"scale\": %.5f, \"parent\": [", k ? "," : "", s.object, s.pose, s.state, s.clip, s.joint_count, s.scale);
+                        for (int j = 0; j < s.joint_count; j++) fprintf(o, "%s%d", j ? ", " : "", s.parent[j]);
+                        fprintf(o, "], \"bind\": [");
+                        for (int j = 0; j < s.joint_count; j++) fprintf(o, "%s[%.4f, %.4f, %.4f]", j ? ", " : "", s.bind[j][0], s.bind[j][1], s.bind[j][2]);
+                        fprintf(o, "], \"joint\": [");
+                        for (int j = 0; j < s.joint_count; j++) {
+                            fprintf(o, "%s[", j ? ", " : "");
+                            for (int c = 0; c < 12; c++) fprintf(o, "%s%.5f", c ? ", " : "", s.joint[j][c]);
+                            fprintf(o, "]");
+                        }
+                        fprintf(o, "]}");
+                    }
+                    fprintf(o, "],\n \"pieces\": [");
+                    bool first = true;
+                    for (uint32_t k = 0; k < sc->piece_count; k++) {
+                        if (sc->pieces[k].kind != 2) continue;
+                        const rtag_skin_piece& sp = skel.pieces[k];
+                        fprintf(o, "%s\n {\"object\": %u, \"skeleton\": %d, \"flags\": %u, \"sources\": %u, \"corners\": %u, \"slot0\": [", first ? "" : ",", sc->pieces[k].object, sp.skeleton,
+                                sc->pieces[k].flags, sp.source_count, sc->pieces[k].full_count);
+                        for (int c = 0; c < 12; c++) fprintf(o, "%s%.4f", c ? ", " : "", sp.slot0[c]);
+                        fprintf(o, "], \"weights\": [");
+                        for (uint32_t v = 0; v < sp.source_count; v++) {
+                            const rtag_skin_source& q = skel.sources[sp.source_first + v];
+                            fprintf(o, "%s[%.3f, %.3f, %.3f, %u, %u]", v ? ", " : "", q.position[0], q.position[1], q.position[2], q.joint[0], q.weight[0]);
+                        }
+                        fprintf(o, "]}");
+                        first = false;
+                    }
+                    fprintf(o, "]}\n");
+                    fclose(o);
+                }
+            }
+            sk.skeletons += skel.skeleton_count;
+            for (uint32_t k = 0; k < skel.skeleton_count; k++) {
+                const rtag_skeleton& s = skel.skeletons[k];
+                sk.states.insert(s.state); sk.clips.insert(s.clip);
+                // a bone's length in the pose against the rest (joints keep their offset from the parent unless the clip moves them)
+                for (int j = 1; j < s.joint_count; j++) {
+                    int p = s.parent[j];
+                    if (p < 0 || s.scale <= 0) continue;
+                    double a = 0, b = 0;
+                    for (int c = 0; c < 3; c++) { double d = s.joint[j][c * 4 + 3] - s.joint[p][c * 4 + 3], e = s.bind[j][c] - s.bind[p][c]; a += d * d; b += e * e; }
+                    if (b < 1.0) continue;
+                    double ratio = std::sqrt(a) / s.scale / std::sqrt(b);
+                    sk.bones++;
+                    sk.bone_worst = std::max(sk.bone_worst, std::fabs(ratio - 1.0));
+                }
+            }
+            for (uint32_t k = 0; k < sc->piece_count; k++) {
+                const rtag_skin_piece& sp = skel.pieces[k];
+                const rtag_scene_piece& piece = sc->pieces[k];
+                if (sp.skeleton < 0 || piece.kind != 2) continue;
+                const rtag_skeleton& s = skel.skeletons[sp.skeleton];
+                if (s.joint_count < 1) continue;
+                for (uint32_t n = 0; n < piece.full_count; n++) {
+                    const uint32_t at = piece.full_first + n;
+                    const rtag_scene_full& drawn = sc->full[at];
+                    const rtag_skin_source& src = skel.sources[sp.source_first + skel.full_source[at]];
+                    double a[3] = {0, 0, 0}, b[3] = {0, 0, 0};
+                    for (int i = 0; i < 4; i++) {
+                        if (!src.weight[i]) continue;
+                        const double w = src.weight[i] / 255.0;
+                        const int j = src.joint[i];
+                        const float* m = s.skin[j];
+                        const float* g = s.joint[j];
+                        // Skeleton3D: global pose x inverse rest, the rest being T(bind[j]): p -> G (p - bind[j])
+                        double q[3] = {src.position[0] - s.bind[j][0], src.position[1] - s.bind[j][1], src.position[2] - s.bind[j][2]};
+                        for (int c = 0; c < 3; c++) {
+                            a[c] += w * (m[c * 4] * src.position[0] + m[c * 4 + 1] * src.position[1] + m[c * 4 + 2] * src.position[2] + m[c * 4 + 3]);
+                            b[c] += w * (g[c * 4] * q[0] + g[c * 4 + 1] * q[1] + g[c * 4 + 2] * q[2] + g[c * 4 + 3]);
+                        }
+                    }
+                    double ea = 0, eb = 0;
+                    const float d[3] = {drawn.x, drawn.y, drawn.z};
+                    for (int c = 0; c < 3; c++) { ea = std::max(ea, std::fabs(a[c] - d[c])); eb = std::max(eb, std::fabs(b[c] - d[c])); }
+                    sk.corners++; sk.sum_skin += ea;
+                    sk.worst_skin = std::max(sk.worst_skin, ea); sk.worst_joint = std::max(sk.worst_joint, eb);
+                    if (std::max(ea, eb) > 0.01) sk.over_001++;
+                    if (std::max(ea, eb) > 0.1) sk.over_01++;
+                }
+            }
+        }
         if (stats && frame->draw_count) {
             // the layout: runs of consecutive draws into one surface, with what they read
             std::string layout;
@@ -218,6 +332,11 @@ int main(int argc, char** argv) {
     if (puller.joinable()) puller.join();
     fprintf(stderr, "rtag_host: %llu frames taken; in the lists %llu vertices, %llu draws, %llu textures; scene: %llu frames with a camera, %llu vertices, %llu mesh packets\n", frames, vertices,
             draws, textures, scene_frames, scene_vertices, scene_pieces);
+    if (skeleton_check)
+        printf("rtag_host: skeletons: %llu frames, %llu skeletons (%zu animation states, %zu clips); %llu drawn corners of posed packets re-skinned from their bind-pose "
+               "sources: through the skin matrices largest difference %.5f (mean %.6f) world units, through joint frames x inverse rest %.5f; over 0.01: %llu, over 0.1: %llu; "
+               "%llu bones measured, largest change of length against the rest %.4f\n", sk.frames, sk.skeletons, sk.states.size(), sk.clips.size(), sk.corners,
+               sk.worst_skin, sk.corners ? sk.sum_skin / sk.corners : 0.0, sk.worst_joint, sk.over_001, sk.over_01, sk.bones, sk.bone_worst);
     if (stats) {
         fprintf(stderr, "rtag_host: frame layouts (runs of draws per surface, in order), by number of frames:\n");
         for (auto& kv : layouts) fprintf(stderr, "  %8llu  %s\n", kv.second, kv.first.c_str());

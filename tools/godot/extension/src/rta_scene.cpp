@@ -85,6 +85,9 @@ struct RtaDrawer::Scene {
     uint64_t fills_dropped = 0, dome_draws = 0, near_faded = 0;
     Scene() { memset(ring_sum, 0, sizeof ring_sum); memset(ring_n, 0, sizeof ring_n); memset(ring, 0, sizeof ring); }
     bool packets = true;                // draw the packets' complete geometry where the tap has it (false: the list's own triangles)
+    std::unordered_set<uint32_t> hidden;    // objects left out (set_hidden_objects)
+    uint64_t hidden_draws = 0;
+    float hidden_order = -1;            // this frame: the place in the world's pass of the first draw left out (-1: none)
     // Meshes kept between frames: a draw whose packets are, byte for byte, those of a mesh made before (the level's chunks
     // where nothing moved and no light changed: most of a frame) takes that mesh instead of being built and sent again.
     // Kept by the draw's identity (its packets' figures, kinds and corner counts, and how many draws of that identity came
@@ -138,6 +141,12 @@ struct RtaDrawer::Scene {
 void RtaDrawer::set_scene_mode(bool on) {
     scene_mode = on;
     if (on && !scene) scene = new Scene;
+}
+
+void RtaDrawer::set_hidden_objects(const PackedInt64Array& objects) {
+    if (!scene) scene = new Scene;
+    scene->hidden.clear();
+    for (int64_t k = 0; k < objects.size(); k++) scene->hidden.insert((uint32_t)objects[k]);
 }
 
 void RtaDrawer::set_scene_option(const String& name, double value) {
@@ -580,6 +589,10 @@ Dictionary RtaDrawer::get_scene_info() const {
     info["game_camera"] = scene->game_camera;
     info["camera"] = scene->camera;
     info["fov_y"] = scene->fov_y;
+    // where the host's own figure goes among the world's draws (set_hidden_objects): the transparent pass draws by this
+    // sorting offset, as the drawer places every draw (RtaDrawer::place)
+    info["hidden_order"] = scene->hidden_order;
+    info["hidden_draws"] = (int64_t)scene->hidden_draws;
     info["focus"] = scene->game_camera.origin - scene->game_camera.basis.get_column(2) * (real_t)scene->focus;
     double n = scene->frames ? (double)scene->frames : 1;
     info["figures"] = vformat("scene: %d lists (%d without a camera); per list %.1f draws and %.0f vertices in the world (%.1f of the draws from the vertex programs' inputs, "
@@ -610,6 +623,7 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
     sc.level_draws = 0;
     sc.ground_near_last = sc.ground_near;
     sc.ground_near = 0;
+    sc.hidden_order = -1;
     Target* world = world_target();
     if (!sc.valid || !world) { if (!sc.valid) sc.frames_without_camera++; return; }
     scene_scan_sky(f, *world);
@@ -656,6 +670,16 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     }
     RenderingServer* s = RenderingServer::get_singleton();
     if (fill_drops(f, d)) return true;                      // the library's plain fill: drawn here by rta_fill.cpp instead
+    if (!sc.hidden.empty() && d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count) {
+        // an object the host draws itself (set_hidden_objects): a draw all of whose packets are its goes
+        uint32_t hidden = 0;
+        for (uint32_t k = 0; k < d.scene_piece_count; k++) hidden += sc.hidden.count(sc.tap->pieces[d.scene_piece_first + k].object) ? 1 : 0;
+        if (hidden == d.scene_piece_count) {
+            sc.hidden_draws++;
+            if (sc.hidden_order < 0 || order < sc.hidden_order) sc.hidden_order = order;
+            return true;
+        }
+    }
     // the game's own ground shadows (a silhouette drawn into a small surface, then subtracted from the ground through a
     // quad the CPU projects) go when Godot throws real ones
     if (sc.shadows && d.tex_is_target && d.scene_kind == RTAG_SCENE_DEPTH && d.blend) { sc.blob_shadows_dropped++; return true; }

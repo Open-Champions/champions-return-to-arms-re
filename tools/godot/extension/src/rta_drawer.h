@@ -32,6 +32,7 @@
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/classes/shader.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/packed_int64_array.hpp>
 #include <godot_cpp/variant/rect2.hpp>
 #include <godot_cpp/variant/rid.hpp>
 #include <godot_cpp/variant/transform3d.hpp>
@@ -71,6 +72,9 @@ class RtaDrawer : public RefCounted {
     // ---- scene mode (rta_scene.cpp) ----
     void set_scene_mode(bool on);
     void set_scene_option(const String& name, double value);
+    // The scene's objects (rtag_scene_piece::object) the next frames leave out: their draws are not made at all.  For a
+    // host that draws something else in their place (er_layer.gd: a figure posed by the object's skeleton).
+    void set_hidden_objects(const PackedInt64Array& objects);
     Dictionary get_scene_info() const;
     RID get_world_scenario() const;
     RID get_world_camera() const;
