@@ -2155,6 +2155,46 @@ completion, stored mission return from this new checkpoint, console-reference
 fidelity, performance, physical multiple-controller play and separate-PC
 multiplayer remain open.
 
+## Normal mission return from the earned checkpoint
+
+A new private native process completes a normal frontend Load, free hub Recall
+and collective return to blood1 (Lost Battleground) in 27.472 seconds. It records
+1,416 complete 474-column fields and exits normally without a timeout. Card
+traffic is 311,272 bytes read and zero written. Original and copied game files,
+protected sources and the candidate retain their hashes.
+
+Player zero holds the ordinary Square+Select Recall chord for eight fields;
+the other players' controls remain neutral. The recording observes a positive
+hub Recall countdown, the pending mission and all four requested positions
+matching their own saved return metadata, followed by the active mission and
+released controls. Recall quantities remain 1/1/1/2. Actual settled positions
+are recorded separately from the requested positions.
+
+At both captures, all four characters retain XP 153/153/179/205, all occupied
+inventory items, all 20 equipment/auxiliary references, stored skills and
+ability/binding bytes, and the 44-byte return metadata. Every complete-record
+difference remains in the private audit. Current mana, constructor actor pointers
+and the HUD float counter change during normal updates. Player zero also loses
+health after the mission resumes, reaching 29.705715 at the returned capture
+and 26.734173 at the final recorded field; all four characters remain alive.
+Exact attacker attribution remains unqualified.
+Root viewed both captures: the four-character party at the hub savepoint and
+then in Lost Battleground.
+
+An independent object reader resolves four current allocated Player owners with
+reciprocal grid handles at both captures. The three selected saved defeated
+Kobolds each resolve to a unique current allocated object with exact saved
+position, facing and variant. Each has nonpositive HP matching the guest
+round-toward-zero product of its saved fraction and observed current maximum HP,
+AI state 20, the expected frozen death-animation clip and reciprocal grid
+membership. This is bounded endpoint evidence for those three creatures;
+complete reconstruction of all saved object classes remains unqualified.
+
+This qualifies normal stored mission return for this earned checkpoint. The
+candidate remains private and uninstalled. NPC/quest completion, full campaign,
+console-reference fidelity, performance, physical multiple-controller play and
+separate-PC multiplayer remain open.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
