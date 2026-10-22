@@ -2239,6 +2239,28 @@ performance, physical multiple-controller play and separate-PC multiplayer remai
 open.
 
 
+## North-route movement stall before a new checkpoint
+
+A new private four-character attempt reaches normal application and controller
+exits after ordinary Load, stored mission return, combat and northward movement.
+The controller ends gameplay input at its declared traversal no-progress limit.
+Recorded positions stop changing despite continuing movement inputs for two
+characters; the other two receive neutral movement inputs. This is a bounded
+controller outcome, not an established game defect. The precise cause of the
+stall remains unqualified.
+
+The late captures retain four living characters with XP 536/536/640/588. No new
+Recall or Save transaction occurs. Card traffic is 311,272 bytes read and zero
+written, and the cloned slot remains unchanged. These gains therefore do not
+establish a new durable checkpoint; the previously verified saved XP remains
+153/153/179/205. Original source saves, cloned game files, protected sources and
+the candidate retain their hashes.
+
+The candidate remains private and uninstalled. Continued progress through normal
+Save and separate fresh Load/return, Natasla dialogue, mission and full-campaign
+completion, physical multi-controller play, reference fidelity and separate-
+PC/WAN multiplayer remain open.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
