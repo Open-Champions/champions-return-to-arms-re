@@ -2379,6 +2379,39 @@ completion, the full campaign, reference fidelity, physical multi-controller
 play and separate-PC/WAN multiplayer remain open. Strict default-off visual
 equivalence remains false, and the candidate stays private and uninstalled.
 
+## Northern continuation stops at the fresh-position guard
+
+One private normal Load and free hub return completes before the next route
+attempt. The native process and control client exit normally, with 7,296
+complete 480-column telemetry rows. The wrapper records 127.317 seconds
+including postprocessing; this is not a performance benchmark. Card traffic is
+311,272 bytes read and zero written. All four source save files and all four
+private copies retain their hashes, together with the protected files and
+candidate.
+
+The actual full reply at field 1,423 establishes four living current owners in
+the expected world. Recomputing the route-entry projection from that reply
+places P3 32.423332 units laterally from the reviewed incoming leg, beyond the
+test's 32-unit limit. The other three owners satisfy the check. The driver stops
+before movement, combat or dialogue input. The raw journal contains 112 read
+requests, one neutral request and one cancel request; there are no ordinary pad
+requests. All 56 pad scalars remain neutral in every one of the 5,871 sampled
+native fields from cancel through the final trace row.
+
+The fixed diagnostic schedule continues unpaused after this early stop.
+Nonpositive health is subsequently observed, and the late image shows fallen
+characters with enemies nearby. The exact attacker and movement cause remain
+unqualified. Capture filenames do not establish a dialogue or pause state.
+
+This is a completed bounded partial attempt, with no new route, story, pause,
+mission or durability qualification. The next test needs a reviewed connector
+from each freshly observed owner position and a purpose-specific normal pause on
+an early controlled stop when a living ordinary-world source can be proved.
+Existing intermediate waypoint bounds and global quotas remain in force. The
+accepted earned checkpoint remains the preceding Load/return checkpoint; full
+campaign, reference fidelity, physical multi-controller and separate-PC/WAN
+qualification remain open. The candidate stays private and uninstalled.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
