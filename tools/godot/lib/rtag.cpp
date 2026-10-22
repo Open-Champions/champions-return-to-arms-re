@@ -811,7 +811,7 @@ int rtag_start(const rtag_config* config) {
             s += std::string("aim = ") + (fpaim::wanted() ? "where you look" : "the game's") + "\n";
 #endif
 #ifdef RTAG_HAVE_SOULS
-            s += std::string("combat = ") + (soulscombat::wanted() ? "souls" : "the game's") + "\n";
+            s += std::string("combat = ") + (soulscombat::wanted() ? "Hardcore" : "the game's") + "\n";
 #endif
             if (g_m) {
                 char text[160];

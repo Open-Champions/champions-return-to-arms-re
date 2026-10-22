@@ -131,8 +131,8 @@ func build() -> void:
 	column += 1
 	if combat:
 		var souls := _souls_of(mine) if i_host else _souls_of(host_member)
-		var mode := W.Choice.new("Combat", PackedStringArray(["Classic", "Souls-style"]), 1 if souls else 0,
-			"Stamina, dodge, lock-on" if souls else "")
+		var mode := W.Choice.new("Combat", PackedStringArray(["Classic", "Hardcore"]), 1 if souls else 0,
+			"Stamina, dodge, parry, flasks" if souls else "")
 		mode.key = "combat"
 		mode.locked = not can_choose
 		mode.narrow = columns > 3
@@ -339,8 +339,8 @@ func _mismatch_text(members: Array, mine: Dictionary, host_member: Dictionary) -
 			without.append("you" if bool(m.me) else String(m.name))
 	if not without.is_empty():
 		if _souls_of(host_member):
-			return "The host plays with souls-style combat and %s does not have it (yet) - every copy must, or the host picks Classic." % " and ".join(PackedStringArray(without))
-		return "Souls-style combat is on for %s and off for the host - every copy must play the same." % " and ".join(PackedStringArray(without))
+			return "The host plays in Hardcore mode and %s does not have it (yet) - every copy must, or the host picks Classic." % " and ".join(PackedStringArray(without))
+		return "Hardcore mode is on for %s and off for the host - every copy must play the same." % " and ".join(PackedStringArray(without))
 	# aiming by looking, the same way
 	without = []
 	for m in members:

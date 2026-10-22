@@ -1585,7 +1585,7 @@ int main(int argc, char** argv) {
         else if (a == "--disc") opt.disc = next();
         else if (a == "--data") opt.data = next();
         else if (a == "--elf") opt.elf = next();
-        else if (a == "--combat") overrides.push_back({"combat.mode", next()});        // souls | off (soulscombat.h)
+        else if (a == "--combat") overrides.push_back({"combat.mode", next()});        // hardcore (or souls) | off: Hardcore mode (soulscombat.h)
         else if (a == "--aim") overrides.push_back({"combat.aim", next()});           // look | off (fpaim.h)
         else if (a == "--window") overrides.push_back({"window", next()});
         else if (a == "--size") overrides.push_back({"resolution", next()});
@@ -1644,7 +1644,7 @@ int main(int argc, char** argv) {
             printf("picture (each also a line of <data>/settings.txt, see tools/recomp/app/settings.h):\n"
                    "        [--aspect auto|4:3|16:9|16:10|21:9|W:H] [--resolution window|WxH|Nx] [--antialiasing off|2|4|8] [--anisotropy 1..16]\n"
                    "        [--mipmaps yes|no] [--art-pack DIR] [--art-memory MB] [--frame-cap 60|30|0] [--plain] [--settings FILE] [--no-settings]\n"
-                   "        [--view overhead|action|chase|shoulder|first] [--view-set view.<mode>.<name>=VALUE]   (V switches while the game runs)\n"
+                   "        [--view overhead|action|chase|shoulder|first] [--view-set view.<mode>.<name>=VALUE] [--combat hardcore|off]   (V switches while the game runs)\n"
                    "        [--game-hud on|off] [--game-hud-text on|off] [--music-volume 0..1]   (the game's own HUD layer; its boss meter, message and prompt box; the music alone)\n"
                    "        [--boss-music on|off] [--boss-music-dir DIR] [--boss-music-volume 0..1]   (your own music for boss fights: files in <data>/music/boss/)\n"
                    "        [--pacing ahead|queued] [--present metal|opengl]   (opengl: the way into the window used until 2026-10-13 - if the picture looks wrong)\n");

@@ -1210,7 +1210,7 @@ static const char* HELP =
     "        [--aspect auto|4:3|16:9|16:10|21:9|W:H] [--resolution window|WxH|Nx] [--antialiasing off|2|4|8] [--anisotropy 1..16]\n"
     "        [--mipmaps yes|no] [--art-pack FOLDER] [--art-memory MB] [--frame-cap 60|30|0] [--plain] [--settings FILE] [--no-settings]\n"
     "        [--pacing ahead|queued]   (queued: the pacing of the first builds - try it when the picture stutters, and say so)\n"
-    "        [--view overhead|action|chase|shoulder|first] [--view-set view.<mode>.<name>=VALUE] [--combat souls|off] [--aim look|off]   (V switches while the game runs)\n"
+    "        [--view overhead|action|chase|shoulder|first] [--view-set view.<mode>.<name>=VALUE] [--combat hardcore|off] [--aim look|off]   (V switches while the game runs)\n"
 #ifdef RTA_NET
     "online: [--server ADDRESS] (or the first line of server.txt beside the program) [--online | --host [CODE] | --join CODE]\n"
     "        [--choose-character] [--player N] [--server-public ADDRESS] [--name NAME]\n"

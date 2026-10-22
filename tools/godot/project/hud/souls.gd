@@ -1,8 +1,10 @@
 extends Control
-# souls.gd - the souls-style combat mode's part of the HUD (tools/recomp/app/soulscombat.h,
+# souls.gd - Hardcore mode's part of the HUD (the internal name of the mode is "souls": tools/recomp/app/soulscombat.h,
 # docs/issues/native-souls-combat.md): the stamina bar under the middle of the picture, a frame
-# round it during a dodge's invulnerable ticks, red while the guard is broken; and the lock-on
-# marker on the locked creature with its health.
+# round it during a dodge's invulnerable ticks, red while the guard is broken, a gold line over it in
+# the parry's window and a red one under it while a riposte or guard counter is open; the flasks
+# (pips and a count) left of it; the lock-on marker on the locked creature with its health; and a
+# marker over this player's death drop when it is on this level.
 #
 # It reads the mode's block in the game's memory (0xE0800: "SOUL", then the numbers) through the
 # machine's peek_u32 / peek_f32 - nothing else of the game or the library.  With a library that
@@ -19,6 +21,11 @@ const MAGIC := 0x4c554f53
 const FL_IFRAMES := 2
 const FL_BROKEN := 32
 const FL_EMPTY := 64
+const FL_PARRY := 128
+const FL_RIPOSTE := 256
+const FL_COUNTER := 512
+const FL_DRINK := 1024
+const EXT := 0x200                  # the second per-player part (kept over a death): flasks, the death drop
 const STAMINA_MAX := 10000.0        # soulscombat::Tuning::stamina_max
 
 var hud: Node
@@ -30,6 +37,10 @@ var lock := false
 var lock_at := Vector3.ZERO
 var lock_hp := 0.0
 var lock_max := 0.0
+var flasks := 0
+var flask_max := 4                  # soulscombat::Tuning::flask_count (the most seen: the count is full at a level's start)
+var drop := false
+var drop_at := Vector3.ZERO
 
 
 func _ready() -> void:
@@ -60,6 +71,12 @@ func _process(_delta: float) -> void:
 	stamina = clampf(float(_peek(0x40 + slot * 0x40)) / STAMINA_MAX, 0.0, 1.0)
 	flags = _peek(0x40 + slot * 0x40 + 8)
 	shown = lerpf(shown, stamina, 0.35)
+	flasks = _peek(EXT + slot * 0x40)
+	flask_max = maxi(flask_max, flasks)
+	drop = _peek(0x19c) != 0
+	if drop:
+		var e := BASE + EXT + slot * 0x40
+		drop_at = Vector3(hud.machine.peek_f32(e + 0x18), hud.machine.peek_f32(e + 0x1c), hud.machine.peek_f32(e + 0x20) + 20.0)
 	lock = _peek(0x180) != 0
 	if lock:
 		lock_at = Vector3(hud.machine.peek_f32(BASE + 0x188), hud.machine.peek_f32(BASE + 0x18c), hud.machine.peek_f32(BASE + 0x190))
@@ -106,6 +123,33 @@ func _draw() -> void:
 		draw_rect(rect, Color(0.9, 0.12, 0.12, 0.35 * a))
 	if (flags & FL_IFRAMES) != 0:
 		draw_rect(rect.grow(4.0 * s), Color(1, 1, 1, 0.8 * a), false, maxf(1.5, 2.0 * s))
+	if (flags & FL_PARRY) != 0:
+		draw_rect(Rect2(rect.position + Vector2(0, -5.0 * s), Vector2(rect.size.x, 2.0 * s)), Color(0.95, 0.9, 0.5, 0.9 * a))
+	if (flags & (FL_RIPOSTE | FL_COUNTER)) != 0:
+		draw_rect(Rect2(rect.position + Vector2(0, rect.size.y + 3.0 * s), Vector2(rect.size.x, 2.0 * s)), Color(0.95, 0.38, 0.25, 0.9 * a))
+	# the flasks: amber pips left of the bar, spent ones dark, and the count
+	var pw := maxf(3.0, 5.0 * s)
+	var ph := maxf(8.0, 14.0 * s)
+	for k in range(flask_max):
+		var px := rect.position.x - 10.0 * s - float(flask_max - k) * (pw + 3.0 * s)
+		var pip := Rect2(Vector2(px, rect.end.y - ph).round(), Vector2(pw, ph).round())
+		var full := k < flasks
+		var fade := 0.45 if (flags & FL_DRINK) != 0 and k == flasks else 1.0
+		draw_rect(pip.grow(1.0), Color(0, 0, 0, 0.5 * a))
+		draw_rect(pip, (Color(0.92, 0.55, 0.16, a * fade) if full else Color(0.22, 0.2, 0.2, 0.8 * a)))
+	var font := ThemeDB.fallback_font
+	var fs := int(maxf(9.0, 11.0 * s))
+	var label := "%d" % flasks
+	var lx := rect.position.x - 10.0 * s - float(flask_max) * (pw + 3.0 * s) - font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x - 4.0 * s
+	draw_string(font, Vector2(lx, rect.end.y), label, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(1, 0.85, 0.6, a))
+	# the death drop: a pale green upright diamond over the spot
+	if drop and hud.gs != null:
+		var dc: Vector3 = hud.gs.project(drop_at)
+		if dc.z > 1.0:
+			var q: Vector2 = hud.to_window(dc.x, dc.y)
+			if pic.grow(20.0).has_point(q):
+				var r := 9.0 * s
+				draw_colored_polygon(PackedVector2Array([q + Vector2(0, -1.6 * r), q + Vector2(0.6 * r, 0), q + Vector2(0, 1.6 * r), q + Vector2(-0.6 * r, 0)]), Color(0.56, 0.94, 0.69, 0.85 * a))
 	if lock and hud.gs != null:
 		var sc: Vector3 = hud.gs.project(lock_at)
 		if sc.z > 1.0:

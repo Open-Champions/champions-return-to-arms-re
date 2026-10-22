@@ -19,7 +19,8 @@
 // nothing is replaced and the program is the program without this file.
 //   Player_run 0x1a5030 (Player slot 4)          stamina, the tap / hold of attack, dodge, sprint
 //   Player_takeDamage 0x1b5330 (Player slot 2)   invulnerable ticks, block cost, guard break
-//   Creature_takeDamage 0x116638 (slot 2)        poise and stagger, the heavy attack's weight
+//   Creature_takeDamage 0x116638 (slot 2)        poise and stagger, the heavy attack's weight, criticals
+//   Savepoint_run 0x28cdd0 (SavePoint slot 4)    the flasks refilled near a save point
 //
 // Inputs (the lockstep pad row of each player; nothing is added to the record):
 //   attack (the slot's own attack button, the game's table 0x41b980)
@@ -32,6 +33,9 @@
 //              ticks) toward the stick's direction, or straight back with the stick at rest
 //       hold = sprint while moving
 //   block (the slot's block button): the game's own block; a blocked hit costs stamina
+//   block held + L3 pressed = parry (the L3 press is then neither a dodge nor a sprint)
+//   attack pressed within the guard-counter window after a paid block = guard counter (the game's heavy attack at once)
+//   potion A (the health potion button, the game's table 0x41ba10) = drink a flask; the game's health potions are not used
 //
 // State: a block of guest memory at SOULS_BASE (0xE0800, in the first megabyte, where the game
 // has nothing: tools/recomp/soak uses 0xE0000-0xE004F) - the per-player numbers, written in the
@@ -80,6 +84,33 @@ struct Tuning {
     int32_t poise_boss = 1100;
     int32_t poise_reset_ticks = 300;    // poise damage is forgotten after this long without a hit
     int32_t stagger_ticks = 50;         // the creature's stun (its own slot 30) when its poise breaks
+    // ---- parry, criticals, guard counter, flasks, the death drop (2026-10-21; docs/issues/native-souls-combat.md 2.7) ----
+    int32_t parry_first = 3;            // ticks after the parry press (block held + L3) in which a melee hit is parried
+    int32_t parry_last = 18;
+    int32_t parry_recovery = 45;        // up to this tick a missed parry leaves the guard open (hits are not blocked)
+    int32_t cost_parry = 1000;
+    int32_t parry_reach = 90;           // units between the two centres: farther is not a melee hit
+    int32_t parry_stagger_ticks = 100;  // the parried attacker's stun (its own slot 30)
+    int32_t riposte_window = 100;       // ticks the parried attacker is open to a riposte
+    int32_t crit_riposte_percent = 400; // damage of a critical: a riposte, a stance-break critical, a backstab
+    int32_t crit_stance_percent = 400;
+    int32_t crit_backstab_percent = 300;
+    int32_t crit_stun_ticks = 45;       // the creature's stun after a critical
+    int32_t stance_crit_window = 90;    // ticks after a poise break in which a heavy hit is a critical (the stagger, and the recovery from it)
+    int32_t backstab_half_angle = 40;   // degrees either side of straight behind the creature
+    int32_t backstab_reach = 90;
+    int32_t backstab_cooldown = 120;    // ticks before the same creature can be backstabbed again
+    int32_t guard_counter_window = 36;  // ticks after a paid block in which an attack press is a guard counter
+    int32_t guard_counter_damage_percent = 150;
+    int32_t poise_guard_counter = 550;
+    int32_t flask_count = 4;            // flasks: refilled at level entry, at a respawn and near a save point
+    int32_t flask_heal_percent = 50;    // of the maximum hit points, delivered by the game's own potion healing
+    int32_t flask_drink_ticks = 66;     // the drink's committed length
+    int32_t flask_heal_tick = 36;       // the tick of the drink at which the flask is spent and the healing starts
+    int32_t flask_heal_spread = 30;     // ticks the healing is delivered over
+    int32_t flask_refill_radius = 120;  // units from a save point
+    int32_t drop_percent = 50;          // of the carried gold, left where the player died
+    int32_t drop_radius = 60;           // units from the spot that pick it up again
 };
 const Tuning& tuning();
 
@@ -93,9 +124,18 @@ const uint32_t SOULS_MAGIC = 0x4c554f53;        // "SOUL"
 //   +0x10 dodge cooldown   +0x14 attack held (ticks)   +0x18 L3 held (ticks)   +0x1c guard broken (ticks left)
 //   +0x20 last action state   +0x24 last combo step   +0x28 dodges   +0x2c heavy attacks
 //   +0x30 light attacks   +0x34 refused (no stamina)   +0x38 hits not landed   +0x3c blocks paid
+// header (version 2) +0x20 parries, +0x24 ripostes, +0x28 stance-break criticals, +0x2c backstabs, +0x30 guard counters,
+//   +0x34 flask refills, +0x38 gold picked up again, +0x3c gold lost; +0x300 drops left, +0x304 drops picked up, +0x308 flasks drunk,
+//   +0x30c + slot x 4 dead (1 from the death to the first tick alive again); +0x31c a test aid (0 outside tests): slot + 1 puts that player on its death drop in its next tick
+// per player, kept over a death and a level change, at +0x200 + slot x 0x40 (s32 each):
+//   +0x00 flasks left   +0x04 parry tick (-1 none)   +0x08 riposte window (ticks left)   +0x0c guard-counter window
+//   +0x10 drink tick (-1 none)   +0x14 gold at the death spot   +0x18 x, +0x1c y, +0x20 z of the spot (f32)
+//   +0x24 the spot's level (FNV-1a of the level name)   +0x28 gold to take at the respawn   +0x2c parries
+//   +0x30 criticals   +0x34 guard counters   +0x38 flasks drunk   +0x3c gold picked up again
 // local, per machine (presentation; not simulation): +0x180 lock on, +0x184 locked object,
-//   +0x188 x, +0x18c y, +0x190 z, +0x194 hp, +0x198 hp max (f32)
-enum : uint32_t { FL_DODGE = 1, FL_IFRAMES = 2, FL_SPRINT = 4, FL_BLOCK = 8, FL_HEAVY = 16, FL_BROKEN = 32, FL_EMPTY = 64 };
+//   +0x188 x, +0x18c y, +0x190 z, +0x194 hp, +0x198 hp max (f32), +0x19c this player's drop is on this level
+enum : uint32_t { FL_DODGE = 1, FL_IFRAMES = 2, FL_SPRINT = 4, FL_BLOCK = 8, FL_HEAVY = 16, FL_BROKEN = 32, FL_EMPTY = 64,
+                  FL_PARRY = 128, FL_RIPOSTE = 256, FL_COUNTER = 512, FL_DRINK = 1024, FL_COUNTER_HEAVY = 2048 };
 
 // ---- from the application -----------------------------------------------------------------
 // The setting ("combat.mode = souls|off", "--combat souls"): what this copy wants.  Offline it is what

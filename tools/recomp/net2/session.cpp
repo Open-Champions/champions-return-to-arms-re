@@ -104,7 +104,7 @@ void State::room_checks() {
         char text[NET2_TEXT];
         if ((m.fix_words & 0x8000) != (first->fix_words & 0x8000)) {
             // the souls-style combat mode (tools/recomp/app/soulscombat.h) is a room option every copy must have
-            snprintf(text, sizeof text, "The souls-style combat mode is %s for %s and %s for %s: every copy must have it. Do not start.",
+            snprintf(text, sizeof text, "Hardcore mode is %s for %s and %s for %s: every copy must have it. Do not start.",
                      (m.fix_words & 0x8000) ? "on" : "off", m.name, (first->fix_words & 0x8000) ? "on" : "off", first->name);
             room.mismatch = 1;
             put(room.warning, text);
@@ -403,7 +403,7 @@ int net2_start(net2* n) {
     const net2_room_t& room = n->body->s.room;
     for (int i = 1; i < room.count; i++)
         if ((room.members[i].fix_words & 0x8000) != (room.members[0].fix_words & 0x8000))
-            return n->body->s.error(NET2_ERR_REFUSED, "Not every copy in the room plays with the souls-style combat mode.");
+            return n->body->s.error(NET2_ERR_REFUSED, "Not every copy in the room plays with Hardcore mode.");
     for (int i = 1; i < room.count; i++)
         if ((room.members[i].fix_words & 0x4000) != (room.members[0].fix_words & 0x4000))
             return n->body->s.error(NET2_ERR_REFUSED, "Not every copy in the room aims by looking.");

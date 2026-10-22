@@ -41,7 +41,7 @@ extends Node
 #   --view NAME         the camera view: overhead (the game's own), action, chase, shoulder, first; V cycles them
 #                       (the game builds and culls each frame for the view itself: tools/recomp/app/fpview.h)
 #   --no-game-hud       the game's own HUD layer is left out (for a HUD drawn by Godot)
-#   --combat souls|off  the souls-style combat mode (tools/recomp/app/soulscombat.h: stamina, dodge, light / heavy attacks,
+#   --combat hardcore|off  Hardcore mode ("souls" is the earlier name) (tools/recomp/app/soulscombat.h: stamina, dodge, light / heavy attacks,
 #                       blocking with stamina, poise, lock-on); offline this copy's own, in a room the host's (portal room screen)
 #   --aim look|off      aiming by looking (tools/recomp/app/fpaim.h: bows and spell bolts leave along the look, heading and
 #                       pitch); offline this copy's own, in a room the host's (portal room screen)
@@ -417,7 +417,7 @@ func _start() -> void:
 	if not opt.game_hud:
 		machine.set_option("game_hud", "off")
 	if String(opt.combat) != "" and not machine.set_option("combat.mode", String(opt.combat)):
-		print("rta_godot: this game library has no souls-style combat mode (--combat %s ignored)" % opt.combat)
+		print("rta_godot: this game library has no Hardcore mode (--combat %s ignored)" % opt.combat)
 	if String(opt.aim) != "" and not machine.set_option("combat.aim", String(opt.aim)):
 		print("rta_godot: this game library has no aiming by looking (--aim %s ignored)" % opt.aim)
 	if own_picture:

@@ -157,7 +157,7 @@ func set_combat(souls: bool) -> bool:
 		return false
 	var ok := bool(game.get("machine").call("set_option", "combat.mode", "souls" if souls else "off"))
 	copy_clock = 0.0                # said again at once
-	print("portal: souls-style combat %s for this copy (%s)" % ["wanted" if souls else "not wanted", "taken" if ok else "refused"])
+	print("portal: Hardcore mode %s for this copy (%s)" % ["wanted" if souls else "not wanted", "taken" if ok else "refused"])
 	return ok
 
 

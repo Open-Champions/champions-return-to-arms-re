@@ -21,7 +21,7 @@ inline std::string describe_app(const app::Settings& s, const std::string& extra
     snprintf(text, sizeof text,
              "view = %s\naim = %s\ncombat = %s\naspect = %s\nresolution = %s\nantialiasing = %d\nanisotropy = %d\nmipmaps = %s\n"
              "art_pack = %s\nframe_cap = %d\ngame_hud = %s\ngame_hud_text = %s\nmusic_volume = %.2f\n",
-             fpview::mode_name(fpview::mode()), fpaim::wanted() ? "where you look" : "the game's", soulscombat::wanted() ? "souls" : "the game's",
+             fpview::mode_name(fpview::mode()), fpaim::wanted() ? "where you look" : "the game's", soulscombat::wanted() ? "Hardcore" : "the game's",
              aspect, resolution, s.samples, s.anisotropy, s.mipmaps ? "yes" : "no", s.art_pack.empty() ? "none" : "yes", s.frame_cap,
              s.game_hud ? "on" : "off", s.game_hud_text ? "on" : "off", s.music_volume);
     return text + extra;

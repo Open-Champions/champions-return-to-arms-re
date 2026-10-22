@@ -1,4 +1,10 @@
-# Souls-style combat for the native build
+# Hardcore mode (souls-style combat) for the native build
+
+**Name (2026-10-21):** the player-facing name is **Hardcore mode** (room screen "Combat: Classic / Hardcore", the
+room's warnings, `--combat hardcore`, help texts). `--combat souls` and `combat.mode = souls` stay accepted as the
+earlier name. Internal names are kept to avoid churn: `soulscombat.{h,cpp}`, `soulscombat::Tuning`, `hud/souls.gd`,
+the `SOUL` block, `app souls ...` script commands, `rtag_has("souls")`, `souls_want=` / `souls_on=` in `rtag_info`,
+the net2 hook names and the stderr prefix `souls:`.
 
 Started 2026-10-19 (the owner: "what about elden ring style combat?"). An optional combat mode
 on top of the views that look along the ground (chase, shoulder, first person:
@@ -12,7 +18,25 @@ either is in the repository.
 
 ## STATE (rewritten at every step; read this first after a stop)
 
-**2026-10-20 - built, run offline and online; the proof runs of part 4 passed. Not committed.**
+**2026-10-21, second round - Elden Ring mechanics added (parry and riposte, stance-break critical, guard counter,
+backstab, flasks, the death drop), renamed Hardcore mode; built, run offline and in rooms. Not committed.**
+
+- Program: `local/recomp-out/bin/rta_app_next` (fix set, the mode), `rta_app_next_orig` (the disc's game with the
+  mode's code linked in, for the rig). `bin/rta_app` was not touched.
+- **Ran**: mode off, the rig byte for byte in overhead and first person with the final sources (4.1, `off-over7`,
+  `off-first7`); offline every new mechanic with its numbers (4.5); a two-copy room (`hard2c`, 5,730 ticks) and a
+  three-copy room (`hard3a`, 5,702 ticks, all three pairs) with Hardcore on, through fights, deaths with a drop,
+  recoveries, the reload after everybody died and save point refills, every pair of tick logs equal in every column
+  (126 columns, the new ones included) (4.6).
+- Built: Windows (`build_win.py --no-game`), Linux aarch64 in the container (`build_linux.py --docker arm64
+  --no-game`), the Godot library (`tools/godot/build.py snapshot` + `lib`); `hud/souls.gd`, `room.gd`, `gameflow.gd`
+  parsed by Godot 4.5.2 `--check-only`.
+- **Not done this round**: a parry, riposte, backstab, stance-break critical or guard-counter hit inside a room (the
+  drawn input of the room runs never landed a player hit on a creature: they are equal on every machine by
+  construction, but only Ran offline); a Linux container room and a Windows run; the new HUD pieces seen in a running
+  Godot build or by a person; "dying again loses it" Ran offline only.
+
+**Earlier (2026-10-20/21, first round):** **2026-10-20 - built, run offline and online; the proof runs of part 4 passed. Not committed.**
 
 - Program: `local/recomp-out/bin/rta_app_combat` (the fix-set game with the mode),
   `rta_app_combat_orig` (the game as on the disc with the mode's code linked in, for the rig).
@@ -132,7 +156,7 @@ The prediction copy (net games, own player only) runs the same wrapper with its 
 presses, using the real player's stamina, so the dodge and the heavy attack show without waiting
 for the copy's next re-clone; it changes no number of the block.
 
-### 2.6 The mechanics
+### 2.6 The mechanics (first round)
 
 - **Stamina**: 0 to 100.0. Spent by a swing or combo step, a heavy attack, a shot, a dodge,
   sprinting and blocked hits; refills when nothing was spent for `regen_delay` ticks, slower
@@ -159,11 +183,64 @@ for the copy's next re-clone; it changes no number of the block.
   changes to the next enemy on that side; the lock lets go when the target dies, leaves range
   or the view stops steering. While locked the strafe mode is asked for in every look view.
 
+### 2.7 The second round (2026-10-21): Elden Ring mechanics
+
+Everything below is in the same three wrappers plus one more (`Savepoint_run` 0x28cdd0, SavePoint slot 4, optional:
+without it no save point refill), only when the mode is in force, and every number is in `soulscombat::Tuning` (3.2).
+The block's version is 2: a header extension (+0x20..+0x3c, +0x300..+0x31c) and a second per-player part at
++0x200 + slot x 0x40 that is **kept over a death, a respawn and a level change** (flasks, the drop) - `soulscombat.h`
+lists the words. All of it is written in the tick by every machine alike and is a tick-log column of 4.6.
+
+| Mechanic | Input (lockstep row) | Rule | The game's own pieces used |
+|---|---|---|---|
+| **Parry** | block held + L3 pressed (keys: hold E / Shift / right mouse, tap X / mouse 4). L3 is otherwise the dodge; with the block held its press is spent on the parry (neither a dodge nor a sprint) | costs `cost_parry`; ticks `parry_first`..`parry_last` after the press a hit from a **creature** (its slot 2 is `Creature_takeDamage`) within `parry_reach` units is parried: it does not land, the attacker is stunned `parry_stagger_ticks` and is open to a riposte for `riposte_window`; from `parry_last` to `parry_recovery` a missed parry leaves the guard open (hits get flag 0x40, not blocked). One parry per press | the guard is raised again by the game (block flag `P+0x47f` cleared: state 8 restarts its own `anim(0x84)`); the stun is the creature's own slot 30 |
+| **Riposte** | any melee hit (light or heavy) on the parried creature inside the window | damage x `crit_riposte_percent`, then the creature stunned `crit_stun_ticks`; the window ends | slot 30 stun |
+| **Stance-break critical** | a heavy hit within `stance_crit_window` ticks of the creature's poise break | damage x `crit_stance_percent` (one per break) | |
+| **Backstab** | a light hit with the attacker inside `backstab_half_angle` of straight behind the creature's facing, within `backstab_reach` | damage x `crit_backstab_percent`; not again on that creature for `backstab_cooldown` ticks. The facing's direction is the game's own `math_cos16` / `math_sin16` (no host trigonometry in the decision) | |
+| **Guard counter** | attack pressed within `guard_counter_window` ticks after a blocked hit was paid (not a guard break), in state 2 or 8 | the game's heavy attack at once (the press is spent), from the block too; costs `cost_heavy`; its hit does `guard_counter_damage_percent` and `poise_guard_counter` poise damage. The block's clips fill the tracks, so the track-count gate of the hold heavy is not applied (anim_start replaces the top track when full) | the heavy of 2.6 |
+| **Flasks** | the health potion button (R2; the game's table 0x41ba10) | the game's own health potions are never used in the mode (the button is taken from the row); with a flask left, in state 2 on the ground: the drink, `flask_drink_ticks` long and committed (no move); at its `flask_heal_tick` the flask is spent and `flask_heal_percent` of the maximum hit points goes to the game's own pending-heal fields (`R+0xb4`, rate `R+0xb8` over `flask_heal_spread` ticks: `Player_regenHealth` delivers it). Full again (`flask_count`) at a new player object (level entry), after a death (respawn, reload after everybody died) and when alive within `flask_refill_radius` of a save point | the drink is the weapon class's cast clip `anim(0x6c)` played once in the game's hit-reaction state 3 (steps the clip, no move, back to state 2 at its end); in a net game the clip ends sooner, so the state is held until the drink's length |
+| **Death drop** | - | at the death (state 4) `drop_percent` of the carried gold (`R+0xe4`) and the spot (`P+0x10`) and level (FNV-1a of the level name) are written; at the first tick alive again the share is taken from the gold *then* (a game that restores the record on everybody's death has done it by then; at most what is there) and left at the spot; alive within `drop_radius` of it on that level: the gold comes back; dying again before that loses it | gold and position of the record and the object |
+
+Further fixes this round, mode on only: a heavy of the mode that is left before its hit (the block taken in its combo
+window, a stagger) no longer leaves the attack request 2 behind (the game kept it in states 2 and 8 and started no
+further swing); a heavy hold that reaches `heavy_hold` while a swing is still running starts the heavy as soon as the
+swing has ended (it was lost before).
+
+Presentation: the native overlay draws flask pips left of the stamina bar, a gold line over the bar in the parry
+window, a red line under it while a riposte or guard counter is open, and a pale green upright diamond over this
+player's drop on this level (local word +0x19c); `hud/souls.gd` draws the same in Godot (pips and a count, the lines,
+the drop marker through `gs.project`).
+
+Test aids (they change the simulation; never used outside tests): `app souls turn | pose front | pose back | go-drop`
+(offline only, refused online), and the block word +0x31c: slot + 1 puts that player on its drop in its next tick -
+written by every copy in one lockstep tick through n2party's `--tick-do`, so a room stays in step.
+
 ## 3. The numbers
 
 All of them are one struct, `soulscombat::Tuning` (`soulscombat.h`); `combat.<name> = value`
 in the settings file or `app souls set NAME VALUE` changes one offline; online the room's figure
 holds them equal. Stamina in hundredths, ticks of 60 a second.
+
+### 3.2 The second round's numbers (2026-10-21)
+
+Benched against the owner's copy where the regulation has the figure (attack corrections of the straight-sword moveset
+the first bench used - critical, parry-critical and guard-counter rows - read with the same local scripts; nothing of
+it in the repository). Our values are our own, chosen near the ratios:
+
+| What | Reference (ratio to that moveset's first light attack) | Our value |
+|---|---|---|
+| riposte / stance-break critical | the parry critical about 4 x a light (the front critical is the one a stance break opens) | `crit_riposte_percent` 400, `crit_stance_percent` 400 (x the hit's own damage) |
+| backstab | the back critical about 3 x a light | `crit_backstab_percent` 300 |
+| guard counter | damage about 1.4 x a light (a little over the uncharged heavy), poise damage about 6 x | `guard_counter_damage_percent` 150 (our heavy is 130), `poise_guard_counter` 550 (light 100) |
+| flasks | a new character starts with 4 | `flask_count` 4 |
+| parry window | small-shield parry active for about a quarter of a second | `parry_first` 3 - `parry_last` 18 (0.27 s), recovery to 45 (0.75 s) |
+| flask heal / drink | heals about half of a starting character's bar; the drink about a second | `flask_heal_percent` 50, `flask_drink_ticks` 66 (1.1 s), spent at 36 |
+| runes lost on death | all, recoverable at the spot | `drop_percent` 50 (gold also buys the shops here), `drop_radius` 60 |
+| not in the regulation (animation time-acts) | stagger after a parry, riposte window, backstab angle | `parry_stagger_ticks` / `riposte_window` 100, `crit_stun_ticks` 45, `stance_crit_window` 90 (the stun of the break is 50: the window covers the get-up), `backstab_half_angle` 40, reaches 90, `backstab_cooldown` 120, `guard_counter_window` 36, `flask_heal_spread` 30, `flask_refill_radius` 120 (the game's own save-point radius) |
+
+`soulscombat::Tuning` is plain `int32_t` fields in one struct: the room figure (FNV-1a of the struct) covers every
+new field, and the next round's weapon numbers (equip load, scaling, upgrades, weapon arts, two-handing) go into the
+same struct, named in `NAMES[]` for `combat.<name>` / `app souls set`.
 
 ### 3.1 Elden Ring reference -> our value
 
@@ -295,6 +372,38 @@ offline, 4.2); a run of four copies.
 | a dodge through an attack: the white frame of the invulnerable ticks round the bar while the boar's hit at tick 3273 does not land | `t2o/sheet-iframe.png` (ticks 3250-3282, overhead) |
 | the dodge itself | `t1/sheet-dodge.png` |
 
+### 4.5 Offline, the second round (Ran)
+
+`local/souls-combat/t3.py` (the valor route, the boar; `SOULS_LOG=1`, `--combat hardcore`; maximum hit points and
+stamina topped up by pokes so the fight lasts; `app souls pose` keeps the boar in reach). Final run `t3/out.log`:
+
+| What | Seen |
+|---|---|
+| flasks | three drinks: state 3 for 66 ticks, at drink tick 36 "500.0 of 1000.0 hit points to come", 4 -> 3 -> 2 -> 1; hit points 300 -> 807 within the spread |
+| parry | 3 parried boar hits ("a hit of 37.1 (parry tick 13)", 35.1, 44.1 at tick 18), the boar stunned 100 ticks each |
+| riposte | tick 3112: 5.9 x 400 % (hit points 201.2 -> 177.6) |
+| guard counter | 5 started from the block; tick 3617: 11.6 x 150 % (177.6 -> 160.1) and the poise broken by it |
+| backstab | tick 3982: 5.6 x 300 % (160.1 -> 143.1) with the boar turned away |
+| stance-break critical | tick 5006: a heavy 65 ticks after a break, 11.3 x 400 % (63.0 -> 17.4); with `poise_normal` set to 100 for that part. Many of the game's heavy hits on the boar come with 0 damage (its own roll), which is why several tries were needed |
+| death drop | died with 1000 gold: 500 at the spot; offline the level restarts from the save (gold 500 again), 500 taken then (0 left), `go-drop`: picked up, 500; died again with 500 (250 left), after the reload died again before picking it up: "died again: 250 gold lost", 125 left the second time |
+| save point refill | after the reload at valor's start: "at a save point: flasks full (4)" |
+
+### 4.6 Rooms with Hardcore mode (Ran)
+
+`local/souls-combat/net/hardroom.sh OUT N PORT` (n2party through `n2hard.py`: the drawn input of 4.3 plus parry
+presses inside blocks, attack presses inside blocks, R2 drinks; 126 tick-log columns with the block's new words; only
+the host given `--combat hardcore`; a rendezvous service of its own on 127.0.0.1; `--tick-do` pokes in one lockstep
+tick on every copy: pending damage on every player at 2600 and 3400, the test-aid word at 3150 and 3900).
+
+| Run | Copies | Result | What happened |
+|---|---|---|---|
+| `hard2a`, `hard2b` | 2 | 5,731 / 5,732 ticks in step | earlier builds: found the drink ending early in a net game and the respawn without a new object (both fixed, above) |
+| `hard2c` | 2 | **5,730 ticks in step**, no column differs | hub > drunare; "Hardcore mode: on for this game" on both; 3 flasks drunk, 3 refills, both died (drop 250 each), reload after everybody died, both drops picked up (one by the test aid, one by walking: 500 gold back) |
+| `hard3a` | 3 | **5,702 ticks in step, all three pairs** | `--level-option valor` > drunare; 11 flasks drunk, 11 refills (save point refills at valor's start: "p0 at a save point: flasks full (4)" at ticks 272, 812, p1 at 1052, 1083, 1211, p2 at 332), 38 hits on players (2 dodged), 5 deaths, 3 drops left and picked up (750 gold back), the reload after everybody died |
+
+Not reached in a room: a parry, riposte, backstab, stance-break critical or guard-counter hit (no player hit landed
+on a creature in the drawn input), "dying again loses it".
+
 ## 5. Files
 
 | File | What |
@@ -308,6 +417,7 @@ offline, 4.2); a run of four copies.
 | `tools/recomp/net2/hooks.h`, `launch.cpp`, `session.cpp`, `session_net.cpp` | the room option: four hook pointers, the copy's description, the joiner following the host, the refusal, `net2_set("copy")` |
 | `tools/godot/project/hud/souls.gd`, `hud/hud.gd` | new file; three lines in `_ready` |
 | `docs/issues/native-souls-combat.md` | this |
+| second round (2026-10-21) | `soulscombat.{h,cpp}` (the mechanics of 2.7, the Tuning fields of 3.2, the block's version 2, the test aids, Hardcore names), `hud/souls.gd` (flasks, parry / riposte lines, drop marker); the name in `app_main.cpp`, `win_main.cpp`, `linux_main.cpp` (`--combat hardcore`), `testerkit_app.h`, `net2/session.cpp`, `net2/launch.cpp`, `godot/lib/rtag.cpp`, `godot/project/main.gd`, `portal/screens/room.gd`, `portal/gameflow.gd` |
 
 ## 6b. In the Godot library (2026-10-20, Ran)
 
@@ -346,8 +456,12 @@ not there and the piece draws nothing.
 ## 7. How to repeat
 
 ```sh
-python3 tools/recomp/app/build.py --no-game --as rta_app_combat
-python3 tools/recomp/app/build.py --original --no-game --as rta_app_combat_orig
+python3 tools/recomp/app/build.py --no-game --as rta_app_next
+python3 tools/recomp/app/build.py --original --no-game --as rta_app_next_orig
+python3 local/souls-combat/rig/check.py off-over7 rta_app_next_orig overhead
+python3 local/souls-combat/rig/check.py off-first7 rta_app_next_orig first
+# second round offline: cd local/souls-combat && python3 t3.py && SOULS_LOG=1 PROG=rta_app_next ./run.sh t3 t3/t3.rig --combat hardcore
+# second round rooms:   cd local/souls-combat/net && ./hardroom.sh hard2c 2 41987; EXTRA="--level-option valor" ./hardroom.sh hard3a 3 41988
 python3 local/souls-combat/rig/check.py off-over rta_app_combat_orig overhead
 python3 local/souls-combat/rig/check.py off-first rta_app_combat_orig first
 # offline: local/souls-combat/t1.py, t2.py (scripts from the valor route), run.sh DIR RIG --combat souls
@@ -363,4 +477,5 @@ python3 local/souls-combat/rig/check.py off-first rta_app_combat_orig first
 | SC1 | The game has no roll; its block move (state 0xb, `anim(0xa4)`) is a backward hop of about 49 units in 45 ticks | Read, Ran | 0x1bf150, 0x1a6588; this document 1 |
 | SC2 | `Player_processDamage` skips the stagger roll for a player whose attack request is 2 (the heavy attack) and staggers on pending flag 0x4000000 | Read | 0x1b3718-0x1b37e8 |
 | SC3 | `Player_takeDamage` blocks a hit from the front in states 8 and 0xb unless flag 0x40; the blocked hit still ORs its flags into the pending ones | Read | 0x1b5440-0x1b5698 |
+| SC5 | Hardcore mode's parry, riposte, guard counter, backstab, stance-break critical, flasks and death drop work offline with the numbers of 3.2; two and three copies in a room stay in step with them on through deaths, drops, recoveries, the reload and save point refills | Ran | this document 4.5, 4.6 |
 | SC4 | With the souls mode (L3 the dodge bit of the row; the mode's numbers in guest memory at 0xE0800, written in the tick by every machine), two and three native copies in one room stay in step through a level change, the arena fight, deaths and a reload, the mode's numbers equal in every tick; a room whose copies differ in the mode is not started | Ran | this document 4.3 |

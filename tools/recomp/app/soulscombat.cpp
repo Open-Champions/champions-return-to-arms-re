@@ -19,11 +19,13 @@ namespace soulscombat {
 namespace {
 
 // ---- the game (addresses and offsets: docs/player.md, docs/spec/player-tick.md, docs/creatures.md) ----
-const u32 PLAYER_RUN = 0x1a5030, PLAYER_TAKE_DAMAGE = 0x1b5330, CREATURE_TAKE_DAMAGE = 0x116638;
+const u32 PLAYER_RUN = 0x1a5030, PLAYER_TAKE_DAMAGE = 0x1b5330, CREATURE_TAKE_DAMAGE = 0x116638, SAVEPOINT_RUN = 0x28cdd0;
+const u32 MATH_COS16 = 0x166630, MATH_SIN16 = 0x1666e0;
 const u32 MATH_ATAN2_16 = 0x166798, NET_GET_CAM_YAW = 0x13e0c8, ANIM_START_BLEND_IN_OUT = 0x16ceb0, CREATURE_BOSS_RANK = 0x10d940;
 const u32 G_PLAYERS = 0x4d8af0, REC = 0x4c30, REC_OBJECT = 0x43d8, REC_HP = 0xac, REC_HP_MAX = 0xb0, REC_SPEED = 0x4c20, REC_WEAPON_CLASS = 0x4a86;
 const u32 G_PADS = 0x41bfd8, PAD = 0x58, PAD_HELD = 8, PAD_PRESSED = 0xc, PAD_LX = 0x14, PAD_LY = 0x18;
-const u32 G_BTN_ATTACK = 0x41b980, G_BTN_BLOCK = 0x41b9d0;
+const u32 G_BTN_ATTACK = 0x41b980, G_BTN_BLOCK = 0x41b9d0, G_BTN_POTION_A = 0x41ba10;
+const u32 REC_GOLD = 0xe4, REC_HEAL_PENDING = 0xb4, REC_HEAL_RATE = 0xb8, REC_BLOCK_TIMER = 0x4a5c, O_POS = 0x10, O_ANIM_FLAGS = 0x11a;
 const u32 G_SIM_FRAME = 0x44fdcc, G_NETWORK_MODE = 0x402791, G_LEVEL_FLAGS = 0x44fe08, G_LEVEL_NAME = 0x41b721;
 const u32 VT_PLAYER = 0x511308;
 const u32 O_FLAGS = 0x0c, O_FACING = 0x38, O_VTABLE = 0x48, O_ANIM = 0x114, O_TRACKS = 0x118, O_TRACKS2 = 0x119, O_ANIM_TABLE = 0x24;
@@ -55,7 +57,17 @@ enum : u32 { S_STAMINA = 0, S_DELAY = 4, S_FLAGS = 8, S_DODGE = 0xc, S_COOL = 0x
              S_LAST_STATE = 0x20, S_LAST_COMBO = 0x24, S_DODGES = 0x28, S_HEAVIES = 0x2c, S_LIGHTS = 0x30, S_REFUSED = 0x34,
              S_AVOIDED = 0x38, S_BLOCKS = 0x3c };
 enum : u32 { H_MAGIC = 0, H_VERSION = 4, H_MODE = 8, H_UPDATES = 0xc, H_BREAKS = 0x10, H_POISE = 0x14, H_AVOIDED = 0x18, H_BLOCKS = 0x1c,
-             L_LOCK = 0x180, L_OBJECT = 0x184, L_X = 0x188, L_Y = 0x18c, L_Z = 0x190, L_HP = 0x194, L_HP_MAX = 0x198 };
+             H_PARRIES = 0x20, H_RIPOSTES = 0x24, H_STANCE = 0x28, H_BACKSTABS = 0x2c, H_COUNTERS = 0x30, H_REFILLS = 0x34,
+             H_GOLD_BACK = 0x38, H_GOLD_LOST = 0x3c, H_DROPS = 0x300, H_PICKUPS = 0x304, H_DRUNK = 0x308, H_DEAD = 0x30c, H_TEST_GO = 0x31c, BLOCK_SIZE = 0x320,
+             L_LOCK = 0x180, L_OBJECT = 0x184, L_X = 0x188, L_Y = 0x18c, L_Z = 0x190, L_HP = 0x194, L_HP_MAX = 0x198, L_DROP = 0x19c };
+// the second per-player part (soulscombat.h): kept over a death and a level change
+u32 ext_off(int slot, u32 field) { return 0x200 + (u32)slot * 0x40 + field; }
+enum : u32 { E_FLASKS = 0, E_PARRY = 4, E_RIPOSTE = 8, E_COUNTER = 0xc, E_DRINK = 0x10, E_DROP = 0x14, E_DROP_X = 0x18, E_DROP_Y = 0x1c,
+             E_DROP_Z = 0x20, E_DROP_LEVEL = 0x24, E_PENDING = 0x28, E_PARRIES = 0x2c, E_CRITS = 0x30, E_COUNTERS = 0x34, E_DRUNK = 0x38,
+             E_GOLD_BACK = 0x3c };
+s32 ER(int slot, u32 f) { return SR(ext_off(slot, f)); }
+void EW(int slot, u32 f, s32 v) { SW(ext_off(slot, f), v); }
+void bump(u32 off, s32 by = 1) { SW(off, SR(off) + by); }
 
 // ---- state ----
 Tuning g_tuning;
@@ -65,22 +77,26 @@ std::atomic<int> g_room{-1};            // -1 no room game; 0 / 1 the launched g
 int g_last_room = -1;
 bool g_on = false;                      // in force (game thread)
 bool g_installed = false;
-RecompFn g_orig_run = nullptr, g_orig_ptd = nullptr, g_orig_ctd = nullptr;
+RecompFn g_orig_run = nullptr, g_orig_ptd = nullptr, g_orig_ctd = nullptr, g_orig_save = nullptr;
+u32 g_riposte_target[4] = {0, 0, 0, 0}; // per slot: the creature a parry opened (an object of this machine, see Poise)
 u32 g_last_object[4] = {0, 0, 0, 0};    // per machine: which object the slot's numbers belong to
 char g_level[16] = "";
 struct Ghost { s32 atk = 0, l3 = 0, dodge = -1; u32 object = 0; } g_ghost;   // the prediction copy's own presses (picture only)
-struct Poise { s32 poise = 0; u32 last = 0; };
+struct Poise { s32 poise = 0; u32 last = 0, broken = 0, crit = 0; };   // broken / crit: the tick + 1 of the last poise break / critical
 std::unordered_map<u32, Poise> g_poise; // by creature object (soulscombat.h)
 // presentation
 Camera g_camera;
-struct Shown { bool valid = false; int slot = -1; float stamina = 1, max = 1; u32 flags = 0; bool lock = false; float x = 0, y = 0, z = 0, hp = 0, hp_max = 0; } g_shown;
+struct Shown { bool valid = false; int slot = -1; float stamina = 1, max = 1; u32 flags = 0; bool lock = false; float x = 0, y = 0, z = 0, hp = 0, hp_max = 0;
+               int flasks = 0, flask_max = 0; bool drop = false; float dx = 0, dy = 0, dz = 0; } g_shown;
 // counters (per machine)
-uint64_t g_runs = 0, g_ptd_calls = 0, g_ctd_calls = 0, g_staggers = 0, g_iframe_skips = 0;
+uint64_t g_runs = 0, g_ptd_calls = 0, g_ctd_calls = 0, g_staggers = 0, g_iframe_skips = 0, g_save_calls = 0;
+bool g_log = false;                     // SOULS_LOG: a line for each parry, critical, guard counter, drink, drop
 
 u32 frame_now() { return W(G_SIM_FRAME); }
 
 // A game function called the way its own code calls it, on the context that is running (its registers put
 // back afterwards); returns v0.
+u32 g_f0 = 0;                           // f0 of the last call()
 u32 call(Ctx* c, u32 address, u32 a0, u32 a1 = 0, u32 a2 = 0, u32 f12 = 0, u32 f13 = 0) {
     Ctx saved = *c;
     c->r[29] = (u64)(s64)(s32)((((u32)saved.r[29]) - 0x600) & ~15u);
@@ -88,6 +104,7 @@ u32 call(Ctx* c, u32 address, u32 a0, u32 a1 = 0, u32 a2 = 0, u32 f12 = 0, u32 f
     c->f[12] = f12; c->f[13] = f13;
     rt_call(c, address);
     u32 v = (u32)c->r[2];
+    g_f0 = (u32)c->f[0];
     s64 budget = c->budget;
     *c = saved;
     c->budget = budget;
@@ -107,14 +124,44 @@ void reset_slot(int slot) {
     SW(slot_off(slot, S_LAST_STATE), -1);
 }
 
+void reset_ext(int slot) {
+    for (u32 f = 0; f < 0x40; f += 4) EW(slot, f, 0);
+    EW(slot, E_FLASKS, g_tuning.flask_count);
+    EW(slot, E_PARRY, -1);
+    EW(slot, E_DRINK, -1);
+}
+
 void reset_all() {
-    for (u32 a = 0; a < 0x200; a += 4) PW(SOULS_BASE + a, 0);
+    for (u32 a = 0; a < BLOCK_SIZE; a += 4) PW(SOULS_BASE + a, 0);
     SW(H_MAGIC, (s32)SOULS_MAGIC);
-    SW(H_VERSION, 1);
-    for (int k = 0; k < 4; k++) { reset_slot(k); g_last_object[k] = 0; }
+    SW(H_VERSION, 2);
+    for (int k = 0; k < 4; k++) { reset_slot(k); reset_ext(k); g_last_object[k] = 0; g_riposte_target[k] = 0; }
     g_poise.clear();
     g_ghost = Ghost();
 }
+
+u32 level_figure() {
+    u32 h = 2166136261u;
+    for (u32 k = 0; k < 15 && g_ram[G_LEVEL_NAME + k]; k++) h = (h ^ g_ram[G_LEVEL_NAME + k]) * 16777619u;
+    return h;
+}
+
+// A creature that a player's hit goes through Creature_takeDamage for (its slot 2), alive: what a parry staggers and a
+// critical lands on.  Its stun is its own slot 30 (the stun skill's effect).
+bool creature(u32 A) {
+    if (!ok(A, 0x3c8)) return false;
+    u32 vt = W(A + O_VTABLE);
+    return vt && vt != VT_PLAYER && ok(vt, 0x100) && W(vt + 2 * 8 + 4) == CREATURE_TAKE_DAMAGE && F(A + C_HP) > 0;
+}
+bool stun(Ctx* c, u32 V, s32 ticks) {
+    u32 vtable = W(V + O_VTABLE);
+    u32 fn = vtable ? W(vtable + 30 * 8 + 4) : 0;
+    if (!fn) return false;
+    call(c, fn, V, (u32)ticks, 1);
+    return true;
+}
+// squared distance in the ground plane (x, y) and in all three; single float operations
+float ground2(u32 a, u32 b) { float dx = F(a + O_POS) - F(b + O_POS), dy = F(a + O_POS + 4) - F(b + O_POS + 4); return dx * dx + dy * dy; }
 
 bool level_changed() {
     char now[16];
@@ -166,6 +213,19 @@ bool start_dodge(Ctx* c, u32 P, int slot, int cls) {
     return true;
 }
 
+// The drink: the game's cast clip (anim(0x6c)) played once in the game's hit-reaction state 3, which steps the
+// animation, does not move the character and returns to state 2 when the clip ends (flag 8) - a committed action.
+bool start_drink(Ctx* c, u32 P, int cls) {
+    u32 table = W(P + O_ANIM_TABLE);
+    u32 clip = table ? W(table + (u32)cls * 0x68 + 0x6c) : 0;
+    if (!clip) return false;
+    PB(P + P_BLOCKING, 0);
+    PW(P + P_ACTION_START, frame_now());
+    PW(P + P_STATE, 3);
+    call(c, ANIM_START_BLEND_IN_OUT, P + O_ANIM, clip, 0x808, F_ONE_TENTH, F_POINT_3);
+    return true;
+}
+
 // ---- Player_run (slot 4) ----------------------------------------------------------------------
 void w_player_run(Ctx* c) {
     u32 P = (u32)c->r[4];
@@ -178,7 +238,13 @@ void w_player_run(Ctx* c) {
     if (!copy) {
         g_runs++;
         if (level_changed()) g_poise.clear();
-        if (g_last_object[slot] != P) { g_last_object[slot] = P; reset_slot(slot); }
+        if (g_last_object[slot] != P) {
+            // a new object: the level's entry or a respawn - the flasks are full again (the second part is kept)
+            g_last_object[slot] = P; reset_slot(slot);
+            if (ER(slot, E_FLASKS) < t.flask_count) { EW(slot, E_FLASKS, t.flask_count); bump(H_REFILLS); }
+            EW(slot, E_PARRY, -1); EW(slot, E_DRINK, -1); EW(slot, E_RIPOSTE, 0); EW(slot, E_COUNTER, 0);
+            g_riposte_target[slot] = 0;
+        }
         SW(H_UPDATES, SR(H_UPDATES) + 1);
     } else if (g_ghost.object != P) { g_ghost = Ghost(); g_ghost.object = P; }
     s32 stamina = SR(slot_off(slot, S_STAMINA));
@@ -188,37 +254,70 @@ void w_player_run(Ctx* c) {
     u32 pad = G_PADS + (u32)slot * PAD;
     u32 held = W(pad + PAD_HELD), pressed = W(pad + PAD_PRESSED), nh = held, np = pressed;
     u32 attack = W(G_BTN_ATTACK + (u32)slot * 4) & 0xffff, block = W(G_BTN_BLOCK + (u32)slot * 4) & 0xffff;
+    u32 potion = W(G_BTN_POTION_A + (u32)slot * 4) & 0xffff;
     s32 atk = copy ? g_ghost.atk : SR(slot_off(slot, S_ATK)), l3 = copy ? g_ghost.l3 : SR(slot_off(slot, S_L3));
-    bool light = false, heavy = false, dodge = false, refused = false;
-    // attack: a tap is the game's swing, a hold its heavy attack
+    bool light = false, heavy = false, dodge = false, refused = false, counter = false, parry = false, drink = false;
+    bool broken_guard = SR(slot_off(slot, S_BROKEN)) > 0;
+    // the health potion button drinks a flask; the game's own potions are not used in the mode
+    if (potion) {
+        if (pressed & potion) drink = true;
+        nh &= ~potion; np &= ~potion;
+    }
+    // attack: a tap is the game's swing, a hold its heavy attack; pressed in the guard-counter window it is a guard counter
     if (attack && !ranged) {
-        if (held & attack) {
+        if ((held & attack) && atk == 0 && ER(slot, E_COUNTER) > 0 && (state == 2 || state == 8)) {
+            counter = true;
+            atk = -100000;                          // the press is spent: neither a tap nor a hold follows from it
+            nh &= ~attack; np &= ~attack;
+        } else if (held & attack) {
             atk++;
             nh &= ~attack; np &= ~attack;
-            if (atk == t.heavy_hold) heavy = true;
+            if (atk >= t.heavy_hold) heavy = true;     // held long enough: the heavy starts as soon as the character can (a swing ending)
         } else {
             if (atk > 0 && atk < t.heavy_hold) light = true;
             atk = 0;
         }
         if (light) { if (stamina > 0) { nh |= attack; np |= attack; } else { light = false; refused = true; } }
-        if (heavy && stamina <= 0) { heavy = false; refused = true; }
+        if (heavy && stamina <= 0) { heavy = false; refused = atk == t.heavy_hold; }
+        if (counter && stamina <= 0) { counter = false; refused = true; }
     } else if (attack && ranged && state == 2 && stamina <= 0 && (held & attack)) {
         nh &= ~attack; np &= ~attack;
         if (pressed & attack) refused = true;
     }
-    // L3: a tap is a dodge, a hold a sprint
-    if (held & L3) l3++;
+    // L3: a tap is a dodge, a hold a sprint; pressed while the block is held, a parry (the press is then spent)
+    if ((held & L3) && l3 == 0 && block && (held & block) && !broken_guard && (state == 2 || state == 8)) {
+        l3 = -100000;
+        parry = true;
+    } else if (held & L3) l3++;
     else { if (l3 > 0 && l3 < t.sprint_hold) dodge = true; l3 = 0; }
     float lx = F(pad + PAD_LX), ly = F(pad + PAD_LY);
     bool sprint = (held & L3) && l3 >= t.sprint_hold && state == 2 && stamina > 0 && lx * lx + ly * ly > 0.25f;
-    if (SR(slot_off(slot, S_BROKEN)) > 0 && block) { nh &= ~block; np &= ~block; }
+    if (broken_guard && block) { nh &= ~block; np &= ~block; }
     if (nh != held) PW(pad + PAD_HELD, nh);
     if (np != pressed) PW(pad + PAD_PRESSED, np);
     u32 speed_bits = W(record + REC_SPEED);
     if (sprint) PF(record + REC_SPEED, flt(speed_bits) * ((float)t.sprint_speed_percent / 100.0f));
-    bool heavy_started = false;
-    if (heavy && state == 2 && B(P + P_ON_GROUND) && W(P + P_ATTACK_REQUEST) == 0 && (int8_t)B(P + O_TRACKS) < 6 && !B(P + C_INERT) && F(record + REC_HP) > 0)
+    bool heavy_started = false, counter_started = false, parry_started = false;
+    bool can_attack = B(P + P_ON_GROUND) && W(P + P_ATTACK_REQUEST) == 0 && (int8_t)B(P + O_TRACKS) < 6 && !B(P + C_INERT) && F(record + REC_HP) > 0;
+    if (heavy && state == 2 && can_attack)
         heavy_started = start_heavy(c, P, cls);
+    if (heavy_started) atk = -100000;           // the hold is spent: neither another heavy nor a tap at its release
+    // the guard counter starts from the block, whose clips fill the tracks: anim_start replaces the top track when the
+    // state is full (docs/spec/animation.md 4), so the track count is not a condition here
+    bool can_counter = B(P + P_ON_GROUND) && W(P + P_ATTACK_REQUEST) == 0 && !B(P + C_INERT) && F(record + REC_HP) > 0;
+    if (counter && !copy && can_counter) {
+        if (state == 8) { PB(P + P_BLOCKING, 0); PW(record + REC_BLOCK_TIMER, 0); }   // the block let go, as the game lets go of it
+        counter_started = start_heavy(c, P, cls);
+    }
+    if (counter && !copy && !counter_started && g_log)
+        fprintf(stderr, "souls: tick %u: p%d guard counter press not taken: state %d on ground %d request %u tracks %d\n", frame_now(), slot, state,
+                B(P + P_ON_GROUND), W(P + P_ATTACK_REQUEST), (int)(int8_t)B(P + O_TRACKS));
+    if (parry && !copy) {
+        if (ER(slot, E_PARRY) < 0 && stamina > 0 && F(record + REC_HP) > 0) {
+            parry_started = true;
+            PB(P + P_BLOCKING, 0);              // the game raises the guard again (state 8: its own clip anim(0x84))
+        } else refused = true;
+    }
 
     g_orig_run(c);
 
@@ -240,9 +339,24 @@ void w_player_run(Ctx* c) {
         return;
     }
     // ---- the numbers, real players only: the same on every machine ----
+    bool alive = F(record + REC_HP) > 0 && now != 4;
+    s32 drink_t = ER(slot, E_DRINK);
+    bool drank = false;
+    if (drink && drink_t < 0 && !dodged) {
+        bool can = now == 2 && B(P + P_ON_GROUND) && !B(P + C_INERT) && alive && W(P + P_ATTACK_REQUEST) == 0;
+        if (can && ER(slot, E_FLASKS) > 0) drank = start_drink(c, P, cls);
+        else if (can) refused = true;
+        if (drank) { now = 3; drink_t = 0; if (g_log) fprintf(stderr, "souls: tick %u: p%d drinks (%d flasks)\n", frame_now(), slot, ER(slot, E_FLASKS)); }
+    }
     SW(slot_off(slot, S_ATK), atk);
     SW(slot_off(slot, S_L3), l3);
-    u32 flags = (u32)SR(slot_off(slot, S_FLAGS)) & (FL_HEAVY);
+    u32 flags = (u32)SR(slot_off(slot, S_FLAGS)) & (FL_HEAVY | FL_COUNTER_HEAVY);
+    // a heavy attack of the mode that was left before its hit frame (the block taken in its combo window, a stagger)
+    // leaves no heavy request behind: the game would otherwise keep request 2 in state 2 and 8 and start no swing
+    if (((flags & FL_HEAVY) || heavy_started || counter_started) && now != 1 && W(P + P_ATTACK_REQUEST) == 2) {
+        PW(P + P_ATTACK_REQUEST, 0);
+        if (g_log) fprintf(stderr, "souls: tick %u: p%d heavy left in state %d: its request cleared\n", frame_now(), slot, now);
+    }
     s32 last = SR(slot_off(slot, S_LAST_STATE)), combo = (int8_t)B(P + P_COMBO);
     bool spent = false;
     if (refused) SW(slot_off(slot, S_REFUSED), SR(slot_off(slot, S_REFUSED)) + 1);
@@ -257,18 +371,114 @@ void w_player_run(Ctx* c) {
     SW(slot_off(slot, S_DODGE), dodge_t);
     if (dodge_t >= 0) flags |= FL_DODGE;
     if (dodge_t >= t.dodge_iframe_first && dodge_t <= t.dodge_iframe_last) flags |= FL_IFRAMES;
-    if (heavy_started) {
+    if (heavy_started || counter_started) {
         charge(slot, t.cost_heavy); spent = true; flags |= FL_HEAVY;
         SW(slot_off(slot, S_HEAVIES), SR(slot_off(slot, S_HEAVIES)) + 1);
+        if (counter_started) {
+            flags |= FL_COUNTER_HEAVY;
+            EW(slot, E_COUNTER, 0);
+            EW(slot, E_COUNTERS, ER(slot, E_COUNTERS) + 1);
+            bump(H_COUNTERS);
+            if (g_log) fprintf(stderr, "souls: tick %u: p%d guard counter\n", frame_now(), slot);
+        }
     } else if (now == 1 && W(P + P_ATTACK_REQUEST) != 2 && (last != 1 || combo != SR(slot_off(slot, S_LAST_COMBO)))) {
-        charge(slot, t.cost_light); spent = true; flags &= ~FL_HEAVY;
+        charge(slot, t.cost_light); spent = true; flags &= ~(FL_HEAVY | FL_COUNTER_HEAVY);
         SW(slot_off(slot, S_LIGHTS), SR(slot_off(slot, S_LIGHTS)) + 1);
     } else if (now == 0 && last != 0) { charge(slot, t.cost_ranged); spent = true; }
-    if (now != 1) flags &= ~FL_HEAVY;
+    if (now != 1) flags &= ~(FL_HEAVY | FL_COUNTER_HEAVY);
     if (sprint) { charge(slot, t.cost_sprint_per_tick); spent = true; flags |= FL_SPRINT; }
     if (now == 8) flags |= FL_BLOCK;
     s32 broken = SR(slot_off(slot, S_BROKEN));
     if (broken > 0) { SW(slot_off(slot, S_BROKEN), broken - 1); flags |= FL_BROKEN; }
+    // the parry: its tick counts up from the press to the end of its recovery
+    s32 parry_t = ER(slot, E_PARRY);
+    if (parry_started) {
+        charge(slot, t.cost_parry); spent = true;
+        parry_t = 0;
+        if (g_log) fprintf(stderr, "souls: tick %u: p%d parry pressed\n", frame_now(), slot);
+    } else if (parry_t >= 0 && ++parry_t > t.parry_recovery) parry_t = -1;
+    if (!alive) parry_t = -1;
+    EW(slot, E_PARRY, parry_t);
+    if (parry_t >= t.parry_first && parry_t <= t.parry_last) flags |= FL_PARRY;
+    s32 riposte = ER(slot, E_RIPOSTE), window = ER(slot, E_COUNTER);
+    if (riposte > 0) { flags |= FL_RIPOSTE; if (--riposte == 0) g_riposte_target[slot] = 0; EW(slot, E_RIPOSTE, riposte); }
+    if (window > 0) { flags |= FL_COUNTER; EW(slot, E_COUNTER, window - 1); }
+    // the drink: the flask is spent and the healing starts at its heal tick; the drink ends with the clip, or here
+    if (drink_t >= 0 && !drank) {
+        drink_t++;
+        if (now == 2 && alive && last == 3 && drink_t < t.flask_drink_ticks) {
+            // the clip ended before the drink's time (in a net game the game steps it faster): the character stays in
+            // the committed state until the drink's end
+            PW(P + P_STATE, 3);
+            now = 3;
+        }
+        if (drink_t == t.flask_heal_tick && now == 3 && alive && ER(slot, E_FLASKS) > 0) {
+            float most = F(record + REC_HP_MAX);
+            float heal = most * ((float)t.flask_heal_percent / 100.0f);
+            PF(record + REC_HEAL_PENDING, F(record + REC_HEAL_PENDING) + heal);
+            PF(record + REC_HEAL_RATE, heal / (float)std::max(1, t.flask_heal_spread));
+            EW(slot, E_FLASKS, ER(slot, E_FLASKS) - 1);
+            EW(slot, E_DRUNK, ER(slot, E_DRUNK) + 1);
+            bump(H_DRUNK);
+            if (g_log) fprintf(stderr, "souls: tick %u: p%d flask drunk: %.1f of %.1f hit points to come, %d left\n", frame_now(), slot, heal, most, ER(slot, E_FLASKS));
+        }
+        if (now != 3 || !alive) drink_t = -1;
+        else if (drink_t >= t.flask_drink_ticks) {
+            PW(P + P_STATE, 2); PW(P + P_ATTACK_REQUEST, 0); PW(P + P_ACTION_START, frame_now());
+            now = 2; drink_t = -1;
+        }
+    }
+    EW(slot, E_DRINK, drink_t);
+    if (drink_t >= 0) flags |= FL_DRINK;
+    // the death drop: on the death a share of the gold is marked at the spot; it is taken from the gold when the player
+    // is back (a game that restores the record on everybody's death has done so by then); walking over the spot gives it back
+    if (now == 4 && last != 4 && last != -1) {
+        if (ER(slot, E_DROP) > 0) { bump(H_GOLD_LOST, ER(slot, E_DROP)); if (g_log) fprintf(stderr, "souls: tick %u: p%d died again: %d gold lost\n", frame_now(), slot, ER(slot, E_DROP)); }
+        s64 gold = (s32)W(record + REC_GOLD);
+        s32 share = gold > 0 ? (s32)(gold * t.drop_percent / 100) : 0;
+        EW(slot, E_DROP, 0);
+        EW(slot, E_PENDING, share);
+        SW(H_DEAD + 4 * (u32)slot, 1);
+        PW(SOULS_BASE + ext_off(slot, E_DROP_X), W(P + O_POS));
+        PW(SOULS_BASE + ext_off(slot, E_DROP_Y), W(P + O_POS + 4));
+        PW(SOULS_BASE + ext_off(slot, E_DROP_Z), W(P + O_POS + 8));
+        EW(slot, E_DROP_LEVEL, (s32)level_figure());
+        if (g_log) fprintf(stderr, "souls: tick %u: p%d died with %lld gold: %d to be left at %.1f %.1f %.1f\n", frame_now(), slot, (long long)gold, share, F(P + O_POS), F(P + O_POS + 4), F(P + O_POS + 8));
+    }
+    if (alive && SR(H_DEAD + 4 * (u32)slot)) {
+        // back after a death (a respawn or the reload after everybody died; the object can be the same one): the flasks
+        // are full again
+        SW(H_DEAD + 4 * (u32)slot, 0);
+        if (ER(slot, E_FLASKS) < t.flask_count) { EW(slot, E_FLASKS, t.flask_count); bump(H_REFILLS); }
+    }
+    if (alive && ER(slot, E_PENDING) > 0) {
+        s32 gold = (s32)W(record + REC_GOLD);
+        s32 take = std::min(ER(slot, E_PENDING), std::max(0, gold));
+        PW(record + REC_GOLD, (u32)(gold - take));
+        EW(slot, E_DROP, take);
+        EW(slot, E_PENDING, 0);
+        if (take > 0) bump(H_DROPS);
+        if (g_log) fprintf(stderr, "souls: tick %u: p%d back: %d gold taken, left at the spot\n", frame_now(), slot, take);
+    } else if (alive && ER(slot, E_DROP) > 0 && (u32)ER(slot, E_DROP_LEVEL) == level_figure()) {
+        // a test aid for the room runs: the word H_TEST_GO, written by every copy in the same lockstep tick (n2party's
+        // tick-do), puts player (word - 1) on its drop spot here; 0 (always, outside such a test) does nothing
+        if (SR(H_TEST_GO) == slot + 1) {
+            for (u32 k = 0; k < 3; k++) PW(P + O_POS + 4 * k, W(SOULS_BASE + ext_off(slot, E_DROP_X) + 4 * k));
+            SW(H_TEST_GO, 0);
+        }
+        float dx = F(P + O_POS) - F(SOULS_BASE + ext_off(slot, E_DROP_X)), dy = F(P + O_POS + 4) - F(SOULS_BASE + ext_off(slot, E_DROP_Y));
+        float dz = F(P + O_POS + 8) - F(SOULS_BASE + ext_off(slot, E_DROP_Z));
+        float r = (float)t.drop_radius;
+        if (dx * dx + dy * dy <= r * r && dz * dz <= 4.0f * r * r) {
+            s32 back = ER(slot, E_DROP);
+            PW(record + REC_GOLD, W(record + REC_GOLD) + (u32)back);
+            EW(slot, E_DROP, 0);
+            EW(slot, E_GOLD_BACK, ER(slot, E_GOLD_BACK) + back);
+            bump(H_GOLD_BACK, back);
+            bump(H_PICKUPS);
+            if (g_log) fprintf(stderr, "souls: tick %u: p%d picked up the %d gold at the death spot\n", frame_now(), slot, back);
+        }
+    }
     if (!spent) {
         s32 delay = SR(slot_off(slot, S_DELAY));
         if (delay > 0) SW(slot_off(slot, S_DELAY), delay - 1);
@@ -306,8 +516,24 @@ void w_player_take_damage(Ctx* c) {
         SW(H_AVOIDED, SR(H_AVOIDED) + 1);
         return;
     }
+    s32 parry_t = ER(slot, E_PARRY);
+    if (parry_t >= t.parry_first && parry_t <= t.parry_last && amount > 0 && amount < 100000.0f && creature(attacker) &&
+        ground2(P, attacker) <= (float)t.parry_reach * (float)t.parry_reach) {
+        // parried: the hit does not land, the attacker staggers (its own stun) and is open to a riposte
+        stun(c, attacker, t.parry_stagger_ticks);
+        g_riposte_target[slot] = attacker;
+        EW(slot, E_RIPOSTE, t.riposte_window);
+        EW(slot, E_PARRY, t.parry_last + 1);        // one parry per press
+        EW(slot, E_PARRIES, ER(slot, E_PARRIES) + 1);
+        bump(H_PARRIES);
+        if (g_log) fprintf(stderr, "souls: tick %u: p%d parried a hit of %.1f (parry tick %d); the attacker is stunned for %d ticks\n", frame_now(), slot, amount, parry_t, t.parry_stagger_ticks);
+        return;
+    }
     s32 state = (s32)W(P + P_STATE);
     if (dodge_t >= 0 && state == 0xb) { flags |= HIT_UNBLOCKABLE; c->r[6] = (u64)(s64)(s32)flags; }   // the dodge's recovery is no block
+    if (parry_t > t.parry_last && parry_t <= t.parry_recovery && !(flags & HIT_UNBLOCKABLE)) {
+        flags |= HIT_UNBLOCKABLE; c->r[6] = (u64)(s64)(s32)flags;  // a missed parry leaves the guard open until its recovery ends
+    }
     bool blocking = (state == 8 || state == 0xb) && !(flags & HIT_UNBLOCKABLE) && attacker && amount > 0 && amount < 100000.0f;
     float before = F(P + C_PENDING);
     g_orig_ptd(c);
@@ -323,12 +549,28 @@ void w_player_take_damage(Ctx* c) {
     s32 stamina = SR(slot_off(slot, S_STAMINA));
     SW(slot_off(slot, S_BLOCKS), SR(slot_off(slot, S_BLOCKS)) + 1);
     SW(H_BLOCKS, SR(H_BLOCKS) + 1);
-    if (stamina >= cost) { charge(slot, cost); return; }
+    if (stamina >= cost) { charge(slot, cost); EW(slot, E_COUNTER, t.guard_counter_window); return; }
     // the guard breaks: no stamina left, the hit lands whole and the player staggers (the game's own forced stagger)
     charge(slot, stamina);
     SW(slot_off(slot, S_BROKEN), t.guard_break_ticks);
     PF(P + C_PENDING, F(P + C_PENDING) + (amount - added));
     PW(P + C_PENDING_FLAGS, W(P + C_PENDING_FLAGS) | PEND_STAGGER);
+}
+
+// A light hit from behind the creature: the attacker inside backstab_half_angle of straight behind its facing, within
+// reach.  The facing's direction is the game's own cos16 / sin16 of the facing word (docs/spec/core.md).
+bool from_behind(Ctx* c, u32 V, u32 A) {
+    const Tuning& t = g_tuning;
+    float dx = F(A + O_POS) - F(V + O_POS), dy = F(A + O_POS + 4) - F(V + O_POS + 4);
+    float d2 = dx * dx + dy * dy, reach = (float)t.backstab_reach;
+    if (!(d2 <= reach * reach) || d2 < 1.0f) return false;
+    s32 facing = (s16)H(V + O_FACING);
+    call(c, MATH_COS16, (u32)facing); float fx = flt(g_f0);
+    call(c, MATH_SIN16, (u32)facing); float fy = flt(g_f0);
+    call(c, MATH_COS16, (u32)(t.backstab_half_angle * 65536 / 360)); float limit = flt(g_f0);
+    float along = fx * dx + fy * dy;            // < 0: the attacker is behind
+    if (g_log) fprintf(stderr, "souls: tick %u: backstab test: facing %d (%.3f %.3f) to the attacker %.1f %.1f, along %.1f, limit %.3f\n", frame_now(), facing, fx, fy, dx, dy, along, limit);
+    return along < 0 && along * along >= d2 * (limit * limit);
 }
 
 // ---- Creature_takeDamage (slot 2 of most creatures) -------------------------------------------------------------
@@ -341,33 +583,78 @@ void w_creature_take_damage(Ctx* c) {
     const Tuning& t = g_tuning;
     float amount = flt(c->f[12]);
     s32 state = (s32)W(A + P_STATE);
-    bool heavy = state == 1 && W(A + P_ATTACK_REQUEST) == 2 && (SR(slot_off(slot, S_FLAGS)) & FL_HEAVY);
-    if (heavy && amount > 0) c->f[12] = bits(amount * ((float)t.heavy_damage_percent / 100.0f));
+    u32 pflags = (u32)SR(slot_off(slot, S_FLAGS));
+    bool heavy = state == 1 && W(A + P_ATTACK_REQUEST) == 2 && (pflags & FL_HEAVY);
+    bool counter = heavy && (pflags & FL_COUNTER_HEAVY);
+    u32 tick = frame_now();
+    // a critical: a riposte on the creature a parry opened, a heavy hit on a creature whose poise just broke, a light
+    // hit from behind
+    int kind = 0;
+    if (state == 1 && amount > 0 && amount < 100000.0f && F(V + C_HP) > 0 && !B(V + C_INERT)) {
+        auto it = g_poise.find(V);
+        if (ER(slot, E_RIPOSTE) > 0 && g_riposte_target[slot] == V) kind = 1;
+        else if (heavy && it != g_poise.end() && it->second.broken && tick + 1 - it->second.broken <= (u32)t.stance_crit_window) kind = 2;
+        else if (!heavy && (it == g_poise.end() || !it->second.crit || tick + 1 - it->second.crit > (u32)t.backstab_cooldown) && from_behind(c, V, A)) kind = 3;
+    }
+    s32 percent = kind == 1 ? t.crit_riposte_percent : kind == 2 ? t.crit_stance_percent : kind == 3 ? t.crit_backstab_percent : 0;
+    if (kind && amount > 0) c->f[12] = bits(amount * ((float)percent / 100.0f));
+    else if (counter && amount > 0) c->f[12] = bits(amount * ((float)t.guard_counter_damage_percent / 100.0f));
+    else if (heavy && amount > 0) c->f[12] = bits(amount * ((float)t.heavy_damage_percent / 100.0f));
+    float hp_before = F(V + C_HP);
     g_orig_ctd(c);
+    if (g_log) fprintf(stderr, "souls: tick %u: p%d hits %08x: %.1f%s, its hit points %.1f -> %.1f\n", tick, slot, V, amount, heavy ? " (heavy)" : "", hp_before, F(V + C_HP));
     if (!(amount > 0)) return;
+    if (kind) {
+        if (kind == 1) { EW(slot, E_RIPOSTE, 0); g_riposte_target[slot] = 0; bump(H_RIPOSTES); }
+        else if (kind == 2) bump(H_STANCE);
+        else bump(H_BACKSTABS);
+        EW(slot, E_CRITS, ER(slot, E_CRITS) + 1);
+        if (g_log) fprintf(stderr, "souls: tick %u: p%d %s: %.1f x %d %% -> the creature's hit points %.1f -> %.1f\n", tick, slot,
+                           kind == 1 ? "riposte" : kind == 2 ? "stance-break critical" : "backstab", amount, (int)percent, hp_before, F(V + C_HP));
+    } else if (counter && g_log)
+        fprintf(stderr, "souls: tick %u: p%d guard counter hit: %.1f x %d %% -> %.1f -> %.1f\n", tick, slot, amount, (int)t.guard_counter_damage_percent, hp_before, F(V + C_HP));
     if (!(F(V + C_HP) > 0)) { g_poise.erase(V); return; }
     if (B(V + C_INERT)) return;
-    u32 tick = frame_now();
     Poise& p = g_poise[V];
+    if (kind) {
+        p.crit = tick + 1;
+        if (kind == 2) p.broken = 0;            // one critical per poise break
+        stun(c, V, t.crit_stun_ticks);
+    }
     if (tick - p.last > (u32)t.poise_reset_ticks) p.poise = 0;
-    p.poise += heavy ? t.poise_heavy : state == 0 ? t.poise_ranged : t.poise_light;
+    p.poise += counter ? t.poise_guard_counter : heavy ? t.poise_heavy : state == 0 ? t.poise_ranged : t.poise_light;
     p.last = tick;
     u32 rank = call(c, CREATURE_BOSS_RANK, V) & 0xff;
     s32 limit = rank >= 2 ? t.poise_boss : rank == 1 ? t.poise_miniboss : t.poise_normal;
     if (p.poise >= limit) {
         p.poise = 0;
-        u32 vtable = W(V + O_VTABLE);
-        u32 stun = vtable ? W(vtable + 30 * 8 + 4) : 0;
-        if (stun) {
-            call(c, stun, V, (u32)t.stagger_ticks, 1);
+        if (stun(c, V, t.stagger_ticks)) {
+            p.broken = tick + 1;
             g_staggers++;
             SW(H_BREAKS, SR(H_BREAKS) + 1);
-            static const bool log = getenv("SOULS_LOG") != nullptr;
-            if (log) fprintf(stderr, "souls: tick %u: poise broken (rank %u): stun slot %08x, the creature's stun timer is now %d\n", tick, rank, stun, (int)(s16)H(V + 0x31c));
+            if (g_log) fprintf(stderr, "souls: tick %u: poise broken (rank %u): the creature's stun timer is now %d\n", tick, rank, (int)(s16)H(V + 0x31c));
         }
     }
     if (g_poise.size() > 256)
         for (auto it = g_poise.begin(); it != g_poise.end();) it = tick - it->second.last > (u32)t.poise_reset_ticks ? g_poise.erase(it) : std::next(it);
+}
+
+// ---- Savepoint_run (SavePoint slot 4): a living player near a save point has the flasks full again ----------------
+void w_savepoint_run(Ctx* c) {
+    u32 S = (u32)c->r[4];
+    g_orig_save(c);
+    if (!g_on || !ok(S, 0x118)) return;
+    g_save_calls++;
+    const Tuning& t = g_tuning;
+    float r = (float)t.flask_refill_radius;
+    for (int slot = 0; slot < 4; slot++) {
+        u32 record = G_PLAYERS + (u32)slot * REC, P = W(record + REC_OBJECT);
+        if (!P || P != g_last_object[slot] || !ok(P, 0x590) || !(F(record + REC_HP) > 0)) continue;
+        if (ER(slot, E_FLASKS) >= t.flask_count || !(ground2(P, S) <= r * r)) continue;
+        EW(slot, E_FLASKS, t.flask_count);
+        bump(H_REFILLS);
+        if (g_log) fprintf(stderr, "souls: tick %u: p%d at a save point: flasks full (%d)\n", frame_now(), slot, t.flask_count);
+    }
 }
 
 void install() {
@@ -375,17 +662,20 @@ void install() {
     g_orig_run = rt_replace_function(PLAYER_RUN, w_player_run);
     g_orig_ptd = rt_replace_function(PLAYER_TAKE_DAMAGE, w_player_take_damage);
     g_orig_ctd = rt_replace_function(CREATURE_TAKE_DAMAGE, w_creature_take_damage);
+    g_orig_save = rt_replace_function(SAVEPOINT_RUN, w_savepoint_run);   // optional: without it no refill at save points
     if (!g_orig_run || !g_orig_ptd || !g_orig_ctd) {
         // a translation without one of them: put back what was replaced and stay off
         if (g_orig_run) rt_replace_function(PLAYER_RUN, g_orig_run);
         if (g_orig_ptd) rt_replace_function(PLAYER_TAKE_DAMAGE, g_orig_ptd);
         if (g_orig_ctd) rt_replace_function(CREATURE_TAKE_DAMAGE, g_orig_ctd);
+        if (g_orig_save) rt_replace_function(SAVEPOINT_RUN, g_orig_save);
         fprintf(stderr, "souls: the game's functions are not all there; the mode stays off\n");
         g_want = false;
         return;
     }
     g_installed = true;
-    fprintf(stderr, "souls: the combat mode's wrappers are in place\n");
+    g_log = getenv("SOULS_LOG") != nullptr;
+    fprintf(stderr, "souls: the combat mode's wrappers are in place%s\n", g_orig_save ? "" : " (no save point refill: Savepoint_run not found)");
 }
 
 u32 tuning_figure() {
@@ -416,7 +706,32 @@ const Named NAMES[] = {
     {"guard_break_ticks", &Tuning::guard_break_ticks}, {"sprint_speed_percent", &Tuning::sprint_speed_percent},
     {"heavy_damage_percent", &Tuning::heavy_damage_percent}, {"poise_light", &Tuning::poise_light}, {"poise_heavy", &Tuning::poise_heavy},
     {"poise_ranged", &Tuning::poise_ranged}, {"poise_normal", &Tuning::poise_normal}, {"poise_miniboss", &Tuning::poise_miniboss},
-    {"poise_boss", &Tuning::poise_boss}, {"poise_reset_ticks", &Tuning::poise_reset_ticks}, {"stagger_ticks", &Tuning::stagger_ticks}};
+    {"poise_boss", &Tuning::poise_boss}, {"poise_reset_ticks", &Tuning::poise_reset_ticks}, {"stagger_ticks", &Tuning::stagger_ticks},
+    {"parry_last", &Tuning::parry_last},
+    {"parry_recovery", &Tuning::parry_recovery},
+    {"cost_parry", &Tuning::cost_parry},
+    {"parry_reach", &Tuning::parry_reach},
+    {"parry_stagger_ticks", &Tuning::parry_stagger_ticks},
+    {"riposte_window", &Tuning::riposte_window},
+    {"crit_riposte_percent", &Tuning::crit_riposte_percent},
+    {"crit_stance_percent", &Tuning::crit_stance_percent},
+    {"crit_backstab_percent", &Tuning::crit_backstab_percent},
+    {"crit_stun_ticks", &Tuning::crit_stun_ticks},
+    {"stance_crit_window", &Tuning::stance_crit_window},
+    {"backstab_half_angle", &Tuning::backstab_half_angle},
+    {"backstab_reach", &Tuning::backstab_reach},
+    {"backstab_cooldown", &Tuning::backstab_cooldown},
+    {"guard_counter_window", &Tuning::guard_counter_window},
+    {"guard_counter_damage_percent", &Tuning::guard_counter_damage_percent},
+    {"poise_guard_counter", &Tuning::poise_guard_counter},
+    {"flask_count", &Tuning::flask_count},
+    {"flask_heal_percent", &Tuning::flask_heal_percent},
+    {"flask_drink_ticks", &Tuning::flask_drink_ticks},
+    {"flask_heal_tick", &Tuning::flask_heal_tick},
+    {"flask_heal_spread", &Tuning::flask_heal_spread},
+    {"flask_refill_radius", &Tuning::flask_refill_radius},
+    {"drop_percent", &Tuning::drop_percent},
+    {"drop_radius", &Tuning::drop_radius}};
 
 }  // namespace
 
@@ -440,7 +755,7 @@ void blank(uint64_t number) {
         g_on = on;
         SW(H_MODE, on ? 1 : 0);
         if (!on) SW(H_MAGIC, 0);
-        fprintf(stderr, "souls: the combat mode is %s (%s)\n", on ? "ON" : "off", room >= 0 ? "a room's game" : net ? "an online game without a room: off" : "offline");
+        fprintf(stderr, "souls: Hardcore mode is %s (%s)\n", on ? "ON" : "off", room >= 0 ? "a room's game" : net ? "an online game without a room: off" : "offline");
     }
     fpcontrols::set_souls(on);
     // the local part of the block, and what the overlay shows
@@ -458,6 +773,11 @@ void blank(uint64_t number) {
         SW(L_OBJECT, (s32)(s.lock ? h.lock.object : 0));
         PF(SOULS_BASE + L_X, s.x); PF(SOULS_BASE + L_Y, s.y); PF(SOULS_BASE + L_Z, s.z);
         PF(SOULS_BASE + L_HP, s.hp); PF(SOULS_BASE + L_HP_MAX, s.hp_max);
+        s.flasks = ER(h.slot, E_FLASKS);
+        s.flask_max = g_tuning.flask_count;
+        s.drop = ER(h.slot, E_DROP) > 0 && (u32)ER(h.slot, E_DROP_LEVEL) == level_figure();
+        s.dx = F(SOULS_BASE + ext_off(h.slot, E_DROP_X)); s.dy = F(SOULS_BASE + ext_off(h.slot, E_DROP_Y)); s.dz = F(SOULS_BASE + ext_off(h.slot, E_DROP_Z));
+        SW(L_DROP, s.drop ? 1 : 0);
     }
     std::lock_guard<std::mutex> hold(g_lock);
     g_shown = s;
@@ -493,6 +813,37 @@ void overlay(render::FrameList& frame) {
         quad(bx - 2 - e, by + bh + 2, bx + bw + 2 + e, by + bh + 2 + e, 0xf0, 0xf0, 0xf0, 0x78);
         quad(bx - 2 - e, by - 2, bx - 2, by + bh + 2, 0xf0, 0xf0, 0xf0, 0x78);
         quad(bx + bw + 2, by - 2, bx + bw + 2 + e, by + bh + 2, 0xf0, 0xf0, 0xf0, 0x78);
+    }
+    // the flasks: one upright pip for each, full ones amber, spent ones dark, left of the bar
+    for (int k = 0; k < s.flask_max && k < 16; k++) {
+        float pw = std::max(3.0f, bh * 0.9f), ph = bh * 2.6f, px = bx - 8 - (float)(s.flask_max - k) * (pw + 3), py = by + bh - ph;
+        quad(px - 1, py - 1, px + pw + 1, py + ph + 1, 0, 0, 0, 0x60);
+        bool full = k < s.flasks;
+        quad(px, py, px + pw, py + ph, full ? 0xe8 : 0x38, full ? 0x8c : 0x30, full ? 0x28 : 0x30, (s.flags & FL_DRINK) && k == s.flasks ? 0x40 : 0x70);
+    }
+    if (s.flags & FL_PARRY) quad(bx, by - bh * 0.8f, bx + bw, by - bh * 0.4f, 0xf0, 0xe8, 0x80, 0x78);   // the parry's window: a gold line over the bar
+    if (s.flags & (FL_RIPOSTE | FL_COUNTER)) quad(bx, by + bh * 1.4f, bx + bw, by + bh * 1.8f, 0xf0, 0x60, 0x40, 0x70);   // a riposte or guard counter is open
+    auto project = [&](float wx, float wy, float wz, float& cx, float& cy) {
+        if (!cam.valid) return false;
+        float v[3] = {wx - cam.eye[0], wy - cam.eye[1], wz - cam.eye[2]};
+        float z = v[0] * cam.forward[0] + v[1] * cam.forward[1] + v[2] * cam.forward[2];
+        if (z <= 1.0f) return false;
+        float th = std::tan(cam.fov * 0.5f * 3.14159265f / 180.0f), aspect = frame.aspect > 0.1f ? frame.aspect : 4.0f / 3.0f;
+        float px = (v[0] * cam.right[0] + v[1] * cam.right[1] + v[2] * cam.right[2]) / (z * th * aspect);
+        float py = (v[0] * cam.up[0] + v[1] * cam.up[1] + v[2] * cam.up[2]) / (z * th);
+        if (std::fabs(px) >= 1.2f || std::fabs(py) >= 1.2f) return false;
+        cx = X + (0.5f + 0.5f * px) * Wd; cy = Y + (0.5f - 0.5f * py) * Ht;
+        return true;
+    };
+    // the death drop: a pale green upright diamond over the spot
+    float mx, my;
+    if (s.drop && project(s.dx, s.dy, s.dz + 20.0f, mx, my)) {
+        float r = Ht * 0.022f;
+        render::Vertex d{};
+        d.z = 1; d.q = 1; d.r = 0x90; d.g = 0xf0; d.b = 0xb0; d.a = 0x70;
+        auto put = [&](float x, float y) { d.x = x; d.y = y; frame.vertices.push_back(d); };
+        put(mx, my - r * 1.6f); put(mx + r * 0.6f, my); put(mx - r * 0.6f, my);
+        put(mx - r * 0.6f, my); put(mx + r * 0.6f, my); put(mx, my + r * 1.6f);
     }
     // the lock-on: a diamond on the target, its health under it
     if (s.lock && cam.valid) {
@@ -540,7 +891,7 @@ void overlay(render::FrameList& frame) {
 bool setting(const char* key, const char* value) {
     if (strncmp(key, "combat.", 7) != 0) return false;
     std::string name = key + 7, text = value ? value : "";
-    if (name == "mode") { g_want = text == "souls" || text == "on" || text == "yes"; return true; }
+    if (name == "mode") { g_want = text == "hardcore" || text == "souls" || text == "on" || text == "yes"; return true; }   // "souls": the earlier name
     std::lock_guard<std::mutex> hold(g_lock);
     for (const Named& n : NAMES)
         if (name == n.name) { g_tuning.*(n.field) = (int32_t)atol(text.c_str()); return true; }
@@ -548,26 +899,35 @@ bool setting(const char* key, const char* value) {
 }
 
 std::string settings_text() {
-    std::string out = std::string("combat.mode = ") + (g_want.load() ? "souls" : "off") +
-                      "      # souls: stamina, dodge, light / heavy attacks, blocking with stamina, poise, lock-on (docs/issues/native-souls-combat.md)\n";
+    std::string out = std::string("combat.mode = ") + (g_want.load() ? "hardcore" : "off") +
+                      "      # hardcore (or souls): stamina, dodge, light / heavy attacks, blocking with stamina, poise, lock-on, parry, criticals, flasks, the death drop (docs/issues/native-souls-combat.md)\n";
     return out;
 }
 
 std::string figures() {
-    char text[320];
-    snprintf(text, sizeof text, "souls: %s, wrappers %s; player ticks %llu, player hits %llu (dodged %llu), creature hits by players %llu, staggers %llu, tuning %08x",
+    char text[640];
+    snprintf(text, sizeof text, "souls: %s, wrappers %s; player ticks %llu, player hits %llu (dodged %llu), creature hits by players %llu, staggers %llu, "
+             "parries %d, ripostes %d, stance criticals %d, backstabs %d, guard counters %d, flasks drunk %d, refills %d, save point runs %llu, "
+             "drops %d, picked up %d (gold %d), gold lost %d, tuning %08x",
              g_on ? "on" : "off", g_installed ? "in place" : "not installed", (unsigned long long)g_runs, (unsigned long long)g_ptd_calls,
-             (unsigned long long)g_iframe_skips, (unsigned long long)g_ctd_calls, (unsigned long long)g_staggers, tuning_figure());
+             (unsigned long long)g_iframe_skips, (unsigned long long)g_ctd_calls, (unsigned long long)g_staggers,
+             SR(H_PARRIES), SR(H_RIPOSTES), SR(H_STANCE), SR(H_BACKSTABS), SR(H_COUNTERS), SR(H_DRUNK), SR(H_REFILLS), (unsigned long long)g_save_calls,
+             SR(H_DROPS), SR(H_PICKUPS), SR(H_GOLD_BACK), SR(H_GOLD_LOST), tuning_figure());
     return text;
 }
 
 std::string help_text() {
-    return "Souls-style combat (combat.mode = souls; online the room's host decides):\n"
+    return "Hardcore mode (combat.mode = hardcore; online the room's host decides):\n"
            "  Light attack          tap the attack button (K, left mouse button)\n"
            "  Heavy attack          hold it\n"
            "  Dodge                 tap L3 (X, mouse button 4) - toward the move stick, or back\n"
            "  Sprint                hold L3 while moving\n"
            "  Block                 R1 (E, Shift, right mouse button): costs stamina instead of health\n"
+           "  Parry                 dodge button while blocking: a melee attacker caught in the window staggers\n"
+           "  Riposte               attack a parried enemy while it staggers: a critical\n"
+           "  Guard counter         attack just after a blocked hit\n"
+           "  Backstab              light attack from behind; a heavy attack on a staggered enemy is a critical\n"
+           "  Flask                 the health potion button (R2): heals, refilled at save points and on a new level\n"
            "  Lock on               R3 (Tab, mouse button 5); flick the mouse or the right stick to change target\n";
 }
 
@@ -577,11 +937,15 @@ std::string command(const std::string& text) {
     if (w.empty() || w == "info") {
         std::string out = figures();
         for (int k = 0; k < 4; k++) {
-            char one[200];
+            char one[256];
             snprintf(one, sizeof one, " | p%d st=%d fl=%x dodge=%d atk=%d l3=%d dodges=%d heavy=%d light=%d refused=%d avoided=%d blocks=%d", k,
                      SR(slot_off(k, S_STAMINA)), SR(slot_off(k, S_FLAGS)), SR(slot_off(k, S_DODGE)), SR(slot_off(k, S_ATK)), SR(slot_off(k, S_L3)),
                      SR(slot_off(k, S_DODGES)), SR(slot_off(k, S_HEAVIES)), SR(slot_off(k, S_LIGHTS)), SR(slot_off(k, S_REFUSED)),
                      SR(slot_off(k, S_AVOIDED)), SR(slot_off(k, S_BLOCKS)));
+            out += one;
+            snprintf(one, sizeof one, " flasks=%d parry=%d riposte=%d counter=%d drink=%d drop=%d pending=%d crits=%d counters=%d drunk=%d back=%d gold=%d",
+                     ER(k, E_FLASKS), ER(k, E_PARRY), ER(k, E_RIPOSTE), ER(k, E_COUNTER), ER(k, E_DRINK), ER(k, E_DROP), ER(k, E_PENDING),
+                     ER(k, E_CRITS), ER(k, E_COUNTERS), ER(k, E_DRUNK), ER(k, E_GOLD_BACK), (s32)W(G_PLAYERS + (u32)k * REC + REC_GOLD));
             out += one;
         }
         char tail[96];
@@ -590,6 +954,33 @@ std::string command(const std::string& text) {
     }
     if (w == "on" || w == "off") { if (B(G_NETWORK_MODE)) return "souls: not during an online game"; g_want = w == "on"; return "souls: wanted " + w; }
     if (w == "lock") { fpcontrols::lock_toggle(); return "souls: lock toggled"; }
+    // test aids, offline only (they change the simulation): turn the locked creature's back to this player; put this
+    // player on its death drop
+    if (w == "turn" || w == "go-drop" || w == "pose front" || w == "pose back") {
+        if (B(G_NETWORK_MODE)) return "souls: not during an online game";
+        const fpcontrols::Hud& h = fpcontrols::hud();
+        if (h.slot < 0 || h.slot > 3) return "souls: no player";
+        u32 P = W(G_PLAYERS + (u32)h.slot * REC + REC_OBJECT);
+        if (!ok(P, 0x590)) return "souls: no player object";
+        if (w == "go-drop") {
+            for (u32 k = 0; k < 3; k++) PW(P + O_POS + 4 * k, W(SOULS_BASE + ext_off(h.slot, E_DROP_X) + 4 * k));
+            return "souls: on the drop spot";
+        }
+        u32 V = h.lock.valid ? h.lock.object : 0;
+        if (!ok(V, 0x3c8)) return "souls: nothing locked";
+        if (w.compare(0, 5, "pose ") == 0) {
+            // this player 40 units in front of the locked creature (front) or behind it (back), facing it; the creature
+            // is not moved (its grid cell stays right)
+            double f = (s16)H(V + O_FACING) * 3.141592653589793 / 32768.0, side = w == "pose front" ? 40.0 : -40.0;
+            PF(P + O_POS, F(V + O_POS) + (float)(side * std::cos(f)));
+            PF(P + O_POS + 4, F(V + O_POS + 4) + (float)(side * std::sin(f)));
+            PH(P + O_FACING, (u16)(s16)(H(V + O_FACING) + (w == "pose front" ? 0x8000 : 0)));
+            return "souls: posed";
+        }
+        double a = std::atan2((double)(F(V + O_POS + 4) - F(P + O_POS + 4)), (double)(F(V + O_POS) - F(P + O_POS)));
+        PH(V + O_FACING, (u16)(s16)(int)std::lround(a * 32768.0 / 3.141592653589793));
+        return "souls: turned";
+    }
     if (w.compare(0, 4, "set ") == 0) {
         if (B(G_NETWORK_MODE)) return "souls: not during an online game";
         size_t sp = w.find(' ', 4);

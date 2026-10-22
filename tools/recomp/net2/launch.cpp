@@ -366,7 +366,7 @@ void follow_souls() {
     char text[64];
     snprintf(text, sizeof text, "fix=%08x words=%u", set, words);
     net2_set(G.session, "copy", text);
-    if (souls) say("the host plays with the souls-style combat mode %s: so does this copy now", host_on ? "on" : "off");
+    if (souls) say("the host plays with Hardcore mode %s: so does this copy now", host_on ? "on" : "off");
     if (aim) say("the host plays with aiming by looking %s: so does this copy now", host_aim ? "on" : "off");
 }
 
@@ -416,12 +416,12 @@ void follow_room(int64_t now) {
         if (any && !all) {
             G.launched_session = start.session;
             G.start_seen_ms = 0;
-            say("the room started, but its copies do not all have the souls-style combat mode: not launching");
+            say("the room started, but its copies do not all have Hardcore mode: not launching");
             tell_room(nullptr);
             return;
         }
         net2hook::souls_room(all ? 1 : 0);
-        say("souls-style combat: %s for this game", all ? "on" : "off");
+        say("Hardcore mode: %s for this game", all ? "on" : "off");
     }
     // aiming by looking (app/fpaim.h) likewise
     if (net2hook::aim_room) {
