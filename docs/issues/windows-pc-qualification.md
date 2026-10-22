@@ -2318,6 +2318,32 @@ candidate remains private and uninstalled; Natasla dialogue, mission and
 full-campaign completion, reference fidelity, physical multi-controller play and
 separate-PC/WAN multiplayer remain open.
 
+## Earned route progress persists through a fresh normal Load
+
+A single fresh-process normal frontend Load restores the newly written private
+checkpoint in the hub with four living characters. The first observed HP, mana
+and XP match the saved bits; XP is 536/562/614/588, with one Recall scroll each.
+The attempt exits normally after 23.3 seconds and 1,171 complete telemetry rows,
+recording 311,272 bytes read and no card writes. Original saves, the written
+input, copied files and protected files retain their hashes.
+
+The independent audit passes 40 checks, including current allocated owners,
+reciprocal handle/grid links, occupied inventory items, all 20 references per
+player, skills, bindings and return data at two neutral hub observations. All
+eight differing bytes per player at each observation remain recorded and
+source-accounted within mana, the recreated actor pointer and the HUD field. No
+generic mask or whole live-record equality is used; exact regeneration and HUD
+call histories remain unqualified. Both images show the living party in the hub.
+
+Root accepts bounded fresh Load and persistence of this checkpoint's earned XP.
+The first offline audit failure remains preserved; a one-line correction
+accounts for the unsampled final quit callback, without rerunning the native
+attempt. The preceding Save's Continue/acknowledgement and complete Save flow
+remain unqualified. Stored mission return, Natasla dialogue,
+mission/full-campaign completion, reference fidelity, physical multi-controller
+play and separate-PC/WAN multiplayer remain open; the candidate stays private
+and uninstalled.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
