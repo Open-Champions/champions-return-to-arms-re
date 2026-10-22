@@ -2494,6 +2494,43 @@ bounded attempt, preserving the existing deadlines. Passage traversal, Natasla
 dialogue, full Save acknowledgement, campaign completion, reference fidelity and
 performance, physical multiplayer and separate-PC/WAN multiplayer remain open.
 
+## Snapshot decoding improvement does not resolve live input expiry
+
+**Ran on Windows, 2026-10-22:** one private continuation used optimized snapshot
+decoding and control-reply parsing while retaining the same gameplay driver,
+complete atomic snapshots, request deadlines and input guards. Before launch,
+183 synthetic equivalence checks passed and eight complete replies from the
+preceding closed run produced identical decoded outputs. Separate warmed offline
+measurements reduced complete snapshot decoding time by approximately 14
+percent. Those measurements do not establish live input acceptance or game
+performance.
+
+Normal Load and the free hub return again completed from the accepted
+checkpoint. The live run still rejected both ordinary control requests as
+expired: source fields 1428 and 1442, deadlines 1430 and 1444, and rejection
+fields 1431 and 1445. No ordinary pad request was accepted. The driver stopped
+at its two-consecutive-expiry boundary; its route and passage diagnostic
+observation counts remained zero, and it submitted no dialogue input or pause
+request. The optimization was insufficient to resolve this live timing failure;
+it added no campaign progression coverage.
+
+The native application and control client exited normally. The trace contains
+7296 complete offline-mode rows with 480 columns. All 56 watched raw and decoded
+pad cells remained neutral throughout the armed period; nonpositive health was
+subsequently observed during the unpaused diagnostic tail. This later outcome is
+distinct from the initial input-expiry stop. Game-card traffic was 311272 bytes
+read and zero written; the four accepted checkpoint source files, four private
+copies, installed build and protected inputs remained unchanged. No new
+checkpoint was created, and the previously accepted earned-progress checkpoint
+remains the saved baseline. The candidate remains private and uninstalled.
+
+The next step is to measure the remaining snapshot, decision, transport and
+native input-processing latency before another campaign continuation. Full story
+and campaign progression, complete Save acknowledgement, reference fidelity and
+performance, physical multiplayer sessions and Windows separate-PC/WAN
+qualification remain open. Earlier one-PC network and separate-camera results
+remain valid within their recorded build and test scope.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
