@@ -2288,6 +2288,36 @@ fresh persistence, Natasla dialogue, mission and full-campaign completion,
 physical multi-controller play, reference fidelity and multiplayer between
 separate PCs or over the internet remain open.
 
+## Earned route progress written before Save acknowledgement
+
+A new private four-character attempt completes the neutral-to-idle handoff and
+uses ordinary Recall to return collectively to the hub. The normal occupied-slot
+Save writes 310,392 bytes; native card traffic records 311,392 bytes read. The
+written private slot and captured game-built buffer match, containing XP
+536/562/614/588. Original source saves and cloned header/icon files retain their
+hashes.
+
+The controller stops at its reserved action-read allowance while waiting in the
+paused Save capture phase. It has used 772 of the 900 total reads, preserving
+the separate terminal allowance. The scheduled captures occur later, still
+showing the paused player-zero Save screen with Done set and neutral controls.
+Root viewed both late images, which display Overwrite Successful. No
+Continue/acknowledgement input follows, so the complete Save flow and return to
+ordinary idle remain unqualified.
+
+At both late captures, all four saved-player records equal their buffer records,
+and the checked direct-copy ranges, current actor facing/position entries and
+retained return metadata match. Each inverse comparison with the later live
+record retains two differing bytes within the HUD field. Those
+differences remain recorded; this is not whole-record equality or proof of the
+exact intervening update history.
+
+The written slot is accepted as input for a separate normal frontend Load test.
+Restoration and durability of this new progress remain pending that test. The
+candidate remains private and uninstalled; Natasla dialogue, mission and
+full-campaign completion, reference fidelity, physical multi-controller play and
+separate-PC/WAN multiplayer remain open.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
