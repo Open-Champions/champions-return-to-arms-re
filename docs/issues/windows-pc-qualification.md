@@ -2344,6 +2344,41 @@ mission/full-campaign completion, reference fidelity, physical multi-controller
 play and separate-PC/WAN multiplayer remain open; the candidate stays private
 and uninstalled.
 
+## Earned checkpoint returns to the northern mission area
+
+A single private process uses the normal frontend to Load the earned checkpoint,
+then one ordinary eight-field player-zero Square+Select chord to return
+collectively from the hub to the stored mission. The run exits normally; its
+wrapper records 27.654 seconds and 1,416 complete telemetry rows with 474
+columns. XP remains 536/562/614/588, and each character retains one Recall
+scroll at both captures. Recall from the hub is free. Card traffic records
+311,272 bytes read and no writes; source saves, private copies and protected
+files retain their hashes.
+
+Independent checks establish current allocated owners and reciprocal links at
+both captures, retained checked party data and all ten supported saved defeated
+Kobold endpoints. Each endpoint is matched individually against current
+identity, health, death state and animation; this does not qualify every
+saved-world class or complete world reconstruction. All four requested
+destinations match their own stored return data. Final follower positions differ
+from those requests and are preserved separately, consistent with the source's
+secondary-placement and terrain steps; exact placement replay remains
+unqualified.
+
+All 64 differing record-byte occurrences remain recorded and source-accounted
+within mana, recreated actor pointers and the HUD counter. Whole live-record
+equality and exact regeneration or HUD call histories are not claimed. Controls
+are neutral after the chord's release. P3's HP drops after the returned-mission
+capture, with the exact attacker unqualified; all four characters remain alive
+at termination.
+
+Root accepts this bounded stored return and the ten supported defeated-enemy
+endpoints. The preceding Save's Continue/acknowledgement and complete Save flow
+remain unqualified. Continuing north toward Natasla, story and mission
+completion, the full campaign, reference fidelity, physical multi-controller
+play and separate-PC/WAN multiplayer remain open. Strict default-off visual
+equivalence remains false, and the candidate stays private and uninstalled.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
