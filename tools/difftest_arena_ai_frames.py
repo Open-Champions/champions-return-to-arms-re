@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run 32 original idle class-AI ticks per recipe-0 wave on disc terrain/clips.
+"""Run 256 original idle class-AI ticks per recipe-0 wave on disc terrain/clips.
 
 The surrounding scheduler and player activity centre are authored. The class
 run body, target scan, activity, and animation advance execute in ee_emu.
@@ -13,7 +13,7 @@ import ref_arena_ai_frames as R
 import ref_objects as O
 
 
-FRAMES = 32
+FRAMES = 256
 ACTIVE = 0x10C0F0
 OBJ_ACTIVE = 0x14DB08
 CAN_SEE_TARGET = 0x118D40
@@ -37,6 +37,9 @@ def run(path, iso_path, seed):
             emu.mem.w32(O.G_ACTIVITY_CENTERS + 4 * axis,
                         emu.mem.u32(player + 0x10 + 4 * axis))
         serials = {obj: emu.mem.u8(obj + 0x230) for _index, obj in created}
+        positions = {obj: tuple(emu.mem.u32(obj + 0x10 + 4 * k) for k in range(3))
+                     for _index, obj in created}
+        links = {obj: [] for _index, obj in created}
         seed_before = emu.mem.u32(P.RA.SEED)
         calls_before = len(emu.calls)
         for frame in range(FRAMES):
@@ -45,12 +48,17 @@ def run(path, iso_path, seed):
                 emu.call(P.RUN_STATES[index], obj, max_steps=400_000_000)
                 node = emu.mem.u32(obj + 0x234)
                 got = bool(node)
+                if got and (frame == 0 or not R.target_present(frame - 1, serials[obj], FRAMES)):
+                    links[obj].append(frame)
                 assert got == R.target_present(frame, serials[obj], FRAMES), (
                     wave, index, frame, serials[obj], got)
                 if node:
                     assert emu.mem.u32(node + 0xC) == player
                 assert emu.mem.u16(obj + 0x232) == 0
+                assert tuple(emu.mem.u32(obj + 0x10 + 4 * k) for k in range(3)) == positions[obj]
             assert emu.mem.u32(P.RA.SEED) == seed_before
+        for _index, obj in created:
+            assert links[obj] == R.target_link_frames(serials[obj], FRAMES)
         segment = emu.calls[calls_before:]
         for target in (P.PICK_TARGET, ACTIVE, STEP_ANIM, ADVANCE):
             calls = [call for call in segment if call.target == target]
@@ -69,7 +77,7 @@ def main():
     args = parser.parse_args()
     for wave, classes, scans, shared in run(args.elf, args.iso, args.seed):
         print('PASS seed %d wave %d: classes %s, first target scans %s, '
-              '32 ticks each, shared seed %#x' % (args.seed, wave, classes, scans, shared))
+              '256 ticks each, shared seed %#x' % (args.seed, wave, classes, scans, shared))
 
 
 if __name__ == '__main__':

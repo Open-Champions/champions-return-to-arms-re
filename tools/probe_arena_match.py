@@ -170,6 +170,22 @@ def recipe0_clips_from_disc(path):
     return clips
 
 
+def recipe0_models_from_disc(path):
+    """Read recipe-0 model entries from the owner's disc, without extracting files."""
+    iso = Disc.Iso(path)
+    models = {}
+    try:
+        for actor in ('GOBLIN', 'GOBLIN_Z', 'MUMMY', 'SCORPION', 'EQUIPMNT', 'FX',
+                      'SELECT', 'SELECT2'):
+            lump = disc_file(iso, 'BG/DATA/%s.LMP' % actor)
+            for name, off, size in gob.lmp_entries(lump):
+                if name.lower().endswith('.vif'):
+                    models[(actor.lower() + '.lmp', name.lower())] = lump[off:off + size]
+    finally:
+        iso.f.close()
+    return models
+
+
 def install_disc_animation(emu, clips):
     """Original animation pool and clip relocation; clips exist only in probe memory."""
     import probe_full_placement as PF
@@ -279,7 +295,7 @@ def first_constructor_boundary(path, seed):
     raise AssertionError('first spawn did not reach world_createObject')
 
 
-def install_factory_fixture(emu, real=False):
+def install_factory_fixture(emu, real=False, disc_models=None):
     """Follow original world_createObject/factory with constructor fixtures.
 
     The constructor fixture retains the original class vtable and gives scaling
@@ -382,7 +398,7 @@ def install_factory_fixture(emu, real=False):
     emu.hook(WORLD_CREATE, entering_world_create)
     emu.stub(POOL_NEW, function=pool_new)
     if real:
-        return install_real_creatures(emu, created, spells)
+        return install_real_creatures(emu, created, spells, disc_models)
     for constructor in CONSTRUCTORS.values():
         emu.stub(constructor, function=construct)
     def add_spell(e):
@@ -576,7 +592,7 @@ def install_chain_check(emu, created):
     emu.spell_block_check = spell_block
 
 
-def install_real_creatures(emu, created, spells):
+def install_real_creatures(emu, created, spells, disc_models=None):
     """--real-creatures: the class constructors and their whole chain run for real
     (ref_arena_creature_chain.REAL; docs/spec/arena-creature-chain.md), and so do
     creature_addSpell with handle_link (SpellArena is linked into +0x364), slot 34
@@ -591,6 +607,18 @@ def install_real_creatures(emu, created, spells):
                        0x10A9C0, 0x1195E0, 0x1195F0, 0x119608, 0x11A6D0, 0x11A710,
                        emu.mem.u32(B.VT_SPELL_ARENA + 4)})   # SpellArena's type-info getter (slot 0)
     player_part = getattr(emu, 'player_part', emu.creature_part)
+    model_addresses = {}
+
+    def disc_model(lump_name, entry_name):
+        key = (lump_name, entry_name)
+        if key not in disc_models:
+            raise ValueError('model %s::%s absent from disc' % key)
+        if key not in model_addresses:
+            blob = disc_models[key]
+            pointer = emu.alloc(len(blob) + 0x10, align=0x10)
+            emu.mem.write(pointer, blob)
+            model_addresses[key] = pointer
+        return model_addresses[key]
 
     def res_find(e):
         site = e._fresh_call.site if e._fresh_call is not None else 0
@@ -601,9 +629,15 @@ def install_real_creatures(emu, created, spells):
             if clip is not None:
                 e.clip_resolutions += 1
                 return clip
+        if disc_models is not None:
+            lump = CH.cstr(e.mem.u8, e.r[4] & 0xFFFFFFFF).decode('latin1').lower()
+            name = CH.cstr(e.mem.u8, e.r[5] & 0xFFFFFFFF).decode('latin1').lower()
+            if name.endswith('.vif'):
+                return disc_model(lump, name)
         return player_part if RA.CTOR <= site < 0x1A24B8 else e.creature_part
     emu.stub(RA.RES_FIND, function=res_find)
     emu.clip_resolutions = 0
+    emu.model_addresses = model_addresses
 
     def bounds(e):
         outs = [e.r[k] & 0xFFFFFFFF for k in range(6, 12)]
@@ -674,7 +708,7 @@ def disc_animation_report(path, seed, iso_path):
 
 
 def run_match(path, seed, attacked, max_frames=2400, fighting=False,
-              real_player=False, real_creatures=False, world_data=None):
+              real_player=False, real_creatures=False, world_data=None, disc_models=None):
     """Run original arena_runTask and nextWave on an authored object fixture.
 
     The driver injects a lethal player hit after each intro. Original base
@@ -694,7 +728,7 @@ def run_match(path, seed, attacked, max_frames=2400, fighting=False,
     if real_player:
         install_real_player(emu)
         install_player_tick(emu)
-    created = install_factory_fixture(emu, real_creatures)
+    created = install_factory_fixture(emu, real_creatures, disc_models)
     emu.player_ticks = emu.player_draws = 0
     emu.player_states = Counter()
     emu.mem.w32(D.PLAYERS + 0xAC, 0x41A00000)

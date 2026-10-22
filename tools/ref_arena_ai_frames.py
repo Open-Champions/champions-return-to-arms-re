@@ -20,3 +20,9 @@ def target_present(frame, serial, frames):
     """One eligible player stays linked from the first scan onward."""
     scan = first_scan(serial, frames)
     return scan is not None and frame >= scan
+
+
+def target_link_frames(serial, frames):
+    """In a stationary one-player idle fixture, the first scan creates one link."""
+    scan = first_scan(serial, frames)
+    return [] if scan is None else [scan]

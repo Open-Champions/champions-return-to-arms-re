@@ -476,7 +476,56 @@ These are independent wave builders, not one progressing match. No player
 movement, real attack timing, spawned-object run, or complete visibility and
 collision services are established by the 32-frame idle test.
 
-### Bounded player and spawned-object services; first prop boundary
+### Round 9: disc model hull and longer idle AI boundary (2026-10-22)
+
+**Observed** (`SLUS_209.73` v2.00): `creature_dropHeldPartAsProp` `0x117d30`
+passes its part definition to `PhProp_ctor` `0x155a0c`. The named constructor
+looks up the `.vif` at `res_find` `0x17365c` and stores the model entry at prop
+`+0x4c`. `model_getHullPoints` `0x179320` uses header byte `+0x25` times 16,
+plus mesh index times 24, to return eight signed-byte xyz points. The previous
+fixture returned the same zeroed block for every lookup, so the header byte was
+zero; `PhProp_run` `0x155fcc` faulted at `0x1561bc` after a null hull answer.
+
+**Executed** (`tools/difftest_arena_services.py`, seeds 20973 and 7): the
+resource boundary now maps `.vif` lookups to entries read from the owner's disc
+at test time. The original factory and `PhProp_ctor` bind the model during the
+fighting fixture. The first dropped prop uses `goblin_z.lmp::g_axe.vif` on seed
+20973 and `goblin_z.lmp::g_sword1.vif` on seed 7. The independent
+`ref_arena_services.model_hull` model compares the original hull accessor's
+pointer and all 24 hull bytes. One original `PhProp_run` tick finishes without
+the fault on each seed; shared seed remains `0xead31674` and `0xd05bbc05`.
+The test does not execute resource loading, mesh relocation, or a full prop
+lifetime. Its disc bytes stay only in ignored emulator memory.
+
+Run the two focused comparisons with `PYTHONDONTWRITEBYTECODE=1`:
+
+```text
+python3 tools/difftest_arena_services.py local/SLUS_209.73 --seed 20973 --iso "$ISO"
+python3 tools/difftest_arena_services.py local/SLUS_209.73 --seed 7 --iso "$ISO"
+python3 tools/difftest_arena_ai_frames.py local/SLUS_209.73 "$ISO" --seed 20973
+python3 tools/difftest_arena_ai_frames.py local/SLUS_209.73 "$ISO" --seed 7
+```
+
+`ISO` is the owner's local v2.00 disc image path; these commands do not
+extract files into the tracked tree.
+
+**Executed** (`tools/difftest_arena_ai_frames.py`, seeds 20973 and 7): the
+existing `ref_arena_ai_frames` target-scan model now agrees across 256 original
+class-AI ticks per creature in each independent wave builder. Targets link at
+frames 1–4 as before, but all objects remain in AI state 0 and at their starting
+positions, with no shared draw. This bounded stationary player input does not
+produce a fight. The full match driver still moves the player to each creature,
+forces attack setup and animation-event answers, and injects lethal damage;
+there is no evidence for a natural wave transition or live match.
+
+For the native client, the new portable contract is named `.vif` binding for
+dropped held parts and the hull lookup: `model + (u8 at +0x25) * 16 + mesh *
+24`, then eight signed-byte xyz points. The prop holds that model at `+0x4c`;
+the two observed recipe-0 weapons are named above. The first prop tick made no
+shared draw in this fixture. No new attack, damage timing, wave completion, or
+full prop lifetime is port-ready from round 9.
+
+### Bounded player and spawned-object services (round 8 baseline)
 
 `tools/difftest_arena_services.py` uses `ref_arena_services` for two small
 contracts on seeds 20973 and 7. In a fresh wave-0 builder it runs 200 neutral
@@ -495,17 +544,9 @@ matching `ref_arena_services.gold_countdown`; shared seeds remain
 in this fixture. The model's countdown and no-draw rule come from
 `Gold_run` `0x157b58` (also `docs/spec/gold-run.md` §4).
 
-**The first spawned-prop tick is blocked at a concrete resource boundary.**
-Original `PhProp_run` `0x155fcc` on the first dropped held-part prop faults at
-`0x1561bc`, reading address zero, on both seeds. The authored creature part
-from `res_find` `0x17365c` has no model hull; this is consistent with
-`model_getHullPoints` `0x179320` returning zero, which `PhProp_run`
-dereferences (`docs/spec/phprop-run.md` §7).
-The script reports this as `BOUNDARY`, not as a passing physics tick. Until a
-disc-backed model and hull are supplied at run time, this combined fixture
-cannot execute its dropped props, their rest constructors, or all resulting
-seed draws. The separate `ref_phprop_run` / `difftest_phprop_run` synthetic
-contract does not fill that missing arena resource.
+The round-8 missing-hull fault was reproduced on both seeds and is resolved
+for one original prop tick by the round-9 disc model binding above. Full prop
+lifetimes and their rest constructors remain outside this combined fixture.
 
 ### Native arena-match ranking (updated after bounded round-8 transition)
 
@@ -517,12 +558,12 @@ contract does not fill that missing arena resource.
    are executed, but schedule all creature and player clips every frame in the
    match, including attack events and movement. Death completion alone did not
    remove the `0x612b` corpse in the bounded test.
-3. **Per-frame creature AI:** 32 idle ticks per creature with natural target
+3. **Per-frame creature AI:** 256 idle ticks per creature with natural target
    scans and activity now match their scan clock. Extend through fighting and
    death in one scheduler, with real visibility, ray and movement answers.
-4. **Player and spawned objects:** neutral `Player_move` and one `Gold_run`
-   tick now execute in bounded fixtures. Supply runtime model hulls for
-   `PhProp_run`, then tick dropped props, gold and item objects; replace
+4. **Player and spawned objects:** neutral `Player_move`, one `Gold_run` tick,
+   and one disc-backed `PhProp_run` tick now execute in bounded fixtures.
+   Tick dropped props, gold and item objects over their lifetimes; replace
    scripted player actions and remaining service answers. Compare exact
    frame, seed, placement, object state and wave transition against a running
    match. The combined fixture currently cannot make that comparison.

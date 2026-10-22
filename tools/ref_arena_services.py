@@ -22,3 +22,13 @@ def gold_countdown(countdown, ended):
     if ended:
         return 0
     return (countdown - 1) & 0xFF
+
+
+def model_hull(blob, mesh):
+    """Disc .vif hull entry read by model_getHullPoints 0x179320."""
+    if not 0 <= mesh < 64 or len(blob) < 0x28:
+        raise ValueError('invalid model or mesh')
+    offset = blob[0x25] * 16 + mesh * 24
+    if not blob[0x25] or offset + 24 > len(blob):
+        raise ValueError('model has no complete hull')
+    return offset, blob[offset:offset + 24]
