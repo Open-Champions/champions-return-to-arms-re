@@ -1984,6 +1984,34 @@ installed files retain their hashes. The candidate stays private and uninstalled
 strict rendering equivalence, NPC/mission progression and full campaigns remain
 unqualified.
 
+## Automation decoding and expiry recognition
+
+Two offline experiments tested how the automation reads captured game state. A
+reader with a scalar-value cache preserved results but increased median complete
+snapshot decoding time from 7.1179 to 8.7076 ms, so it was rejected. A later reader
+with direct scalar access and no cache reduced that component's median from
+7.1289 to 5.6543 ms: 1.4746 ms, or 20.68%. It met the predetermined 20% and 1 ms
+thresholds, with lower medians in all three comparison passes.
+
+Both versions used the same 15 full snapshots and one compact observation,
+including the recorded target selection. Across the six direct-reader comparison
+passes, all 96 outputs matched the recorded baseline, and 48 original/candidate
+pairs preserved types, dictionary/list order and float bits. All 62 boundary
+and error controls also passed. Timing retained all
+45 full-snapshot samples per version, alternated which version ran first, and
+preceded the primitive tests. This measures automation snapshot construction and
+decoding, **not game FPS or the complete controller pipeline**.
+
+A separate observer passed 706 pure checks across 20 groups for recognizing one
+exactly matched expired input request. The completed trial's actual closed
+journal remained ineligible; healthy open journal states used for positive tests
+were explicitly synthetic. Recognition supplies a historical fact, not a retry
+or permission to resume input.
+
+These experiments add no fresh native gameplay run or live recovery/deadline
+reliability proof. NPC and campaign progression, rendering fidelity, and the
+previously stated physical-controller and multiplayer limits are unchanged.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
