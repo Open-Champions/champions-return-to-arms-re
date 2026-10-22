@@ -314,3 +314,35 @@ assets below are identifiers or counts; no asset bytes are tracked.
 **Current status:** these services and call contracts are portable research.
 The native real enemy fight, actual starter equipment, runtime resource
 answers, full boar/player tick and Gold-producing playthrough remain Unknown.
+
+## Research round 4: grant, clip, binding and Gold boundaries (2026-10-22)
+
+**Executed** by `tools/difftest_campaign_combat_r4.py` in `tools/ee_emu.py`
+on seeds 20973 and 7. The private `valor` and boar archives supplied input
+only; no game asset bytes or level-record derivatives are tracked.
+
+| Question | Observed / Executed result | Remaining boundary |
+|---|---|---|
+| Initial equipment | **Observed** at `player_initNewCharacter` 0x1b1d70: model +0x54 derives class +0x50. **Executed**: all 12 valid model/class pairs through `player_giveStartingItems` 0x1acc78 with debug bytes 0x41b550–0x41b554 explicitly zero. Parser 0x1069b8, grant 0x1c1868 and equip 0x1c27c0 call counts and first weapon descriptors agree with `ref_campaign_combat_r4.py`. Model pairs share these default grant routes; the special model paths for 10 and 11 are included. | The parser, inventory and equip services were stubbed, so active weapon set +0x4434/+0x4a7c and damage are still unproven. A `Player1` level record is a start marker, not an equipped character. No character save or level-entry player record was supplied to identify the actual model, debug state, carried items or equipped weapon on this route. Capture those record fields at entry, then run the parser/inventory/equip chain and `Player_recalcDamage` 0x1b7158. |
+| Boar resources and animation | **Observed**: class definition 0x502f80 resolves from `warboar.lmp`. **Executed**: all 17 clip entries from that definition pass the original `anm_relocate` 0x1707b8, `anim_push` 0x170838 and three `anim_advance` 0x16d748 steps each; `ref_anim` agrees on event bits, root deltas and yaw. The seven `WarBoar_ctor` 0x2ba03c calls to `creature_setDefEntryParams` 0x118378 populate real clip event slots. On the configured `atak_mid` clip, original advance and the reference agree on hit bit 1 at frame 18 and later bit 2 at frame 42. | This uses archive bytes mapped into the interpreter, not the full `res_find` 0x17365c / on-demand lump manager, model/texture upload or native renderer. Hide-mask 0x179550, animation-driven `WarBoar_run` hit dispatch and a full resource-backed boar tick remain unexecuted. |
+| Level actor identity | **Executed**: `world_createObject` 0x14f6c8 passes a synthetic `WarBoar` request to the installed factory and returns exactly the one address it supplied; original `GameObject_ctor` 0x14cb10 had already linked that same pool block. Round 3 separately checked original grid and run-list identity for synthetic player and boar objects. | The factory body here is a recording stub, so this does not establish the native script-host-to-combat binding. A read-only check of the `play-enemies` client on this date finds `Host::build` still refuses WarBoar at `script_commands_objects.cpp` 0x2ba03c, while `Session::bind_hp` requires the live `objects::World` address and serial. That host now conditionally copies stat fields when `stats_ready_`, superseding round 3's unconditional `kNotCopied` statement. It still needs one production actor binding, tick dispatch, handle/deletion and snapshot/restore path. |
+| Gold source on `valor` | **Observed**: `VALOR.GOB` contains `Minotaur` records. **Executed**: `Minotaur_setState` 0x28a16c death state 0x14 calls `Creature_dropLoot` 0x10f2c8, which calls `loot_generateDrops` 0x100d54 with nonzero Gold chance (raw float 0x3f199999); this is a Gold-capable source distinct from WarBoar's zero chance. With a fresh synthetic shared seed, one player and modelled level 22, the original generator and `ref_items.loot_generate_drops` agree on the full drop sequence and ending seed: seed 20973 makes one Gold spawn request; seed 7 makes none. | The `loot_spawnGold` 0x100974, terrain, pool and Gold constructor were stubbed. The actual shared seed after loading and fighting, death conditions, Gold object landing/touch and player record +0xe4 increase remain unobserved. A Minotaur must be reachable and killed on the chosen playthrough for this path to satisfy the Gold milestone. |
+
+### Port plan after round 4
+
+1. Observe the level-entry player record and save state to pin model, class,
+   debug switches and equipped item. Run the original grant/equip chain with
+   real inventory services before importing weapon statistics into the client.
+2. Resolve the boar model, textures and clips through the client resource
+   manager. Apply the seven measured event-parameter calls to loaded clips,
+   then compare hit dispatch, root motion and hide mask in a resource-backed tick.
+3. Bind the factory's World-owned address and live serial directly to combat
+   state. Feed class stats when their balance/level inputs are ready; dispatch
+   the boar and player through one scheduler and verify target handles,
+   deletion and restored snapshots against that identity.
+4. Keep the WarBoar item-only death path distinct from the Minotaur Gold path.
+   For the latter, follow the actual campaign seed through death, Gold spawn,
+   terrain landing, touch and delayed record credit in one loaded session.
+
+**Status:** these are bounded original-code contracts and a Gold-capable source.
+The requested real `valor` fight and actual route equipment remain Unknown.
