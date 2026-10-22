@@ -23,6 +23,8 @@ FACTORY = {
     "mosquito": (0x3C8, 0x297788, "hostile creature"),
     "scorpion": (0x3D0, 0x2A4D68, "hostile creature"),
     "badger": (0x3D0, 0x244018, "hostile creature"),
+    "warboar": (0x3D8, 0x2BA03C, "hostile creature"),
+    "warboarsmall": (0x3D8, 0x2BA03C, "hostile creature"),
 }
 
 
@@ -40,6 +42,8 @@ def classify(name, properties=()):
         return FACTORY["mosquito"]
     if key.startswith("badger"):
         return FACTORY["badger"]
+    if key.startswith("warboar"):
+        return FACTORY["warboar"]
     if any(p.lower().startswith("critter=") and p.split("=", 1)[1] != "0"
            for p in properties):
         return (0x448, 0x2547FC, "ambient critter")

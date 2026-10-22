@@ -150,3 +150,109 @@ synthetic hostile class strings with the original factory on seeds 20973 and
 execute ctors. Existing `difftest_objects.py`, `difftest_creature.py` and
 `difftest_combat.py` own the list, AI/damage and statistics reference models;
 their seed reruns are reported in the commit and coordination line.
+
+## Research round 2: `valor` WarBoar boundary (2026-10-22)
+
+**Executed** by `tools/difftest_campaign_combat_r2.py` on US v2.00 in
+`tools/ee_emu.py`, seeds 20973 and 7. The private `VALOR.GOB` has 201 records,
+including 34 `WarBoar` and 44 `WarBoarSmall`; all 78 take the factory's
+0x3d8-byte, 0x2ba03c constructor branch. The factory receives the class string,
+but the ctor receives `(block, position, angle, properties, type name)`; this
+argument order matters to a port. The class's own writes and service calls were
+compared for every boar record. The test stubs `Creature_ctor`, so it does not
+claim full placement, grid membership or initialized stats.
+
+**Observed** at `WarBoar_ctor` 0x2ba03c: both names use vtable 0x517cf0 and
+definition 0x502f80. After the base ctor, the class writes radius +0x1c = 30,
+half-width +0x28 = 40, speed +0xb8 = 0, turn +0xb0 = 1, kind +0xb4 = 3,
+flags +0xa8 |= 0x200040000, forward offset +0xe0 = -15, scale +0xdc =
+0.75, and small marker +0x3d0 = 0. `WarBoarSmall` changes the forward offset
+to -10, scale to 0.6 and marker to 1, while radius remains 30. The ctor
+calls `Creature_ctor` 0x109d68, prefix test 0x159c20, model hide-mask
+0x179550, animation clear/push 0x1707b0/0x170838, `obj_runEvery60`
+0x14f2b8, seven entry-parameter calls 0x118378 (entries 4, 5, 6, 7, 10,
+11, 12), then `Creature_init` 0x10a230. The test checks this order and the
+class-written fields. **Unknown:** the resolved clip/model pointers and
+hide-mask answer from real resource loading; those services were stubbed.
+
+**Executed:** the active `WarBoar_run` 0x2ba3a0 on a constructed object with
+scripted base activity and animation answers. A no-target state 0 calls
+`Creature_processDamage` 0x110d30, `Creature_run` 0x112948,
+`Creature_updateActive` 0x10c0f0, animation step 0x1162b0,
+knockback 0x115eb8 and target pick 0x10ded0, then sight/home checks.
+State 3 hands a transition to `WarBoar_setState` 0x2bac60. State 6's
+hit event calls `Creature_hitAllEnemiesInArc` 0x119b58 with damage flags 8,
+and writes the hit-frame marker +0x3c8 = 1. The no-target state 0x14 calls
+`Creature_deadUpdate` 0x1108a0. Direct setState execution confirms attack
+state 6 clears +0x3c8, stores +0x3cc = 6 and starts a blend; state 0x14
+calls `Creature_dropLoot` 0x10f2c8, draws once from the object's own seed
+0x1509d0 for a death clip, starts animation and calls `Creature_onDeath`
+0x10beb8. **Unknown:** actual target selection, damage dealt, animation event
+schedule and a full kill in this level. Those answers were stubbed or absent.
+
+**Observed** in `BALANCE.LMP` and **Executed** at `balance_lookup` 0x223a4c:
+the first rows matching name hashes 0xfe90 (`WarBoar`) and 0x270c
+(`WarBoarSmall`) are found. The difftest extracts their five signed percentages
+at run time and checks the original's single-precision multiplication by
+0.01 against `ref_campaign_combat_r2.py`; no balance file data is committed.
+The `valor` level table row is at 0x4f7b70. Its level byte +4 is 20, so
+`game_loadLevel` 0x1e5b70 gives monster level 22 at difficulty 1; at
+difficulties 2–5 it applies the formula in `docs/spec/combat.md` 4.1.
+`Creature_setStats` 0x10a620 then uses these factors, player count,
+difficulty and the object's own HP roll as documented there. This round did
+not run the combined balance, level load and constructor chain in one
+emulator world.
+
+**Executed:** `Gold_onTouch` 0x157a9c with a synthetic player and Gold object.
+`Gold_run` 0x157b58 decrements nonzero countdown +0x4c on each tested tick
+(41, 2 and 1) and calls animation service 0x1709d8.
+Prediction-copy flag 0x20000, nonzero countdown +0x4c, non-player flag word
+or zero amount +0x80 each prevent pickup. With player flag 0x40, countdown
+zero and a synthetic nonzero amount, it calls resource/sound services,
+`hud_addGoldFloater` 0x1dc268 and `obj_delete` 0x14f200, and clears +0x80.
+**Unknown in this round:** whether a `valor` kill generates Gold on a given
+shared seed, its terrain landing, the floater's delayed credit in a running
+session, and the final balance.
+
+### Concrete native port order
+
+1. In `script_commands_objects.cpp`, register `WarBoar` and
+   `WarBoarSmall` against ctor 0x2ba03c and preserve record type name,
+   position, angle, properties, seed and class size. Port the common class
+   ctor in the native monster model, plus `Creature_ctor`/`Creature_init`
+   effects it needs. Load definition 0x502f80's model and clips through the
+   actual resource service; retain its seven animation events and root motion.
+   Do not mark the object built while `kNotCopied` still excludes HP,
+   damage, attack, experience, armour or resource-dependent fields.
+2. Make each host-created object the one simulation actor. The host already
+   allocates in file order into `objects::World`, while
+   `combat_creature::Adapter` owns a separate `combat::World` and explicitly
+   says it is not a shared object allocator. Use the factory object address
+   and generation as the combat binding, with one canonical position,
+   flags, grid A/B links, active/15/60 run-list node, target handles,
+   seed and vtable dispatch. Route `runObjects` 0x14b910 and
+   `world_collectObjectsInBox` 0x14a928 through that same identity; bind
+   actual player objects before AI or melee queries. Specify how saves
+   restore those links and how deletion invalidates handles. No production
+   transfer/unification API has been verified yet.
+3. Load `BALANCE.LMP`'s `monsters.bal` and the level table row. Execute
+   `balance_lookup`, `Creature_setStats`, `Creature_init` and the player
+   equipment/grant, `Player_recalcDamage` 0x1b7158 and state-1 melee
+   sequence. `Player_run` 0x1a9678 targets from grid A at swing start and
+   invokes `Player_meleeHit` 0x1b6a98 on the hit frame; connect this to
+   `damage_apply` 0x1e8230, `Creature_takeDamage` 0x116638 and later
+   `Creature_processDamage` 0x110d30. The present fixture player weapon
+   values cannot stand in for the session equipment.
+4. Port `WarBoar_run` 0x2ba3a0 and `WarBoar_setState` 0x2bac60 with
+   target/activity, animation event, root-motion/terrain and arc-hit
+   services. Keep the class's all-enemies arc hit and state-0x14 loot call.
+   Then connect `loot_generateDrops` 0x100d54, `loot_spawnGold` 0x100974,
+   terrain placement, pool allocation, Gold ctor/run/touch and HUD floater
+   credit. Verify damage, death, a spawned drop, touch and increased player
+   record gold separately in one loaded `valor` session.
+
+**Unknown:** the exact resource service outputs, actual terrain query values
+for this level, the player's initial equipped weapon on this route, an
+integrated hostile tick/target path, loot outcome for a particular seed, and
+the native world's transfer API. The reference difftest isolates the class
+edges; it is not proof of a playable fight.
