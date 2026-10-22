@@ -2012,6 +2012,36 @@ These experiments add no fresh native gameplay run or live recovery/deadline
 reliability proof. NPC and campaign progression, rendering fidelity, and the
 previously stated physical-controller and multiplayer limits are unchanged.
 
+## Bounded four-player spell and potion trial
+
+A subsequent private native trial records 126.075 seconds elapsed, normal exits
+from the game and controller process, 7,296 complete field records and no
+input-expiry rejection. This adds no live expiry-recovery proof.
+The tester records 13 Circle requests and 12 spell-response/guard-restoration
+sequences before stopping the active traversal. NPC interaction is not reached.
+
+Per-field observations explain the final response-witness failure. The casting
+character is still receiving mana from a potion. Its mana falls from 22.2659568
+to 14.3492832 at field 1988, but remains below the tester's original pre-request
+mana minus seven only at fields 1988–1989. The actual state replies surrounding
+that interval are at 1984 and 1991. The fixed-baseline net-mana test therefore
+misses the brief threshold crossing, despite a visible debit in the recorded
+fields. This is evidence about the tester's sampling and criterion; it does not
+establish projectile impact or a particular damaged enemy.
+
+After input is neutralized, the read-only scheduled tail records nonpositive HP
+for each character, followed by a mission reload and a simulation-counter reset.
+Card transfer remains idle. The late and terminal captures show four allocated
+characters back in the mission corridor. Those captures do not show uninterrupted
+survival, and the final world-boundary reason must not erase the earlier cast
+witness stop. The run remains a controlled partial, without NPC/quest completion
+or a full campaign pass.
+
+Original and copied saves, protected sources and installed files retain their
+hashes. The candidate remains private and uninstalled. Rendering fidelity,
+performance, physical multiple-controller play and separate-PC Internet
+multiplayer remain unqualified.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
