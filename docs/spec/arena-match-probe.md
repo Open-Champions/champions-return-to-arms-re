@@ -453,6 +453,29 @@ reuse branch is a plausible normal path here. Exact match behavior still needs
 the real scheduler and input, because the lethal hit, activity and frame calls
 above were supplied by the driver.
 
+### Bounded per-frame idle AI
+
+`tools/difftest_arena_ai_frames.py` builds each of recipe 0's waves 0–2 in a
+fresh emulator state with the disc's `pvparena.world` and actor clips loaded
+at run time. The driver supplies one stationary player activity centre and
+32 frame values at `g_simFrame` `0x44fdcc`. Every creature in each wave runs
+its original class body each frame: Goblin `0x26b27c`, Mummy `0x298d18`, and
+Scorpion `0x2a5068`; original `Creature_updateActive` `0x10c0f0`,
+`Creature_pickTarget` `0x10ded0`, `Creature_stepAnim` `0x1162b0`, and
+`anim_advance` `0x16d748` execute as callees. The original target scan finds
+the player from the object grid without a forced target request. The
+independent `ref_arena_ai_frames` model uses the scan condition at `0x10ded0`:
+`(frame XOR signed serial byte +0x230) & 0x1f == 0`. The first link appears
+on frames 1, 2 for wave 0; 1, 2, 3 for wave 1; and 1, 2, 3, 4 for wave 2,
+on both seeds. All these bounded idle ticks stay in AI state 0 and draw no
+shared seed. Constructor seeds are `0xb3c33116`, `0x05b7dae3`,
+`0x19e63f4e` for seed 20973 and `0x1d30c75a`, `0x50112cb9`,
+`0xa025c237` for seed 7.
+
+These are independent wave builders, not one progressing match. No player
+movement, real attack timing, spawned-object run, or complete visibility and
+collision services are established by the 32-frame idle test.
+
 ### Native arena-match ranking (updated after bounded round-8 transition)
 
 1. **World and object lifecycle:** the saved `0x612b` path now has an original
@@ -463,8 +486,9 @@ above were supplied by the driver.
    are executed, but schedule all creature and player clips every frame in the
    match, including attack events and movement. Death completion alone did not
    remove the `0x612b` corpse in the bounded test.
-3. **Per-frame creature AI:** run Goblin `0x26b27c`, Mummy `0x298d18`, and
-   Scorpion `0x2a5068` with natural target, activity, ray and movement answers.
+3. **Per-frame creature AI:** 32 idle ticks per creature with natural target
+   scans and activity now match their scan clock. Extend through fighting and
+   death in one scheduler, with real visibility, ray and movement answers.
 4. **Player and spawned objects:** replace scripted player actions and service
    answers; tick dropped `PhProp`, gold and item objects. Then compare exact
    frame, seed, placement, object state and wave transition against a running
