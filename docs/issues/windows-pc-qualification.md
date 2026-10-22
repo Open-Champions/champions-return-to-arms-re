@@ -2412,6 +2412,49 @@ accepted earned checkpoint remains the preceding Load/return checkpoint; full
 campaign, reference fidelity, physical multi-controller and separate-PC/WAN
 qualification remain open. The candidate stays private and uninstalled.
 
+## Fresh-position continuation reaches a later passage stall
+
+**Ran on Windows, 2026-10-22:** one new bounded continuation used a normal Load
+and free hub Recall from the same accepted northern checkpoint. The native
+application and its sole control client exited normally. The run produced 7,296
+complete 480-column native rows, all offline, in 127.129 seconds including
+wrapper and postprocessing work; that elapsed time is not an FPS measurement.
+Native game-card traffic was 311,272 bytes read and zero written. All four
+original save files, all four case copies, the installed build and the protected
+source inputs remained unchanged.
+
+Root recomputed the four fresh route origins from the complete raw reply at
+field 1425. Each origin is uncommanded context; the first target remains the
+existing northern waypoint. This passed the previous entry-position stop without
+widening the existing waypoint tolerances. The raw journal contains 209 accepted
+ordinary pad requests, with correlated session/IDs and source-plus-two
+deadlines; there were no expiry rejections, Confirm, Use or Start requests. Full
+per-field control-lease and cast-response replay remain unqualified.
+
+Independent decoding of complete raw replies at fields 1425 and 2881 established
+the current allocated four-owner party and its handle/grid links at those two
+anchors. XP changed from `[536,562,614,588]` to `[790,944,868,842]`. These are
+in-session gains only: no Save was attempted and no new durable checkpoint
+exists. All four persistent HP values remained positive from field 1425 through
+the last native row. After the final neutral/cancel at field 2884, all 56
+watched raw and decoded pad cells were neutral in every one of the remaining
+4,413 rows.
+
+The route-progress metric stopped the attempt at field 2881, 247 fields after
+its last qualifying progress. A late image shows the living party clustered in a
+narrow rocky passage near a barrel. The exact cause remains unknown: waypoint
+corner acceptance, party congestion, terrain/object collision and screen limits
+need further checks. The original partial reason remained intact through the
+read-only tail. Protective pause was ineligible after gameplay inputs, so no
+pause attempt or pause qualification is claimed.
+
+The next work is a source-guided check of passage geometry, party collision and
+nearby interaction semantics before another ordinary-control attempt. The
+accepted saved seed remains unchanged. Natasla dialogue, full Save
+acknowledgement, mission completion, the full campaign, reference
+fidelity/performance, physical four-pad play and separate-PC/WAN play remain
+open. The diagnostic candidate remains private and uninstalled.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
