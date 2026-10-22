@@ -88,6 +88,7 @@ struct RtaDrawer::Scene {
     std::unordered_set<uint32_t> hidden;    // objects left out (set_hidden_objects)
     uint64_t hidden_draws = 0;
     float hidden_order = -1;            // this frame: the place in the world's pass of the first draw left out (-1: none)
+    std::unordered_map<uint32_t, float> hidden_orders;      // this frame: per object left out, the place of its first draw
     // Meshes kept between frames: a draw whose packets are, byte for byte, those of a mesh made before (the level's chunks
     // where nothing moved and no light changed: most of a frame) takes that mesh instead of being built and sent again.
     // Kept by the draw's identity (its packets' figures, kinds and corner counts, and how many draws of that identity came
@@ -592,6 +593,11 @@ Dictionary RtaDrawer::get_scene_info() const {
     // where the host's own figure goes among the world's draws (set_hidden_objects): the transparent pass draws by this
     // sorting offset, as the drawer places every draw (RtaDrawer::place)
     info["hidden_order"] = scene->hidden_order;
+    {
+        Dictionary per;                 // per object left out: the place of its first draw (a figure of the host's goes there)
+        for (const auto& e : scene->hidden_orders) per[(int64_t)e.first] = e.second;
+        info["hidden_orders"] = per;
+    }
     info["hidden_draws"] = (int64_t)scene->hidden_draws;
     info["focus"] = scene->game_camera.origin - scene->game_camera.basis.get_column(2) * (real_t)scene->focus;
     double n = scene->frames ? (double)scene->frames : 1;
@@ -624,6 +630,7 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
     sc.ground_near_last = sc.ground_near;
     sc.ground_near = 0;
     sc.hidden_order = -1;
+    sc.hidden_orders.clear();
     Target* world = world_target();
     if (!sc.valid || !world) { if (!sc.valid) sc.frames_without_camera++; return; }
     scene_scan_sky(f, *world);
@@ -677,6 +684,11 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         if (hidden == d.scene_piece_count) {
             sc.hidden_draws++;
             if (sc.hidden_order < 0 || order < sc.hidden_order) sc.hidden_order = order;
+            for (uint32_t k = 0; k < d.scene_piece_count; k++) {
+                auto it = sc.hidden_orders.find(sc.tap->pieces[d.scene_piece_first + k].object);
+                if (it == sc.hidden_orders.end()) sc.hidden_orders[sc.tap->pieces[d.scene_piece_first + k].object] = order;
+                else if (order < it->second) it->second = order;
+            }
             return true;
         }
     }

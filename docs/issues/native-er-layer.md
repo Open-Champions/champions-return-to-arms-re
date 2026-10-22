@@ -7,6 +7,14 @@ Everything below says **Ran** (with what was seen) or **Read**. A successor need
 
 ## STATE
 
+**2026-10-22, round 3** (built into `local/godot-r12/`; pictures `local/er-layer/r3/`; not committed): **creatures** -
+`look.er_creatures = on` (default off) draws the game's monsters as Elden Ring enemies of a similar build, each told by its
+class and level record, retargeted from its own skeleton (people by the person reader, four-legged ones by a new reader);
+each figure placed in the draw order at its own first hidden draw (the overhead view's see-through leaves stay over it);
+shields drawn as objects of their own are taken when they keep their place at a hand; capes and skirts kept off the legs
+(capsules on thighs and shins). Two Godot copies in one room, A with players and creatures drawn: **1,826 ticks in step**.
+Round 3 below.
+
 **2026-10-22, round 2** (built into `local/godot-r11/`; tests and pictures `local/er-layer/r2/`, rooms `local/er-layer/m6..m9`; not
 committed): every player drawn with the layer, each in the outfit of its class and with the Elden Ring weapon of its weapon's
 class on the game's own grip; normal and metal/roughness maps; capes, skirts and hair swing; the skeleton reader finds arms on
@@ -219,22 +227,102 @@ reader), `er_joint_map.cfg` (`[weapons]`, `[joints64]` only for its build), `sce
 `er_springs`, `er_metal`). Local: `souls-ref/scripts/er_gltf.py` (maps, tangents, cloth parents, `figure.json`, weapons
 mode, skin joints only those used plus the mapped ones), `er_sets.sh`.
 
+## Round 3 (2026-10-22): creatures, draw order, shields, legs
+
+Built into `local/godot-r12/` (a copy-on-write clone of r11; `build.py extension` - the drawer's per-object order, below -
+and `project`). Tests: `local/er-layer/run.sh` (the fight route; `OUT=local/godot-r12`; modes such as `on+er_creatures=on`
+now set `er_models` right), `lvrun.sh` / `lvroute.py` (new: power-on, then any levels the way the game asks for one, pictures
+with creatures off and on at given ticks, `app er info`, `app er creatures FILE`; `PRE` lines, e.g. a stick held or the player
+put somewhere by `poke`), `room12.py` (room11 on r12, A with `er_creatures on`, a picture with the layer off beside each one
+on). Pictures: `local/er-layer/r3/`.
+
+**1. The Elden Ring enemies (local only, Ran).** Seven enemy models fetched like the armour (`er-work/ranges-r3.txt`: 15
+byte ranges of `Data3.bdt`, 53 MB through the patched DepotDownloader with the remembered login - no password asked), the
+Oodle streams decompressed in the Windows test machine (`unkrak.exe`, the game's own DLL; the machine's folder removed and
+the machine stopped after), dumped with `flverdump`, the textures to PNG (BC1 in its sRGB form read as plain BC1; at most
+1024 a side). `local/souls-ref/scripts/er_chr.py` (new) writes `er-models/creatures/<name>/figure.glb` through
+`er_gltf.figure` (now with the skeleton's source, a mesh filter and a texture chooser as arguments): an enemy's flver holds all
+its variants - meshes marked by number in their material names - and names no textures, so per model the script keeps the
+unmarked meshes and the numbers of one variant, and picks each material's texture by its material file's name (by hand where
+the names do not meet). Fur cards are grey masks the game's shader colours: coloured here by the body texture's mean colour.
+Models: soldier (a Godrick soldier with sword and shield), skeleton (a militiaman with a sword), demihuman (with a club),
+noble (a wandering noble), wolf, boar, troll. 24 MB in all.
+
+**2. Which creature is which (Ran).** A skeleton's animation state lies at +0x114 of its creature (as the players'); the
+creature's class from its virtual table (+0x48; `er_creatures.cfg [classes]`, the table of `vtables.txt`) and, for one loaded
+from the level, the level record's class name (+0x34) - all read with `peek_u32` / `peek_string`. `er_creatures.cfg
+[families]` (our own): class or record -> [model, reader]. Seen in eleven levels (prints once per kind): WarBoar
+"WarBoarSmall"/"WarBoar" (25 joints, valor, valor2) and Badger "Snobadge" (32, storm1) -> boar; Goblin "fgoblin",
+"fgoblinarcher", "fgoblinrecruit" (48, fire1) -> demihuman; Orc "Orc2Soldier" (60, fay1) -> soldier; Hag, "HagRed" (38, dis2)
+and Vampire (43, islgoth) -> noble; Horsemen "UndeadKnight2..4" (55, drunare's scene) -> skeleton; LavaMonster
+"EarthElemental" (38, storm1) -> troll; Cyclops, Ogre, CloudGiant, Minotaur -> troll (not met). Kept as the game's: Critter
+(one class for bats, butterflies, frogs, sharks), NPC and GnomeNavigator (people of the story), Clockwork and others not named.
+**Several figures can share one animation state and even one pose buffer** (fire1's band of archers runs one): a figure is a
+pose at one place (state, pose number, root), its objects those drawn with that pose there.
+
+**3. Retargeting (Ran).** People: `_auto_table` (the person reader of round 2) on the creature's own skeleton - on the 36-, 38-,
+43-, 48-, 55-, 60- and 63/64-joint skeletons met it found pelvis, spine, head, legs, clavicles, arms and hands (18-20 joints
+mapped). Four-legged: `_auto_four` (new): the two joints with a branch going down on either side are the girdles, the front
+one (the figures face -y) the shoulders; the spine the way between them; the head the far end of the shoulders' remaining
+branch, the tail the hips'; legs from their lowest branch (thigh/upper arm, a knee halfway, foot, toe). Ran: the 25-joint war
+boar (15 joints mapped) and the 32-joint badger (16), names from `er_joint_map.cfg [auto_four]` (the Elden Ring quadrupeds
+use the people's bone names). The rest is round 1's retarget. What a creature holds is part of its own objects and hidden
+with it (the model carries its own weapon). A creature's figure is let go two seconds after it was last drawn.
+
+**4. Draw order (Ran).** The figures were placed at the frame's first hidden draw - and at the end of the pass when the
+drawer found none that frame (the list it took drawn before the objects were named): then over everything, the overhead
+view's see-through leaves among it. The drawer now hands over per hidden object the place of its first draw
+(`get_scene_info().hidden_orders`, `rta_scene.cpp`); each figure takes its own objects' first place, else the place it had
+last. Overhead in valor: leaves over the boar as in the game: `r3/valor-overhead-leaves.jpg`.
+
+**5. Shields of their own, legs (built; the leg capsules Ran in every picture with capes).** A rigid model of another object
+at a hand is taken as held when it keeps its place against the hand's joint for 4 frames (loot or another figure's weapon
+passing does not); at the off hand it is drawn as the shield model and the game's hidden. No shield was held in these runs
+(the room's B took the berserker again), so this is **not seen yet**. Capes and skirts: the thighs and shins are capsules
+from the game's own joints (0.11 m, the shin 3/4), each spring weight pushed out to their skin.
+
+**Pictures** (`local/er-layer/r3/`): `valor-boar-fight{1,3,5}.jpg` (the game | players drawn | players and creatures; taken
+before the fur colouring), `valor-overhead-leaves.jpg`, `fire1-goblins-{640,760}.jpg` (the player put beside the goblin band),
+`drunare.jpg` (room copy A, layer off | on), `drunare-skeleton.png` (the undead knights of drunare's scene as skeletons),
+`storm1-badger.jpg`, `islgoth-demihuman.jpg` (the gnome navigator, since left as the game's).
+
+**Cost (Ran, paced, 3024 x 1964, shoulder, the fight route; another program was running on the machine).** The layer's
+own time with the players and creatures drawn: **1.16 ms mean with 7 figures, 1.29 ms with 6** (get_skeletons 0.16, finding
+0.23-0.30, posing and drawing 0.47; worst 2 ms; once 250 ms when the models load). Pictures a second: 51.6 with it, 51.5
+without (`r3/cost/out-{on,off}.txt`). (A first measure gave 2 ms: the drawer's scene info, which builds its long figures line,
+was asked for per instance; now once a frame, and a creature's identity is kept by its state.)
+
+**The room (Ran, `room12.py m11`).** As round 2's, copy A with `er_models on` and `er_creatures on` (the undead knights of
+drunare's scene drawn as skeletons), copy B as it was: `compare.py ticks a b`: **1,826 ticks compared, no shared column
+differs** (`r3/room-m11.log`).
+
+**Changed (tracked):** `tools/godot/project/er_layer.gd` (creatures: identity, finder, the four-legged reader, per-figure
+order, held models of other objects, leg capsules, `app er creatures FILE`), `er_joint_map.cfg` (`[auto_four]`),
+`er_creatures.cfg` (new: classes and families), `scene_view.gd` (`er_creatures`), `tools/godot/extension/src/rta_scene.cpp`
+(`hidden_orders`). Local: `souls-ref/scripts/er_chr.py` (new), `er_gltf.py` (figure's arguments), `er-models/creatures/`,
+`er-layer/{lvroute.py,lvrun.sh,room12.py,mkroute.py}`.
+
 ## What is local only
 
 Everything of either game: `local/souls-ref/` (the depot's files, the partial archives `er/Game/Data0.bdt` and
 `Data3.bdt` - sparse, only the fetched ranges - the decrypted headers' index, `er-raw/`, `er-work/`, `er-models/`), the
 patched DepotDownloader and its source, SoulsFormatsNEXT and `flverdump`, the ooz builds, `unkrak.exe`, the .NET SDK,
-`local/godot-r10/`, `local/godot-r11/`, `local/er-layer/`, the Windows test machine's scratch folder (removed after each
+`local/godot-r10/`, `local/godot-r11/`, `local/godot-r12/`, `local/er-layer/`, the Windows test machine's scratch folder (removed after each
 decompression). Tracked: code and our own joint table only.
 
 ## Not done, and what to know
 
-- Cloth is springs of our own, not the game's cloth simulation: no collision with the body (a cape can pass through a leg).
-- Creatures and other people of a level stay the game's; faces, hair and bare skin are not drawn (the helmets cover them).
+- Cloth is springs of our own, not the game's cloth simulation; since round 3 kept off the legs only (capsules), not off
+  the body.
+- Creatures (round 3): the troll, soldier and wolf models were not seen in a picture (no troll-like or wolf creature met
+  near the player; fay1's orcs were out of view); the figures do not take the game's fog (far ones stand out bright in
+  fire1's haze); the person reader gives a zero-length calf on 3-joint legs (the gnome); the variant and texture choices of
+  the enemy models are ours and partly guessed (a demi-human's collar takes the light orange).
+- Players' faces, hair and bare skin are not drawn (the helmets cover them).
 - Metal shows only half its strength (`er_metal`): the scene has no reflections of Godot's. The figure is drawn over
   see-through leaves in the overhead view (it is placed in the draw order at its first hidden draw).
-- A shield drawn by the game as an object of its own (not of its bearer's) would not be found (only the bearer's own rigid
-  pieces count, so loot passing a hand is not taken; no shield was held in the runs). Bows: a bow was found on the berserker's right hand after a
+- A shield drawn by the game as an object of its own is taken since round 3 when it stays at a hand for 4 frames - not
+  yet seen (no shield was held in any run). Bows: a bow was found on the berserker's right hand after a
   weapon swap and drawn there (m7); in m9 its class was bow with nothing found at its hands at the moment of the info line
   (the bow not drawn at a hand then, or held otherwise) - not looked into.
 - Weapon pairing per class is by shape (model numbers are not weapon numbers); the `[weapons]` shifts are 0 (grip on grip

@@ -30,6 +30,11 @@ extends Node
 #   app er catch N FILE      the first frame from now with an N-joint skeleton: `dump` to FILE (and its auto reading printed),
 #                            and three pictures 20 frames apart (FILE without .json, -0..2.png)
 #   app er cost              the layer's own time per frame (mean and worst, microseconds) since the last `cost`
+#   app er creatures FILE    every skeleton of the frame that is not a player's, with what the game says it is, as JSON
+#
+# With look.er_creatures = on, the game's monsters too: each told by its class and level record (er_creatures.cfg, read
+# only), drawn as a local model of a similar build (er-models/creatures/<model>) retargeted from its own skeleton
+# (_auto_table for people, _auto_four for four-legged ones); a class with no model keeps the game's figure.
 
 var main: Node
 var view: Node                  # scene_view.gd
@@ -70,6 +75,9 @@ var catch_shots := 0
 var catch_frame := 0
 var er_root: Node
 var er_failed := ""
+var creatures_on := false          # look.er_creatures
+var creature_cfg: ConfigFile        # er_creatures.cfg (null: not read yet)
+var creature_said := {}             # identity text -> printed once
 # a light of the figures' own where the scene has none of Godot's (the game's overhead view: its colours are lit by the game
 # itself; a figure of ours would be black): a key light from above the camera and a fill, on our figures only (layer 20)
 const OWN_LAYER := 1 << 19
@@ -131,6 +139,9 @@ func command(w: PackedStringArray) -> void:
 		# app er catch N FILE: the first frame from now with a skeleton of N joints is dumped to FILE
 		catch_joints = w[2].to_int()
 		catch_path = w[3]
+	elif w.size() >= 3 and w[1] == "creatures":
+		# app er creatures FILE: every skeleton of the frame that is not a player's, with what the game says it is, as JSON
+		_dump(w[2], true)
 	elif w.size() >= 2 and w[1] == "cost":
 		var nf := maxf(1.0, float(cost_frames))
 		print("[blank %d] rta_godot: er cost: %d frames, mean %.1f us (get_skeletons %.1f, finding %.1f, posing and drawing %.1f), worst %d us, %d figures drawn now" % [main.blanks, cost_frames,
@@ -179,7 +190,8 @@ func _player() -> Dictionary:
 func before_frame(wanted: String) -> void:
 	cost_start = Time.get_ticks_usec()
 	mode = wanted
-	var drawing := mode == "self" or mode == "on"
+	creatures_on = view != null and String(view.look.get("er_creatures", "off")) == "on"
+	var drawing := mode == "self" or mode == "on" or creatures_on
 	if not drawing and check_path == "":
 		if hidden_sent:
 			drawer.call("set_hidden_objects", PackedInt64Array())
@@ -216,9 +228,12 @@ func before_frame(wanted: String) -> void:
 	if mode == "self" and player_skeleton >= 0:
 		hide = hidden.duplicate()
 		hide.append_array(held_objects)
-	elif mode == "on":
+	if mode == "on" or creatures_on:
 		var t_find := Time.get_ticks_usec()
-		_find_targets()
+		if mode == "on":
+			_find_targets()
+		if creatures_on:
+			_find_creatures()
 		part_us.find += Time.get_ticks_usec() - t_find
 		for t in targets:
 			hide.append_array(t.objects)
@@ -318,6 +333,8 @@ func _objects_of(state: int) -> PackedInt64Array:
 # What a figure holds: rigid models whose own matrix is at one of its hands (the game hangs a weapon on an attach point of
 # the hand's joint: model_getAttachPoint): its own origin within 20 units of the hand (a spear's is at its butt).
 # [{piece, object, joint, hand, at: Transform3D (the model's matrix in the world)}]
+const ATTACH_FRAMES := 4
+var attach_seen := {}               # "<state>:<hand>" -> {rel, frame, count}: a model of another object held at that hand
 func _held(p: Dictionary, own: PackedInt64Array) -> Array:
 	var out: Array = []
 	if not data.has("piece_kind"):
@@ -330,10 +347,9 @@ func _held(p: Dictionary, own: PackedInt64Array) -> Array:
 	var hands := _hands_of(p)
 	var groups := {}
 	# (the weapon is drawn as part of its bearer's object: rigid pieces, no pose of their own, their matrix at a hand)
+	var frame_now := Engine.get_process_frames()
 	for i in kinds.size():
-		# (only the figure's own objects: rigid models of other objects that pass near a hand - loot, another
-		# figure's weapon - are not what it holds)
-		if kinds[i] != 2 or skel_of[i] >= 0 or not own.has(objs[i]):
+		if kinds[i] != 2 or skel_of[i] >= 0:
 			continue
 		var at: Transform3D = slot0[i]
 		var best := -1
@@ -345,6 +361,20 @@ func _held(p: Dictionary, own: PackedInt64Array) -> Array:
 				best = k
 		if best < 0:
 			continue
+		if not own.has(objs[i]):
+			# a model of another object at a hand (a shield the game draws as an object of its own): held only when it has
+			# kept its place against the hand's joint for ATTACH_FRAMES frames - loot or another figure's weapon passing a
+			# hand does not (the object numbers are the frame's, so the hand is what is followed)
+			var rel := (p.joints[hands[best][0]] as Transform3D).affine_inverse() * at
+			var akey := "%x:%s" % [int(p.state), String(hands[best][1])]
+			var seen: Dictionary = attach_seen.get(akey, {})
+			if seen.is_empty() or int(seen.frame) != frame_now:
+				var steady := not seen.is_empty() and int(seen.frame) >= frame_now - 2 and (seen.rel as Transform3D).origin.distance_to(rel.origin) < 1.5 \
+					and ((seen.rel as Transform3D).basis.x - rel.basis.x).length() < 0.1 * maxf(rel.basis.x.length(), 1e-3)
+				seen = {"rel": rel, "frame": frame_now, "count": (int(seen.count) + 1) if steady else 1}
+				attach_seen[akey] = seen
+			if int(seen.count) < ATTACH_FRAMES:
+				continue
 		var key := "%d:%d:%d:%d" % [objs[i], roundi(at.origin.x * 4.0), roundi(at.origin.y * 4.0), roundi(at.origin.z * 4.0)]
 		if not groups.has(key):
 			groups[key] = {"pieces": PackedInt32Array(), "object": objs[i], "joint": int(hands[best][0]), "hand": String(hands[best][1]), "at": at,
@@ -575,7 +605,7 @@ func frame(to_scenario: RID) -> void:
 	if to_scenario != scenario:
 		release()
 		scenario = to_scenario
-	var drawing := (mode == "self" and player_skeleton >= 0) or (mode == "on" and not targets.is_empty())
+	var drawing := (mode == "self" and player_skeleton >= 0) or ((mode == "on" or creatures_on) and not targets.is_empty())
 	if not drawing:
 		_hide_drawn()
 		for pair in own_lights:
@@ -596,9 +626,20 @@ func frame(to_scenario: RID) -> void:
 			_draw_figure(t)
 			drawn[t.key] = true
 		part_us.draw += Time.get_ticks_usec() - t_draw
+		var gone: Array = []
 		for key in figures:
 			if not drawn.has(key):
 				_hide_figure(figures[key])
+				# a creature's figure not drawn for two seconds (it died, or is out of sight) is let go
+				var f: Dictionary = figures[key]
+				f["unseen"] = int(f.get("unseen", 0)) + 1
+				if String(key).begins_with("c") and int(f.unseen) > 120:
+					gone.append(key)
+			else:
+				figures[key]["unseen"] = 0
+		for key in gone:
+			_free_figure(figures[key])
+			figures.erase(key)
 	_count(started)
 
 
@@ -700,13 +741,15 @@ func _check() -> void:
 
 
 
-func _dump(path: String) -> void:
+func _dump(path: String, creatures := false) -> void:
 	var out := {"tick": machine.get_sim_tick(), "local": player_skeleton, "players": data.get("players", []), "skeletons": []}
 	for k in (data.get("skeletons", []) as Array).size():
 		var p: Dictionary = data.skeletons[k]
-		if int(p.joint_count) < 30:
+		if int(p.joint_count) < (2 if creatures else 30):
 			continue
 		var s := {"index": k, "object": p.object, "state": p.state, "clip": p.clip, "parent": Array(p.parent), "bind": [], "joints": []}
+		if creatures:
+			s["identity"] = _identity(p)
 		for j in int(p.joint_count):
 			var b: Vector3 = p.bind[j]
 			s.bind.append([b.x, b.y, b.z])
@@ -899,7 +942,7 @@ func _model(set_name: String) -> Dictionary:
 
 
 # The joint map (er_joint_map.cfg) and, once per model and game skeleton, how the two bind poses sit against each other.
-func _align(m: Dictionary, p: Dictionary) -> bool:
+func _align(m: Dictionary, p: Dictionary, reader := "person") -> bool:
 	var n := int(p.joint_count)
 	var akey := _build_key(p)
 	if (m.aligns as Dictionary).has(akey):
@@ -915,14 +958,17 @@ func _align(m: Dictionary, p: Dictionary) -> bool:
 	# the joints told apart by where they sit in the skeleton's bind pose (_auto_table), with the bone names of the
 	# map's [auto] section; a [jointsN] row of our own is taken instead when it is of the same build (the same head and
 	# hips: two skeletons of one joint count can be built differently - the shaman's and the berserker's 64)
-	var found := _auto_cached(p)
+	var found := _auto_cached(p) if reader == "person" else _four_cached(p)
+	var auto_section := "auto" if reader == "person" else "auto_four"
+	if reader != "person":
+		section = "none"
 	var row_fits := cfg.has_section(section) and (found.is_empty() or (int(cfg.get_value(section, "frame_head", -1)) == int(found.frame_head)
 		and int(cfg.get_value(section, "frame_left", -1)) == int(found.frame_left)))
 	if row_fits:
 		for key in cfg.get_section_keys(section):
 			table[key] = cfg.get_value(section, key)
 	else:
-		if found.is_empty() or not cfg.has_section("auto"):
+		if found.is_empty() or not cfg.has_section(auto_section):
 			if not said.has(section):
 				said[section] = true
 				print("rta_godot: er: the joint map has no [%s] of this build, and the skeleton could not be read by itself" % section)
@@ -930,16 +976,16 @@ func _align(m: Dictionary, p: Dictionary) -> bool:
 		for key in found:
 			if key.begins_with("frame_"):
 				table[key] = found[key]
-			elif cfg.has_section_key("auto", key):
-				var names: Array = cfg.get_value("auto", key)
+			elif cfg.has_section_key(auto_section, key):
+				var names: Array = cfg.get_value(auto_section, key)
 				table[key] = [found[key][0], found[key][1], names[0], names[1]]
-		var said_key := "%s:%d" % [section, int(found.frame_head)]
+		var said_key := "%s:%s:%d:%s" % [section, m.name, int(found.frame_head), akey]
 		if not said.has(said_key):
 			said[said_key] = true
 			var line := PackedStringArray()
 			for key in table:
 				line.append("%s = %s" % [key, str(table[key])])
-			print("rta_godot: er: [%s] (head at joint %d) read from the skeleton itself: %s" % [section, int(found.frame_head), ", ".join(line)])
+			print("rta_godot: er: %s: a %d-joint skeleton (head at joint %d) read by itself (%s): %s" % [m.name, n, int(found.frame_head), reader, ", ".join(line)])
 	var game_rest := func(j: int) -> Vector3: return p.bind[j]
 	var er_rest := func(b: int) -> Vector3: return (m.grest[b] as Transform3D).origin
 	# the two figures' up, forward and left, from their own bind poses (named in the map's [frame] section)
@@ -964,7 +1010,7 @@ func _align(m: Dictionary, p: Dictionary) -> bool:
 	var e_up: Vector3 = (er_rest.call(e_head) - e_ground)
 	var g_side: Vector3 = (game_rest.call(g_left) - game_rest.call(g_right))
 	var e_side: Vector3 = (er_rest.call(e_left) - er_rest.call(e_right))
-	var al := {"map": [], "by_bone": {}, "scale": g_up.length() / maxf(e_up.length(), 1e-4)}
+	var al := {"map": [], "by_bone": {}, "by_name": {}, "scale": g_up.length() / maxf(e_up.length(), 1e-4)}
 	al["axes"] = _frame_basis(g_up, g_side) * _frame_basis(e_up, e_side).inverse()
 	for key in table:
 		if key.begins_with("frame_"):
@@ -988,6 +1034,7 @@ func _align(m: Dictionary, p: Dictionary) -> bool:
 		var entry := {"name": key, "er": eb_bone, "game": gj, "align": align, "fixed": align * (al.axes as Basis) * (m.grest_basis[eb_bone] as Basis)}
 		al.map.append(entry)
 		al.by_bone[eb_bone] = entry
+		al.by_name[key] = gj
 	# the root of the mapped bones (the one nearest the skeleton's root), and the bones a frame computes: those that carry
 	# the mesh or a weapon, the mapped ones and their ancestors, parents first
 	var root_entry: Dictionary = {}
@@ -1079,6 +1126,18 @@ func _draw_figure(t: Dictionary) -> void:
 	var root_rest: Transform3D = grest[root_bone]
 	var above := root_global * Transform3D(root_rest.basis.scaled(kv), root_rest.origin * k).affine_inverse()
 	var down := Vector3(0, 0, -1)
+	# the legs as capsules (thigh and shin, from the game's own joints), for the swinging bones to stay out of: a cape or a
+	# skirt is pushed off a leg rather than passing through it (a simple collision of our own; presentation only)
+	var capsules: Array = []
+	if not springs.is_empty():
+		var leg_r := LEG_RADIUS * k
+		for side in ["left", "right"]:
+			var seg: Array = []
+			for part in ["_thigh", "_calf", "_foot"]:
+				if (al.by_name as Dictionary).has(side + part):
+					seg.append((joints[int(al.by_name[side + part])] as Transform3D).origin)
+			for q in range(seg.size() - 1):
+				capsules.append([seg[q], seg[q + 1], leg_r * (1.0 if q == 0 else 0.75)])
 	for b in al.order:
 		if b == root_bone:
 			g[b] = root_global
@@ -1116,6 +1175,19 @@ func _draw_figure(t: Dictionary) -> void:
 				if angle > SPRING_MAX:
 					now = want.slerp(now, SPRING_MAX / angle).normalized()
 				pos = origin + now * length
+				for cap in capsules:
+					var a0: Vector3 = cap[0]
+					var ab: Vector3 = (cap[1] as Vector3) - a0
+					var u := clampf((pos - a0).dot(ab) / maxf(ab.length_squared(), 1e-6), 0.0, 1.0)
+					var near := a0 + ab * u
+					var off := pos - near
+					var r := float(cap[2])
+					if off.length() < r:
+						# out to the capsule's skin, away from the leg (behind it when it is on the axis), at the bone's length
+						var away := off.normalized() if off.length() > 1e-4 else (pos - origin).normalized()
+						pos = origin + ((near + away * r) - origin).normalized() * length
+						v -= away * minf(0.0, v.dot(away))
+				now = (pos - origin).normalized()
 				g[b] = Transform3D(_arc(want, now) * from_parent.basis, origin)
 			else:
 				g[b] = from_parent
@@ -1140,7 +1212,7 @@ func _draw_figure(t: Dictionary) -> void:
 		for q in binds.size():
 			var bone := binds[q]
 			RenderingServer.skeleton_bone_set_transform(rid, q, (g[bone] as Transform3D) * (poses[q] as Transform3D) if bone >= 0 else Transform3D())
-		_place(instances[i].instance, mesh.materials)
+		_place(instances[i].instance, mesh.materials, t)
 		RenderingServer.instance_set_visible(instances[i].instance, true)
 		RenderingServer.instance_set_custom_aabb(instances[i].instance, AABB(root_at - Vector3(120, 120, 120), Vector3(240, 240, 240)))
 	# the weapons
@@ -1172,7 +1244,7 @@ func _draw_figure(t: Dictionary) -> void:
 			weapons[key] = w
 		var size := k * float(wm.size)
 		RenderingServer.instance_set_transform(w.instance, Transform3D(turn.scaled(Vector3(size, size, size)), grip))
-		_place(w.instance, wm.materials)
+		_place(w.instance, wm.materials, t)
 		RenderingServer.instance_set_visible(w.instance, true)
 		shown[key] = true
 	for key in weapons:
@@ -1184,6 +1256,7 @@ const SPRING_PULL := 140.0          # 1/s^2: how hard the pose pulls the weight 
 const SPRING_GRAVITY := 9.8         # m/s^2 (times the figure's units a metre)
 const SPRING_DAMP := 0.86           # of the speed kept a frame
 const SPRING_MAX := 1.0             # radians at most from the pose
+const LEG_RADIUS := 0.11            # metres (times the figure's units a metre): the thigh's capsule; the shin's 3/4 of it
 
 
 # The world's draws are all in Godot's transparent pass, in the list's order (RtaDrawer::place: a sorting offset each),
@@ -1215,7 +1288,7 @@ func _own_light() -> void:
 			RenderingServer.light_set_cull_mask(light, OWN_LAYER)
 			var inst := RenderingServer.instance_create2(light, scenario)
 			own_lights.append([light, inst])
-	var cam: Transform3D = drawer.call("get_scene_info").get("camera", Transform3D())
+	var cam: Transform3D = _scene_info().get("camera", Transform3D())
 	for k in own_lights.size():
 		# key: from over the camera's shoulder, down at 50 degrees; fill: from the other side, low
 		var dir := (-cam.basis.z).normalized()
@@ -1226,11 +1299,47 @@ func _own_light() -> void:
 		RenderingServer.instance_set_visible(own_lights[k][1], not lit)
 
 
-func _place(instance: RID, materials: Array) -> void:
+var info_frame := -1
+var info_now := {}
+func _scene_info() -> Dictionary:           # the drawer's scene info, once a frame (it is not cheap: its figures line)
+	if info_frame != Engine.get_process_frames():
+		info_frame = Engine.get_process_frames()
+		info_now = drawer.call("get_scene_info")
+	return info_now
+
+
+var last_order := -1.0
+var orders_frame := -1
+var first_order := -1.0
+var orders := {}                    # this frame's drawer: per object left out, the place of its first draw
+func _place(instance: RID, materials: Array, t: Dictionary = {}) -> void:
 	RenderingServer.instance_set_layer_mask(instance, 1 | OWN_LAYER)
 	for i in materials.size():
 		RenderingServer.instance_set_surface_override_material(instance, i, (materials[i] as Material).get_rid())
-	var order := float(drawer.call("get_scene_info").get("hidden_order", -1.0))
+	# each figure at the place of the first of its own draws the drawer left out (a creature drawn before the leaves over it
+	# stays under them; the first hidden draw of the whole frame may be another figure's); without one this frame (the
+	# list the drawer took was drawn before the objects were named), the place that figure had last - not the end of
+	# the pass, where it was drawn over everything, the overhead view's see-through leaves among it
+	if orders_frame != Engine.get_process_frames():
+		orders_frame = Engine.get_process_frames()
+		var info: Dictionary = _scene_info()
+		orders = info.get("hidden_orders", {})
+		first_order = float(info.get("hidden_order", -1.0))
+	var order := -1.0
+	for o in t.get("objects", PackedInt64Array()):
+		if orders.has(o) and (order < 0.0 or float(orders[o]) < order):
+			order = float(orders[o])
+	if order < 0.0 and t.is_empty():
+		order = first_order
+	var key := String(t.get("key", ""))
+	if order >= 0.0:
+		if key != "" and figures.has(key):
+			figures[key]["order"] = order
+		last_order = order
+	elif key != "" and figures.has(key) and figures[key].has("order"):
+		order = float(figures[key].order)
+	else:
+		order = last_order
 	RenderingServer.instance_set_pivot_data(instance, order + 0.5 if order >= 0.0 else 1.0e6, false)
 
 
@@ -1462,3 +1571,277 @@ func _arc(a: Vector3, b: Vector3) -> Basis:
 		return Basis(any.normalized(), PI)
 	return Basis(axis / s, atan2(s, c))
 
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Creatures (look.er_creatures = on): the game's monsters drawn as local models of a similar build.  Which creature a
+# skeleton is: its animation state lies at +0x114 of its creature (as the players'), whose class is told by its virtual
+# table (+0x48) and, for one loaded from the level, by the record's class name (+0x34) - read only.  er_creatures.cfg
+# (our own) names, per class, the model folder (er-models/creatures/<model>) and how the joints are read from the bind
+# pose ("person": _auto_table; "four": _auto_four).  A class it does not name, or a model that is not there, keeps the
+# game's own figure.  What the creature holds is part of its own objects: hidden with it (the model carries its own).
+func _creature_table() -> ConfigFile:
+	if creature_cfg == null:
+		creature_cfg = ConfigFile.new()
+		if creature_cfg.load("res://er_creatures.cfg") != OK:
+			print("rta_godot: er: no er_creatures.cfg: the creatures are the game's")
+	return creature_cfg
+
+
+var identities := {}                # state -> identity (checked again by its virtual table each frame)
+func _identity(p: Dictionary) -> Dictionary:
+	var cfg := _creature_table()
+	var obj := (int(p.state) - 0x114) & 0x1ffffff
+	var vt := int(machine.peek_u32(obj + 0x48)) & 0x1ffffff
+	var known: Dictionary = identities.get(int(p.state), {})
+	if not known.is_empty() and int(known.vtable) == vt:
+		return known
+	var cls := String(cfg.get_value("classes", "0x%x" % vt, ""))
+	var rec := ""
+	var family: Array = []
+	if cls != "":
+		var rec_at := int(machine.peek_u32(obj + 0x34)) & 0x1ffffff
+		rec = machine.peek_string(rec_at, 32) if rec_at != 0 else ""
+		if rec != "" and cfg.has_section_key("families", rec):
+			family = cfg.get_value("families", rec)
+		elif cfg.has_section_key("families", cls):
+			family = cfg.get_value("families", cls)
+	var id := {"object": obj, "vtable": vt, "class": cls, "record": rec, "family": family}
+	if identities.size() > 512:
+		identities.clear()
+	identities[int(p.state)] = id
+	return id
+
+
+func _find_creatures() -> void:
+	if er_failed != "":
+		return
+	var skeletons: Array = data.skeletons
+	var skip := {}
+	for t in targets:
+		skip[int(skeletons[t.skeleton].state)] = true
+	for pl in data.get("players", []):
+		skip[int(pl.state)] = true
+	if player_skeleton >= 0 and player_offset >= 0 and player_offset < 0x800:
+		skip[int(skeletons[player_skeleton].state)] = true
+	# one figure per pose (a figure drawn as several objects has one pose); several figures can share one animation state
+	# (a band of archers runs one), so the state names the kind - its creature's class - and the pose the figure
+	var poses := {}
+	var per_state := {}
+	var ids := {}
+	for k in skeletons.size():
+		var s: Dictionary = skeletons[k]
+		var st := int(s.state)
+		if skip.has(st) or int(s.joint_count) < 8:
+			continue
+		# (one pose buffer can be drawn at several places - a band sharing its animation: then each place is a figure)
+		var root: Vector3 = (s.joints[0] as Transform3D).origin
+		var pkey := "%x:%d:%d:%d:%d" % [st, int(s.pose), roundi(root.x / 8.0), roundi(root.y / 8.0), roundi(root.z / 8.0)]
+		if poses.has(pkey):
+			var more: Dictionary = poses[pkey]
+			more["objects"] = (more.objects as PackedInt64Array) + PackedInt64Array([int(s.object)])
+			continue
+		if not ids.has(st):
+			ids[st] = _identity(s)
+		var id: Dictionary = ids[st]
+		var said_key := "%s/%s/%d" % [id.class, id.record, int(s.joint_count)]
+		if not creature_said.has(said_key):
+			creature_said[said_key] = true
+			print("rta_godot: er: creature %s (record \"%s\"), %d joints: %s" % [id.class if id.class != "" else "unknown 0x%x" % int(id.vtable),
+				id.record, int(s.joint_count), ("drawn as " + String(id.family[0])) if not (id.family as Array).is_empty() else "the game's own"])
+		if (id.family as Array).is_empty():
+			continue
+		var set_name := "creatures/" + String(id.family[0])
+		var model := _model(set_name)
+		if model.is_empty() or not _align(model, s, String(id.family[1])):
+			continue
+		var n := int(per_state.get(st, 0))
+		per_state[st] = n + 1
+		var t := {"key": "c%x:%d" % [st, n], "skeleton": k, "set": set_name, "slot": -1, "cls": -1, "wclass": -1, "item": 0, "local": false,
+			"creature": true, "objects": PackedInt64Array([int(s.object)]), "held": []}
+		poses[pkey] = t
+		targets.append(t)
+
+
+var _four_cache := {}
+func _four_cached(p: Dictionary) -> Dictionary:
+	var key := _build_key(p)
+	if not _four_cache.has(key):
+		_four_cache[key] = _auto_four(p)
+	return _four_cache[key]
+
+
+# A four-legged skeleton read from its bind pose (z up, the figure's left at +x, facing -y, as the people's): the two
+# joints from which a branch goes down on either side are the hips and the shoulders - the front one the shoulders; the spine is the way between them, the
+# neck and head the shoulders' remaining branch that reaches farthest forward, the tail the hips' remaining branch.  Each
+# leg: its first joint, a knee halfway, the foot and the toe at its end.
+func _auto_four(p: Dictionary) -> Dictionary:
+	var n := int(p.joint_count)
+	var bind: PackedVector3Array = p.bind
+	var parent: PackedInt32Array = p.parent
+	var kids := []
+	kids.resize(n)
+	for j in n:
+		kids[j] = []
+	for j in n:
+		if parent[j] >= 0:
+			kids[parent[j]].append(j)
+	var lo := PackedFloat32Array()
+	lo.resize(n)
+	var top := -1e9
+	var bottom := 1e9
+	for j in range(n - 1, -1, -1):
+		lo[j] = bind[j].z
+		for c in kids[j]:
+			lo[j] = minf(lo[j], lo[c])
+		top = maxf(top, bind[j].z)
+		bottom = minf(bottom, bind[j].z)
+	var h := top - bottom
+	if h < 1.0:
+		return {}
+	# the girdles: joints with a branch going down on each side
+	var girdles: Array = []
+	for j in n:
+		var l := -1
+		var r := -1
+		for c in kids[j]:
+			if lo[c] < bind[j].z - 0.4 * (bind[j].z - bottom):
+				if bind[c].x > 0.01 * h and l < 0:
+					l = c
+				elif bind[c].x < -0.01 * h and r < 0:
+					r = c
+		if l >= 0 and r >= 0:
+			girdles.append([j, l, r])
+	if girdles.size() < 2:
+		return {}
+	var path_to_root := func(j: int) -> Array:
+		var out: Array = []
+		while j >= 0:
+			out.append(j)
+			j = parent[j]
+		return out
+	# the head: of all joints, the one farthest from both girdles' middle along the line between them - forward is the end
+	# where the head is; it is not on a leg branch
+	var a: int = girdles[0][0]
+	var b: int = girdles[1][0]
+	var leg_roots := {}
+	for g in girdles:
+		leg_roots[g[1]] = true
+		leg_roots[g[2]] = true
+	var on_leg := func(j: int) -> bool:
+		var q := j
+		while q >= 0:
+			if leg_roots.has(q):
+				return true
+			q = parent[q]
+		return false
+	var axis := (bind[b] - bind[a])
+	if axis.length() < 1e-4:
+		return {}
+	axis = axis.normalized()
+	var head := -1
+	var tail := -1
+	for j in n:
+		if on_leg.call(j) or j == a or j == b:
+			continue
+		var t := (bind[j] - bind[a]).dot(axis)
+		if head < 0 or t > (bind[head] - bind[a]).dot(axis):
+			head = j
+		if tail < 0 or t < (bind[tail] - bind[a]).dot(axis):
+			tail = j
+	# which girdle is in front: the figures face -y in their bind pose (as the people do)
+	var hips: Array = girdles[0]
+	var shoulders: Array = girdles[1]
+	if bind[a].y < bind[b].y:
+		hips = girdles[1]
+		shoulders = girdles[0]
+		var swap := head
+		head = tail
+		tail = swap
+	# the spine: the way from the hips to the shoulders through the tree
+	var up_h: Array = path_to_root.call(int(hips[0]))
+	var up_s: Array = path_to_root.call(int(shoulders[0]))
+	var common := -1
+	for q in up_h:
+		if up_s.has(q):
+			common = q
+			break
+	if common < 0:
+		return {}
+	var spine: Array = up_h.slice(0, up_h.find(common) + 1)
+	var rest: Array = up_s.slice(0, up_s.find(common))
+	rest.reverse()
+	spine.append_array(rest)              # hips ... shoulders
+	if spine.size() < 2:
+		return {}
+	# the neck: the head's way up to the shoulders (or to the spine where it leaves it)
+	var neck: Array = []
+	var q := head
+	while q >= 0 and not spine.has(q):
+		neck.append(q)
+		q = parent[q]
+	neck.reverse()                        # from the spine out to the head's end
+	var out := {}
+	var hip := int(spine[0])
+	var sh := int(spine[spine.size() - 1])
+	out["pelvis"] = [hip, int(spine[1])]
+	if spine.size() >= 3:
+		out["spine"] = [int(spine[1]), int(spine[2])]
+	if spine.size() >= 4:
+		out["chest"] = [int(spine[spine.size() - 3]), int(spine[spine.size() - 2])]
+	if not neck.is_empty():
+		out["upper_chest"] = [sh, int(neck[0])]
+		# the head joint: the last of the chain with two or more children (the jaw leaves it), else the one before the end
+		var hj: int = neck[neck.size() - 2] if neck.size() >= 2 else neck[0]
+		for k in neck:
+			if (kids[k] as Array).size() >= 2 and k != neck[0]:
+				hj = k
+		var nj: int = neck[0] if neck[0] != hj else sh
+		out["neck"] = [nj, hj]
+		out["head"] = [hj, -1]
+		out["frame_head"] = hj
+	else:
+		return {}
+	# the tail: from the hips' remaining branch
+	var tq := tail
+	var tchain: Array = []
+	while tq >= 0 and not spine.has(tq):
+		tchain.append(tq)
+		tq = parent[tq]
+	tchain.reverse()
+	if tchain.size() >= 2:
+		out["tail"] = [int(tchain[0]), int(tchain[1])]
+	var leg := func(root: int, names: Array) -> Array:
+		var chain := [root]
+		var j := root
+		while not (kids[j] as Array).is_empty():
+			var best: int = kids[j][0]
+			for c in kids[j]:
+				if lo[c] < lo[best]:
+					best = c
+			j = best
+			chain.append(j)
+		if chain.size() < 3:
+			return []
+		var toe: int = chain[-1]
+		var foot: int = chain[-2] if chain.size() >= 4 else chain[-1]
+		var knee: int = chain[1]
+		var mid := (bind[root].z + bind[foot].z) * 0.5
+		for k in range(1, chain.size() - 1):
+			if chain[k] != foot and absf(bind[chain[k]].z - mid) < absf(bind[knee].z - mid):
+				knee = chain[k]
+		out[names[0]] = [root, knee]
+		out[names[1]] = [knee, foot]
+		if foot != toe:
+			out[names[2]] = [foot, toe]
+		return chain
+	var lh: Array = leg.call(int(hips[1]), ["left_thigh", "left_calf", "left_foot"])
+	var rh: Array = leg.call(int(hips[2]), ["right_thigh", "right_calf", "right_foot"])
+	leg.call(int(shoulders[1]), ["left_upper_arm", "left_forearm", "left_hand"])
+	leg.call(int(shoulders[2]), ["right_upper_arm", "right_forearm", "right_hand"])
+	if lh.is_empty() or rh.is_empty():
+		return {}
+	out["frame_toes"] = [lh[-1], rh[-1]]
+	out["frame_left"] = int(hips[1])
+	out["frame_right"] = int(hips[2])
+	return out

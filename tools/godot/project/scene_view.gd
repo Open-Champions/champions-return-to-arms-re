@@ -49,6 +49,8 @@ extends Node
 #   er_who    all (the default: every player of the game, this machine's and the others') | me (the local player only)
 #   er_springs on | off: capes, skirts and hair swing (er_layer.gd's springs; presentation only)
 #   er_metal  0..1 (default 0.5): how much of the outfits' metal maps is taken (no reflections here for a metal to show)
+#   er_creatures off | on: the game's monsters drawn as local models of a similar build, posed by their own skeletons
+#             (er_layer.gd, er_creatures.cfg: which class is which model); a class with no model keeps its own figure
 #
 # Each of sky, fog, sun, lamp, bloom, grade, foliage, fill is  off | on | auto.  auto - the default - means: in the views that look
 # along the ground (chase, shoulder, first person: tools/recomp/app/fpview.h), not in the game's own overhead view
@@ -89,7 +91,7 @@ var look := {
 	"fill_light": 0.36, "fill_scale": 1.0, "light_energy": 1.0, "light_shadows": 2.0, "light_max": 8.0,
 	"sun_gain": 1.0, "saturation": 1.10, "contrast": 1.06, "brightness": 1.0, "preset": "on", "balance": "0.6",
 	"backdrop": "auto", "models": "on", "model_smooth": 2.0, "model_crease": 0.35, "model_near": 520.0, "model_rim": 0.35, "model_form": 0.7, "model_sharp": 0.6, "contact": 0.55,
-	"er_models": "off", "er_set": "auto", "er_who": "all", "er_springs": "on", "er_metal": 0.5,
+	"er_models": "off", "er_set": "auto", "er_who": "all", "er_springs": "on", "er_metal": 0.5, "er_creatures": "off",
 }
 # Per level presets (tools/godot/presets.py): the look keys above, by level, picked from what the level's own colours
 # are (its clear colour, its dome, its light level, the game's light nodes, the picture the game's own camera gives) by
