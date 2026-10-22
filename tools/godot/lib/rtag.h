@@ -424,6 +424,15 @@ typedef struct rtag_skin_piece {    /* parallel to rtag_scene::pieces */
     uint32_t source_first, source_count;
     float slot0[12];            /* joint matrix 0 of the piece in the world (a rigid model's own matrix: a weapon in a hand) */
 } rtag_skin_piece;
+typedef struct rtag_skeleton_player {  /* one of the game's players, as of the draw pass the frame shows */
+    int32_t slot;               /* 0 .. 3 */
+    uint32_t object;            /* guest address of its creature (player record +0x43d8) */
+    uint32_t state;             /* its animation state (object +0x114): rtag_skeleton::state of the poses that draw it */
+    int32_t character_class;    /* record +0x50: 0 barbarian, 1 cleric, 2 shadowknight, 3 ranger, 4 wizard, 5 berserker, 6 shaman */
+    int32_t weapon_class;       /* the weapon in hand by the Hardcore mode's classes (soulscombat.h WC_*): 0 none, 1 dagger,
+                                   2 sword, 3 axe, 4 mace, 5 great weapon, 6 spear, 7 staff, 8 bow; -1 not known (built without it) */
+    uint32_t weapon_item;       /* guest address of the item record in hand, 0 none */
+} rtag_skeleton_player;
 typedef struct rtag_skeletons {
     uint32_t struct_size;       /* sizeof(rtag_skeletons), set by the caller */
     uint32_t skeleton_count, piece_count, source_count, full_count;
@@ -432,6 +441,9 @@ typedef struct rtag_skeletons {
     const rtag_skin_source* sources;
     const uint16_t* full_source;        /* per rtag_scene::full corner: which source of its piece (source_first + this) */
     uint32_t poses_seen, poses_matched; /* figures: poses uploaded / found again in the program's joint matrices */
+    /* added later (filled when struct_size reaches them): the players present - read on the game's thread with the poses */
+    uint32_t player_count;
+    rtag_skeleton_player players[4];
 } rtag_skeletons;
 /* 1: filled for the frame taken last (pointers valid until the next frame is taken); 0: none (no scene, an older library).
  * Same thread as rtag_poll. */

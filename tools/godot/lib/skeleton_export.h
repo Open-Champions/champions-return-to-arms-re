@@ -35,8 +35,9 @@ struct Frame {
     std::vector<rtag_skin_piece> pieces;        // parallel to scene::Frame::pieces
     std::vector<rtag_skin_source> sources;
     std::vector<uint16_t> full_source;
+    std::vector<rtag_skeleton_player> players;  // the game's players at the pass (their animation states tie them to poses)
     uint32_t poses_seen = 0, poses_matched = 0;
-    void clear() { skeletons.clear(); pieces.clear(); sources.clear(); full_source.clear(); poses_seen = poses_matched = 0; }
+    void clear() { skeletons.clear(); pieces.clear(); sources.clear(); full_source.clear(); players.clear(); poses_seen = poses_matched = 0; }
 };
 
 void install();                                 // before the game starts

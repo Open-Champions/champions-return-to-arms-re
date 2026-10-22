@@ -222,6 +222,9 @@ void room_agreed(bool on);
 // mode becomes active, keeps the local block (lock-on) and tells fpcontrols
 void blank(uint64_t number);
 bool active();                          // the mode is in force for the game that runs
+// The class (WC_*) of the weapon player `slot` holds, by the mode's own rules (the definition row's animation class, damage
+// kind, weight and name), and the item record (guest address, 0 none).  Reads memory only; whether or not the mode is on.
+int32_t weapon_class_in_hand(int slot, uint32_t* item = nullptr);
 // The overlay of the native picture: the stamina bar and the lock-on marker, added to the frame's draw list
 // before the backend draws it (render thread).  `view_*`: the camera of the frame (fpview::View).
 struct Camera { bool valid = false; float eye[3], forward[3], up[3], right[3], fov = 50; };

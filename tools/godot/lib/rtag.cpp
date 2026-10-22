@@ -11,6 +11,7 @@
 // host lets it go (Gate), finished frames wait in a short queue for the host (Outbox), and
 // the end of the run stops the machine instead of the process (host_godot.cpp).
 #include "rtag.h"
+#include <cstddef>
 
 #include "app_rt.h"
 #include "backend_gl.h"
@@ -687,7 +688,8 @@ const char* rtag_build_line(void) {
 const char* rtag_report_told(void) { return g_report_told.c_str(); }
 
 int rtag_skeletons_get(rtag_skeletons* out) {
-    if (!g_m || !out || out->struct_size < sizeof(rtag_skeletons) || !g_m->scene3d || !g_m->held) return 0;
+    // a host built before the players were added passes the shorter structure (up to player_count): it is served too
+    if (!g_m || !out || out->struct_size < offsetof(rtag_skeletons, player_count) || !g_m->scene3d || !g_m->held) return 0;
     skel::fill(g_m->held->scene.skeletons, *out);
     return 1;
 }

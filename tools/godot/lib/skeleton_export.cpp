@@ -3,9 +3,15 @@
 
 #include "rt.h"
 #include "scene_tap.h"
+#if __has_include("soulscombat.h")
+#include "soulscombat.h"
+#define SKEL_WEAPON_CLASSES 1
+#endif
 
 #include <atomic>
+#include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -34,7 +40,11 @@ struct Record {
 struct Batch {
     uint32_t number = 0;
     std::vector<Record> records;
+    std::vector<rtag_skeleton_player> players;
 };
+
+// docs/player.md, docs/spec/player-tick.md: the player records, each one's creature, its animation state (+0x114)
+const uint32_t G_PLAYERS = 0x4D8AF0, REC = 0x4C30, REC_OBJECT = 0x43D8, REC_CLASS = 0x50, O_ANIM = 0x114, O_VTABLE = 0x48, VT_PLAYER = 0x511308;
 
 std::mutex g_lock;
 std::deque<std::shared_ptr<Batch>> g_batches;      // the last few draw passes'
@@ -175,6 +185,23 @@ uint32_t drawn(const uint8_t* ram) {
         }
         batch->records.push_back(r);
     }
+    for (int slot = 0; slot < 4; slot++) {
+        const uint32_t record = G_PLAYERS + (uint32_t)slot * REC;
+        const uint32_t object = rd32(ram, record + REC_OBJECT);
+        if (!object || !in_ram(object, 0x600) || rd32(ram, object + O_VTABLE) != VT_PLAYER) continue;
+        rtag_skeleton_player p;
+        memset(&p, 0, sizeof p);
+        p.slot = slot;
+        p.object = object;
+        p.state = object + O_ANIM;
+        p.character_class = (int32_t)rd32(ram, record + REC_CLASS);
+#ifdef SKEL_WEAPON_CLASSES
+        p.weapon_class = soulscombat::weapon_class_in_hand(slot, &p.weapon_item);
+#else
+        p.weapon_class = -1;
+#endif
+        batch->players.push_back(p);
+    }
     g_passes++;
     g_recorded += batch->records.size();
     std::lock_guard<std::mutex> hold(g_lock);
@@ -274,11 +301,13 @@ void build(const render::TapFrame& tap, const std::vector<uint8_t>& kept, Frame&
         out.pieces.push_back(sp);
     }
     out.poses_seen = batch ? (uint32_t)batch->records.size() : 0;
+    if (batch) out.players = batch->players;
 }
 
 void fill(const Frame& f, rtag_skeletons& out) {
     const uint32_t size = out.struct_size;
-    memset(&out, 0, sizeof out);
+    // an older host's structure ends before `player_count`: only that much is written
+    memset(&out, 0, std::min<size_t>(sizeof out, std::max<size_t>(size, offsetof(rtag_skeletons, player_count))));
     out.struct_size = size;
     out.skeleton_count = (uint32_t)f.skeletons.size();
     out.piece_count = (uint32_t)f.pieces.size();
@@ -290,6 +319,10 @@ void fill(const Frame& f, rtag_skeletons& out) {
     out.full_source = f.full_source.data();
     out.poses_seen = f.poses_seen;
     out.poses_matched = f.poses_matched;
+    if (size >= offsetof(rtag_skeletons, players) + sizeof out.players) {
+        out.player_count = (uint32_t)std::min<size_t>(f.players.size(), 4);
+        for (uint32_t i = 0; i < out.player_count; i++) out.players[i] = f.players[i];
+    }
 }
 
 void report() {

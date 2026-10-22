@@ -41,10 +41,14 @@ extends Node
 #             (shaders/backdrop.gdshader), fading into the haze
 #   contact   contact shadows (0..1, 0 = none): a soft dark patch on the level under every standing figure, from the
 #             figures' feet the drawer finds in the frame (get_sky_info().contacts)
-#   er_models off | on | self: the local player drawn as another figure posed by the game's own skeleton (er_layer.gd):
+#   er_models off | on | self: the players drawn as other figures posed by the game's own skeletons (er_layer.gd):
 #             on = the owner's own converted Elden Ring models, when their local folder is there (nothing changes
-#             otherwise); self = the game's own bind-pose mesh re-skinned in Godot (the skeleton stream's check)
-#   er_set    which of the local outfits (a folder of er-models: default, barbarian, cleric, ...)
+#             otherwise); self = the local player's own bind-pose mesh re-skinned in Godot (the skeleton stream's check)
+#   er_set    auto (the default: each player's outfit by its character class) or one of the local outfits for everyone
+#             (a folder of er-models: default, barbarian, cleric, ...)
+#   er_who    all (the default: every player of the game, this machine's and the others') | me (the local player only)
+#   er_springs on | off: capes, skirts and hair swing (er_layer.gd's springs; presentation only)
+#   er_metal  0..1 (default 0.5): how much of the outfits' metal maps is taken (no reflections here for a metal to show)
 #
 # Each of sky, fog, sun, lamp, bloom, grade, foliage, fill is  off | on | auto.  auto - the default - means: in the views that look
 # along the ground (chase, shoulder, first person: tools/recomp/app/fpview.h), not in the game's own overhead view
@@ -85,7 +89,7 @@ var look := {
 	"fill_light": 0.36, "fill_scale": 1.0, "light_energy": 1.0, "light_shadows": 2.0, "light_max": 8.0,
 	"sun_gain": 1.0, "saturation": 1.10, "contrast": 1.06, "brightness": 1.0, "preset": "on", "balance": "0.6",
 	"backdrop": "auto", "models": "on", "model_smooth": 2.0, "model_crease": 0.35, "model_near": 520.0, "model_rim": 0.35, "model_form": 0.7, "model_sharp": 0.6, "contact": 0.55,
-	"er_models": "off", "er_set": "default",
+	"er_models": "off", "er_set": "auto", "er_who": "all", "er_springs": "on", "er_metal": 0.5,
 }
 # Per level presets (tools/godot/presets.py): the look keys above, by level, picked from what the level's own colours
 # are (its clear colour, its dome, its light level, the game's light nodes, the picture the game's own camera gives) by

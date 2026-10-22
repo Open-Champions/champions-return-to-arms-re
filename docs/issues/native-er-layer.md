@@ -7,12 +7,17 @@ Everything below says **Ran** (with what was seen) or **Read**. A successor need
 
 ## STATE
 
+**2026-10-22, round 2** (built into `local/godot-r11/`; tests and pictures `local/er-layer/r2/`, rooms `local/er-layer/m6..m9`; not
+committed): every player drawn with the layer, each in the outfit of its class and with the Elden Ring weapon of its weapon's
+class on the game's own grip; normal and metal/roughness maps; capes, skirts and hair swing; the skeleton reader finds arms on
+any person skeleton; the Windows and Linux libraries built with it; the layer costs about 0.3-0.45 ms a frame. Round 2 below.
+
 | Asked | State | Shown |
 |---|---|---|
-| A. the game's skeletons out of the library | **done, Ran**: per drawn animated model its skeleton (parents, bind pose), its posed joints and skin matrices in the world, the bind-pose mesh with joints and weights; `rtag_skeletons_get` (optional function), `RtaMachine.get_skeletons(with_mesh)` | the game's bind mesh re-skinned from the stream: 0.00035 units at most in C++, 0.022 through Godot's `Skeleton3D` (below) |
-| B. Elden Ring models, local only | **done, Ran**: 50 part files and the shared body textures fetched by byte range (188 MB of the 14.7 GB the two archives hold), decrypted, decompressed, read with SoulsFormatsNEXT, written as glTF: 8 outfits, one per Champions class | `local/souls-ref/er-models/<set>/` (never tracked, never uploaded) |
-| C. retarget and draw (`look.er_models = on`) | **done, Ran**: a joint map of our own (`tools/godot/project/er_joint_map.cfg`) plus a reader of any person skeleton's bind pose; the figure drawn in the world's draw order; nothing changes without the folder | pictures below; running and attacking, overhead and shoulder views |
-| multiplayer unaffected | **Ran**: two Godot portals in one room, copy A with the layer on (shoulder view), copy B without: **1,851 ticks in step** hub > drunare, no shared column differs | `local/er-layer/m2/` |
+| A. the game's skeletons out of the library | **done, Ran**: per drawn animated model its skeleton (parents, bind pose), its posed joints and skin matrices in the world, the bind-pose mesh with joints and weights; `rtag_skeletons_get` (optional function), `RtaMachine.get_skeletons(with_mesh)`; **round 2**: and the game's players (slot, creature, animation state, character class, Hardcore weapon class, item in hand) | the game's bind mesh re-skinned from the stream: 0.00035 units at most in C++, 0.022 through Godot's `Skeleton3D` (below) |
+| B. Elden Ring models, local only | **done, Ran**: 8 outfits, 9 weapons (one per Hardcore class and a shield); **round 2**: normal and metal/roughness maps, tangents, 31 more weapon files fetched (56 MB, remembered login, no password) to find an axe, a mace, a polearm and a bow | `local/souls-ref/er-models/` (never tracked, never uploaded) |
+| C. retarget and draw (`look.er_models = on`) | **done, Ran**: joint map plus the bind-pose reader; **round 2**: every player (`er_who = all`), outfit by class (`er_set = auto`), weapons by class on the game's grip, springs | `local/er-layer/r2/step1..5` |
+| multiplayer unaffected | **Ran (round 2)**: two Godot portals in one room, copy A with the layer on drawing both players (shaman and berserker), copy B without: **1,828 ticks in step with the final code** (m9), 1,853 (m8), 1,807 (m7), 1,743 (m6), hub > drunare, no shared column differs | `local/er-layer/m7/pictures`, `m8.log` |
 
 Built into `local/godot-r10/` (`RTA_GODOT_OUT=local/godot-r10`; a copy-on-write clone of `local/godot-r9`, its snapshot of
 `tools/recomp` with this round's `render/scene_tap.*`; `build.py lib`, `extension`, `project`). Tests, routes and pictures:
@@ -132,25 +137,107 @@ figure), `sheet-overhead-zoom.jpg` (overhead, five moments, the same three); the
 drunare; copy A with `app view shoulder` and `app look er_models on` and a picture every 90 blanks, copy B as it was.
 `compare.py ticks a b`: **1,851 ticks compared, no shared column differs**. (A first run, `m1`, the same: 1,818 ticks.)
 
+## Round 2 (2026-10-22): materials, weapons by class, every player, springs, arms on any skeleton, libraries, cost
+
+Built into `local/godot-r11/` (a copy-on-write clone of r10 with `build.py snapshot --refresh`: today's `tools/recomp`, which
+has the Hardcore weapons round; `lib`, `extension`, `project`). Tests: `local/er-layer/run.sh` (`OUT=local/godot-r11`; new
+switches `HUB=N` a picture in the hub, `DUMP=1`, `COST=1`, `UNPACED=` for a paced run, modes like `on/shaman+er_springs=off`),
+`room11.py` (room10 on r11; B takes another class: `ROOM_B_CLASS` presses right on the race-and-class page; A catches a
+55-joint skeleton: `app er catch`). Pictures: `local/er-layer/r2/step1-materials` .. `step5-arms` (before | after).
+
+**1. Materials (Ran).** The FLVER materials name their maps by the part (`<MODEL>_a`, `_n`, `_m`; the TPFs were already
+extracted to PNG). Read from them (Ran, 5 parts): `_n` holds the normal's x, y in R, G and a gloss in B (high on the metal,
+where `_m` is high: BD_M_1500 metal 115 against cloth 16), `_m` is a grey metalness. `scripts/er_gltf.py` now writes per
+material a normal map (green turned to glTF's up, z rebuilt), a metal/roughness map (G = 1 - gloss, B = metalness; JPEG,
+at most 1024 a side; `ER_MAP_SIDE`), and per-vertex tangents; fur shells (`*fur*` materials, stacked copies the game's fur
+shader draws) are left out - drawn plainly they were the shaman's "shards". +3 MB an outfit. In Godot a full-strength metal
+map read black (the scene is drawn by the game's own shaders, there are no reflections of Godot's to show), so the layer
+takes `look.er_metal` (0.5) of it. Seen in two levels and both views: `step1-materials/{hub,valor}-{shoulder,overhead}.jpg`
+(before: the same models built with `ER_FLAT=1`, albedo only). The difference is in the metal parts (chain mail, helm, pauldrons
+take relief and highlights); cloth changes little.
+
+**2. Weapons (Ran).** The library now hands over the game's players (`rtag_skeletons::players`, filled on the game's thread
+with the poses): slot, creature (record +0x43d8), animation state (+0x114), character class (record +0x50) and the weapon
+class by the Hardcore mode's own rule (`soulscombat::weapon_class_in_hand`, new: read only, whether or not the mode is on).
+The weapon in hand is drawn as rigid pieces **of its bearer's own object** (not an object of its own: the r10 search by object
+found nothing and hid the weapon with the body), their matrix at a hand joint: the game's attach point. Its own long and side
+axes are read once per weapon from its bind-pose vertices (Ran: through its matrix they are the drawn corners within 0.0001
+units). The Elden Ring weapon of the class (`er-models/weapons/<class>.glb`, its axes in `<class>.json`) is turned so its
+long and side axes lie along the game weapon's, its grip put where the game's grip is, measured from the figure's own hand
+(`[weapons]` of the joint map: a shift along the weapon and a size, our own numbers). Classes -> models, chosen by looking at
+40 weapon models' shapes (the model numbers are not the weapon numbers: 1100 and 1111 are twinblades, 1508 a crossbow, 1601 a
+glaive): dagger 0100, sword 0200, axe 0700, mace 0800, great weapon 0300, spear 1001 (a halberd), staff 3000, bow 1401, shield
+2101. Ran: the shaman's mace and the berserker's axe (and a bow when B changed weapons) on their grips, through swings:
+`step2-weapons/valor-fight{1,3}.jpg` (game | r1 | now), `step3-outfits/room-*.jpg`.
+
+**3. Outfit by class, every player (Ran).** `look.er_set = auto` (default): record class 0 barbarian, 1 cleric, 2
+shadowknight -> necromancer, 3 ranger, 4 wizard, 5 berserker, 6 shaman; a name for everyone otherwise. `look.er_who = all`
+(default) | `me`. A player's figure is the skeleton posed by its animation state; this machine's own player in a net game is
+drawn from its prediction copy, so the local slot takes the skeleton the controls name. Two builds of 64 joints exist
+(shaman and berserker: Ran, different joint orders): `[joints64]` is used only when its head and hips are where the reader
+finds them, else the skeleton is read by itself. Ran in a room: both players drawn on A (shaman with the mace, berserker with
+the axe), B without the layer, in step (above): `step3-outfits/room-{0090,0180,0270,drunare-1}.jpg` (r10: only the local
+player, default outfit | now). All eight outfits on one pose: `local/er-layer/r2/sets/`.
+
+**4. Capes and skirts (Ran).** The converter took cloth bones from a part that does not use them (no parent, no place): they
+hung from nothing and moved rigidly with the pelvis. Now the part that uses a node gives its parent and place (the capes hang
+from the spine, the skirts from the thighs, chains of up to four), and `figure.json` names the bones that swing (cloth, mantle,
+cape, cloak, skirt, hair, hood) with the centre of what each carries. Godot's SpringBoneSimulator3D works on a Skeleton3D node;
+the layer poses through the RenderingServer, so the springs are our own: per bone a weight at that centre, pulled toward where
+the pose puts it (140/s^2), gravity, damping 0.86 a frame, at most 1 radian from the pose; the bone turns toward it; children
+follow. Presentation only (`look.er_springs = off` turns them off). `step4-springs/{run,fight1,fight3,fight5}.jpg` (berserker's
+wings, off | on).
+
+**5. Arms on any skeleton (Ran).** The bind-pose reader (`_auto_table`) now follows the branch that reaches farthest (a
+twist or elbow helper may stick out further sideways than the hand) and reads hand, elbow and shoulder from lengths along the
+chain (hand about 78 % along, fingers past it; elbow halfway; a short first link a clavicle). Ran on the two real 64-joint
+builds (unchanged results), on synthetic variants (no clavicle; mittens) and on the real 55-joint skeleton caught in drunare:
+**clavicle, upper arm, forearm and hand on both sides (17-18 joints mapped, against 10)**. That 55-joint figure is a figure
+of drunare's cut scene (state 0x62b1d4, no player's), which r10 and the first round-2 rooms drew in the local player's outfit
+because the "nearest skeleton" guess took it: the local slot now needs the skeleton the controls name (Ran, m9: the
+cut-scene figure caught again, not drawn as a player).
+`step5-arms/catch55-drunare.jpg`.
+
+**Libraries (built).** Windows x86-64 (`build_lib_win.py`, clang for mingw: 41 files, `local/godot-r11/windows/librta_game.dll`,
+71 functions, Windows' own DLLs) and Linux aarch64 (`build_lib_linux.py --arch arm64` in the container: 39 files,
+`linux/aarch64/librta_game.so`, its load test passes); both link `skeleton_export.cpp` with `soulscombat::weapon_class_in_hand`.
+Not run on those systems.
+
+**Cost (Ran, paced, 3024 x 1964 - the display's resolution - shoulder view, the fight route).** The layer's own time a frame
+with one figure drawn: **0.31 ms mean in valor's walk and fight, 0.45 ms in the boar fight (worst 0.6 ms)**: get_skeletons
+0.05-0.1, finding the players and their weapons 0.1, posing (about 100 bones) and drawing 0.06-0.12; once 183 ms when an
+outfit is loaded (the glTF read). Pictures a second 58.1 with the layer against 58.2 without (the route's own pacing).
+`local/er-layer/r2/cost-{off,on}/`. (A first measure gave 13 ms: the weapon's one-time request for the meshes was never
+cleared, so every frame asked for them; and `get_skeletons` now leaves out the skin matrices and the matrices of pieces that
+are not rigid models unless the meshes are asked for.)
+
+**Changed (tracked):** `tools/godot/lib/rtag.h` (`rtag_skeleton_player`, `rtag_skeletons::player_count/players`, appended;
+an older host's shorter structure is still served), `rtag.cpp`, `skeleton_export.{h,cpp}` (the players at each draw pass),
+`tools/recomp/app/soulscombat.{h,cpp}` (`weapon_class_in_hand`), `tools/godot/extension/src/rta_machine.cpp` (`players`;
+lighter dictionary), `tools/godot/project/er_layer.gd` (rewritten: models per outfit, figures per player, weapons, springs,
+reader), `er_joint_map.cfg` (`[weapons]`, `[joints64]` only for its build), `scene_view.gd` (`er_set = auto`, `er_who`,
+`er_springs`, `er_metal`). Local: `souls-ref/scripts/er_gltf.py` (maps, tangents, cloth parents, `figure.json`, weapons
+mode, skin joints only those used plus the mapped ones), `er_sets.sh`.
+
 ## What is local only
 
 Everything of either game: `local/souls-ref/` (the depot's files, the partial archives `er/Game/Data0.bdt` and
 `Data3.bdt` - sparse, only the fetched ranges - the decrypted headers' index, `er-raw/`, `er-work/`, `er-models/`), the
 patched DepotDownloader and its source, SoulsFormatsNEXT and `flverdump`, the ooz builds, `unkrak.exe`, the .NET SDK,
-`local/godot-r10/`, `local/er-layer/`. Tracked: code and our own joint table only.
+`local/godot-r10/`, `local/godot-r11/`, `local/er-layer/`, the Windows test machine's scratch folder (removed after each
+decompression). Tracked: code and our own joint table only.
 
 ## Not done, and what to know
 
-- Cloth, capes and skirts stand as they rest (no cloth simulation): on a leaning figure they stick out; outfits without
-  them look best (default, cleric, wizard).
-- Only the local player is replaced; other players and creatures stay the game's. The outfit is chosen by `er_set`, not
-  by the character's class (the class is not read yet).
-- Weapons: the model's own weapon dummy, not calibrated against the game's grip; the game's weapon is hidden by distance
-  from the hand (20 units), which may miss a long weapon held at its end.
-- Only albedo; the lighting is Godot's (sun in the views along the ground, an own key light overhead), not the game's
-  vertex light the rest of the scene has.
-- A 55-joint skeleton (seen in drunare in the room) was read with legs, spine and head but no arms; the front end's
-  37-joint figure was not tried with the layer.
-- Not built or run: the Linux and Windows libraries with `skeleton_export.cpp` (their builders list it); the layer's cost
-  per frame was not measured (GDScript over 562 bones and 20 mapped joints a frame).
+- Cloth is springs of our own, not the game's cloth simulation: no collision with the body (a cape can pass through a leg).
+- Creatures and other people of a level stay the game's; faces, hair and bare skin are not drawn (the helmets cover them).
+- Metal shows only half its strength (`er_metal`): the scene has no reflections of Godot's. The figure is drawn over
+  see-through leaves in the overhead view (it is placed in the draw order at its first hidden draw).
+- A shield drawn by the game as an object of its own (not of its bearer's) would not be found (only the bearer's own rigid
+  pieces count, so loot passing a hand is not taken; no shield was held in the runs). Bows: a bow was found on the berserker's right hand after a
+  weapon swap and drawn there (m7); in m9 its class was bow with nothing found at its hands at the moment of the info line
+  (the bow not drawn at a hand then, or held otherwise) - not looked into.
+- Weapon pairing per class is by shape (model numbers are not weapon numbers); the `[weapons]` shifts are 0 (grip on grip
+  looked right in the pictures).
+- The 37-joint front-end figure was not tried. Windows and Linux libraries built, not run there.
 - Champions of Norrath and the other directions of the merge: not started.

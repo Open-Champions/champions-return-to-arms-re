@@ -4,24 +4,32 @@ extends Node
 # The game decides everything: where a character stands, how it is turned, every joint of every pose comes from the
 # game's animation code through the library (rtag_skeletons_get: RtaMachine.get_skeletons; tools/godot/lib/skeleton_export.h).
 # Godot only draws.  Per frame, before the drawer takes the frame:
-#   - the local player's figure is found: the skeleton whose root is nearest the view's player position (all objects
-#     posed by the same animation state are one figure: body, head, what it wears), and the rigid models in its hands;
-#   - with er_models = on or self, those objects are left out of the drawer's frame (RtaDrawer.set_hidden_objects) and drawn
-#     here instead, posed by the frame's joints:
-#       self  the game's own bind-pose mesh (the packets' sources: rest-pose model space, joints, weights), skinned by a
-#             Godot skeleton made from the pose stream - the check that the stream is what the game drew (er check);
-#       on    the owner's own Elden Ring models (converted locally into local/souls-ref/er-models: never in the
-#             repository, never shared), retargeted: er_joint_map.cfg names which joint of the game's skeleton drives which
-#             bone of theirs.  Without that folder nothing changes (the game's figure is drawn as always).
+#   - the players' figures are found: the library names every player of the game (slot, its creature, its animation
+#     state, its character class and the class of the weapon in its hand - the Hardcore mode's classes, soulscombat.h);
+#     a player's figure is every object posed by its animation state (body, head, what it wears), and the rigid models
+#     at its hands are what it holds.  Every machine of a net game runs every player, so the other machines' players
+#     are in the same stream as this one's;
+#   - with er_models = on, those objects are left out of the drawer's frame (RtaDrawer.set_hidden_objects) and drawn here
+#     instead: the owner's own Elden Ring models (converted locally into local/souls-ref/er-models: never in the
+#     repository, never shared), retargeted: er_joint_map.cfg names which joint of the game's skeleton drives which bone
+#     of theirs.  The outfit by the character's class (look.er_set = auto) or one named outfit for everyone; the weapon
+#     in hand by its class (er-models/weapons/<class>.glb), its grip put where the game's own weapon is held, along the
+#     game's weapon; capes, skirts and hair swing (springs of our own, presentation only).  Without the folder nothing
+#     changes (the game's figures are drawn as always);
+#   - with er_models = self, the local player's own bind-pose mesh (the packets' sources), skinned by a Godot skeleton
+#     made from the pose stream - the check that the stream is what the game drew (er check).
 # Nothing here reaches the simulation: two copies in one room, one with the layer and one without, stay in step.
 #
 #   app er check FILE        from now on, every frame: the frame's skeletons into Skeleton3D nodes (rest from the bind
 #                            pose, pose from the joint frames), the game's bind-pose sources skinned through them, compared
 #                            with the corners the game's programs drew; one line per skeleton appended to FILE
 #   app er check off
-#   app er info              what is loaded, found and hidden
-#   app er dump FILE         this frame's player skeleton (parents, bind pose, joint frames) as JSON
-#   app er auto              what the bind-pose reader (_auto_table) makes of the player's skeleton
+#   app er info              what is loaded, found and hidden, per player
+#   app er dump FILE         this frame's person skeletons (parents, bind pose, joint frames) and players as JSON
+#   app er auto              what the bind-pose reader (_auto_table) makes of every person skeleton of the frame
+#   app er catch N FILE      the first frame from now with an N-joint skeleton: `dump` to FILE (and its auto reading printed),
+#                            and three pictures 20 frames apart (FILE without .json, -0..2.png)
+#   app er cost              the layer's own time per frame (mean and worst, microseconds) since the last `cost`
 
 var main: Node
 var view: Node                  # scene_view.gd
@@ -32,12 +40,11 @@ var hidden_sent := false
 var check_path := ""
 var checks := 0
 var data := {}                  # this frame's get_skeletons()
-var player_skeleton := -1       # index into data.skeletons
+var player_skeleton := -1       # index into data.skeletons: the local player's
 var player_state := 0
-var player_offset := -1           # the player's animation state, from its object (0x114 when found that way)
+var player_offset := -1         # the player's animation state, from its object (0x114 when found that way)
 var hidden: PackedInt64Array = PackedInt64Array()
-var held_objects: PackedInt64Array = PackedInt64Array()    # rigid models in the player's hands (weapons)
-var held_pieces: PackedInt32Array = PackedInt32Array()
+var held_objects: PackedInt64Array = PackedInt64Array()    # rigid models in the local player's hands
 var hands_found: Array = []
 var skel_nodes := {}            # key -> Skeleton3D (the check and "self")
 var said := {}
@@ -47,26 +54,33 @@ var self_instance: RID
 var self_skeleton: RID
 var self_mesh: ArrayMesh
 var self_material: StandardMaterial3D
-# the Elden Ring figure
-var er_dir := ""
-var er_loaded := false
+# the Elden Ring figures
+const CLASS_SETS := ["barbarian", "cleric", "necromancer", "ranger", "wizard", "berserker", "shaman"]   # record +0x50
+const WEAPON_NAMES := ["", "dagger", "sword", "axe", "mace", "great", "spear", "staff", "bow"]      # soulscombat WC_*
+const DT := 1.0 / 60.0
+var models := {}                # outfit -> model (below), or {"failed": why}
+var weapon_models := {}         # weapon class name -> {mesh, materials, axis, side, length} or {} (none)
+var figures := {}               # key ("slot0".. or "local") -> figure: {set, instances, globals, springs, weapons, used}
+var targets: Array = []         # this frame's: [{key, skeleton, set, slot, wclass, held: [...]}]
+var game_weapons := {}          # signature -> {axis, side} of a game weapon in its own model space (from its vertices)
+var want_mesh := false
+var catch_joints := 0
+var catch_path := ""
+var catch_shots := 0
+var catch_frame := 0
+var er_root: Node
 var er_failed := ""
-var er_skeleton: Skeleton3D     # the figure's skeleton (from its glTF), rest pose = the model's bind pose
-var er_meshes: Array = []       # [{mesh: Mesh, skin: Skin, instance: RID, skeleton: RID, binds: PackedInt32Array}]
-var er_weapons: Array = []      # [{mesh: Mesh, instance: RID, bone: int, hand: String, local: Transform3D}]
-var er_order: PackedInt32Array = PackedInt32Array()   # bones, parents first
-var er_map: Array = []          # [{er: int, game: int, game_aim: int, er_aim: int, align: Basis}]
-var er_by_bone := {}            # er bone -> entry of er_map
-var er_axes := Basis()          # the model's space -> the game's model space (rotation only)
-var er_scale := 1.0             # metres of the model -> units of the game
-var er_aligned_for := -1        # joint count the alignment was made for
-var er_globals: Array = []      # this frame's bone globals (world)
-var er_set_loaded := ""
-# a light of the figure's own where the scene has none of Godot's (the game's overhead view: its colours are lit by the game
-# itself; a figure of ours would be black): a key light from above the camera and a fill, on our figure only (layer 20)
+# a light of the figures' own where the scene has none of Godot's (the game's overhead view: its colours are lit by the game
+# itself; a figure of ours would be black): a key light from above the camera and a fill, on our figures only (layer 20)
 const OWN_LAYER := 1 << 19
 var own_lights: Array = []          # [light RID, instance RID]
-var er_root: Node
+# cost of the layer (before_frame + frame), microseconds
+var cost_sum := 0
+var cost_worst := 0
+var cost_frames := 0
+var cost_start := 0
+var bf_spent := 0
+var part_us := {"get": 0, "find": 0, "draw": 0}
 
 
 func _ready() -> void:
@@ -84,15 +98,21 @@ func release() -> void:
 			RenderingServer.free_rid(rid)
 	self_instance = RID()
 	self_skeleton = RID()
-	for m in er_meshes:
+	for key in figures:
+		_free_figure(figures[key])
+	figures.clear()
+
+
+func _free_figure(f: Dictionary) -> void:
+	for m in f.get("instances", []):
 		for key in ["instance", "skeleton"]:
 			if (m[key] as RID).is_valid():
 				RenderingServer.free_rid(m[key])
-	for w in er_weapons:
+	for w in f.get("weapons", {}).values():
 		if (w.instance as RID).is_valid():
 			RenderingServer.free_rid(w.instance)
-	er_meshes.clear()
-	er_weapons.clear()
+	f["instances"] = []
+	f["weapons"] = {}
 
 
 func command(w: PackedStringArray) -> void:
@@ -103,14 +123,49 @@ func command(w: PackedStringArray) -> void:
 	elif w.size() >= 3 and w[1] == "dump":
 		_dump(w[2])
 	elif w.size() >= 2 and w[1] == "auto":
-		# what the bind-pose reader makes of the player's skeleton (against a [jointsN] row of the map, if there is one)
-		print("[blank %d] rta_godot: er auto: %s" % [main.blanks, str(_auto_table(_player())) if not _player().is_empty() else "no player skeleton"])
+		# what the bind-pose reader makes of every person skeleton of the frame
+		for s in data.get("skeletons", []):
+			if int(s.joint_count) >= 30:
+				print("[blank %d] rta_godot: er auto: %d joints (state %x): %s" % [main.blanks, int(s.joint_count), int(s.state), str(_auto_table(s))])
+	elif w.size() >= 4 and w[1] == "catch":
+		# app er catch N FILE: the first frame from now with a skeleton of N joints is dumped to FILE
+		catch_joints = w[2].to_int()
+		catch_path = w[3]
+	elif w.size() >= 2 and w[1] == "cost":
+		var nf := maxf(1.0, float(cost_frames))
+		print("[blank %d] rta_godot: er cost: %d frames, mean %.1f us (get_skeletons %.1f, finding %.1f, posing and drawing %.1f), worst %d us, %d figures drawn now" % [main.blanks, cost_frames,
+			float(cost_sum) / nf, part_us.get / nf, part_us.find / nf, part_us.draw / nf, cost_worst, targets.size()])
+		part_us = {"get": 0, "find": 0, "draw": 0}
+		cost_sum = 0
+		cost_worst = 0
+		cost_frames = 0
 
 
 func info_text() -> String:
-	return "mode %s, models %s (%s), player skeleton %d (state %x at +0x%x of the player, %d joints), %d objects hidden, %d held, %d checks" % [mode,
-		"loaded" if er_loaded else "not loaded", er_dir if er_failed == "" else er_failed, player_skeleton, player_state, player_offset,
-		int(_player().get("joint_count", 0)), hidden.size(), held_objects.size(), checks]
+	var per := PackedStringArray()
+	for t in targets:
+		var held := PackedStringArray()
+		for h in t.held:
+			held.append("%s %s at joint %d (%d pieces)%s" % [h.what, h.hand, h.joint, h.pieces.size(), "" if h.drawn else " (not drawn)"])
+		var spread := 0.0
+		var far := PackedStringArray()
+		var fg: Array = figures.get(t.key, {}).get("globals", [])
+		var msk: Skeleton3D = models[t.set].skeleton
+		for b in fg.size():
+			var gt = fg[b]
+			if gt is Transform3D:
+				var d := (gt as Transform3D).origin.distance_to((data.skeletons[t.skeleton].joints[0] as Transform3D).origin)
+				spread = maxf(spread, d)
+				var sc := (gt as Transform3D).basis.get_scale().x
+				if d > 60.0 or absf(sc - fg.size() * 0.0 - (gt as Transform3D).basis.get_scale().y) > 1.0:
+					far.append(msk.get_bone_name(b))
+		if not far.is_empty():
+			per.append("FAR: " + ",".join(far))
+		per.append("%s: set %s, bones within %.0f units, skeleton %d (%d joints), weapon class %s, holds [%s]" % [t.key, t.set, spread, t.skeleton,
+			int(data.skeletons[t.skeleton].joint_count), WEAPON_NAMES[t.wclass] if t.wclass > 0 and t.wclass < WEAPON_NAMES.size() else str(t.wclass), ", ".join(held)])
+	return "mode %s, %s, players %d, figures drawn %d [%s], local skeleton %d (state %x at +0x%x of the player, %d joints), %d objects hidden, %d checks" % [mode,
+		"models " + ",".join(PackedStringArray(models.keys())) if er_failed == "" else er_failed, data.get("players", []).size(), targets.size(), "; ".join(per),
+		player_skeleton, player_state, player_offset, int(_player().get("joint_count", 0)), hidden.size(), checks]
 
 
 func _player() -> Dictionary:
@@ -120,33 +175,89 @@ func _player() -> Dictionary:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# Before the drawer takes the frame: find the player's figure; leave it out when it is drawn here.
+# Before the drawer takes the frame: find the figures; leave out what is drawn here.
 func before_frame(wanted: String) -> void:
+	cost_start = Time.get_ticks_usec()
 	mode = wanted
-	var want_set := String(view.look.get("er_set", "default")) if view != null else "default"
-	if want_set != er_set_loaded and (er_loaded or er_failed != ""):
-		_unload()                               # another outfit asked for: loaded the next time it is drawn
-	if mode == "on" and not er_loaded and er_failed == "":
-		_load_er()
-	var drawing := mode == "self" or (mode == "on" and er_loaded)
+	var drawing := mode == "self" or mode == "on"
 	if not drawing and check_path == "":
 		if hidden_sent:
 			drawer.call("set_hidden_objects", PackedInt64Array())
 			hidden_sent = false
+		targets = []
 		_hide_drawn()
+		bf_spent = Time.get_ticks_usec() - cost_start
 		return
-	data = machine.get_skeletons(mode == "self" or check_path != "")
+	var t_get := Time.get_ticks_usec()
+	data = machine.get_skeletons(mode == "self" or check_path != "" or want_mesh)
+	want_mesh = false
+	part_us.get += Time.get_ticks_usec() - t_get
+	if data.is_empty():
+		data = {"skeletons": []}
 	_find_player()
+	if catch_shots > 0:
+		catch_frame += 1
+		if catch_frame % 20 == 1:
+			main.pending_shots.append(catch_path.get_basename() + "-%d.png" % (3 - catch_shots))
+			catch_shots -= 1
+	if catch_joints > 0:
+		for sk in data.skeletons:
+			if int(sk.joint_count) == catch_joints:
+				_dump(catch_path)
+				catch_shots = 3             # and pictures of the frame drawn now and the next two (main.gd's shots)
+				catch_frame = 0
+				print("[blank %d] rta_godot: er catch: %d joints (state %x), dumped to %s; auto: %s" % [main.blanks, catch_joints, int(sk.state), catch_path, str(_auto_table(sk))])
+				catch_joints = 0
+				break
 	if check_path != "":
 		_check()
-	if drawing and player_skeleton >= 0:
-		var all := hidden.duplicate()
-		all.append_array(held_objects)
-		drawer.call("set_hidden_objects", all)
+	var hide := PackedInt64Array()
+	targets = []
+	if mode == "self" and player_skeleton >= 0:
+		hide = hidden.duplicate()
+		hide.append_array(held_objects)
+	elif mode == "on":
+		var t_find := Time.get_ticks_usec()
+		_find_targets()
+		part_us.find += Time.get_ticks_usec() - t_find
+		for t in targets:
+			hide.append_array(t.objects)
+			for h in t.held:
+				if h.drawn and not h.own:
+					hide.append(h.object)
+	if not hide.is_empty():
+		drawer.call("set_hidden_objects", hide)
 		hidden_sent = true
 	elif hidden_sent:
 		drawer.call("set_hidden_objects", PackedInt64Array())
 		hidden_sent = false
+	bf_spent = Time.get_ticks_usec() - cost_start
+
+
+# the hands of a person skeleton: joints with three or more children (the fingers) low and to the side in the bind pose
+# ([joint, "left" / "right"]; the figure's left is at +x)
+func _hands_of(p: Dictionary) -> Array:
+	var t := _auto_cached(p)
+	var out: Array = []
+	for side in ["left", "right"]:
+		if t.has(side + "_hand"):
+			out.append([int(t[side + "_hand"][0]), side])
+	return out
+
+
+# a skeleton's build: its joint count and its parents (two builds of one count differ in their parents)
+func _build_key(p: Dictionary) -> String:
+	var parent: PackedInt32Array = p.parent
+	var h := hash(parent)
+	return "%d:%d" % [int(p.joint_count), h]
+
+
+var _auto_cache := {}
+func _auto_cached(p: Dictionary) -> Dictionary:
+	var key := _build_key(p)
+	if not _auto_cache.has(key):
+		_auto_cache[key] = _auto_table(p)
+	return _auto_cache[key]
 
 
 func _find_player() -> void:
@@ -154,7 +265,6 @@ func _find_player() -> void:
 	player_state = 0
 	hidden = PackedInt64Array()
 	held_objects = PackedInt64Array()
-	held_pieces = PackedInt32Array()
 	var skeletons: Array = data.get("skeletons", [])
 	if skeletons.is_empty():
 		return
@@ -184,42 +294,319 @@ func _find_player() -> void:
 	if player_skeleton < 0:
 		return
 	player_state = int(skeletons[player_skeleton].state)
+	hidden = _objects_of(player_state)
+	hands_found = []
+	for h in _hands_of(skeletons[player_skeleton]):
+		hands_found.append((skeletons[player_skeleton].joints[h[0]] as Transform3D).origin)
+	for h in _held(skeletons[player_skeleton], hidden):
+		if not h.own:
+			held_objects.append(h.object)
+
+
+# every object posed by one animation state: one figure (body, head, what it wears)
+func _objects_of(state: int) -> PackedInt64Array:
 	var objects := {}
-	for k in skeletons.size():
-		if int(skeletons[k].state) == player_state:
-			objects[int(skeletons[k].object)] = true
+	for s in data.skeletons:
+		if int(s.state) == state:
+			objects[int(s.object)] = true
+	var out := PackedInt64Array()
 	for o in objects:
-		hidden.append(o)
-	# what the player holds: rigid models whose own matrix is at one of the hands (the game hangs a weapon on an attach
-	# point of the hand's joint: model_getAttachPoint): its own origin within 20 units of the hand (a spear's is at its butt)
-	var p: Dictionary = skeletons[player_skeleton]
-	# a hand: a joint with three or more children (the fingers) low and to the side in the bind pose - found from the
-	# skeleton itself
-	var children := {}
-	for j in p.joint_count:
-		var parent := int(p.parent[j])
-		if parent >= 0:
-			children[parent] = int(children.get(parent, 0)) + 1
-	var hand_points: Array = []
-	for j in children:
-		if int(children[j]) >= 3 and (p.bind[j] as Vector3).z < (p.bind[0] as Vector3).z + 8.0 and absf((p.bind[j] as Vector3).x) > 10.0:
-			hand_points.append((p.joints[j] as Transform3D).origin)
-	hands_found = hand_points
+		out.append(o)
+	return out
+
+
+# What a figure holds: rigid models whose own matrix is at one of its hands (the game hangs a weapon on an attach point of
+# the hand's joint: model_getAttachPoint): its own origin within 20 units of the hand (a spear's is at its butt).
+# [{piece, object, joint, hand, at: Transform3D (the model's matrix in the world)}]
+func _held(p: Dictionary, own: PackedInt64Array) -> Array:
+	var out: Array = []
+	if not data.has("piece_kind"):
+		return out
 	var kinds: PackedInt32Array = data.piece_kind
 	var skel_of: PackedInt32Array = data.piece_skeleton
 	var objs: PackedInt32Array = data.piece_object
+	var flags: PackedInt32Array = data.piece_flags
 	var slot0: Array = data.piece_slot0
-	var held := {}
+	var hands := _hands_of(p)
+	var groups := {}
+	# (the weapon is drawn as part of its bearer's object: rigid pieces, no pose of their own, their matrix at a hand)
 	for i in kinds.size():
-		if kinds[i] != 2 or skel_of[i] >= 0 or objects.has(objs[i]):
+		# (only the figure's own objects: rigid models of other objects that pass near a hand - loot, another
+		# figure's weapon - are not what it holds)
+		if kinds[i] != 2 or skel_of[i] >= 0 or not own.has(objs[i]):
 			continue
-		var at: Vector3 = (slot0[i] as Transform3D).origin
-		for h in hand_points:
-			if at.distance_to(h) < 20.0:
-				held[objs[i]] = true
-				held_pieces.append(i)
-	for o in held:
-		held_objects.append(o)
+		var at: Transform3D = slot0[i]
+		var best := -1
+		var best_d := 20.0
+		for k in hands.size():
+			var d := at.origin.distance_to((p.joints[hands[k][0]] as Transform3D).origin)
+			if d < best_d:
+				best_d = d
+				best = k
+		if best < 0:
+			continue
+		var key := "%d:%d:%d:%d" % [objs[i], roundi(at.origin.x * 4.0), roundi(at.origin.y * 4.0), roundi(at.origin.z * 4.0)]
+		if not groups.has(key):
+			groups[key] = {"pieces": PackedInt32Array(), "object": objs[i], "joint": int(hands[best][0]), "hand": String(hands[best][1]), "at": at,
+				"count": 0, "drawn": false, "what": "", "own": own.has(objs[i])}
+			out.append(groups[key])
+		if (flags[i] & 2) == 0:             # (the environment-map pass of a two-pass packet repeats the first)
+			groups[key].pieces.append(i)
+			groups[key].count += int(data.piece_source_count[i])
+	return out
+
+
+# The players to draw this frame, each with its outfit and what it holds.
+func _find_targets() -> void:
+	if er_failed != "":
+		return
+	var skeletons: Array = data.skeletons
+	var players: Array = data.get("players", [])
+	var who := String(view.look.get("er_who", "all")) if view != null else "all"
+	var list: Array = []
+	# (in a net game this machine's own player is drawn from its prediction copy - another object, the one the controls
+	# name - so the local slot takes the local skeleton found by the controls)
+	var local_slot := int(machine.get_controls_hud().get("slot", -1))
+	for pl in players:
+		var found := -1
+		# (only when the controls named it: the nearest-skeleton guess can be anyone - in drunare's cut scene a 55-joint
+		# figure of the scene's was taken for the player and drawn in its outfit)
+		if int(pl.slot) == local_slot and player_skeleton >= 0 and player_offset >= 0 and player_offset < 0x800:
+			found = player_skeleton
+		else:
+			for k in skeletons.size():
+				if int(skeletons[k].state) == int(pl.state) and int(skeletons[k].joint_count) >= 30:
+					found = k
+					break
+		if found >= 0:
+			list.append({"key": "slot%d" % int(pl.slot), "skeleton": found, "slot": int(pl.slot), "cls": int(pl.character_class),
+				"wclass": int(pl.weapon_class), "item": int(pl.weapon_item), "local": found == player_skeleton})
+	if players.is_empty() and player_skeleton >= 0 and player_offset >= 0 and player_offset < 0x800:
+		# a library from before the players were added: the local player alone, its class not known
+		list.append({"key": "local", "skeleton": player_skeleton, "slot": -1, "cls": -1, "wclass": -1, "item": 0, "local": true})
+	var want_set := String(view.look.get("er_set", "auto")) if view != null else "auto"
+	for t in list:
+		if who == "me" and not t.local:
+			continue
+		var set_name := want_set
+		if want_set == "auto" or want_set == "":
+			set_name = String(CLASS_SETS[t.cls]) if t.cls >= 0 and t.cls < CLASS_SETS.size() else "default"
+		var model := _model(set_name)
+		if model.is_empty() and set_name != "default":
+			set_name = "default"
+			model = _model(set_name)
+		if model.is_empty():
+			continue
+		var s: Dictionary = skeletons[t.skeleton]
+		if not _align(model, s):
+			continue
+		t["set"] = set_name
+		t["objects"] = _objects_of(int(s.state))
+		t["held"] = _held(s, t.objects)
+		_weapons_for(t)
+		targets.append(t)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The weapons: the game's weapon in hand swapped for the Elden Ring weapon of its class (er-models/weapons/<class>.glb,
+# a rigid model whose origin is its grip; <class>.json its axes).  The game's own weapon tells where and how it is held:
+# its matrix (the hand joint's attach point, slot 0 of its piece) and its own long and side axes (from its vertices, once
+# per weapon).  The new weapon's grip is put at the figure's hand where the game's grip is at the game's hand, its long
+# axis along the game weapon's, its side axis along the game weapon's side; its size is its own (metres, by the figure's
+# scale).  A shield (a piece at the other hand) becomes the shield model.
+func _weapons_for(t: Dictionary) -> void:
+	var weapon_name: String = WEAPON_NAMES[t.wclass] if t.wclass > 0 and t.wclass < WEAPON_NAMES.size() else "sword"
+	var main_hand: String = "left" if weapon_name == "bow" else "right"
+	var have_main := false
+	for h in t.held:
+		if h.hand == main_hand and not have_main:
+			h.what = weapon_name
+			have_main = true
+	for h in t.held:
+		if h.what == "":
+			h.what = weapon_name if (not have_main and weapon_name == "bow") else "shield"
+			have_main = have_main or h.what == weapon_name
+	for h in t.held:
+		var wm: Dictionary = _weapon_model(h.what)
+		if wm.is_empty():
+			continue
+		var sig: String = "%s:%x:%d" % [h.what, int(t.item) if h.what != "shield" else 0, h.count]
+		if not game_weapons.has(sig):
+			if data.has("source_position"):
+				game_weapons[sig] = _game_axes(h)
+			else:
+				want_mesh = true            # its vertices next frame; the game's weapon is drawn until then
+				continue
+		if (game_weapons[sig] as Dictionary).is_empty():
+			continue
+		h["sig"] = sig
+		h.drawn = true
+
+
+# a game weapon's long and side axes in its own model space, from its bind-pose vertices (the piece's sources)
+func _game_axes(h: Dictionary) -> Dictionary:
+	var src: PackedVector3Array = data.source_position
+	var pos := PackedVector3Array()
+	for i in h.pieces:
+		var first := int(data.piece_source_first[i])
+		var count := int(data.piece_source_count[i])
+		if first + count <= src.size():
+			pos.append_array(src.slice(first, first + count))
+	var n := pos.size()
+	if n < 4:
+		return {}
+	var mean := Vector3.ZERO
+	for v in pos:
+		mean += v
+	mean /= float(n)
+	var c := [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+	for v in pos:
+		var d := v - mean
+		for r in 3:
+			for q in 3:
+				c[r][q] += d[r] * d[q]
+	var cov := Basis(Vector3(c[0][0], c[1][0], c[2][0]), Vector3(c[0][1], c[1][1], c[2][1]), Vector3(c[0][2], c[1][2], c[2][2]))
+	var axis := _principal(cov, Vector3(0.31, 0.83, 0.47))
+	var l1 := axis.dot(cov * axis)
+	var deflated := Basis(cov.x - axis * axis.x * l1, cov.y - axis * axis.y * l1, cov.z - axis * axis.z * l1)
+	var side := _principal(deflated, axis.cross(Vector3(0.2, 0.9, 0.4)).normalized())
+	side = (side - axis * side.dot(axis)).normalized()
+	var lo := 0.0; var hi := 0.0; var slo := 0.0; var shi := 0.0
+	for v in pos:
+		lo = minf(lo, v.dot(axis)); hi = maxf(hi, v.dot(axis))
+		slo = minf(slo, v.dot(side)); shi = maxf(shi, v.dot(side))
+	if hi < -lo:
+		axis = -axis
+		var t := lo; lo = -hi; hi = -t
+	if shi < -slo:
+		side = -side
+	# the check that the sources are the pieces' own model space: through their matrix they are the corners the game drew
+	var err := -1.0
+	if data.has("full_position"):
+		var at: Transform3D = h.at
+		var fp: PackedVector3Array = data.full_position
+		var fs: PackedInt32Array = data.full_source
+		err = 0.0
+		for i in h.pieces:
+			var ff := int(data.piece_full_first[i])
+			var first := int(data.piece_source_first[i])
+			for c2 in range(ff, ff + mini(int(data.piece_full_count[i]), 60)):
+				err = maxf(err, (at * src[first + fs[c2]]).distance_to(fp[c2]))
+	var scale: Vector3 = (h.at as Transform3D).basis.get_scale()
+	print("rta_godot: er: game weapon (%s, %d pieces, %d vertices) at joint %d: long axis %s (%.1f units out, %.1f back, its matrix's scale %s), side %s; its vertices through its matrix: %.4f units from the corners drawn" % [
+		h.what, h.pieces.size(), n, h.joint, str(axis), hi, -lo, str(scale), str(side), err])
+	return {"axis": axis, "side": side, "length": hi, "back": -lo}
+
+
+func _principal(m: Basis, start: Vector3) -> Vector3:
+	var v := start.normalized()
+	for i in 40:
+		var w := m * v
+		if w.length() < 1e-12:
+			break
+		v = w.normalized()
+	return v
+
+
+func _weapon_model(cls: String) -> Dictionary:
+	if weapon_models.has(cls):
+		return weapon_models[cls]
+	weapon_models[cls] = {}
+	var path := _er_folder().path_join("weapons").path_join(cls + ".glb")
+	var info_path := path.get_basename() + ".json"
+	if not FileAccess.file_exists(path) or not FileAccess.file_exists(info_path):
+		return {}
+	var doc := GLTFDocument.new()
+	var state := GLTFState.new()
+	if doc.append_from_file(path, state) != OK:
+		return {}
+	var root := doc.generate_scene(state)
+	var found: Array = []
+	_meshes(root, found)
+	if found.is_empty():
+		root.queue_free()
+		return {}
+	_holder().add_child(root)
+	(root as Node3D).visible = false
+	var info = JSON.parse_string(FileAccess.get_file_as_string(info_path))
+	if not (info is Dictionary):
+		return {}
+	var mesh: Mesh = (found[0] as MeshInstance3D).mesh
+	var a: Array = info.axis
+	var s: Array = info.side
+	var shift := 0.0
+	var size := 1.0
+	var cfg := ConfigFile.new()
+	if cfg.load("res://er_joint_map.cfg") == OK and cfg.has_section_key("weapons", cls):
+		var v: Array = cfg.get_value("weapons", cls)
+		shift = float(v[0])
+		size = float(v[1]) if v.size() > 1 else 1.0
+	weapon_models[cls] = {"mesh": mesh, "materials": _in_order(mesh), "axis": Vector3(a[0], a[1], a[2]).normalized(),
+		"side": Vector3(s[0], s[1], s[2]).normalized(), "length": float(info.length), "shift": shift, "size": size, "model": String(info.get("model", ""))}
+	print("rta_godot: er: weapon %s loaded (%s, %.2f m)" % [cls, String(info.get("model", "")), float(info.length)])
+	return weapon_models[cls]
+
+
+func _holder() -> Node:
+	if er_root == null:
+		er_root = Node3D.new()
+		add_child(er_root)
+	return er_root
+
+
+func _hide_drawn() -> void:
+	if self_instance.is_valid():
+		RenderingServer.instance_set_visible(self_instance, false)
+	for key in figures:
+		_hide_figure(figures[key])
+
+
+func _hide_figure(f: Dictionary) -> void:
+	for m in f.get("instances", []):
+		RenderingServer.instance_set_visible(m.instance, false)
+	for w in f.get("weapons", {}).values():
+		RenderingServer.instance_set_visible(w.instance, false)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# After the drawer has taken the frame: draw the figures.
+func frame(to_scenario: RID) -> void:
+	var started := Time.get_ticks_usec()
+	if to_scenario != scenario:
+		release()
+		scenario = to_scenario
+	var drawing := (mode == "self" and player_skeleton >= 0) or (mode == "on" and not targets.is_empty())
+	if not drawing:
+		_hide_drawn()
+		for pair in own_lights:
+			RenderingServer.instance_set_visible(pair[1], false)
+		_count(started)
+		return
+	_own_light()
+	if mode == "self":
+		for key in figures:
+			_hide_figure(figures[key])
+		_draw_self()
+	else:
+		if self_instance.is_valid():
+			RenderingServer.instance_set_visible(self_instance, false)
+		var drawn := {}
+		var t_draw := Time.get_ticks_usec()
+		for t in targets:
+			_draw_figure(t)
+			drawn[t.key] = true
+		part_us.draw += Time.get_ticks_usec() - t_draw
+		for key in figures:
+			if not drawn.has(key):
+				_hide_figure(figures[key])
+	_count(started)
+
+
+func _count(started: int) -> void:
+	var spent := Time.get_ticks_usec() - started + bf_spent
+	cost_sum += spent
+	cost_frames += 1
+	cost_worst = maxi(cost_worst, spent)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -312,80 +699,46 @@ func _check() -> void:
 		file.close()
 
 
+
 func _dump(path: String) -> void:
-	var p := _player()
-	if p.is_empty():
-		return
-	var out := {"tick": machine.get_sim_tick(), "state": p.state, "clip": p.clip, "parent": Array(p.parent), "bind": [], "joints": []}
-	for j in int(p.joint_count):
-		var b: Vector3 = p.bind[j]
-		out.bind.append([b.x, b.y, b.z])
-		var t: Transform3D = p.joints[j]
-		out.joints.append([t.basis.x.x, t.basis.y.x, t.basis.z.x, t.origin.x, t.basis.x.y, t.basis.y.y, t.basis.z.y, t.origin.y, t.basis.x.z, t.basis.y.z, t.basis.z.z, t.origin.z])
-	# the scene's model pieces near the player: what could be in its hands
-	out["near"] = []
-	var root: Vector3 = (p.joints[0] as Transform3D).origin
-	var kinds: PackedInt32Array = data.piece_kind
-	for i in kinds.size():
-		if kinds[i] != 2:
+	var out := {"tick": machine.get_sim_tick(), "local": player_skeleton, "players": data.get("players", []), "skeletons": []}
+	for k in (data.get("skeletons", []) as Array).size():
+		var p: Dictionary = data.skeletons[k]
+		if int(p.joint_count) < 30:
 			continue
-		var at: Vector3 = (data.piece_slot0[i] as Transform3D).origin
-		if at.distance_to(root) > 80.0:
-			continue
-		var sk := int(data.piece_skeleton[i])
-		out.near.append({"piece": i, "object": int(data.piece_object[i]), "skeleton": sk, "state": int(data.skeletons[sk].state) if sk >= 0 else 0,
-			"flags": int(data.piece_flags[i]), "at": [at.x, at.y, at.z], "hidden": hidden.has(int(data.piece_object[i])) or held_objects.has(int(data.piece_object[i]))})
-	out["hands"] = []
-	for h in hands_found:
-		out.hands.append([h.x, h.y, h.z])
-	if er_loaded and er_globals.size() == er_skeleton.get_bone_count():
-		out["er_scale"] = er_scale
-		out["er_axes"] = [er_axes.x.x, er_axes.y.x, er_axes.z.x, er_axes.x.y, er_axes.y.y, er_axes.z.y, er_axes.x.z, er_axes.y.z, er_axes.z.z]
-		out["er_bones"] = []
-		for b in er_skeleton.get_bone_count():
-			var g: Transform3D = er_globals[b]
-			var r: Transform3D = er_skeleton.get_bone_global_rest(b)
-			out.er_bones.append({"name": er_skeleton.get_bone_name(b), "parent": er_skeleton.get_bone_parent(b), "mapped": er_by_bone.has(b),
-				"global": [g.basis.x.x, g.basis.y.x, g.basis.z.x, g.origin.x, g.basis.x.y, g.basis.y.y, g.basis.z.y, g.origin.y, g.basis.x.z, g.basis.y.z, g.basis.z.z, g.origin.z],
-				"rest": [r.basis.x.x, r.basis.y.x, r.basis.z.x, r.origin.x, r.basis.x.y, r.basis.y.y, r.basis.z.y, r.origin.y, r.basis.x.z, r.basis.y.z, r.basis.z.z, r.origin.z]})
+		var s := {"index": k, "object": p.object, "state": p.state, "clip": p.clip, "parent": Array(p.parent), "bind": [], "joints": []}
+		for j in int(p.joint_count):
+			var b: Vector3 = p.bind[j]
+			s.bind.append([b.x, b.y, b.z])
+			var t: Transform3D = p.joints[j]
+			s.joints.append([t.basis.x.x, t.basis.y.x, t.basis.z.x, t.origin.x, t.basis.x.y, t.basis.y.y, t.basis.z.y, t.origin.y, t.basis.x.z, t.basis.y.z, t.basis.z.z, t.origin.z])
+		s["held"] = []
+		for h in _held(p, _objects_of(int(p.state))):
+			var a: Transform3D = h.at
+			s.held.append({"object": h.object, "joint": h.joint, "hand": h.hand, "count": h.count, "pieces": Array(h.pieces),
+				"at": [a.basis.x.x, a.basis.y.x, a.basis.z.x, a.origin.x, a.basis.x.y, a.basis.y.y, a.basis.z.y, a.origin.y, a.basis.x.z, a.basis.y.z, a.basis.z.z, a.origin.z],
+				"attach": _rows((p.joints[h.joint] as Transform3D).affine_inverse() * a)})
+		# the scene's model pieces near it: what could be in its hands
+		s["near"] = []
+		var root: Vector3 = (p.joints[0] as Transform3D).origin
+		for i in (data.piece_kind as PackedInt32Array).size():
+			if data.piece_slot0[i] == null:
+				continue
+			var at: Transform3D = data.piece_slot0[i]
+			if at.origin.distance_to(root) > 90.0:
+				continue
+			var sk := int(data.piece_skeleton[i])
+			s.near.append({"piece": i, "object": int(data.piece_object[i]), "kind": int(data.piece_kind[i]), "skeleton": sk,
+				"state": int(data.skeletons[sk].state) if sk >= 0 else 0, "flags": int(data.piece_flags[i]), "count": int(data.piece_source_count[i]), "at": _rows(at)})
+		out.skeletons.append(s)
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file != null:
 		file.store_string(JSON.stringify(out))
 		file.close()
 
 
-func _hide_drawn() -> void:
-	if self_instance.is_valid():
-		RenderingServer.instance_set_visible(self_instance, false)
-	for m in er_meshes:
-		RenderingServer.instance_set_visible(m.instance, false)
-	for w in er_weapons:
-		RenderingServer.instance_set_visible(w.instance, false)
-
-
-# ---------------------------------------------------------------------------------------------------------------------
-# After the drawer has taken the frame: draw the figure.
-func frame(to_scenario: RID) -> void:
-	if to_scenario != scenario:
-		release()
-		scenario = to_scenario
-	var drawing := (mode == "self" or (mode == "on" and er_loaded)) and player_skeleton >= 0
-	if not drawing:
-		_hide_drawn()
-		for pair in own_lights:
-			RenderingServer.instance_set_visible(pair[1], false)
-		return
-	_own_light()
-	if mode == "self":
-		for m in er_meshes:
-			RenderingServer.instance_set_visible(m.instance, false)
-		for w in er_weapons:
-			RenderingServer.instance_set_visible(w.instance, false)
-		_draw_self()
-	else:
-		if self_instance.is_valid():
-			RenderingServer.instance_set_visible(self_instance, false)
-		_draw_er()
+func _rows(a: Transform3D) -> Array:
+	return [a.basis.x.x, a.basis.y.x, a.basis.z.x, a.origin.x, a.basis.x.y, a.basis.y.y, a.basis.z.y, a.origin.y, a.basis.x.z, a.basis.y.z, a.basis.z.z, a.origin.z]
 
 
 # the game's own bind-pose mesh of the player's figure, skinned by a Skeleton3D made from the pose stream
@@ -461,22 +814,7 @@ func _draw_self() -> void:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# The Elden Ring figure (local files only).
-func _unload() -> void:
-	release()
-	if er_root != null:
-		er_root.queue_free()
-	er_root = null
-	er_skeleton = null
-	er_loaded = false
-	er_failed = ""
-	er_set_loaded = ""
-	er_aligned_for = -1
-	er_map.clear()
-	er_by_bone.clear()
-	_depths.clear()
-
-
+# The Elden Ring outfits (local files only), one loaded model per outfit, shared by every figure wearing it.
 func _er_folder() -> String:
 	if OS.has_environment("RTA_ER_MODELS"):
 		return OS.get_environment("RTA_ER_MODELS")
@@ -484,80 +822,368 @@ func _er_folder() -> String:
 	return ProjectSettings.globalize_path("res://").path_join("../../souls-ref/er-models").simplify_path()
 
 
-func _load_er() -> void:
-	var folder := _er_folder()
-	var set_name := String(view.look.get("er_set", "default")) if view != null and view.look.has("er_set") else "default"
-	er_set_loaded = set_name
-	er_dir = folder.path_join(set_name)
-	var figure_path := er_dir.path_join("figure.glb")
+func _model(set_name: String) -> Dictionary:
+	if models.has(set_name):
+		var m: Dictionary = models[set_name]
+		return {} if m.has("failed") else m
+	var dir := _er_folder().path_join(set_name)
+	var figure_path := dir.path_join("figure.glb")
+	models[set_name] = {"failed": "no " + figure_path}
 	if not FileAccess.file_exists(figure_path):
-		er_failed = "no " + figure_path
-		return
+		if not said.has("no " + set_name):
+			said["no " + set_name] = true
+			print("rta_godot: er: no outfit %s (%s): its figures are the game's" % [set_name, figure_path])
+		return {}
 	var doc := GLTFDocument.new()
 	var state := GLTFState.new()
 	if doc.append_from_file(figure_path, state) != OK:
-		er_failed = "could not read " + figure_path
-		return
+		models[set_name] = {"failed": "could not read " + figure_path}
+		return {}
 	var root := doc.generate_scene(state)
-	er_skeleton = null
+	var found := {"skeleton": null}
 	var instances: Array = []
-	_collect(root, instances)
-	if er_skeleton == null or instances.is_empty():
-		er_failed = "no skinned figure in " + figure_path
+	_collect(root, instances, found)
+	var sk: Skeleton3D = found.skeleton
+	if sk == null or instances.is_empty():
+		models[set_name] = {"failed": "no skinned figure in " + figure_path}
 		root.queue_free()
-		return
-	add_child(root)
-	er_root = root
+		return {}
+	_holder().add_child(root)
 	(root as Node3D).visible = false
+	var count := sk.get_bone_count()
+	var m := {"name": set_name, "skeleton": sk, "count": count, "parent": PackedInt32Array(), "rest": [], "grest": [], "grest_basis": [],
+		"meshes": [], "aligns": {}, "springs": {}}
+	for b in count:
+		m.parent.append(sk.get_bone_parent(b))
+		m.rest.append(sk.get_bone_rest(b))
+		m.grest.append(sk.get_bone_global_rest(b))
+		m.grest_basis.append(sk.get_bone_global_rest(b).basis.orthonormalized())
+	var used := {}
 	for mi in instances:
 		var inst: MeshInstance3D = mi
 		var skin: Skin = inst.skin
 		if skin == null or inst.mesh == null:
 			continue
 		var binds := PackedInt32Array()
+		var poses: Array = []
 		for b in skin.get_bind_count():
 			var bone := skin.get_bind_bone(b)
 			if bone < 0:
-				bone = er_skeleton.find_bone(skin.get_bind_name(b))
+				bone = sk.find_bone(skin.get_bind_name(b))
 			binds.append(bone)
-		er_meshes.append({"mesh": inst.mesh, "skin": skin, "instance": RID(), "skeleton": RID(), "binds": binds, "materials": _in_order(inst.mesh)})
-	# weapons: weapon-right.glb / weapon-left.glb, each rigid, its origin at the grip (the converter puts it there)
-	for hand in ["right", "left"]:
-		var path := er_dir.path_join("weapon-%s.glb" % hand)
-		if not FileAccess.file_exists(path):
+			poses.append(skin.get_bind_pose(b))
+			if bone >= 0:
+				used[bone] = true
+		m.meshes.append({"mesh": inst.mesh, "binds": binds, "poses": poses, "materials": _in_order(inst.mesh)})
+	# the bones that swing (figure.json, written by the converter): each with the centre of what it carries
+	var json_path := dir.path_join("figure.json")
+	if FileAccess.file_exists(json_path):
+		var j = JSON.parse_string(FileAccess.get_file_as_string(json_path))
+		if j is Dictionary and j.has("springs"):
+			for name in j.springs:
+				var b := sk.find_bone(name)
+				var tip: Array = j.springs[name].tip
+				if b >= 0 and used.has(b):
+					m.springs[b] = Vector3(tip[0], tip[1], tip[2])
+	for name in ["R_Hand", "L_Hand"]:
+		var b := sk.find_bone(name)
+		m[name] = b
+		if b >= 0:
+			used[b] = true
+	m["used"] = used
+	m["order"] = PackedInt32Array()      # filled by _align (the mapped bones join the used ones)
+	print("rta_godot: er: outfit %s loaded: %d bones (%d carry the mesh), %d skinned meshes, %d swinging bones" % [set_name, count, used.size(),
+		m.meshes.size(), m.springs.size()])
+	models[set_name] = m
+	return m
+
+
+# The joint map (er_joint_map.cfg) and, once per model and game skeleton, how the two bind poses sit against each other.
+func _align(m: Dictionary, p: Dictionary) -> bool:
+	var n := int(p.joint_count)
+	var akey := _build_key(p)
+	if (m.aligns as Dictionary).has(akey):
+		return not (m.aligns[akey] as Dictionary).is_empty()
+	m.aligns[akey] = {}
+	var sk: Skeleton3D = m.skeleton
+	var cfg := ConfigFile.new()
+	if cfg.load("res://er_joint_map.cfg") != OK:
+		er_failed = "no er_joint_map.cfg"
+		return false
+	var section := "joints%d" % n
+	var table := {}
+	# the joints told apart by where they sit in the skeleton's bind pose (_auto_table), with the bone names of the
+	# map's [auto] section; a [jointsN] row of our own is taken instead when it is of the same build (the same head and
+	# hips: two skeletons of one joint count can be built differently - the shaman's and the berserker's 64)
+	var found := _auto_cached(p)
+	var row_fits := cfg.has_section(section) and (found.is_empty() or (int(cfg.get_value(section, "frame_head", -1)) == int(found.frame_head)
+		and int(cfg.get_value(section, "frame_left", -1)) == int(found.frame_left)))
+	if row_fits:
+		for key in cfg.get_section_keys(section):
+			table[key] = cfg.get_value(section, key)
+	else:
+		if found.is_empty() or not cfg.has_section("auto"):
+			if not said.has(section):
+				said[section] = true
+				print("rta_godot: er: the joint map has no [%s] of this build, and the skeleton could not be read by itself" % section)
+			return false
+		for key in found:
+			if key.begins_with("frame_"):
+				table[key] = found[key]
+			elif cfg.has_section_key("auto", key):
+				var names: Array = cfg.get_value("auto", key)
+				table[key] = [found[key][0], found[key][1], names[0], names[1]]
+		var said_key := "%s:%d" % [section, int(found.frame_head)]
+		if not said.has(said_key):
+			said[said_key] = true
+			var line := PackedStringArray()
+			for key in table:
+				line.append("%s = %s" % [key, str(table[key])])
+			print("rta_godot: er: [%s] (head at joint %d) read from the skeleton itself: %s" % [section, int(found.frame_head), ", ".join(line)])
+	var game_rest := func(j: int) -> Vector3: return p.bind[j]
+	var er_rest := func(b: int) -> Vector3: return (m.grest[b] as Transform3D).origin
+	# the two figures' up, forward and left, from their own bind poses (named in the map's [frame] section)
+	var f := "frame"
+	var g_head := int(table.get("frame_head", 16))
+	var g_feet: Array = table.get("frame_toes", [6, 11])
+	var g_left := int(table.get("frame_left", 2))
+	var g_right := int(table.get("frame_right", 7))
+	var e_head := sk.find_bone(String(cfg.get_value(f, "head", "Head")))
+	var e_toes: Array = cfg.get_value(f, "toes", ["L_Toe0", "R_Toe0"])
+	var e_left := sk.find_bone(String(cfg.get_value(f, "left", "L_Thigh")))
+	var e_right := sk.find_bone(String(cfg.get_value(f, "right", "R_Thigh")))
+	var e_feet := [sk.find_bone(String(e_toes[0])), sk.find_bone(String(e_toes[1]))]
+	if e_head < 0 or e_left < 0 or e_right < 0 or e_feet[0] < 0 or e_feet[1] < 0:
+		if not said.has("frame " + String(m.name)):
+			said["frame " + String(m.name)] = true
+			print("rta_godot: er: outfit %s: its skeleton lacks the bones of the joint map's [frame]" % m.name)
+		return false
+	var g_ground: Vector3 = (game_rest.call(int(g_feet[0])) + game_rest.call(int(g_feet[1]))) * 0.5
+	var e_ground: Vector3 = (er_rest.call(e_feet[0]) + er_rest.call(e_feet[1])) * 0.5
+	var g_up: Vector3 = (game_rest.call(g_head) - g_ground)
+	var e_up: Vector3 = (er_rest.call(e_head) - e_ground)
+	var g_side: Vector3 = (game_rest.call(g_left) - game_rest.call(g_right))
+	var e_side: Vector3 = (er_rest.call(e_left) - er_rest.call(e_right))
+	var al := {"map": [], "by_bone": {}, "scale": g_up.length() / maxf(e_up.length(), 1e-4)}
+	al["axes"] = _frame_basis(g_up, g_side) * _frame_basis(e_up, e_side).inverse()
+	for key in table:
+		if key.begins_with("frame_"):
 			continue
-		var wdoc := GLTFDocument.new()
-		var wstate := GLTFState.new()
-		if wdoc.append_from_file(path, wstate) != OK:
+		var v: Array = table[key]
+		# key = our own name; v = [joint of the game, the joint its aim is taken toward, bone of the model, its aim bone]
+		var gj := int(v[0])
+		var ga := int(v[1])
+		var eb_bone := sk.find_bone(String(v[2]))
+		var ea := sk.find_bone(String(v[3])) if String(v[3]) != "" else -1
+		if gj < 0 or gj >= n or eb_bone < 0:
 			continue
-		var wroot := wdoc.generate_scene(wstate)
-		var found: Array = []
-		_meshes(wroot, found)
-		root.add_child(wroot)
-		(wroot as Node3D).visible = false
-		var bone := er_skeleton.find_bone("R_Weapon" if hand == "right" else "L_Weapon")
-		if bone < 0:
-			bone = er_skeleton.find_bone("R_Hand" if hand == "right" else "L_Hand")
-		for f in found:
-			er_weapons.append({"mesh": (f as MeshInstance3D).mesh, "instance": RID(), "bone": bone, "hand": hand, "materials": _in_order((f as MeshInstance3D).mesh),
-				"local": (f as MeshInstance3D).global_transform if (f as Node3D).is_inside_tree() else Transform3D()})
-	# the bones, parents before children
-	er_order = PackedInt32Array()
+		# align: turns the model's bone (its rest, carried into the game's model space) so that its aim lies along the
+		# game's joint's aim in the bind pose; the game's bind pose has every joint's axes along the model's
+		var align := Basis()
+		if ga >= 0 and ga < n and ea >= 0:
+			var from: Vector3 = (al.axes as Basis) * (er_rest.call(ea) - er_rest.call(eb_bone))
+			var to: Vector3 = game_rest.call(ga) - game_rest.call(gj)
+			if from.length() > 1e-5 and to.length() > 1e-5:
+				align = _arc(from.normalized(), to.normalized())
+		var entry := {"name": key, "er": eb_bone, "game": gj, "align": align, "fixed": align * (al.axes as Basis) * (m.grest_basis[eb_bone] as Basis)}
+		al.map.append(entry)
+		al.by_bone[eb_bone] = entry
+	# the root of the mapped bones (the one nearest the skeleton's root), and the bones a frame computes: those that carry
+	# the mesh or a weapon, the mapped ones and their ancestors, parents first
+	var root_entry: Dictionary = {}
+	for e in al.map:
+		if root_entry.is_empty() or _depth_in(m, int(e.er)) < _depth_in(m, int(root_entry.er)):
+			root_entry = e
+	if root_entry.is_empty():
+		return false
+	al["root"] = root_entry
+	var need := {}
+	for b in (m.used as Dictionary).keys() + al.by_bone.keys():
+		var q := int(b)
+		while q >= 0 and not need.has(q):
+			need[q] = true
+			q = int(m.parent[q])
+	var order := PackedInt32Array()
 	var placed := {}
-	while er_order.size() < er_skeleton.get_bone_count():
-		var progressed := false
-		for b in er_skeleton.get_bone_count():
-			if placed.has(b):
-				continue
-			var parent := er_skeleton.get_bone_parent(b)
+	var pending: Array = need.keys()
+	while not pending.is_empty():
+		var rest: Array = []
+		for b in pending:
+			var parent := int(m.parent[b])
 			if parent < 0 or placed.has(parent):
-				er_order.append(b)
+				order.append(b)
 				placed[b] = true
-				progressed = true
-		if not progressed:
+			else:
+				rest.append(b)
+		if rest.size() == pending.size():
 			break
-	er_loaded = true
-	print("rta_godot: er: loaded %s: %d bones, %d skinned meshes, %d weapons" % [er_dir, er_skeleton.get_bone_count(), er_meshes.size(), er_weapons.size()])
+		pending = rest
+	al["order"] = order
+	# the mapped root's ancestors (Master, the root motion bones) and the other roots are carried rigidly with it; every
+	# other bone follows its parent
+	var under := {}
+	for b in order:
+		under[b] = true
+	var q := int(m.parent[int(root_entry.er)])
+	while q >= 0:
+		under[q] = false
+		q = int(m.parent[q])
+	al["under"] = under
+	m.aligns[akey] = al
+	print("rta_godot: er: %s: %d joints mapped for a %d-joint skeleton; %.2f units a metre; %d of %d bones computed a frame" % [m.name,
+		al.map.size(), n, al.scale, order.size(), int(m.count)])
+	return true
+
+
+func _depth_in(m: Dictionary, b: int) -> int:
+	var d := 0
+	var q := int(m.parent[b])
+	while q >= 0:
+		d += 1
+		q = int(m.parent[q])
+	return d
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# One figure, this frame: its bones from the game's joints, the springs, the skin, the weapons.
+func _draw_figure(t: Dictionary) -> void:
+	var p: Dictionary = data.skeletons[t.skeleton]
+	var m: Dictionary = models[t.set]
+	var al: Dictionary = m.aligns[_build_key(p)]
+	var f: Dictionary = figures.get(t.key, {})
+	if f.get("set", "") != t.set:
+		if not f.is_empty():
+			_free_figure(f)
+		f = {"set": t.set, "instances": [], "weapons": {}, "springs": {}, "globals": []}
+		figures[t.key] = f
+	var joints: Array = p.joints
+	var k := float(al.scale) * float(p.scale)
+	var kv := Vector3(k, k, k)
+	var g: Array = f.globals
+	if g.size() != int(m.count):
+		g.resize(int(m.count))
+	var parent: PackedInt32Array = m.parent
+	var rest: Array = m.rest
+	var grest: Array = m.grest
+	var by_bone: Dictionary = al.by_bone
+	var under: Dictionary = al.under
+	var springs: Dictionary = m.springs if view == null or String(view.look.get("er_springs", "on")) != "off" else {}
+	var state: Dictionary = f.springs
+	# a mapped bone: the game's joint's turn since its bind pose (its axes in the bind pose are the model's), applied to
+	# the model's bone as it rests, carried into the game's model space and aligned; its place: from its parent, by the
+	# model's own proportions (scaled to the game's figure) - the root's from the game's
+	var root_entry: Dictionary = al.root
+	var root_bone := int(root_entry.er)
+	var root_global := Transform3D(((joints[int(root_entry.game)] as Transform3D).basis.orthonormalized() * (root_entry.fixed as Basis)).scaled(kv),
+		(joints[int(root_entry.game)] as Transform3D).origin)
+	var root_rest: Transform3D = grest[root_bone]
+	var above := root_global * Transform3D(root_rest.basis.scaled(kv), root_rest.origin * k).affine_inverse()
+	var down := Vector3(0, 0, -1)
+	for b in al.order:
+		if b == root_bone:
+			g[b] = root_global
+			continue
+		var par := parent[b]
+		if par < 0 or not under[b]:
+			var r: Transform3D = grest[b]
+			g[b] = above * Transform3D(r.basis.scaled(kv), r.origin * k)
+			continue
+		var from_parent: Transform3D = g[par] * (rest[b] as Transform3D)
+		if by_bone.has(b):
+			var e: Dictionary = by_bone[b]
+			g[b] = Transform3D(((joints[int(e.game)] as Transform3D).basis.orthonormalized() * (e.fixed as Basis)).scaled(kv), from_parent.origin)
+		elif springs.has(b):
+			# a spring: the centre of what the bone carries is a weight that lags behind where the pose puts it, pulled
+			# back toward it and down by gravity, at its own distance from the bone's origin; the bone turns toward it
+			var tip: Vector3 = from_parent * (springs[b] as Vector3)
+			var origin := from_parent.origin
+			var s: Dictionary = state.get(b, {})
+			if s.is_empty() or (s.p as Vector3).distance_to(tip) > 60.0:
+				s = {"p": tip, "v": Vector3.ZERO}
+				state[b] = s
+			var v: Vector3 = s.v
+			var pos: Vector3 = s.p
+			v += (tip - pos) * SPRING_PULL * DT + down * (SPRING_GRAVITY * k) * DT
+			v *= SPRING_DAMP
+			pos += v * DT
+			var length := (tip - origin).length()
+			var dir := (pos - origin)
+			if dir.length() > 1e-4 and length > 1e-4:
+				var want := (tip - origin) / length
+				var now := dir.normalized()
+				# no more than SPRING_MAX from where the pose holds it
+				var angle := want.angle_to(now)
+				if angle > SPRING_MAX:
+					now = want.slerp(now, SPRING_MAX / angle).normalized()
+				pos = origin + now * length
+				g[b] = Transform3D(_arc(want, now) * from_parent.basis, origin)
+			else:
+				g[b] = from_parent
+			s.p = pos
+			s.v = v
+		else:
+			g[b] = from_parent
+	# the skin
+	var instances: Array = f.instances
+	var root_at: Vector3 = (joints[0] as Transform3D).origin
+	for i in (m.meshes as Array).size():
+		var mesh: Dictionary = m.meshes[i]
+		if instances.size() <= i:
+			var sk_rid := RenderingServer.skeleton_create()
+			RenderingServer.skeleton_allocate_data(sk_rid, (mesh.binds as PackedInt32Array).size())
+			var inst := RenderingServer.instance_create2((mesh.mesh as Mesh).get_rid(), scenario)
+			RenderingServer.instance_attach_skeleton(inst, sk_rid)
+			instances.append({"instance": inst, "skeleton": sk_rid})
+		var binds: PackedInt32Array = mesh.binds
+		var poses: Array = mesh.poses
+		var rid: RID = instances[i].skeleton
+		for q in binds.size():
+			var bone := binds[q]
+			RenderingServer.skeleton_bone_set_transform(rid, q, (g[bone] as Transform3D) * (poses[q] as Transform3D) if bone >= 0 else Transform3D())
+		_place(instances[i].instance, mesh.materials)
+		RenderingServer.instance_set_visible(instances[i].instance, true)
+		RenderingServer.instance_set_custom_aabb(instances[i].instance, AABB(root_at - Vector3(120, 120, 120), Vector3(240, 240, 240)))
+	# the weapons
+	var weapons: Dictionary = f.weapons
+	var shown := {}
+	for h in t.held:
+		if not h.drawn:
+			continue
+		var wm: Dictionary = _weapon_model(h.what)
+		var ga: Dictionary = game_weapons[h.sig]
+		var at: Transform3D = h.at
+		var game_axis := (at.basis * (ga.axis as Vector3)).normalized()
+		var game_side := at.basis * (ga.side as Vector3)
+		game_side = (game_side - game_axis * game_side.dot(game_axis)).normalized()
+		var er_axis: Vector3 = wm.axis
+		var er_side: Vector3 = wm.side
+		var turn := Basis(game_axis, game_side, game_axis.cross(game_side)) * Basis(er_axis, er_side, er_axis.cross(er_side)).inverse()
+		# the grip: where the game's grip is, measured from the game's hand, measured from the figure's hand
+		var hand_bone := int(m.get("L_Hand" if h.hand == "left" else "R_Hand", -1))
+		var game_hand: Vector3 = (joints[int(h.joint)] as Transform3D).origin
+		var grip := at.origin + (((g[hand_bone] as Transform3D).origin - game_hand) if hand_bone >= 0 else Vector3.ZERO)
+		grip += game_axis * float(wm.shift) * k
+		var key := String(h.hand)
+		var w: Dictionary = weapons.get(key, {})
+		if w.is_empty() or w.what != h.what:
+			if not w.is_empty():
+				RenderingServer.free_rid(w.instance)
+			w = {"what": h.what, "instance": RenderingServer.instance_create2((wm.mesh as Mesh).get_rid(), scenario)}
+			weapons[key] = w
+		var size := k * float(wm.size)
+		RenderingServer.instance_set_transform(w.instance, Transform3D(turn.scaled(Vector3(size, size, size)), grip))
+		_place(w.instance, wm.materials)
+		RenderingServer.instance_set_visible(w.instance, true)
+		shown[key] = true
+	for key in weapons:
+		if not shown.has(key):
+			RenderingServer.instance_set_visible(weapons[key].instance, false)
+
+
+const SPRING_PULL := 140.0          # 1/s^2: how hard the pose pulls the weight back
+const SPRING_GRAVITY := 9.8         # m/s^2 (times the figure's units a metre)
+const SPRING_DAMP := 0.86           # of the speed kept a frame
+const SPRING_MAX := 1.0             # radians at most from the pose
 
 
 # The world's draws are all in Godot's transparent pass, in the list's order (RtaDrawer::place: a sorting offset each),
@@ -571,6 +1197,11 @@ func _in_order(mesh: Mesh) -> Array:
 		copy.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS if copy.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR else BaseMaterial3D.TRANSPARENCY_ALPHA
 		copy.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_ALWAYS
 		copy.cull_mode = BaseMaterial3D.CULL_DISABLED
+		# the maps (normal, metalness, roughness from the outfit's own textures): the world here has no reflections of
+		# Godot's for a metal to show (the game's scene is drawn by its own shaders), so a metal map at full strength
+		# reads black; it is taken at look.er_metal of its strength (default 0.5)
+		if copy.metallic_texture != null:
+			copy.metallic = float(view.look.get("er_metal", 0.5)) if view != null else 0.5
 		out.append(copy)
 	return out
 
@@ -603,13 +1234,13 @@ func _place(instance: RID, materials: Array) -> void:
 	RenderingServer.instance_set_pivot_data(instance, order + 0.5 if order >= 0.0 else 1.0e6, false)
 
 
-func _collect(node: Node, out: Array) -> void:
-	if node is Skeleton3D and er_skeleton == null:
-		er_skeleton = node
+func _collect(node: Node, out: Array, found: Dictionary) -> void:
+	if node is Skeleton3D and found.skeleton == null:
+		found.skeleton = node
 	if node is MeshInstance3D and (node as MeshInstance3D).skin != null:
 		out.append(node)
 	for c in node.get_children():
-		_collect(c, out)
+		_collect(c, out, found)
 
 
 func _meshes(node: Node, out: Array) -> void:
@@ -618,95 +1249,6 @@ func _meshes(node: Node, out: Array) -> void:
 	for c in node.get_children():
 		_meshes(c, out)
 
-
-# The joint map (er_joint_map.cfg) and, once per skeleton, how the two bind poses sit against each other.
-func _align(p: Dictionary) -> bool:
-	if er_aligned_for == int(p.joint_count) and not er_map.is_empty():
-		return true
-	er_map.clear()
-	er_by_bone.clear()
-	var cfg := ConfigFile.new()
-	if cfg.load("res://er_joint_map.cfg") != OK:
-		er_failed = "no er_joint_map.cfg"
-		return false
-	var section := "joints%d" % int(p.joint_count)
-	var table := {}
-	if cfg.has_section(section):
-		for key in cfg.get_section_keys(section):
-			table[key] = cfg.get_value(section, key)
-	else:
-		# no row of our own for this skeleton: the joints told apart by where they sit in its bind pose (_auto_table),
-		# with the bone names of the map's [auto] section
-		var found := _auto_table(p)
-		if found.is_empty() or not cfg.has_section("auto"):
-			if not said.has(section):
-				said[section] = true
-				print("rta_godot: er: the joint map has no [%s], and the skeleton could not be read by itself" % section)
-			return false
-		for key in found:
-			if key.begins_with("frame_"):
-				table[key] = found[key]
-			elif cfg.has_section_key("auto", key):
-				var names: Array = cfg.get_value("auto", key)
-				table[key] = [found[key][0], found[key][1], names[0], names[1]]
-		if not said.has(section):
-			said[section] = true
-			var line := PackedStringArray()
-			for key in table:
-				line.append("%s = %s" % [key, str(table[key])])
-			print("rta_godot: er: [%s] read from the skeleton itself: %s" % [section, ", ".join(line)])
-	var n := int(p.joint_count)
-	var game_rest := func(j: int) -> Vector3: return p.bind[j]
-	var er_rest := func(b: int) -> Vector3: return er_skeleton.get_bone_global_rest(b).origin
-	# the two figures' up, forward and left, from their own bind poses (named in the map's [frame] section)
-	var f := "frame"
-	var g_head := int(table.get("frame_head", 16))
-	var g_feet: Array = table.get("frame_toes", [6, 11])
-	var g_left := int(table.get("frame_left", 2))
-	var g_right := int(table.get("frame_right", 7))
-	var e_head := er_skeleton.find_bone(String(cfg.get_value(f, "head", "Head")))
-	var e_toes: Array = cfg.get_value(f, "toes", ["L_Toe0", "R_Toe0"])
-	var e_left := er_skeleton.find_bone(String(cfg.get_value(f, "left", "L_Thigh")))
-	var e_right := er_skeleton.find_bone(String(cfg.get_value(f, "right", "R_Thigh")))
-	var e_feet := [er_skeleton.find_bone(String(e_toes[0])), er_skeleton.find_bone(String(e_toes[1]))]
-	if e_head < 0 or e_left < 0 or e_right < 0 or e_feet[0] < 0 or e_feet[1] < 0:
-		er_failed = "the model's skeleton lacks the bones of the joint map's [frame]"
-		return false
-	var g_ground: Vector3 = (game_rest.call(int(g_feet[0])) + game_rest.call(int(g_feet[1]))) * 0.5
-	var e_ground: Vector3 = (er_rest.call(e_feet[0]) + er_rest.call(e_feet[1])) * 0.5
-	var g_up: Vector3 = (game_rest.call(g_head) - g_ground)
-	var e_up: Vector3 = (er_rest.call(e_head) - e_ground)
-	var g_side: Vector3 = (game_rest.call(g_left) - game_rest.call(g_right))
-	var e_side: Vector3 = (er_rest.call(e_left) - er_rest.call(e_right))
-	er_scale = g_up.length() / maxf(e_up.length(), 1e-4)
-	var gb := _frame_basis(g_up, g_side)
-	var eb := _frame_basis(e_up, e_side)
-	er_axes = gb * eb.inverse()
-	for key in table:
-		if key.begins_with("frame_"):
-			continue
-		var v: Array = table[key]
-		# key = our own name; v = [joint of the game, the joint its aim is taken toward, bone of the model, its aim bone]
-		var gj := int(v[0])
-		var ga := int(v[1])
-		var eb_bone := er_skeleton.find_bone(String(v[2]))
-		var ea := er_skeleton.find_bone(String(v[3])) if String(v[3]) != "" else -1
-		if gj < 0 or gj >= n or eb_bone < 0:
-			continue
-		# align: turns the model's bone (its rest, carried into the game's model space) so that its aim lies along the
-		# game's joint's aim in the bind pose; the game's bind pose has every joint's axes along the model's
-		var align := Basis()
-		if ga >= 0 and ga < n and ea >= 0:
-			var from: Vector3 = er_axes * (er_rest.call(ea) - er_rest.call(eb_bone))
-			var to: Vector3 = game_rest.call(ga) - game_rest.call(gj)
-			if from.length() > 1e-5 and to.length() > 1e-5:
-				align = _arc(from.normalized(), to.normalized())
-		var entry := {"name": key, "er": eb_bone, "game": gj, "align": align}
-		er_map.append(entry)
-		er_by_bone[eb_bone] = entry
-	er_aligned_for = n
-	print("rta_godot: er: %d joints mapped for a %d-joint skeleton; %.2f units a metre" % [er_map.size(), n, er_scale])
-	return true
 
 
 # The game's person skeletons told apart by their bind pose (z up, the figure's left at +x): the pelvis is the joint two
@@ -829,28 +1371,71 @@ func _auto_table(p: Dictionary) -> Dictionary:
 		out["upper_chest"] = [spine[s_count - 2], spine[s_count - 1]]
 	out["neck"] = [chest, head_joint]
 	out["head"] = [head_joint, -1]
+	# the arms: from the chest sideways, along the branch that reaches farthest out.  Which joint is which is read from
+	# lengths along the chain, not from how many children a joint has (a forearm with a twist joint has two; a hand with
+	# one finger joint - a mitten - has one): the hand is where about three quarters of the chain's length lie behind
+	# (what is past it is the fingers), the elbow halfway between the shoulder and the hand, the shoulder the chain's
+	# first joint or - when the first link is a clavicle - its second
+	var reach := PackedFloat32Array()            # the longest way down the tree from each joint
+	reach.resize(n)
+	for r in range(n - 1, -1, -1):
+		for c in kids[r]:
+			reach[r] = maxf(reach[r], reach[c] + bind[c].distance_to(bind[r]))
 	for c in kids[chest]:
 		if side[c] <= 0.18 * h:
 			continue
 		var prefix := "left" if bind[c].x > 0.0 else "right"
-		var arm: Array = follow.call(c, func(q: int) -> float: return side[q] + (0.0 if (kids[q] as Array).is_empty() else 0.001))
-		if arm.size() < 4:
+		# along the branch that reaches farthest (a twist or elbow helper may stick out further sideways than the hand)
+		var arm: Array = follow.call(c, func(q: int) -> float: return reach[q] + bind[q].distance_to(bind[parent[q]]))
+		if arm.size() < 3:
 			continue
-		var hand: int = arm[-1]
-		for k in arm:
-			if (kids[k] as Array).size() >= 2:
-				hand = k
+		var along := PackedFloat32Array([0.0])
+		for k in range(1, arm.size()):
+			along.append(along[k - 1] + bind[arm[k]].distance_to(bind[arm[k - 1]]))
+		var total: float = along[arm.size() - 1]
+		if total < 0.05 * h:
+			continue
+		var hand_at := -1
+		for k in range(1, arm.size()):
+			if hand_at < 0 or absf(along[k] - 0.78 * total) < absf(along[hand_at] - 0.78 * total):
+				hand_at = k
+		# a joint with fingers (two or more children) near there is the hand
+		for k in range(1, arm.size()):
+			if (kids[arm[k]] as Array).size() >= 2 and absf(along[k] - along[hand_at]) < 0.08 * total and along[k] > 0.55 * total:
+				hand_at = k
 				break
-		var at: int = arm.find(hand)
-		if at < 3:
+		var best_score := 1e9
+		var shoulder_at := 0
+		var elbow_at := -1
+		for start in [0, 1]:
+			if start >= hand_at - 1:
+				continue
+			var mid: float = (along[start] + along[hand_at]) * 0.5
+			var e := -1
+			for k in range(start + 1, hand_at):
+				if e < 0 or absf(along[k] - mid) < absf(along[e] - mid):
+					e = k
+			if e < 0:
+				continue
+			var d1: float = along[e] - along[start]
+			var d2: float = along[hand_at] - along[e]
+			# a clavicle is short and goes sideways; an upper arm about as long as the forearm
+			var score := absf(d1 - d2) / maxf(d1 + d2, 1e-4) + (0.0 if start == 0 else 0.05)
+			if score < best_score:
+				best_score = score
+				shoulder_at = start
+				elbow_at = e
+		if elbow_at < 0:
 			continue
-		var finger: int = hand
+		var hand: int = arm[hand_at]
+		var finger: int = arm[mini(hand_at + 1, arm.size() - 1)] if hand_at + 1 < arm.size() else -1
 		for q in kids[hand]:
-			if finger == hand or bind[q].distance_to(bind[hand]) > bind[finger].distance_to(bind[hand]):
+			if finger == -1 or bind[q].distance_to(bind[hand]) > bind[finger].distance_to(bind[hand]):
 				finger = q
-		out[prefix + "_clavicle"] = [arm[0], arm[1]]
-		out[prefix + "_upper_arm"] = [arm[1], arm[at - 1]]
-		out[prefix + "_forearm"] = [arm[at - 1], hand]
+		if shoulder_at == 1:
+			out[prefix + "_clavicle"] = [arm[0], arm[1]]
+		out[prefix + "_upper_arm"] = [arm[shoulder_at], arm[elbow_at]]
+		out[prefix + "_forearm"] = [arm[elbow_at], hand]
 		out[prefix + "_hand"] = [hand, finger]
 	out["frame_head"] = head_joint
 	out["frame_toes"] = [lchain[-1], rchain[-1]]
@@ -877,91 +1462,3 @@ func _arc(a: Vector3, b: Vector3) -> Basis:
 		return Basis(any.normalized(), PI)
 	return Basis(axis / s, atan2(s, c))
 
-
-func _draw_er() -> void:
-	var p := _player()
-	if not _align(p):
-		return
-	var joints: Array = p.joints
-	var k := er_scale * float(p.scale)
-	var count := er_skeleton.get_bone_count()
-	er_globals.resize(count)
-	# a mapped bone: the game's joint's turn since its bind pose (its axes in the bind pose are the model's), applied to
-	# the model's bone as it rests, carried into the game's model space and aligned; its place: from its parent, by the
-	# model's own proportions (scaled to the game's figure) - the pelvis's from the game's
-	var root_entry: Dictionary = {}
-	for e in er_map:
-		if root_entry.is_empty() or er_skeleton.get_bone_parent(int(e.er)) == -1 or _depth(int(e.er)) < _depth(int(root_entry.er)):
-			root_entry = e
-	var root_bone := int(root_entry.er)
-	var turn := func(e: Dictionary) -> Basis:
-		var g: Transform3D = joints[int(e.game)]
-		var r := g.basis.orthonormalized()
-		return (r * (e.align as Basis) * er_axes * er_skeleton.get_bone_global_rest(int(e.er)).basis.orthonormalized()).scaled(Vector3(k, k, k))
-	var root_global := Transform3D(turn.call(root_entry), (joints[int(root_entry.game)] as Transform3D).origin)
-	# the bones above the mapped root follow it rigidly (W = root's global x its rest's inverse)
-	var root_rest := er_skeleton.get_bone_global_rest(root_bone)
-	var above := root_global * Transform3D(root_rest.basis.scaled(Vector3(k, k, k)), root_rest.origin * k).affine_inverse()
-	for b in er_order:
-		var parent := er_skeleton.get_bone_parent(b)
-		if b == root_bone:
-			er_globals[b] = root_global
-		elif parent < 0 or _is_under(root_bone, b):
-			# the mapped root's ancestors (Master, the root motion bones) and other roots: carried rigidly with it
-			var rest := er_skeleton.get_bone_global_rest(b)
-			er_globals[b] = above * Transform3D(rest.basis.scaled(Vector3(k, k, k)), rest.origin * k)
-		else:
-			# from the parent by the model's own proportions; a mapped bone turned as its joint
-			var from_parent: Transform3D = er_globals[parent] * er_skeleton.get_bone_rest(b)
-			if er_by_bone.has(b):
-				er_globals[b] = Transform3D(turn.call(er_by_bone[b]), from_parent.origin)
-			else:
-				er_globals[b] = from_parent
-	for m in er_meshes:
-		var binds: PackedInt32Array = m.binds
-		var skin: Skin = m.skin
-		if not (m.skeleton as RID).is_valid():
-			m.skeleton = RenderingServer.skeleton_create()
-			RenderingServer.skeleton_allocate_data(m.skeleton, binds.size())
-			m.instance = RenderingServer.instance_create2((m.mesh as Mesh).get_rid(), scenario)
-			RenderingServer.instance_attach_skeleton(m.instance, m.skeleton)
-		for i in binds.size():
-			var bone := binds[i]
-			var g: Transform3D = er_globals[bone] if bone >= 0 else Transform3D()
-			RenderingServer.skeleton_bone_set_transform(m.skeleton, i, g * skin.get_bind_pose(i))
-		_place(m.instance, m.materials)
-		RenderingServer.instance_set_visible(m.instance, true)
-		var root: Vector3 = (joints[0] as Transform3D).origin
-		RenderingServer.instance_set_custom_aabb(m.instance, AABB(root - Vector3(120, 120, 120), Vector3(240, 240, 240)))
-	for w in er_weapons:
-		if not (w.instance as RID).is_valid():
-			w.instance = RenderingServer.instance_create2((w.mesh as Mesh).get_rid(), scenario)
-		var bone := int(w.bone)
-		if bone < 0:
-			continue
-		var g: Transform3D = er_globals[bone]
-		RenderingServer.instance_set_transform(w.instance, g * (w.local as Transform3D))
-		_place(w.instance, w.materials)
-		RenderingServer.instance_set_visible(w.instance, true)
-
-
-var _depths := {}
-func _depth(b: int) -> int:
-	if _depths.has(b):
-		return _depths[b]
-	var d := 0
-	var p := er_skeleton.get_bone_parent(b)
-	while p >= 0:
-		d += 1
-		p = er_skeleton.get_bone_parent(p)
-	_depths[b] = d
-	return d
-
-
-func _is_under(b: int, root: int) -> bool:
-	var p := b
-	while p >= 0:
-		if p == root:
-			return true
-		p = er_skeleton.get_bone_parent(p)
-	return false

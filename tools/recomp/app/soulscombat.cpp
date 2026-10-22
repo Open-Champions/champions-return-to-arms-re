@@ -1187,6 +1187,14 @@ bool wanted() { return g_want.load(); }
 void room_agreed(bool on) { g_room = on ? 1 : 0; }
 bool active() { return g_on; }
 
+int32_t weapon_class_in_hand(int slot, uint32_t* item) {
+    if (item) *item = 0;
+    if (!g_ram || slot < 0 || slot > 3) return WC_NONE;
+    const u32 it = weapon_item(G_PLAYERS + (u32)slot * REC);
+    if (item) *item = it;
+    return it ? weapon_class(W(it)) : WC_NONE;
+}
+
 void blank(uint64_t number) {
     (void)number;
     bool net = B(G_NETWORK_MODE) != 0;

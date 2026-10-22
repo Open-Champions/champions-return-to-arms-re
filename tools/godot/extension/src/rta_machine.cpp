@@ -209,11 +209,19 @@ Dictionary RtaMachine::get_skeletons(bool with_mesh) const {
         PackedVector3Array bind;
         Array joints, skins;
         const int n = s.joint_count > 0 ? s.joint_count : 0;
+        parent.resize(n);
+        bind.resize(n);
+        joints.resize(n);
         for (int j = 0; j < n; j++) {
-            parent.push_back(s.parent[j]);
-            bind.push_back(Vector3(s.bind[j][0], s.bind[j][1], s.bind[j][2]));
-            joints.push_back(rows34(s.joint[j]));
-            skins.push_back(rows34(s.skin[j]));
+            parent.set(j, s.parent[j]);
+            bind.set(j, Vector3(s.bind[j][0], s.bind[j][1], s.bind[j][2]));
+            joints[j] = rows34(s.joint[j]);
+        }
+        // the skin matrices (= joints x T(-bind)) only with the meshes: a frame's skeletons are many, and every
+        // Transform3D in an Array is an allocation of its own (the layer asks every frame without them)
+        if (with_mesh) {
+            skins.resize(n);
+            for (int j = 0; j < n; j++) skins[j] = rows34(s.skin[j]);
         }
         e["parent"] = parent;
         e["bind"] = bind;
@@ -224,18 +232,24 @@ Dictionary RtaMachine::get_skeletons(bool with_mesh) const {
     d["skeletons"] = skeletons;
     PackedInt32Array piece_skeleton, piece_object, piece_kind, piece_flags, piece_full_first, piece_full_count, piece_source_first, piece_source_count;
     Array slot0;
+    const int64_t pc = k.piece_count;
+    for (PackedInt32Array* a : {&piece_skeleton, &piece_object, &piece_kind, &piece_flags, &piece_full_first, &piece_full_count, &piece_source_first, &piece_source_count})
+        a->resize(pc);
+    slot0.resize(pc);
     for (uint32_t i = 0; i < k.piece_count; i++) {
         const rtag_skin_piece& p = k.pieces[i];
         const rtag_scene_piece& q = sc.pieces[i];
-        piece_skeleton.push_back(p.skeleton);
-        piece_object.push_back((int32_t)q.object);
-        piece_kind.push_back(q.kind);
-        piece_flags.push_back(q.flags);
-        piece_full_first.push_back((int32_t)q.full_first);
-        piece_full_count.push_back((int32_t)q.full_count);
-        piece_source_first.push_back((int32_t)p.source_first);
-        piece_source_count.push_back((int32_t)p.source_count);
-        slot0.push_back(rows34(p.slot0));
+        piece_skeleton.set(i, p.skeleton);
+        piece_object.set(i, (int32_t)q.object);
+        piece_kind.set(i, q.kind);
+        piece_flags.set(i, q.flags);
+        piece_full_first.set(i, (int32_t)q.full_first);
+        piece_full_count.set(i, (int32_t)q.full_count);
+        piece_source_first.set(i, (int32_t)p.source_first);
+        piece_source_count.set(i, (int32_t)p.source_count);
+        // a piece's own matrix where it is a rigid model (no pose: what a hand holds); nil for the others unless the
+        // meshes are asked for (an allocation per Transform3D, thousands of pieces a frame)
+        if (with_mesh || (p.skeleton < 0 && q.kind == 2)) slot0[i] = rows34(p.slot0);
     }
     d["piece_skeleton"] = piece_skeleton;
     d["piece_object"] = piece_object;
@@ -248,6 +262,20 @@ Dictionary RtaMachine::get_skeletons(bool with_mesh) const {
     d["piece_slot0"] = slot0;
     d["poses_seen"] = (int64_t)k.poses_seen;
     d["poses_matched"] = (int64_t)k.poses_matched;
+    // the game's players (a library from before they were added leaves player_count 0)
+    Array players;
+    for (uint32_t i = 0; i < std::min<uint32_t>(k.player_count, 4); i++) {
+        const rtag_skeleton_player& p = k.players[i];
+        Dictionary e;
+        e["slot"] = p.slot;
+        e["object"] = (int64_t)p.object;
+        e["state"] = (int64_t)p.state;
+        e["character_class"] = p.character_class;
+        e["weapon_class"] = p.weapon_class;
+        e["weapon_item"] = (int64_t)p.weapon_item;
+        players.push_back(e);
+    }
+    d["players"] = players;
     if (with_mesh) {
         PackedVector3Array position, normal, full_position, full_normal;
         PackedInt32Array joints, full_source;
