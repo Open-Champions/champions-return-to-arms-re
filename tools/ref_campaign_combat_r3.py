@@ -4,6 +4,8 @@ These are identifiers and rules, not level data or a saved player state. The
 terrain and loot reference implementations live in ref_world and ref_items.
 """
 
+# Class-only probe with model index left at zero and debug switches
+# zero-initialized. These tuples are not portable starting-equipment data.
 START_WEAPONS = {
     0: ("axe",), 1: ("mace",), 2: ("shortsword",),
     3: ("shortsword", "shortbow"), 4: ("quarterstaff",),

@@ -96,7 +96,9 @@ def check_terrain(executable, world_data, rows, seed):
 
 def check_start_grants(executable):
     # The original grant router runs, but parser/inventory/equip are stubs.
-    # This establishes class-dependent calls, not equipped item records.
+    # Model index +0x54 and debug switches 0x41b550..54 stay zero.
+    # This class-only probe includes impossible class/model pairs; it does not
+    # establish portable grants or equipped item records.
     for class_id in range(7):
         emu = EE(executable)
         emu.follow = {0x1ACC78}
@@ -175,6 +177,7 @@ def check_gold_credit(executable, seed):
     emu.mem.w32(0x44FDCC, 100)
     emu.call(0x1DC268, 0, pos, 42, max_steps=100000)
     floater, pending, credited = 42, 0, 0
+    first_credit = None
     for frame in range(101, 171):
         emu.mem.w32(0x44FDCC, frame)
         emu.call(0x1DCB80, max_steps=100000)
@@ -182,8 +185,11 @@ def check_gold_credit(executable, seed):
         assert emu.mem.u32(0x86A900 + 0x1C) == floater, frame
         assert emu.mem.u32(0x86ACE8) == pending, frame
         assert emu.mem.u32(0x4D8AF0 + 0xE4) == credited, frame
+        if first_credit is None and credited:
+            first_credit = frame - 100
     assert credited == 42 and pending == 0
-    return 43
+    assert first_credit is not None
+    return first_credit
 
 
 def check_one_world(executable, seed):
@@ -240,7 +246,7 @@ def check_target_and_melee(executable, row, seed):
         mem.wf32(obj + 0x1C, radius)
     mem.w32(player + 0x3C8, 0)
     mem.w32(0x4D8AF0 + 0x43D8, player)
-    mem.w8(0x4D8AF0 + 0x4C24, 1)  # player's team differs from the boar's zero
+    mem.w8(0x4D8AF0 + 0x4C24, 1)  # boar team remains zero-initialized
     mem.wf32(boar + 0x3C0, 1000)
     mem.write(boar + 0xF8, mem.read(boar + 0x10, 12))
     mem.w32(0x44FDCC, 1)
@@ -315,7 +321,7 @@ def main():
     shared = check_one_world(args.executable, args.seed)
     damage = check_target_and_melee(args.executable, boar, args.seed)
     print("PASS seed %d: %d resource names; %d boar positions x 2 radii (%d heights); "
-          "%d class grant routes; %d boar drop dispatch; loot %s %s in %d draws; gold first credit +%d frames; "
+          "%d class-only grant probes; %d boar drop dispatch; loot %s %s in %d draws; gold first credit +%d frames; "
           "shared grid/run %d/%d; bounded melee damage %.0f" % (args.seed, resources, terrain[0], terrain[1],
                                       grants, drop_calls, loot[0], loot[1], loot[2], delay,
                                       shared[0], shared[1], damage))
