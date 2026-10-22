@@ -2072,6 +2072,50 @@ installed. This trial remains a controlled partial; full campaign, rendering,
 performance, physical-controller and separate-PC multiplayer qualification
 are still open.
 
+## Combat gains written through normal four-player Save
+
+A fresh private native trial completes in 50.377 seconds elapsed, with normal
+game and controller exits, 2,747 complete field records and no input-expiry
+rejection. Four Circle requests have four sampled spell-response and guard
+restoration sequences. XP increases from 102/102/102/154 to 153/153/179/205.
+These observations do not attribute a particular projectile impact or XP award.
+
+The field records show positive HP for every character throughout the post-arm
+window. P2 uses one ordinary Recall potion, reducing its typed bag2 quantity from
+two to one. The party returns collectively to the hub. During the ordinary
+loading interval actor pointers clear, the local-player count falls to zero and
+the simulation counter resets; earned XP and positive persistent HP remain
+intact, and the Load flag stays inactive.
+
+The new Save transaction starts with Done cleared, then records Busy/Xfer and a
+new Done state before acknowledgement. The game writes exactly 310,392 bytes.
+The private cloned slot and captured game-built buffer match byte for byte;
+the tester also compares all four saved-player records, dynamically occupied
+inventory items and equipment references. It checks saved positions against
+current actors and confirms stored return metadata is retained.
+The completed file contains the new XP values and Recall quantities 1/1/1/2.
+
+The game returns to the hub with card transfer idle. All 56 input values are
+neutral from fields 2681 through 2747. Original source saves, cloned header/icon
+files and checked protected files retain their hashes; the single private clone
+slot is the intended game-written exception. The candidate remains uninstalled.
+
+An offline check against preserved captures first exposed an overly strict tester
+camera guard: paused Save UI normally disables camera control. The corrected
+phase-specific guard passes 51 offline checks while ordinary movement continues
+to require active camera control. Those checks are separate from this native run.
+
+An independent read of the completed raw recording passes 40 bounded checks,
+including accepted input timing, requested-zero input values, Recall consumption
+and Save serialization. It checks the stated owner/input/Save subsets; it does
+not replay every strategy predicate or qualify nonzero analog mapping, unique
+hit attribution or the origin of the retained return positions.
+
+A separate fresh Load of this new save remains pending. This does not qualify
+NPC/mission completion, a full campaign,
+rendering fidelity, performance, physical multi-controller play or separate-PC
+multiplayer.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
