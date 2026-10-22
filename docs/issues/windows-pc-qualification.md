@@ -2261,6 +2261,33 @@ Save and separate fresh Load/return, Natasla dialogue, mission and full-campaign
 completion, physical multi-controller play, reference fidelity and separate-
 PC/WAN multiplayer remain open.
 
+## Route advance and Recall readiness boundary
+
+A new private four-character trial advances beyond the corner where the previous
+route attempt stalled. The recorded route diagnostics and measured positions
+agree at the later waypoint observation. At the checkpoint handoff, all four
+characters are alive with XP 536/510/666/588. An independent offline reader
+verifies 32 accepted cast inputs with observed animation and mana responses,
+guard restoration before handoff, and the declared control-timing subset. Unique
+target hits, kills and awards remain unqualified.
+
+The controller stops before sending Recall because the selected character is
+still blocking. All raw and decoded controls are neutral by field 3,156, but the
+fourth character (P3) remains in state 8 with blocking set through 3,164. It
+reaches state 2 with blocking clear at 3,165, five fields after the readiness
+check stopped the action phase. A bounded wait for observed actor readiness is
+the next controller change; the ordinary pulse still requires its own fresh
+admission.
+
+No new Save occurs. Native card traffic is 311,272 bytes read and zero written,
+and the cloned slot remains unchanged. The scheduled neutral observation period
+later records character deaths and a return to the original saved XP
+153/153/179/205. These observations do not establish the cause of those deaths
+or a new durable checkpoint. The candidate remains private and uninstalled;
+fresh persistence, Natasla dialogue, mission and full-campaign completion,
+physical multi-controller play, reference fidelity and multiplayer between
+separate PCs or over the internet remain open.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
