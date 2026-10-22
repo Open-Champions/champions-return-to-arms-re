@@ -2042,6 +2042,36 @@ hashes. The candidate remains private and uninstalled. Rendering fidelity,
 performance, physical multiple-controller play and separate-PC Internet
 multiplayer remain unqualified.
 
+## Follow-up mana-witness and combat trial
+
+A fresh private native trial with the revised sampled-mana witness completes in
+126.450 seconds elapsed, with normal game and controller exits and 7,296 complete
+field records. The controller records 32 Circle requests and 32 sampled
+spell-response/guard-restoration sequences, with no pending cast. Five sequences
+use a greater-than-seven decline from an observed mana peak while the original
+pre-request net-mana criterion remains false. These are sampled response witnesses;
+they do not establish 32 projectile impacts or 32 defeated enemies.
+
+The tester retains its first active-input stop separately from the later tail
+reason: the 32-cast limit is reached at field 3241 with living threats remaining.
+The field records show all 56 input values neutral from 3244 through 7296. There
+are seven mana-potion presses, no health-potion presses, no Confirm or Use requests
+and no input-expiry rejection. This adds no live expiry-recovery proof.
+
+During combat, XP rises to 510/562/588/640; all four characters remain level one.
+After input stops, each character later reaches zero HP, with all four nonpositive
+from fields 4479 through 4750. At 4751 the recorded XP returns to the loaded
+102/102/102/154 values and the player actors clear; the simulation counter resets
+on the next field. Card transfer remains idle throughout the post-arm window.
+The late and terminal captures show four characters back at the mission entrance.
+Their full HP does not establish uninterrupted survival or preserved combat gains.
+
+NPC interaction and quest completion are not reached. The original and copied
+saves and checked protected files remain unchanged. The candidate was not
+installed. This trial remains a controlled partial; full campaign, rendering,
+performance, physical-controller and separate-PC multiplayer qualification
+are still open.
+
 ## Remaining qualification
 
 A full good/evil campaign, all quests, difficulties, item combinations and every
