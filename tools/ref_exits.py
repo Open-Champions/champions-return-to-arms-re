@@ -79,6 +79,51 @@ def push_prompt(keys, values, message=None, lock_message=None):
     return message, True
 
 
+def nearest_interactable(player, objects):
+    """Player_interact's ordered box-query result: first minimum of flagged objects."""
+    best, best_distance = None, 10000000.0
+    for index, (position, flags) in enumerate(objects):
+        if not flags & 0x100000:
+            continue
+        distance = sum((a - b) ** 2 for a, b in zip(position, player))
+        if distance < best_distance:
+            best, best_distance = index, distance
+    return best
+
+
+def use_pressed(prompt_result, pad_pressed, slot_use_mask, display_only=False):
+    """Player_interact slot-14 dispatch after a nonempty slot-13 prompt."""
+    if display_only:
+        return False
+    if prompt_result == 1:
+        return bool(pad_pressed & slot_use_mask)
+    if prompt_result == 2:
+        return bool(pad_pressed & 0x10)
+    return False
+
+
+def push_use(has_action, shop, blocked_shop, off_only, once):
+    """PushTrigger_interact's ordered action/delete effects."""
+    if not has_action or (shop and blocked_shop):
+        return []
+    result = [('action', int(not off_only))]
+    if once:
+        result.append(('delete', 3))
+    return result
+
+
+def gate_use(mutex, network_mode):
+    """JumpGate_interact's branch through the menu mutex and network byte."""
+    return not mutex or bool(network_mode)
+
+
+def gate_travel_tick(counter, fixed_destination, selected_destination):
+    """State 5: counter advances through 180, then requests the destination."""
+    if counter < 181:
+        return counter + 1, None, None, 5
+    return counter, fixed_destination or selected_destination, 0xff, 6
+
+
 def gate_arrival(travel, fixed_destination, player_count, position, seed,
                  initial_rank, find_spot):
     """JumpGate_ctor arrival writes when free-spot search is supplied by caller.

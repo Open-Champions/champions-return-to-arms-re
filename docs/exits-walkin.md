@@ -1,6 +1,6 @@
 # Exit dispatch and gate arrival (SLUS-20973 v2.00)
 
-2026-10-23. Research branch `t3/research-exits-walkin`, pinned to research main
+2026-10-23 (round 2). Research branch `t3/research-exits-walkin`, pinned to research main
 `034d0c0`. **Observed** means an instruction or data reference was read at the
 given address. **Executed** means the original function ran in `tools/ee_emu.py`
 against synthetic memory and was compared with `tools/ref_exits.py` by
@@ -75,6 +75,39 @@ subsequently calls the object's virtual delete slot. There is no evidence
 that walking through a PushTrigger runs `action`; proximity/use is the
 dispatch path.
 
+### Round 2: normal proximity and use
+
+**Observed, Executed** `Player_interact` 0x1b2640–0x1b2b8c first refuses a
+ridden vehicle (+0x540), nonpositive player-record health (+0xac), or a
+missing player object (+0x43d8). It queries a box around that object's
+position: x/y ±48 and z through z+60, limit 0x100 (`0x1b26b8–0x1b2734`).
+Among the returned objects, only flag `0x100000` is eligible; the smallest
+3D squared distance below an initial 10,000,000 wins, with the first query
+result winning a tie (`0x1b2770–0x1b27e0`). The 96 synthetic list/position
+cases per seed execute this selection. The box is supplied by a stub, so
+these cases check the bounds passed to the query and selection over its
+results, not the grid query's own membership or order.
+
+**Observed, Executed** the chosen object's slot-13 prompt is called with its
+player slot (`0x1b27ec–0x1b281c`). A nonempty prompt is required before
+the use path (`0x1b281c–0x1b2824`). In simulation mode, prompt result 1
+requires the player's pressed-pad word at +0xc to intersect the per-slot
+use mask at `0x41b9c0 + 4*slot` (`0x1b2b24–0x1b2b48`). Result 2 instead
+requires pressed bit `0x10` (`0x1b2b50–0x1b2b68`). Display-only mode
+skips both dispatches (`0x1b2b1c`). On dispatch, the active player at
+0x4d8ae4 is set before virtual slot 14 (`0x1b2b6c–0x1b2b88`). The 16
+button/display combinations per seed execute the original choice and pad
+branches; the difftest bypasses only intervening prompt painting.
+
+**Observed, Executed** `PushTrigger_interact` 0x1ecc70–0x1ecd50: no `action`
+returns without effects; a nonzero `shop` and the alive-player check divert
+to the shop refusal when the interacting slot is local. Otherwise
+`offOnly` is queried, the action scripts run with `!offOnly`, then `once`
+queries and invokes virtual delete slot 2 with argument 3. The 32 cases
+per seed compare the original call/effect order with `ref_exits.push_use`.
+Its `shop` test and the local-slot check are scripted answers; full shop
+state, network prompts and running-game button delivery remain separate.
+
 ## 3. Gate discovery, menu and arrival
 
 **Observed, Executed** `JumpGate_interactPrompt` 0x27d7a0–0x27d974:
@@ -99,8 +132,23 @@ counts travel for 180 ticks. At 0x27e1c0–0x27e218 it copies either the
 fixed destination 0x8e3c34 or the selected destination-list entry into
 pending level 0x41b6d0 and sets entrance orientation byte 0x41b720 to
 `0xff`. `docs/level-flow.md` 9 in `t3/research-levels` records list
-persistence, act reset and state-machine detail. The menu input, network
-mutex and full task timing were read but not dynamically compared here.
+persistence, act reset and state-machine detail. The menu input and full
+task timing have not been dynamically compared here; round 2 covers the
+mutex branch and state-5 destination request below.
+
+**Observed, Executed in round 2** `JumpGate_interact` opens the menu when
+the 0x22fc2c mutex result is zero, or when it is nonzero and network byte
+0x402791 is nonzero (`0x27d760–0x27d790`). `JumpGate_openMenu` writes
+chooser slot 0x8e3a3b, fixed destination pointer 0x8e3c34, state zero
+0x8e3a3a and travel counter zero 0x500ae8, and installs two priority-20
+tasks (`0x27da24–0x27da88`). Four combinations per seed compare these
+writes and task calls. In task state 5, counters through 180 advance by
+one; an entry counter of 181 or more copies either the fixed destination
+or `0x8e3a50 + 32*selected_index` to pending level 0x41b6d0, sets
+0x41b720 to `0xff`, and advances state to 6 (`0x27e1a8–0x27e218`). Ten
+counter/destination cases per seed execute this branch. Copying is stubbed,
+so the test verifies source/destination pointers and state writes, not
+the string-copy implementation, menu choice, or full level load.
 
 **Observed, Executed** `JumpGate_ctor` 0x27c694–0x27cab8 handles `Portal`
 and `PortalHurt`. When travel state 0x500ae8 is nonzero and fixed destination
@@ -118,6 +166,20 @@ seed is therefore the value at entry to this arrival branch, after the
 real base constructor would draw. Actual terrain placement remains covered
 by the separate `t3/research-levels` model and its tests, not by this
 synthetic test.
+
+**Executed in round 2** the `JumpGate_ctor` arrival branch invokes the
+original `world_findFreeSpot` 0x14acf8, with its terrain and object queries
+supplied by synthetic callbacks. Across clear terrain, an east-side
+terrain refusal, all terrain refused and a solid object returned by every
+box query, the 40 slot arrivals per seed
+match `ref_objects.World.find_free_spot` in raw x/y/z bits, per-slot facing
+and final shared seed. The `all` cases exercise all 50 failed tries: the
+free-spot function returns the centre with a false success byte, but the
+gate constructor still stores that position and draws a facing. The solid
+cases exercise 50 rejected object queries per player slot. This is
+the exact bounded algorithm for those inputs; an actual level's floor,
+blocking objects, constructor order and initial seed must be supplied
+before any final in-game coordinate can be claimed.
 
 **Observed from `t3/research-levels`**, `Player1_ctor` 0x158928 ranks
 markers by first/default, `from` previous level, then named entrance;
@@ -141,18 +203,27 @@ is embedded here.
    exact `onOnly`, `offOnly`, `timeout`, `needScriptHit` and slot-3 enable
    sequence. Persist the five trigger state bytes.
 3. Wire `PushTrigger` into normal player proximity/use and prompt paths:
-   ordered `key` predicates, host-only branch, `message`/`lockMessage`,
-   `shop`, `offOnly`, `once`. Do not auto-dispatch it on walk-in.
+   query x/y ±48 and z through z+60, keep only flag `0x100000`, and pick
+   the first nearest 3D result. Run slot-13 prompt/key predicates before
+   accepting the per-slot pressed use mask (or `0x10` for result 2); skip
+   dispatch in display-only mode and bind the active player before slot 14.
+   Preserve the host-only prompt branch, `message`/`lockMessage`, shop
+   refusal, `offOnly` action and `once` deletion. Do not auto-dispatch it
+   on walk-in.
 4. Retain the pending world request and selected entrance across the level
    boundary. Run the destination object's construction and the Player1
    ranking/free-spot path in record order. Preserve campaign and level
    states required by `docs/level-flow.md` 5–7.
 5. Port gate discovery and destination list save/restore/reset, then the
    prompt's script and party-distance predicates and the menu/input state
-   machine. Keep the 180-tick travel state through the load, instantiate
+   machine. Apply the mutex/network branch and menu initialization; in state
+   5 advance counters 0..180, then copy the fixed or selected destination
+   at entry count 181 and set entrance byte `0xff`. Keep travel state
+   through the load, instantiate
    destination gates before final placement, and apply `anyHeight=1`
-   searches, seed/facing writes and rank 3. Clear travel through the task
-   at its documented time.
+   `world_findFreeSpot` searches, including its terrain/object refusals,
+   seed/facing writes and rank 3. Clear travel through the task at its
+   documented time. A failed search still writes its returned position.
 6. Run the native client with real, owner-supplied level data: walk into a
    Trigger, interact with a PushTrigger, and travel a gate. Compare
    transition, arrival and save/re-entry traces with the original. The
@@ -162,11 +233,12 @@ is embedded here.
 
 `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_exits.py --seed 20973`
 and `--seed 7` each compare 268 trigger/rectangle, 64 gate-prompt,
-48 push-prompt and 20 gate-arrival cases. The test constructs only synthetic
+48 push-prompt, 20 gate-arrival, 32 push-use, 4 gate-use, 10 gate-travel,
+112 proximity/use and 40 real-free-spot cases. The test constructs only synthetic
 objects and player positions, pins the executable hash, and does not copy
 its bytes into a tracked file. The reference and difftest do not execute
-the level loader, actual scripts, world collision search, network host
-branch, complete jump-gate task or a running game. Those remain separate
+the level loader, actual scripts, real terrain and object-grid contents,
+network host prompt branch, complete jump-gate task or a running game. Those remain separate
 acceptance gates.
 
 On both seeds, `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_objects.py
