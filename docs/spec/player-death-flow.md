@@ -8,9 +8,17 @@ with `tools/ref_death_flow.py`. Neither is a full game or console playthrough.
 ## 1. HP zero to the death clip
 
 **Observed:** `Player_takeDamage` 0x1b5330 queues the hit. During `Player_run`
-0x1a5030, `Player_processDamage` 0x1b2cc0 resolves it. At 0x1b33d4–0x1b3408
-the player record's HP `R+0xac` is tested against zero and clamped to zero,
-and object flag `0x8` is set. The death branch selects an animation from the
+0x1a5030, `Player_processDamage` 0x1b2cc0 resolves it. When record HP
+`R+0xac` is at most zero, the one-player `SpellResurrect` ward is checked
+first (0x1b3370–0x1b33c8): if attached and `g_numPlayers == 1`, it calls
+0x3130f4 and stores the returned HP. A successful roll restores half of max
+HP, clears pending damage, and skips the death sequence; a failed roll
+returns zero HP and continues into it. The spell's roll and return values
+are separately documented and bounded-tested in `docs/spec/skills-35-68.md`
+section 68 and `docs/spec/skills-35-68-executed.md`; this branch has **not**
+executed the `Player_processDamage` caller or its ward hand-off. At
+0x1b33d4–0x1b3408, the remaining lethal branch clamps HP to zero and sets
+object flag `0x8`. The death branch selects an animation from the
 player model definition: `def+0x14` for weapon animation class 2 except models
 2, 3, 6, 7, otherwise `def+0x0c`. `anim_start` 0x16cfe0 gets a 0.5 start and
 flags `0x206` at 0x1b34b0–0x1b34e4. `P+0x58c` becomes state 4 and
@@ -71,8 +79,11 @@ service answers were scripted, and no whole-game timing was measured.
 
 ## 3. Wipe fade, reload, location and possessions
 
-**Observed, Executed:** `deathTask_schedule` 0x1ebd48 clears the fade and
-registers `deathTask` 0x1e75e8 at priority 20. Phase 0 repeatedly asks
+**Observed:** `deathTask_schedule` 0x1ebd48 clears the fade and registers
+`deathTask` 0x1e75e8 at priority 20. The death-flow difftest stubs this
+scheduler call; its setup has not been executed here.
+
+**Observed, Executed:** `deathTask` phase 0 repeatedly asks
 `hud_stepFade(4)` until it returns `0x80`; then phase 1 begins
 (0x1e7648–0x1e7680). A script-set `setAlternateDeath` flag at 0x4f712c
 instead moves to phase 10, which waits for an alive player and removes
@@ -130,19 +141,25 @@ loading, savepoint revival, or a full party wipe as one continuous game.
 ## 4. Ordered native port list
 
 1. Keep the actual record/object link and HP/pending-damage fields, and
-   process the original lethal damage branch before the death clip. Use the
-   model/weapon-class selector and animation flags from `4ad5721`; refuse
-   missing clip/model inputs.
+   process the one-player `SpellResurrect` ward before the lethal clamp and
+   death clip. A successful ward roll restores half max HP and skips death;
+   a failed roll enters the ordinary death branch. Keep this separate from
+   a living teammate's post-death Resurrect spell. Use the model/weapon-class
+   selector and animation flags from `4ad5721`; refuse missing clip/model
+   inputs. Execute the ward hand-off in `Player_processDamage` before
+   claiming this ordering as bounded-tested.
 2. Rebuild the alive list after player damage and at the end of the tick;
    decrement slot and global wipe timers with the original cutscene, pause,
    network and PvP gates. Preserve spectator selection while teammates live.
 3. Implement `player_respawn` object replacement and local spawn protection
    for spell and savepoint revival. Keep savepoint free-spot placement separate
    from exact-body Resurrect placement.
-4. Schedule the fade/death task and its normal/alternate branches. Port
-   checkpoint buffer creation and restore before claiming party-wipe parity;
-   the saved record and level choose location and retained values. Keep the
-   direct same-level/max-HP branch when `save_findAct` returns `-1`.
+4. Schedule the fade/death task and its normal/alternate branches. Execute
+   `deathTask_schedule` setup before claiming its fade clear and priority as
+   bounded-tested. Port checkpoint buffer creation and restore before claiming
+   party-wipe parity; the saved record and level choose location and retained
+   values. Keep the direct same-level/max-HP branch when `save_findAct`
+   returns `-1`.
 5. Validate a real death through fade and level load in the native client,
    checking before/after HP, Gold, XP, items, equipment, position and world
    objects against the original on the same saved state. `328b072` supplies
