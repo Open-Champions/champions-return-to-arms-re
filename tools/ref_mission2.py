@@ -1,7 +1,7 @@
-"""Data-free authored-record and constructor contracts for mission 2.
+"""Aggregate authored-record and constructor contracts for mission 2.
 
-US SLUS-20973 v2.00. Only class frequencies, identifiers and addresses are
-stored here; the owner-supplied archives are read by difftest_mission2.py.
+US SLUS-20973 v2.00. Resource entry names are read from owner inputs only
+during the difftest; none are committed here.
 """
 
 LEVELS = ("innovat1", "inmine1", "inmine2", "innovat2")
@@ -85,32 +85,12 @@ NO_OBJECT = {
     "testlocation", "clearcolor", "customvars",
 }
 
-# GameObject_ctor class-definition requests, in exact order. These three
-# definitions are reached by the new mission-2 hostile constructors.
+# GameObject_ctor class-definition request counts. The executable supplies
+# the ordered entry names in memory during the test.
 RESOURCE_DEFS = {
-    0x4ff260: ("clokwork.lmp", (
-        "clockwork.vif", "clockwork.tex",
-        *(f"cutter_attack{i}.anm" for i in range(1, 4)),
-        *(f"cutter_death{i}.anm" for i in range(1, 4)),
-        "cutter_hit.anm", "cutter_idle1.anm", "cutter_walk.anm",
-        "cutter_walkattack.anm",
-        *(f"hammer_attack{i}.anm" for i in range(1, 4)),
-        *(f"hammer_death{i}.anm" for i in range(1, 4)),
-        "hammer_hit.anm", "hammer_idle1.anm", "hammer_walk.anm",
-        "hammer_walkattack.anm", "l_swoosh.vif", "l_swoosh.tex",
-        "r_swoosh.vif", "r_swoosh.tex")),
-    0x500a88: ("droid.lmp", (
-        "droid.vif", "droid.tex", "explode.anm", "hit_reaction.anm",
-        "idle_aggressive.anm", "idle_passive.anm", "run.anm",
-        "walk.anm", "death_01.anm", "death_02.anm")),
-    0x500960: ("iron.lmp", (
-        "i_guard.vif", "i_guard.tex",
-        *(f"attack_0{i}.anm" for i in range(1, 5)),
-        "catapault.anm", "death.anm", "hit_reaction_01.anm",
-        "hit_reaction_02.anm", "idle_01.anm", "idle_02.anm",
-        "shoot.anm", "walk.anm",
-        *(entry for i in range(1, 11)
-          for entry in (f"junk_{i:02}.vif", f"junk_{i:02}.tex")))),
+    0x4ff260: ("clokwork.lmp", 26),
+    0x500a88: ("droid.lmp", 10),
+    0x500960: ("iron.lmp", 34),
 }
 
 HOSTILES = {"clockworkcutter", "clockworkhammer", "Droid", "IronGuardian"}
@@ -118,24 +98,10 @@ HOSTILES = {"clockworkcutter", "clockworkhammer", "Droid", "IronGuardian"}
 # Only requests made directly by these derived constructors with lower
 # services stubbed. An empty tuple says nothing about later effects.
 DIRECT_REQUESTS = {
-    "PowderKeg": (("powderk.lmp", "powderkeg.vif"),
-                  ("powderk.lmp", "powderkeg.tex")),
-    "Blocker": (),
-    "PushTrigger": (),
-    "Trigger": (),
-    "Weather": (),
-    "smokeBomb": (),
-}
-
-# Minimum observed entry sets for dynamically formatted request families.
-# Archive presence is not an exact ordered res_find contract.
-ARCHIVE_PRESENCE = {
-    "rat.lmp": ("rat.vif", "rat.tex", "rat_idle.anm", "rat_move.anm"),
-    "seagull.lmp": ("seagull.vif", "seagull.tex", "seagull_move.anm",
-                    "stretch.anm", "preen.anm"),
-    "gbarrel.lmp": ("gbarrel.vif", "gbarrel.tex", "gbarrel_explode.vif",
-                    "gbarrel_explode.tex"),
-    "lavakeg.lmp": ("lavakeg.vif", "lavakeg.tex", "lavakeg_explode.vif",
-                    "lavakeg_explode.tex"),
-    "gearbox.lmp": ("gearbox.vif", "gearbox.tex", "gearbox.anm"),
+    "PowderKeg": 2,
+    "Blocker": 0,
+    "PushTrigger": 0,
+    "Trigger": 0,
+    "Weather": 0,
+    "smokeBomb": 0,
 }

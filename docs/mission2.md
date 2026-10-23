@@ -22,34 +22,32 @@ script argument; this check does not resolve its runtime destination.
 | From | Authored link and addressed call | Limit |
 |---|---|---|
 | Mission menu | Row 1 story pointer `innovat1` | The menu requires mission 2 availability; the hub dialog path is not executed here. |
-| `innovat1` | One `PushTrigger` action `newWorld9ddd`: `newWorld('inmine1')` at script offset `0x154` | Physical use and level load untested. |
-| `inmine1` | Two `PushTrigger` actions: `newWorld1f84` calls `newWorld(0)` at `0x02c`; `newWorldb54d` calls `newWorld('inmine2')` at `0x070` | The zero argument's resolved destination is Unknown here. |
-| `inmine2` | Two `PushTrigger` actions: `newWorld9ddd` calls `newWorld(0)` at `0x02c`; `newWorld5ccf` calls `newWorld('innovat2')` at `0x070` | The zero argument's resolved destination is Unknown here. |
-| `innovat2` | `newWorldb54d` returns to `inmine2` at `0x070`; its `Portal` has `script=return1c66`, a gate that reads `in_killediron` | The destination selected by the portal is not established by this script check. |
+| `innovat1` | One `PushTrigger` action calls `newWorld('inmine1')` at script offset `0x154` | Physical use and level load untested. |
+| `inmine1` | Two `PushTrigger` actions call `newWorld(0)` at `0x02c` and `newWorld('inmine2')` at `0x070` | The zero argument's resolved destination is Unknown here. |
+| `inmine2` | Two `PushTrigger` actions call `newWorld(0)` at `0x02c` and `newWorld('innovat2')` at `0x070` | The zero argument's resolved destination is Unknown here. |
+| `innovat2` | One `PushTrigger` action calls `newWorld('inmine2')` at `0x070`; its `Portal` script reads the boss gate variable | The destination selected by the portal is Unknown. |
 
-**Observed and asserted** in `innovat1`: `start` calls
-`setMissionAvailable(2,1)` at `0x0b34`, sets `startedMission2` and
-`currentMission`, and posts `absorb`. That action has a one-time
+**Observed and statically asserted** in `innovat1`: `start` calls
+`setMissionAvailable(2,1)` at `0x0b34`, sets two distinct mission variables
+to 1 and 2, and posts the action at `0x0be0`. That action contains a
 `cutScene('innovat1')` call at `0x0c4c`. Two NPC records link to distinct
 dialog entries; two branch actions add the same quest title key with
 different body keys. A turn-in action removes the quest and a
-`coppersprocket`, then defers `receivedShard`; that entry gives
-`shardofinnovate` and calls `grantMission(2)` at `0x0d00`. The current test
-asserts the named `addQuest`, `removeQuest` and grant call cells, not the
-dialog choice or every condition required to reach them. Other branch
-actions exchange `sprocket1` or `sarcophaguskey1` for `shard`; their
-reachability is Unknown here.
+`coppersprocket`, then defers the entry at `0x0c98`; that entry gives an
+item and calls `grantMission(2)` at `0x0d00`. These are addressed call and
+object-property assertions, not execution of the entry or proof of the
+dialog choice and conditions. Other branch actions exchange quest items;
+their reachability is Unknown here.
 
-**Observed and partially asserted** in `innovat2`: the one
-`IronGuardian` record has `dropitem=coppersprocket` and
-`deathscript=callScricb75`. Two `Trigger` records lead to the `ironboss`
-and `portalMessage` script entries. `ironboss` may play the `iron` cutscene,
-set the save inhibit flag and mark the named boss as a miniboss. The
-`killediron` entry sets `in_killediron=1` and clears save inhibit; the portal
-gate reads that variable. The difftest pins the cutscene and variable cells,
-the deathscript property and the portal property, but does not execute the
-boss death or prove the indirect call reaches `killediron`. Actual item
-drop, quest completion, save behavior and portal travel remain Unknown.
+**Observed and statically asserted** in `innovat2`: the one
+`IronGuardian` record has a `coppersprocket` drop property and a deathscript
+link. Two `Trigger` records link to script wrappers at `0x150` and `0x194`;
+those wrappers call the boss and portal-message entries. The boss entry
+contains the `iron` cutscene call, and a linked entry calls save inhibit on.
+The entry at `0x46c` sets the same variable read by the portal gate and
+calls save inhibit off. The miniboss flag call is **Observed**, not asserted
+by this test. No script entry, boss death or portal is executed here; actual
+item drop, quest completion, save behavior and portal travel remain Unknown.
 
 ## Authored object census and required constructors
 
@@ -108,21 +106,21 @@ file order. It does not construct the full level.
 The four new hostile-class constructor probes execute one representative
 each of `clockworkcutter`, `clockworkhammer`, `Droid` and `IronGuardian`
 through the original factory, `Creature_ctor` and `GameObject_ctor` at both
-seeds. The class definitions and named archive entries are checked against
-the executable and owner disc. A null resource result is returned, so
-archive presence and request order are proven, but residency, loaded model,
-animation and fighting behavior are not.
+seeds. The test reads ordered entry names from the owner executable in memory
+and checks that the executed requests match and the entries occur in the
+owner archives. Only aggregate counts are committed. Null resource results
+leave residency, loaded model, animation and fighting behavior Unknown.
 
 | Class or group | Constructor-stage resource result and limit |
 |---|---|
-| Both clockwork variants | Class definition `0x4ff260` requests 26 entries from `clokwork.lmp`: model/texture, cutter and hammer attack/death/hit/idle/walk clips and left/right swoosh model/texture. Both variants use one `0x24e124` constructor and the same definition; sub-kind behavior still needs a state/tick comparison. |
-| `Droid` | Definition `0x500a88` requests 10 `droid.lmp` entries: model/texture, explode, hit, two idle, run, walk and two death clips. The IronGuardian's separate Droid spawning path remains untested here. |
-| `IronGuardian` | Definition `0x500960` requests 34 `iron.lmp` entries: model/texture, attack 1–4, catapult, death, two hit, two idle, shoot, walk and ten junk model/texture pairs. `docs/monsters-2.md` also records a separate `droid.lmp` load in this constructor; the new probe stubs that lower service. |
-| `PowderKeg` | A separate direct constructor probe asserts `powderk.lmp` requests for `powderkeg.vif` and `powderkeg.tex`. |
+| Both clockwork variants | Class definition `0x4ff260` makes 26 requests from `clokwork.lmp`. Both variants use one `0x24e124` constructor and the same definition; sub-kind behavior still needs a state/tick comparison. |
+| `Droid` | Definition `0x500a88` makes 10 requests from `droid.lmp`. The IronGuardian's separate Droid spawning path remains untested here. |
+| `IronGuardian` | Definition `0x500960` makes 34 requests from `iron.lmp`. `docs/monsters-2.md` also records a separate `droid.lmp` load in this constructor; the new probe stubs that lower service. |
+| `PowderKeg` | A separate direct constructor probe asserts two named resource requests; their names and archive membership are not committed or checked here. |
 | `Blocker`, `PushTrigger`, `Trigger`, `Weather`, `smokeBomb` | Bounded direct constructor probes make zero named `res_find` calls with lower services stubbed. They may still need effect, world or script resources later. |
-| `Rat`, `Seagull` | Their `Critter` constructor has no class-definition pointer and formats resource names dynamically. The owner archives `rat.lmp` and `seagull.lmp` contain matching model/texture and movement/idle identifiers. Exact ordered requests on these records are **Unknown** to this difftest; no class-definition result is inferred for them. |
-| `gbarrel`, `lavakeg`, `gearbox` | Record properties name those three LMPs, which are present on the disc. They use `AutoContainer` or `AutoChest` fallback constructors. Exact instance request strings and archive residency are **Unknown** to the committed test because the stubbed formatting service does not resolve them. |
-| `NPC`, `Portal`, `Savepoint`, lights and markers | Instance-specific resource requests are **Unknown** here. The `innovat2` portal's `lump=jumpgate` property is asserted; the `innovat1` portal has no such property. |
+| `Rat`, `Seagull` | Their `Critter` constructor has no class-definition pointer and formats resource names dynamically. Matching member presence and exact ordered requests are **Unknown** to this difftest. |
+| `gbarrel`, `lavakeg`, `gearbox` | They use `AutoContainer` or `AutoChest` fallback constructors. Exact instance request strings and archive residency are **Unknown** because the stubbed formatting service does not resolve them. |
+| `NPC`, `Portal`, `Savepoint`, lights and markers | Instance-specific resource requests are **Unknown** here. The `innovat2` portal script link is asserted; destination behavior remains Unknown. |
 
 **Native snapshot, 2026-10-23.** The inspected
 `open-champions/worktrees/playable-integration` script host has a
@@ -147,20 +145,25 @@ IronGuardian construction here.
    `innovat1` load. Preserve all 699 object records and metadata side
    effects, the seven conditional `Player1` markers and the real level seed.
    Refuse any unsupported selected class explicitly.
-2. Port blockers, three character-light markers, save points, triggers,
+2. Before native objective claims, execute the addressed start, two NPC
+   branches, turn-in/deferred grant, boss/portal wrappers, and both boss gate
+   states through the original script host on controlled state. Compare
+   native effects and prove the two `innovat2` Trigger links reach their
+   entries. Static cells alone do not establish ordering or reachability.
+3. Port blockers, three character-light markers, save points, triggers,
    portals, NPC dialog hooks, weather, smoke effects, PowderKegs,
    AutoContainers and AutoChests with their property/resource and save
    behavior. Establish real collision and trigger use before accepting an
    exit. Check dynamically formatted request names against original calls.
-3. Port Rat/Seagull `Critter` identity and actual `rat.lmp` / `seagull.lmp`
+4. Port Rat/Seagull `Critter` identity and actual resource
    requests. Then port the two Clockwork variants through their shared
    constructor, holder, animation events, targeting, damage and death.
    Compare real loaded handles, seeded draws and attacks, not just pool size.
-4. Port Droid construction and tick in `inmine1`, then the
+5. Port Droid construction and tick in `inmine1`, then the
    `IronGuardian` constructor, Droid spawn budget, boss AI, junk/missile
    attacks, death and `coppersprocket` drop in `innovat2`. Preserve the
    shared object/grid/seed and real player damage, item pickup and credit.
-5. Execute the two NPC choice paths, quest add/turn-in, mission grant,
+6. Execute the two NPC choice paths, quest add/turn-in, mission grant,
    cutscenes, boss/save inhibit gate, portal condition and every linked
    `PushTrigger` across save/load. Compare actual original and native
    transitions, including what each `newWorld(0)` resolves to. A function
@@ -179,8 +182,8 @@ python3 -m unittest discover -s tools -p 'test_*.py'
 ```
 
 **Results, 2026-10-23:** both mission-2 seeds passed 699 records / 22,156
-loader bytes, 660 factory selections, 70 definition entries, five dynamic
-archive-presence checks, 96 named requests through four constructor chains,
+loader bytes, 660 factory selections, 70 definition entries,
+96 requests through four constructor chains,
 six bounded direct constructor probes and six addressed exits. The generic
 object loader passed 5/5 properties at each seed. The existing quest model
 passed 7/7; quest-log 14/14 controlled page probes plus three disc scripts;
@@ -189,3 +192,10 @@ story route 26/26 menu snapshots per seed; mission-menu art 39/39 draw and
 commands ran serially with `PYTHONDONTWRITEBYTECODE=1`; their logs are under
 ignored `local/`. These are original-function and static-fixture results,
 not a running-game mission or native port.
+
+**Audit FIX rerun, 2026-10-23:** seeds 20973 and 7 each passed the mission
+difftest with the 22,156-byte total now asserted. The test also pins the
+addressed objective calls, NPC, Trigger, deathscript and portal links described
+above. The full Python unit suite passed 652/652. Ordered resource names are
+derived only in memory from owner inputs; dynamic Critter/container member
+presence and all objective execution remain Unknown.

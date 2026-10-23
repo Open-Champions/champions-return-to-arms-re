@@ -136,7 +136,7 @@ def factory(executable, rows, seed):
     return selected
 
 
-def constructor(executable, row, definition, seed):
+def constructor(executable, row, definition, expected_requests, seed):
     ctor = R.FACTORY[row["class"].lower()][1]
     emu = EE(executable)
     emu.follow = ConstructorFollow(ctor)
@@ -156,28 +156,25 @@ def constructor(executable, row, definition, seed):
     assert len(base) == len(obj) == 1
     assert base[0].args[4] == obj[0].args[2] == definition
     assert base[0].args[0] == obj[0].args[0] == block
-    archive, names = R.RESOURCE_DEFS[definition]
-    assert requests == [(archive, entry) for entry in names]
+    assert requests == expected_requests
     return len(requests)
 
 
 def resource_tables(executable, source_dir):
     elf = Elf(open(executable, "rb").read())
-    total = 0
-    for definition, (archive, names) in R.RESOURCE_DEFS.items():
+    expected = {}
+    for definition, (archive, count) in R.RESOURCE_DEFS.items():
         assert elf.cstr(elf.u32(definition)) == archive
-        assert tuple(elf.cstr(elf.u32(definition + 8 + 8 * i))
-                     for i in range(len(names))) == names
-        assert elf.u32(definition + 8 + 8 * len(names)) == 0
+        names = tuple(elf.cstr(elf.u32(definition + 8 + 8 * i))
+                      for i in range(count))
+        assert len(set(names)) == count and all(names)
+        assert elf.u32(definition + 8 + 8 * count) == 0
         blob = open(os.path.join(source_dir, archive.upper()), "rb").read()
         present = {name.lower() for name, _off, _size in lmp_entries(blob)}
         assert all(name.lower() in present for name in names)
-        total += len(names)
-    for archive, names in R.ARCHIVE_PRESENCE.items():
-        blob = open(os.path.join(source_dir, archive.upper()), "rb").read()
-        present = {name.lower() for name, _off, _size in lmp_entries(blob)}
-        assert all(name.lower() in present for name in names), archive
-    return total
+        expected[definition] = [(archive, name) for name in names]
+    assert sum(map(len, expected.values())) == 70
+    return expected
 
 
 def direct_requests(executable, rows_by_level, seed):
@@ -201,7 +198,7 @@ def direct_requests(executable, rows_by_level, seed):
         props, pos = props_for(emu, row), emu.alloc(12)
         assert emu.call(FACTORY, type_name, pos, row["angle"], props,
                         max_steps=1000000) == block
-        assert tuple(requests) == R.DIRECT_REQUESTS[name], name
+        assert len(requests) == R.DIRECT_REQUESTS[name], name
     return len(representatives)
 
 
@@ -221,14 +218,29 @@ class ScriptCheck:
     def words(self, offset, *expected):
         assert tuple(self.word(offset + 4 * i) for i in range(len(expected))) == expected
 
-    def call(self, offset, native, *args):
+    def entry_at(self, offset):
+        found = [name for name, at in self.entries.items() if at == offset]
+        assert len(found) == 1, hex(offset)
+        return found[0]
+
+    def call_values(self, offset, native, count, strings=()):
         self.words(offset, 0x7b, self.natives.index(native))
-        for i, expected in enumerate((*reversed(args), len(args) * 4)):
-            at = offset - 8 * (len(args) + 1 - i)
+        values = []
+        for i in range(count + 1):
+            at = offset - 8 * (count + 1 - i)
             assert self.word(at) == 0x27
             value = self.word(at + 4)
-            assert (self.strings.get(value) == expected if isinstance(expected, str)
-                    else value == expected), (hex(at), native, expected)
+            values.append(value)
+        assert values[-1] == count * 4
+        args = list(reversed(values[:-1]))
+        for i in strings:
+            assert args[i] in self.strings
+            args[i] = self.strings[args[i]]
+        return tuple(args)
+
+    def call(self, offset, native, *args):
+        string_args = tuple(i for i, arg in enumerate(args) if isinstance(arg, str))
+        assert self.call_values(offset, native, len(args), string_args) == args, (hex(offset), native)
 
 
 def script_contract(gobs, rows_by_level):
@@ -236,47 +248,65 @@ def script_contract(gobs, rows_by_level):
                for level in R.LEVELS}
     assert tuple(len(scripts[level].entries) for level in R.LEVELS) == (28, 3, 3, 14)
     calls = (
-        ("innovat1", "newWorld9ddd", 0x128, 0x154, "inmine1"),
-        ("inmine1", "newWorld1f84", 0x000, 0x02c, 0),
-        ("inmine1", "newWorldb54d", 0x044, 0x070, "inmine2"),
-        ("inmine2", "newWorld9ddd", 0x000, 0x02c, 0),
-        ("inmine2", "newWorld5ccf", 0x044, 0x070, "innovat2"),
-        ("innovat2", "newWorldb54d", 0x044, 0x070, "inmine2"),
+        ("innovat1", 0x128, 0x154, "inmine1"),
+        ("inmine1", 0x000, 0x02c, 0),
+        ("inmine1", 0x044, 0x070, "inmine2"),
+        ("inmine2", 0x000, 0x02c, 0),
+        ("inmine2", 0x044, 0x070, "innovat2"),
+        ("innovat2", 0x044, 0x070, "inmine2"),
     )
-    for level, entry, start, site, dest in calls:
+    for level, start, site, dest in calls:
         script = scripts[level]
-        assert script.entries[entry] == start
+        script.entry_at(start)
         script.words(start, 0x2e)
         script.call(site, "newWorld", dest)
     first = scripts["innovat1"]
     assert first.entries["start"] == 0xb00
     first.call(0xb34, "setMissionAvailable", 2, 1)
+    started = first.call_values(0xb68, "setv", 2, (0,))
+    current = first.call_values(0xb9c, "setv", 2, (0,))
+    assert started[1] == 1 and current[1] == 2 and started[0] != current[0]
+    first.call(0xbc8, "postAction", first.entry_at(0xbe0))
     first.call(0xc4c, "cutScene", "innovat1")
-    first.call(0x314, "addQuest", "findthe303e", "nitramndb53")
-    first.call(0x944, "addQuest", "findthe303e", "giwinneb1ab")
-    first.call(0x4ac, "removeQuest", "findthe303e")
+    branches = (first.call_values(0x314, "addQuest", 2, (0, 1)),
+                first.call_values(0x944, "addQuest", 2, (0, 1)))
+    assert branches[0][0] == branches[1][0] and branches[0][1] != branches[1][1]
+    assert first.call_values(0x4ac, "removeQuest", 1, (0,)) == (branches[0][0],)
+    assert first.call_values(0x480, "removePlayerItem", 2, (1,))[1] == "coppersprocket"
+    first.call(0x4d8, "addDeferedCall", first.entry_at(0xc98))
+    given = first.call_values(0xcd4, "givePlayerItem", 3, (0,))
+    assert given[0] != "coppersprocket" and given[1:] == (0, 0)
     first.call(0xd00, "grantMission", 2)
     last = scripts["innovat2"]
-    assert last.entries["killediron"] == 0x46c
-    last.call(0x4a0, "setv", "in_killediron", 1)
+    last.entry_at(0x46c)
+    gate = last.call_values(0x13c, "getv", 1, (0,))
+    assert last.call_values(0x4a0, "setv", 2, (0,)) == (gate[0], 1)
+    last.call(0x4cc, "setSaveInhibit", 0)
     last.call(0x280, "cutScene", "iron")
+    last.call(0x358, "setSaveInhibit", 1)
     last.call(0x70, "newWorld", "inmine2")
 
     def properties(level, cls):
         return [set(x for x in row["properties"].split(";") if x)
                 for row in rows_by_level[level] if row["class"] == cls]
 
-    assert any("action=newWorld9ddd" in p for p in properties("innovat1", "PushTrigger"))
-    assert {"action=newWorld1f84", "action=newWorldb54d"} == {
-        x for p in properties("inmine1", "PushTrigger") for x in p if x.startswith("action=")}
-    assert {"action=newWorld9ddd", "action=newWorld5ccf"} == {
-        x for p in properties("inmine2", "PushTrigger") for x in p if x.startswith("action=")}
-    assert any("action=newWorldb54d" in p for p in properties("innovat2", "PushTrigger"))
-    assert {"dialogscript=startDia852", "dialogscript=startDia4b27"} == {
+    for level, offsets in (("innovat1", (0x128,)), ("inmine1", (0x0, 0x44)),
+                           ("inmine2", (0x0, 0x44)), ("innovat2", (0x44,))):
+        expected = {"action=" + scripts[level].entry_at(off) for off in offsets}
+        assert expected == {x for p in properties(level, "PushTrigger")
+                            for x in p if x.startswith("action=")}
+    assert {"dialogscript=" + first.entry_at(off) for off in (0x0, 0x94)} == {
         x for p in properties("innovat1", "NPC") for x in p if x.startswith("dialogscript=")}
-    assert any("deathscript=callScricb75" in p for p in properties("innovat2", "IronGuardian"))
+    assert any("deathscript=" + last.entry_at(0x0) in p
+               for p in properties("innovat2", "IronGuardian"))
     assert any("dropitem=coppersprocket" in p for p in properties("innovat2", "IronGuardian"))
-    assert any("script=return1c66" in p for p in properties("innovat2", "Portal"))
+    assert {"t=" + last.entry_at(off) for off in (0x150, 0x194)} == {
+        x for p in properties("innovat2", "Trigger") for x in p if x.startswith("t=")}
+    last.call(0x17c, "callScript", last.entry_at(0x21c))
+    last.call(0x1c0, "callScript", last.entry_at(0x3f0))
+    assert any("script=" + last.entry_at(0x110) in p
+               for p in properties("innovat2", "Portal"))
+    assert last.call_values(0x13c, "getv", 1, (0,)) == gate
     return len(calls)
 
 
@@ -299,21 +329,21 @@ def main():
         total_bytes += loader(args.executable, lump(gob, "objects.ob"), rows)
         total_selected += factory(args.executable, rows, args.seed)
     assert total_records == 699 and total_selected == 660
-    assert resource_tables(args.executable, args.source_dir) == 70
+    resource_requests = resource_tables(args.executable, args.source_dir)
     requests = sum(constructor(args.executable,
                                next(row for row in rows_by_level[level]
-                                    if row["class"] == name), definition, args.seed)
+                                    if row["class"] == name), definition,
+                               resource_requests[definition], args.seed)
                    for level, name, definition in (
                        ("innovat1", "clockworkcutter", 0x4ff260),
                        ("innovat1", "clockworkhammer", 0x4ff260),
                        ("inmine1", "Droid", 0x500a88),
                        ("innovat2", "IronGuardian", 0x500960)))
-    assert requests == 96
+    assert requests == 96 and total_bytes == 22156
     direct = direct_requests(args.executable, rows_by_level, args.seed)
     exits = script_contract(gobs, rows_by_level)
     print(f"PASS seed {args.seed}: {total_records} records/{total_bytes} consumed bytes, "
           f"{total_selected} factory objects, 70 class-definition entries, "
-          f"{len(R.ARCHIVE_PRESENCE)} dynamic archives checked, "
           f"{requests} requests through four constructor chains, {direct} direct probes, "
           f"{exits} addressed exits; "
           "allocation/resource returns and downstream services stubbed")
