@@ -25,6 +25,26 @@ ARCHIVES = {
                  21, {'Portal': 0, 'NPC': 5, 'Savepoint': 6, 'PushTrigger': 7, 'Trigger': 9},
                  73, (1, 19, 2, 5, 30, 19), (26, 48)),
 }
+# Exact class census for every row outside the five service-route classes.
+# The effect rings have authored actions, so their interaction is not ruled out.
+REMAINDER = {
+    'HUB.GOB': collections.Counter({
+        'Ambient_Light': 1, 'Ambient_Light2': 1, 'Directional_Light': 1,
+        'Directional_Light2': 1, 'Directional_LightD': 1, 'Directional_LightD2': 1,
+        'charAmbient_Light': 1, 'charDirectional_Light': 1,
+        'charDirectional_LightD': 1, 'Player1': 2, 'apprings': 1,
+        'bflya': 2, 'bflyb': 3, 'clearColor': 1, 'customVars': 1,
+    }),
+    'HUB2.GOB': collections.Counter({
+        'Ambient_Light': 1, 'Ambient_Light2': 1, 'Directional_Light': 1,
+        'Directional_Light2': 1, 'Directional_LightD': 1, 'Directional_LightD2': 1,
+        'charAmbient_Light': 1, 'charDirectional_Light': 1,
+        'charDirectional_LightD': 1, 'Player1': 1, 'Torch': 3,
+        'fpprings': 1, 'clearColor': 1, 'customVars': 1,
+    }),
+}
+SERVICE_PROPERTIES = {'shop', 'dialogscript', 'key', 'action', 't',
+                      'action1', 'actionatend', 'pokeable', 'triggerable'}
 CALLS = ('startDialog', 'activateStore', 'activateMissionMenu', 'addQuest',
          'setMissionAvailable', 'removePlayerItem')
 ABSENT = {'healPlayer', 'giveFullHealth', 'givePlayerExp', 'saveGame',
@@ -79,10 +99,22 @@ def census(iso):
         assert hashlib.sha256(blob).hexdigest() == digest
         rows = objects_from_file(label, blob)
         assert len(rows) == size
-        interactive = {row['class']: row for row in rows
-                       if row['class'] in expected}
-        assert len(interactive) == len(expected)
-        assert {kind: row['index'] for kind, row in interactive.items()} == expected
+        assert [row['index'] for row in rows] == list(range(size))
+        for kind, index in expected.items():
+            assert [row['index'] for row in rows if row['class'] == kind] == [index]
+        interactive = {kind: rows[index] for kind, index in expected.items()}
+        remainder = [row for row in rows if row['class'] not in expected]
+        assert collections.Counter(row['class'] for row in remainder) == REMAINDER[label]
+        rings = 'apprings' if label == 'HUB.GOB' else 'fpprings'
+        for row in remainder:
+            props = properties(row)
+            if row['class'] == rings:
+                assert {'action1', 'actionatend', 'triggerable'} <= props.keys()
+                assert props['action1'] and props['actionatend']
+                assert ('pokeable' in props) == (label == 'HUB.GOB')
+                assert not {'shop', 'dialogscript', 'key', 'action', 't'} & props.keys()
+            else:
+                assert not SERVICE_PROPERTIES & props.keys()
         npc = properties(interactive['NPC'])
         assert npc.get('shop') == '1' and npc.get('dialogscript')
         assert 'action' not in properties(interactive['Savepoint'])
@@ -115,10 +147,10 @@ def census(iso):
                       for i in range(nodes))
         assert len(dialog) == nodes * 0x448
         assert (nodes, choices) == dialog_shape
-        print('%s: %d records, one shop NPC, one savepoint, one portal, '
-              'one mission PushTrigger, one walk-in Trigger; %d script entries, '
+        print('%s: %d records, five singly indexed service-route classes; '
+              '%d other records including one action-bearing effect ring; %d script entries, '
               '%d dialog nodes, %d choices PASS' %
-              (label, size, entries, nodes, choices))
+              (label, size, len(remainder), entries, nodes, choices))
 
 
 def savepoint_use(elf, seed):
