@@ -67,6 +67,20 @@ def object_records(blob):
         off += size
 
 
+def script_imports_string(image, parsed, entry_name, import_name, argument):
+    """Check a named entry's direct call with a short script identifier."""
+    entries = sorted(parsed['internals'])
+    start = dict((name, off) for off, name in entries)[entry_name]
+    end = min((off for off, _ in entries if off > start), default=parsed['code'][1] - parsed['code'][0])
+    imports = [name for _, name in parsed['externals']]
+    pool = dict(scr.strings(image, *parsed['strings']))
+    words = struct.unpack_from('<%dI' % ((end - start) // 4), image, parsed['code'][0] + start)
+    return any(words[i:i + 2] == (0x7b, imports.index(import_name))
+               and any(words[j:j + 2] == (0x27, offset) for j in range(max(0, i - 8), i - 1))
+               for offset, value in pool.items() if value == argument
+               for i in range(len(words) - 1))
+
+
 def check_disc(hub, blood):
     image = entry(hub, 'script.scr')
     parsed = scr.parse(image)
@@ -77,25 +91,42 @@ def check_disc(hub, blood):
     publics = {name for _, name in parsed['internals']}
     assert {'startDia3314', 'setMissi867e', 'setMissib670', 'warnDetect',
             'gatewaytrigger'} <= publics
+    assert script_imports_string(image, parsed, 'callScri8e04', 'callScript', 'warnDetect')
+    assert script_imports_string(image, parsed, 'callScri1ef1', 'callScript', 'gatewaytrigger')
+    assert script_imports_string(image, parsed, 'gatewaytrigger', 'trigger', 'portal')
     dbin = entry(hub, 'firiona.dbin')
     assert dbin[0] == len(dbin) // 0x448 == 31
+    # The first true node condition is node 1; its unconditional choices
+    # traverse node 2 and then reach node 3. No dialog text is copied.
+    for node, target in ((1, 2), (2, 3)):
+        row = dbin[node * 0x448:(node + 1) * 0x448]
+        assert struct.unpack_from('<i', row, 0x54)[0] == 1
+        choice = row[0x58:0x58 + 0x54]
+        assert choice[0x10:0x50] == bytes(0x40)
+        assert struct.unpack_from('<i', choice, 0x50)[0] == target
     # Node 3 is the first mission's two ending actions. Copy no dialog text.
     row = dbin[3 * 0x448:(3 + 1) * 0x448]
     assert struct.unpack_from('<i', row, 0x54)[0] == 2
     actions = []
     for i in range(2):
         off = 0x58 + i * 0x54
+        assert row[off + 0x10:off + 0x30] == bytes(0x20)
         action = row[off + 0x30:off + 0x50].split(b'\0')[0].decode('ascii')
         nxt, = struct.unpack_from('<i', row, off + 0x50)
         actions.append((action, nxt))
     assert actions == [('setMissi867e', -1), ('setMissib670', -1)]
     hub_objects = list(object_records(entry(hub, 'objects.ob')))
-    assert any(cls == 'NPC' and 'dialogscript=startDia3314' in props for cls, props in hub_objects)
-    assert any(cls == 'PushTrigger' and 'action=callScri8e04' in props for cls, props in hub_objects)
-    assert any(cls == 'Trigger' and 't=callScri1ef1' in props for cls, props in hub_objects)
+    assert hub_objects[10][0] == 'NPC' and 'dialogscript=startDia3314' in hub_objects[10][1]
+    assert hub_objects[11][0] == 'PushTrigger'
+    assert {'action=callScri8e04', 'key=returnefa9'} <= set(hub_objects[11][1])
+    assert hub_objects[12][0] == 'Trigger' and 't=callScri1ef1' in hub_objects[12][1]
     blood_objects = list(object_records(entry(blood, 'objects.ob')))
-    assert any(cls == 'Player1' and 'default=1' in props for cls, props in blood_objects)
-    assert not any(cls == 'Player1' and 'name=goodstart' in props for cls, props in blood_objects)
+    markers = [props for cls, props in blood_objects if cls == 'Player1']
+    assert len(markers) == 3
+    assert ['default=1'] in markers
+    assert {'from=strife', 'from=drundar'} == {prop for props in markers for prop in props
+                                                   if prop.startswith('from=')}
+    assert not any('from=hub' in props or 'name=goodstart' in props for props in markers)
     hostile = sum(cls in {'Kobold', 'Koboldtough', 'koboldshaman', 'WarWraith'}
                   for cls, _props in blood_objects)
     assert hostile > 0
@@ -113,7 +144,7 @@ def model_snap(state):
                                     'paused', 'pending', 'orient', 'c0'))
 
 
-def run_hub_entry(elf, hub_script, seed, name, mission1_available=False):
+def run_hub_entry(elf, hub_script, seed, name, mission1_available=False, dialog_open=False):
     """Run a shipped hub entry through scr_load and scr_interpret in ee_emu."""
     rig = N.Rig(elf)
     rig.checkpoint()
@@ -132,12 +163,21 @@ def run_hub_entry(elf, hub_script, seed, name, mission1_available=False):
     mem.w32(0x404464, seed)
     mem.w8(PLAYERS + MISSION + 1, int(mission1_available))
     mem.write(0x4f8468, bytes(0x50))
+    mem.w32(0x4d8ae4, 0)
+    mem.w8(N.N.G_NETWORK_MODE, 0)
+    mem.w8(N.N.G_RECALL_COUNTDOWN, 0)
+    menu_calls = []
+    rig.emu.stub(N.EXT['dialog_isOpen'].addr, ret=int(dialog_open), name='dialog_isOpen')
+    rig.emu.stub(N.EXT['net_isLocalSlot'].addr, ret=1, name='net_isLocalSlot')
+    rig.emu.stub(N.EXT['missionMenu_open'].addr,
+                 function=lambda e: menu_calls.append(e.r[4] & 0xffffffff) or 0,
+                 name='missionMenu_open')
     pointer = scene.cstring(name)
     result = N.s32(rig.call(N.A['script_runByName'], pointer, max_steps=40000000))
     return (result, mem.u8(PLAYERS + MISSION), mem.u8(PLAYERS + MISSION + 1),
             mem.u32(PLAYERS + QUEST_COUNT),
             mem.cstr(PLAYERS + QUEST), mem.cstr(PLAYERS + QUEST + 0x20),
-            mem.u32(0x404464), mem.cstr(0x4f8468))
+            mem.u32(0x404464), mem.cstr(0x4f8468), tuple(menu_calls))
 
 
 def compare_seed(elf, hub_script, seed):
@@ -147,8 +187,13 @@ def compare_seed(elf, hub_script, seed):
                for name in (b'returnc2f', b'if99a5', b'if441a')]
     assert opening == [0, 1, 0]
     assert R.dialog_start_node(opening) == 1
-    portal = run_hub_entry(elf, hub_script, seed, b'warnDetect', mission1_available=True)
-    assert portal[0] == 0 and portal[7] == 'goodstart'
+    gate_key = run_hub_entry(elf, hub_script, seed, b'returnefa9', mission1_available=True)
+    assert gate_key[0] == 1
+    portal = run_hub_entry(elf, hub_script, seed, b'callScri8e04', mission1_available=True)
+    assert portal[0] == 0 and portal[7] == 'goodstart' and portal[8] == (0,)
+    guarded = run_hub_entry(elf, hub_script, seed, b'callScri8e04',
+                            mission1_available=True, dialog_open=True)
+    assert guarded[7] == 'goodstart' and guarded[8] == ()
     actions = [run_hub_entry(elf, hub_script, seed, name)
                for name in (b'setMissi867e', b'setMissib670')]
     assert actions[0] == actions[1]
@@ -221,11 +266,13 @@ def main():
     assert hashlib.sha256(open(args.elf, 'rb').read()).hexdigest() == ELF_SHA256
     counts = check_disc(args.hub_gob, args.blood_gob)
     hub_script = entry(args.hub_gob, 'script.scr')
-    print('PASS disc route: hub objects %d, blood1 objects %d, selected hostile records %d' % counts)
+    print('PASS disc route: indexed hub links, NPC choices, three blood1 markers; '
+          'hub objects %d, blood1 objects %d, selected hostile records %d' % counts)
     for seed in (20973, 7):
         count = compare_seed(args.elf, hub_script, seed)
-        print('PASS seed %d: shipped hub start and both dialog actions, mission/quest/act/entrance, '
-              '%d menu snapshots -> blood1' % (seed, count))
+        print('PASS seed %d: opening conditions, key and script wrapper, guarded menu open, '
+              'both ending actions, mission/quest/act/entrance, %d menu snapshots -> blood1' %
+              (seed, count))
 
 
 if __name__ == '__main__':
