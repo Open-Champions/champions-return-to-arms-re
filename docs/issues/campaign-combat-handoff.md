@@ -524,3 +524,149 @@ difftest; rounds 1–5 remain bounded reference models.
 The alternative was the strict boot and direct level-entry diagnostic above,
 plus the existing bounded round 1–5 probes. No stub result is promoted to a
 `valor` value.
+
+## Research round 7: real emulator capture, incomplete kill (2026-10-23)
+
+**Ran on Play!'s headless PS2 core**, not PCSX2, with the user's SLUS-20973
+v2.00 disc image. The copied `tools/rig` runner, its data directory, scripts,
+states and raw logs are under the ignored `work/valor-capture/` in this
+worktree. No files under `~/champions-re` were changed. No other PCSX2 or
+Play-RTA process was running when the runner started; runs were sequential.
+`loader-targeted.rig` uses the original character-creation buttons from the
+read-only `fight.rig` and then **writes `valor` to the pending-level field** at
+hub simulation frame 100. The game's own level loader, resource manager and
+constructors run after that request. This is an emulator-observed loader
+session, **not a normal campaign gate transition or a PCSX2 result**. The
+later `fight-no-pokes.rig` copies that rig's movement/attack input after a
+Valor entry state, omitting its player-HP and target-HP writes. These limits
+apply to every value below. Run-specific heap addresses are examples of one
+session, not portable constants.
+Six copied earlier rig states were also probed: three loadable ZIP states
+were in `strife`; three `.state` files could not be loaded by this runner.
+None supplied a verified normal-route Valor entry.
+
+### Captured loader and player state
+
+The hub appeared at runner frame 2537. The pending-level request led to
+`valor` at runner frame 2951. At runner frame 3224 / Valor simulation frame
+60, the shared seed `g_randSeed` 0x404464 was `0x661acaed`. The
+`difftest_campaign_combat_live.py` check matches each actor address seen at
+`GameObject_ctor` 0x14cb10, its derived constructor and its
+`obj_runEvery60` 0x14f2b8 call: **78 WarBoar-family actors and six
+Minotaurs**, without an actor stub. The first boar at `0x00628dc0` has
+vtable `0x00517cf0`, grid-link head `+0x8 = 0x008472a4`, 60-frame
+run-list head `+0x4 = 0x00847574`, and HP `+0x228 = 545.687377` in the
+entry state. The first Minotaur at `0x0062d8c0` has vtable
+`0x005165f0`, grid link `0x00849310`, run-list link `0x008492e8`, and
+HP `1173.97656`. The boar constructor addresses span `0x00628dc0` through
+`0x006459c0`; Minotaurs span `0x0062d8c0` through `0x0062f1c0`.
+
+**Ran:** `res_find` 0x17365c returned nonzero for all 20 WarBoar slots in
+definition `0x502f80` and all 26 Minotaur slots in `0x501200`, each on
+the first `GameObject_ctor` resolution at caller return address 0x14cbfc.
+The exact return values from this session follow in definition order:
+
+| Definition | Entry | `res_find` return |
+|---|---|---|
+| WarBoar | `warboar.vif` | `0x019edb00` |
+| WarBoar | `warboar.tex` | `0x019dc500` |
+| WarBoar | `warboar_b.tex` | `0x019f9d00` |
+| WarBoar | `atak_mid.anm` | `0x019cd400` |
+| WarBoar | `atak_left_close.anm` | `0x019cc500` |
+| WarBoar | `atak_front.anm` | `0x019cab80` |
+| WarBoar | `atak_right_close.anm` | `0x019ced00` |
+| WarBoar | `backup.anm` | `0x019cfa80` |
+| WarBoar | `charge.anm` | `0x019d0a80` |
+| WarBoar | `chargetak.anm` | `0x019d1480` |
+| WarBoar | `death1.anm` | `0x019d2600` |
+| WarBoar | `death2.anm` | `0x019d3b80` |
+| WarBoar | `hit2front.anm` | `0x019d5180` |
+| WarBoar | `hit2left.anm` | `0x019d5c80` |
+| WarBoar | `hit2right.anm` | `0x019d6900` |
+| WarBoar | `idle1.anm` | `0x019d7580` |
+| WarBoar | `roar.anm` | `0x019d8380` |
+| WarBoar | `walk.anm` | `0x019d9d80` |
+| WarBoar | `walk_trn_lft.anm` | `0x019daa80` |
+| WarBoar | `walk_trn_ryt.anm` | `0x019db800` |
+| Minotaur | `minotaur.vif` | `0x01a89e00` |
+| Minotaur | `minotaur.tex` | `0x01a5bc00` |
+| Minotaur | `atak_180.anm` | `0x01a40680` |
+| Minotaur | `atak_back.anm` | `0x01a42080` |
+| Minotaur | `atak_f1.anm` | `0x01a43700` |
+| Minotaur | `atak_f2.anm` | `0x01a44780` |
+| Minotaur | `atak_f3.anm` | `0x01a45d80` |
+| Minotaur | `atak_left.anm` | `0x01a47200` |
+| Minotaur | `atak_right.anm` | `0x01a48280` |
+| Minotaur | `block.anm` | `0x01a50d00` |
+| Minotaur | `death.anm` | `0x01a51200` |
+| Minotaur | `death2.anm` | `0x01a54880` |
+| Minotaur | `gore.anm` | `0x01a57980` |
+| Minotaur | `hitreaction.anm` | `0x01a58f80` |
+| Minotaur | `idle1.anm` | `0x01a59c80` |
+| Minotaur | `idle2.anm` | `0x01a5b100` |
+| Minotaur | `run.anm` | `0x01ab8f00` |
+| Minotaur | `taunt.anm` | `0x01ac2000` |
+| Minotaur | `taunt2.anm` | `0x01ac3780` |
+| Minotaur | `walk.anm` | `0x01ac5d80` |
+| Minotaur | `axe.vif` | `0x01a4f200` |
+| Minotaur | `axe.tex` | `0x01a49600` |
+| Minotaur | `shield.vif` | `0x01abd100` |
+| Minotaur | `shield.tex` | `0x01ab9e00` |
+| Minotaur | `shield2.vif` | `0x01ac1380` |
+| Minotaur | `shield2.tex` | `0x01abe800` |
+
+**Ran:** The entry player record at `g_players` 0x4d8af0 has class `6`,
+model `11` (the `MODEL_CLASS` relationship in `ref_campaign_combat_r4.py`),
+active weapon set `+0x4a7c = 0`, primary item pointer
+`+0x4434 = 0x004d8c20`, and item-definition pointer `0x003f87d0`
+(`club`). `Player_recalcDamage` 0x1b7158 ran again from
+`Player_weaponSwapInput` after the entry state was saved; record fields
+`+0xcc/+0xd0/+0xd4` remained **38 / 19 / 24** (s32 attack / minimum /
+maximum). Entry HP was `32.7999954`, Gold at `+0xe4` was `500`.
+
+### Captured melee boundary
+
+**Ran:** in the no-HP-write continuation, at runner frames 2384 and 2408,
+`Player_meleeHit` 0x1b6a98 called `damage_apply` 0x1e8230, which called
+`Creature_takeDamage` 0x116638 on boar `0x0063a0c0`, in that order both
+times. The damage call carried attack `38` and range `19–24`; the
+`Creature_takeDamage` entry saw `f12 = 0`. The same boar's HP `+0x228`
+was `228.319549` before the two attacks and at simulation frame 2470;
+pending damage `+0xc8` was zero and damage flags `+0x2dc` were zero.
+There was **no `Creature_dropLoot` 0x10f2c8 call**. `hud_tickGold`
+0x1dcb80 ran in a three-frame continuation with player Gold still `500`.
+The unmodified fight input did not finish by the 8,000-frame bound and
+produced no demonstrated kill, drop, pickup or credit. The first capture's
+optional `grid=` and `gold=` breakpoint annotations used an extra memory
+indirection and read zero; the direct state reads and corrected Gold
+breakpoint above supersede those annotations.
+
+The checker compares the live trace with the bounded `ref_campaign_combat_r4`
+model/class mapping and `ref_campaign_combat_r5` definition-slot and actor
+call contracts. It reports the two ordered melee paths separately and never
+turns those calls into a claimed kill. The raw logs, state files and private
+disc bytes remain ignored under `work/valor-capture/`.
+
+### Ordered native port list after the capture
+
+1. **Observed call-site contract; runtime value Unknown on a normal route:**
+   enter `valor` through a campaign gate or a legitimate saved character and
+   capture the requested level, player, shared seed and `hud.lmp` residency at
+   `game_loadLevel` 0x1e55c0. This capture used a pending-level write.
+2. **Ran in the scripted loader session:** resolve the 20 boar and 26
+   Minotaur slots through `res_find` 0x17365c, then run `GameObject_ctor`
+   0x14cb10 and `Creature_ctor` 0x109d68 before class constructors
+   0x2ba03c / 0x288fdc. The table above pins this session's nonzero returns;
+   a native port must obtain its own allocator addresses.
+3. **Ran in the same session:** retain the one object identity in the grid
+   and 60-frame list through 0x14f2b8, and dispatch that identity from
+   `runObjects` 0x14b910. The first actors' link values above are captured;
+   full AI, terrain and animation service behavior remain Unknown.
+4. **Ran for the entry player:** keep the actual class/model, `club` item,
+   active set and the `Player_recalcDamage` 38 / 19–24 result. The normal
+   campaign route's equipped player remains Unknown.
+5. **Ran through nonlethal calls only:** keep the `Player_meleeHit` →
+   `damage_apply` → `Creature_takeDamage` order. A real kill must still
+   establish HP loss, death state, `Creature_dropLoot` 0x10f2c8, item or
+   Gold object creation, pickup and `hud_tickGold` credit. Those values and
+   a final fully Observed kill port list remain **Unknown**.
