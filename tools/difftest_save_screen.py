@@ -2,6 +2,7 @@
 """Run bounded save/load screen fixtures in ee_emu on the pinned v2.00 ELF.
 
 Usage: python3 tools/difftest_save_screen.py path/to/SLUS_209.73 [path/to/disc.iso]
+       [--completed-slot path/to/BASLUS-20973_slot0]
 No original file, card record, text, texture, or capture is written.
 """
 import hashlib
@@ -14,6 +15,7 @@ from ee_emu import EE  # noqa: E402
 import ref_save_screen as R  # noqa: E402
 
 SHA256 = "292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675"
+SLOT_SHA256 = "c969195418643f79e31ddc493ad30c3cd5c24802be0aa34614fb584299027796"
 
 
 def fixture(path, seed, state=4, count=2, selected=0, edge=0, debug=0, mode=3):
@@ -185,12 +187,52 @@ def indexed_rows(path, seed):
                            0x10 + index, 0x11, 0x26)) + bytes(8))
         e.mem.w16(0x8E1200 + 112 * index + 0x6A, index + 1)
     e.call(0x21C3A4, max_steps=300000)
+    numbers = tuple((e.mem.cstr(c.args[1] & 0xFFFFFFFF),
+                     c.args[2] & 0xFFFFFFFF, c.args[0] & 0xFFFFFFFF)
+                    for c in e.calls if c.site == 0x21D94C)
+    number_draws = tuple((c.args[0] & 0xFFFFFFFF,
+                          c.args[1] & 0xFFFFFFFF, c.args[2] & 0xFFFFFFFF)
+                         for c in e.calls if c.site == 0x21D99C)
     headers = tuple(c.args[0] & 0xFFFFFFFF for c in e.calls if c.site == 0x21DA74)
     dates = tuple(u32s(c, 5)[2:5] for c in e.calls if c.site == 0x21DB0C)
     clocks = tuple((c.args[2] & 0xFFFFFFFF, c.args[4] & 0xFFFFFFFF,
                     c.args[5] & 0xFFFFFFFF)
                    for c in e.calls if c.site == 0x21DBCC)
-    return e.mem.u32(0x879E2C), headers, dates, clocks
+    return e.mem.u32(0x879E2C), numbers, number_draws, headers, dates, clocks
+
+
+def date_boundary(path, seed):
+    """Single-digit BCD fields expose the original date format and padding."""
+    e = fixture(path, seed, count=1)
+    e.mem.w8(0x88D306, 0x01)
+    e.mem.w8(0x88D305, 0x09)
+    e.call(0x21C3A4, max_steps=300000)
+    c = next(c for c in e.calls if c.site == 0x21DB0C)
+    return e.mem.cstr(c.args[1] & 0xFFFFFFFF), u32s(c, 5)[2:5]
+
+
+def completed_slot_header(path):
+    """Read only a hash-pinned existing card record; never write its bytes."""
+    with open(path, "rb") as source:
+        record = source.read()
+    assert len(record) == 310392, (path, len(record))
+    assert hashlib.sha256(record).hexdigest() == SLOT_SHA256, path
+    header = record[:0x70]
+    assert (struct.unpack_from("<I", header, 0x64)[0],
+            struct.unpack_from("<H", header, 0x6A)[0],
+            header[0x6C]) == (59, 1, 1), path
+    return header
+
+
+def completed_preview(path, seed, header, debug):
+    e = fixture(path, seed, count=1, debug=debug)
+    e.mem.write(0x8E1200, header)
+    e.call(0x21C3A4, max_steps=300000)
+    by_site = {c.site: c for c in e.calls}
+    keys = {c.site: e.mem.cstr(c.args[0] & 0xFFFFFFFF)
+            for c in e.calls if c.target == 0x173C84 and
+            c.site in (0x21DD48, 0x21DFA8, 0x21E258)}
+    return by_site, keys
 
 
 def clock_boundary(path, seed, hour, minute):
@@ -207,19 +249,46 @@ def clock_boundary(path, seed, hour, minute):
 
 
 def main(argv):
-    if len(argv) not in (2, 3):
+    args = argv[1:]
+    slot_path = None
+    if "--completed-slot" in args:
+        assert args.index("--completed-slot") == len(args) - 2, __doc__
+        slot_path = args[-1]
+        args = args[:-2]
+    if len(args) not in (1, 2):
         raise SystemExit(__doc__)
-    path = argv[1]
+    path = args[0]
     with open(path, "rb") as source:
         assert hashlib.file_digest(source, "sha256").hexdigest() == SHA256
     checks = 0
+    slot_header = completed_slot_header(slot_path) if slot_path else None
     for seed in R.SEEDS:
-        scroll, headers, dates, clocks = indexed_rows(path, seed)
+        scroll, numbers, number_draws, headers, dates, clocks = indexed_rows(path, seed)
         assert scroll == 2, (seed, scroll)
+        assert numbers == tuple(("%d.", i, 0x1FFFB80) for i in range(3, 8)), (seed, numbers)
+        assert number_draws == tuple((77, 128 + 17 * i, numbers[i][2])
+                                     for i in range(5)), (seed, number_draws)
         assert headers == tuple(0x8E1200 + 112 * i for i in range(2, 7)), (seed, headers)
         assert dates == tuple((11, 10 + i, 2026) for i in range(2, 7)), (seed, dates)
         assert clocks == tuple((1 + i, 20 + i, 0x53F660) for i in range(2, 7)), (seed, clocks)
-        checks += 4
+        checks += 6
+        assert date_boundary(path, seed) == ("%d/%d/%d", (1, 9, 2026)), seed
+        checks += 1
+        if slot_header is not None:
+            for debug in (0, 1):
+                by_site, keys = completed_preview(path, seed, slot_header, debug)
+                assert u32s(by_site[0x21DA74], 1) == (0x8E1200,), (seed, debug)
+                assert 0x21E1A0 in by_site and 0x21E184 not in by_site, (seed, debug)
+                assert keys[0x21E258] == "memcardDifficulty1", (seed, debug)
+                if debug:
+                    assert keys[0x21DD48] == "MemcardSaveTime", seed
+                    assert keys[0x21DFA8] == "MemcardBrowseMinutes", seed
+                    assert by_site[0x21E088].fargs[0] == 0x3F800000, seed
+                    assert 0x21E0F0 in by_site, seed
+                else:
+                    assert not ({0x21DD48, 0x21DFA8, 0x21E088, 0x21E0F0} &
+                                by_site.keys()), seed
+                checks += 4 if debug else 2
         for hour, minute, expected in R.CLOCK_BOUNDARIES:
             got = clock_boundary(path, seed, hour, minute)
             assert got == expected, (seed, hour, minute, got)
@@ -280,10 +349,10 @@ def main(argv):
             e.call(entry, max_steps=300000)
             assert (slot_site, 0x21C3A4) in ((c.site, c.target) for c in e.calls)
             checks += 2
-    if len(argv) == 3:
+    if len(args) == 2:
         expected = {name: (320, 224) if name == "tilecenter.tex" else (32, 32)
                     for name in R.TILE_PIECES}
-        assert disc_tiles(argv[2]) == expected
+        assert disc_tiles(args[1]) == expected
         checks += 1
     print("PASS save-screen fixtures: %d checks; seeds 20973, 7" % checks)
 
