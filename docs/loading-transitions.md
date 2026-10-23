@@ -5,9 +5,10 @@
 `t3/research-levels` (`13fafa4`), and `t3/research-story-route` (`76d4447`).
 **Observed** means a read of the addressed original executable. **Executed**
 means `tools/ee_emu.py` ran that function or slice against synthetic state in
-`tools/difftest_loading.py` or the named prior difftest. **Disc census** reads
-only file names and texture header dimensions from the operator's read-only
-v2.00 image. **Inferred** and **Unknown** retain their usual narrower meanings.
+`tools/difftest_loading.py` or the named prior difftest. **Disc census** means
+the committed read-only `tools/check_loading_art.py` probe counted names and
+texture headers in the operator's v2.00 image. **Inferred** and **Unknown**
+retain their usual narrower meanings.
 No claim below is a captured GPU frame, decoded art, heard soundtrack, or
 whole-game transition run.
 
@@ -16,7 +17,10 @@ whole-game transition run.
 **Observed:** `game_loadLevel` calls `loadscreen_start` at 0x1e5758,
 after level teardown and before the level archive at 0x1e5914. The start
 routine at 0x321e60 first makes three dark frames using five texture handles,
-then wakes a priority-5 render thread (0x32243c–0x322498). That thread
+then wakes a priority-5 render thread (0x32243c–0x322498). **Executed:** the
+start slice through 0x322400 asserts those three frame submissions, handle
+bindings, layer 6 and tint `0x80606060` against synthetic resources. Thread
+creation and display pixels remain unexecuted. That thread
 `loadscreen_renderLoop` 0x32187c draws one frame at a time while the main
 thread loads. **Executed:** its calls are `gfx_beginFrame`, six plain sprite draws, eight
 rotated sprite draws, and `gfx_endFrame`; it increments `g_loadscreenFrame`
@@ -28,9 +32,12 @@ The large art is `shot.tex` in a level-specific loading lump. The function
 `loadscreen_selectWorldAlias` 0x321c9c applies these rules in order, with
 case-sensitive comparisons; `tools/difftest_loading.py` executed 19 representative
 names at each seed. `loadscreen_start` prepends `l`, truncates that part to
-eight characters, appends `.lmp`, and falls back to `lmiss.lmp` if the file
-is absent (0x321eec–0x321f90). The second search repeats the same candidate;
-it does not establish a distinct region fallback.
+eight characters, appends `.lmp`, and falls back to `lmiss.lmp` if both file
+searches fail (0x321eec–0x321f90). The start-slice difftest asserts candidate
+names and the two-search fallback with synthetic CD results. The second
+search repeats the same candidate; it does not establish a distinct region
+fallback. Case-insensitive matching is supplied by the CD stub, not verified
+as a property of the original CD service.
 
 | Input rule | Art alias |
 |---|---|
@@ -43,7 +50,7 @@ it does not establish a distinct region fallback.
 | Exactly `pvpfire2` | `pvpfir2` |
 | Otherwise | Original base name |
 
-**Disc census:** among 120 `.GOB` level archives, 18 computed candidates lack
+**Disc census (`tools/check_loading_art.py`):** among 120 `.GOB` level archives, 18 computed candidates lack
 their own loading lump and take `LMISS.LMP`; the selected set has 91 distinct
 lump names including that fallback. This is art sharing by alias or filename,
 not a separate region identifier in the loader. The 97 loading lumps that
@@ -60,17 +67,21 @@ byte 0x44fddc selects `titleloadsp.tex` for 1, `titleloadit.tex` for 2,
 244×70, 160×72 and 184×78. The title and `shot.tex` are looked up at
 0x322034–0x322050. The first normal-thread frame submits the 640×320 shot
 at (0,100) and the default 184×78 title at (228,185), layer 6, tint
-`0x80808080` in the controlled capture. These are UI API coordinates in a
+`0x80808080` in the controlled capture. The difftest asserts the selected
+texture descriptors, layer and tint. These are UI API coordinates in a
 640×448 design space, not validated screen pixels.
 
 **Executed:** `scrollbar2.tex` draws twice at y=0 and `scrollbar3.tex`
 twice at y=352, layer 6, tint `0x14808080`. Their horizontal positions are
 `frame % 640` and `frame % 640 - 640` (0x32199c–0x321a50); the test crosses
 the 639→640 wrap. Eight further `scrollbar.tex` rotated submissions form a
-moving ornament: phase is the cosmetic-seed-derived word 0x50609c plus the
-frame, scaled by 100 and passed to sine/cosine (0x321a54–0x321c24). The
-numeric texture descriptors were synthetic; actual alpha and final geometry
-need a renderer capture. No branch reads loaded byte counts, and no text/font
+moving ornament: the difftest asserts that both trig calls receive
+`100 × (phase + frame)` and that all eight rotated calls bind the strip
+descriptor, layer 6, tint `0x80808080` and unit scale
+(0x321a54–0x321c24). The rotated positions are **Observed** in the original
+instructions but are not independently modeled by this difftest. The numeric
+texture descriptors were synthetic; actual alpha and final geometry need a
+renderer capture. No branch reads loaded byte counts, and no text/font
 submission occurs in the render-thread body. Thus the moving strips are an
 activity animation, **not a measured percentage**. No dynamic tip or prose
 entry point was found there. The raster picture or localized title may contain
@@ -206,6 +217,8 @@ integrated emulation of the entire system. `t3/research-levels`
    bind `shot.tex` plus the language-specific title and three strip textures.
    Keep this loading display active until the load barrier completes. Use the
    frame-based animation, not a fabricated byte-progress bar or tips list.
+   Verify CD service case matching separately; the start probe supplies
+   synthetic search results. Use the read-only art census for measured headers.
 3. Bring up the archive, world, sound groups, objects, scripts, lights, paths,
    player constructors and spawn placement in their observed order. Keep
    script loading-flag lifetime and the carried post action intact.
@@ -215,19 +228,22 @@ integrated emulation of the entire system. `t3/research-levels`
 5. Run warm-up, deferred calls, any peer barrier and store stock before
    hiding the loading display. Match the six blank fields, colour ramp and
    first input frame. Keep the HUD/mission-menu fades as separate owners.
-6. Compare call traces with `tools/difftest_loading.py` and the named prior
-   difftests. A renderer capture of actual art, a heard transition and a
-   running hub/menu/level interaction are still needed for visual/audio
-   parity and integrated-control claims.
+6. Compare start and render traces with `tools/difftest_loading.py`, disc
+   headers with `tools/check_loading_art.py`, and the named prior difftests.
+   Extend the rotated-position model before treating its geometry as verified.
+   A renderer capture of actual art, a heard transition and a running
+   hub/menu/level interaction are still needed for visual/audio parity and
+   integrated-control claims.
 
 ## Verification and limits
 
 The local private executable is pinned by SHA-256 inside the difftest.
-`tools/difftest_loading.py` compares 19 aliases, seven draw frames, 14 fade
-cases and four music cases, per seed 20973 and 7 (the alias and fade inputs
-are deterministic repeats). UI/GPU, IOP, CD search, texture pixels and
-thread timing are stubbed or outside the slices. A disc census checks 120
-archive names, selected art candidates and `.tex` header sizes. The
+`tools/difftest_loading.py` compares 19 aliases, six start cases, seven draw
+frames, 14 fade cases and four music cases, per seed 20973 and 7 (the alias
+and fade inputs are deterministic repeats). UI/GPU, IOP, CD service internals,
+texture pixels and thread timing are stubbed or outside the slices. The
+committed read-only disc census checks 120 archive names, selected art
+candidates and `.tex` header sizes. The
 rerun commands and pass/fail counts are recorded in the research worktree's
 ignored `local/loading-research/` logs. `PYTHONDONTWRITEBYTECODE=1` was used
 for all difftests and the full unit suite. No private input, raw disassembly,
@@ -240,7 +256,8 @@ the reference-branch scripts and inputs were read-only.
 
 | Command (`PYTHONDONTWRITEBYTECODE=1`) | Result |
 |---|---|
-| `python3 tools/difftest_loading.py "$ELF"` | 19 aliases, 7 frames, 14 fade cases, 4 entry-music cases per seed |
+| `python3 tools/difftest_loading.py "$ELF"` | 19 aliases, 6 start cases, 7 frames, 14 fade cases, 4 entry-music cases per seed |
+| `python3 tools/check_loading_art.py --iso "$ISO"` | 120 archives, 18 fallback, 91 distinct selections, 97 shot and 8 misc headers |
 | `python3 tools/difftest_fade_lifetime.py "$ELF"` from `t3/research-fade` | 2 setter, 2 step, loader retention; 9 direct setter sites scanned |
 | `python3 tools/difftest_audio.py "$ELF"` from `t3/research-audio` | 23 passing property lines, including alternate FPU models |
 | `python3 tools/difftest_levels.py "$ELF" --quick --seed N` from `t3/research-levels`, N=20973,7 | 12/12 properties per seed |

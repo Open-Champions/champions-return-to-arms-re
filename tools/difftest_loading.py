@@ -38,11 +38,79 @@ def check_alias(path, seed):
         emu.mem.write(ptr, raw)
         got = emu.mem.cstr(emu.call(0x321C9C, ptr))
         assert got == R.picture_alias(name), (name, got)
-        candidate = ("l" + got)[:8] + ".lmp"
-        assert R.picture_lump(name, {candidate}) == candidate
-        assert R.picture_lump(name, {candidate.upper()}) == candidate
-        assert R.picture_lump(name, set()) == "lmiss.lmp"
     return len(names)
+
+
+def check_start(path, seed):
+    """Execute original CD lookup, resource selection and three dark frames."""
+    cases = (("innovat2", 0, "linnova2.lmp", 1),
+             ("innovat2", 1, "LINNOVA2.LMP", 2),
+             ("innovat2", 2, "linnova2.lmp", 0),
+             ("hub", 3, "lhub.lmp", 1),
+             ("blood1", 4, "lblood1.lmp", 1),
+             ("torment4", 0, "ltorment.lmp", 1))
+    titles = ("titleload.tex", "titleloadsp.tex", "titleloadit.tex",
+              "titleloadfr.tex", "titleloadgr.tex")
+    for name, language, available, hit_on in cases:
+        emu = EE(path)
+        emu.follow = {0x321C9C, 0x3B96A8, 0x3B8534}  # alias and libc comparisons
+        emu.mem.write(0x44FE18, name.encode() + b"\0")
+        emu.mem.w32(0x404460, seed)
+        emu.mem.w8(0x44FDDC, language)
+        emu.mem.w32(0x506090, 0xFFFFFFFF)  # no prior loading thread
+        searches, loads, resources = [], [], {}
+
+        def sprintf(e):
+            dest = e.r[4] & 0xFFFFFFFF
+            value = "l" + e.mem.cstr(e.r[6] & 0xFFFFFFFF)
+            e.mem.write(dest, value.encode() + b"\0")
+            return len(value)
+
+        def strcat(e):
+            dest = e.r[4] & 0xFFFFFFFF
+            value = e.mem.cstr(dest) + e.mem.cstr(e.r[5] & 0xFFFFFFFF)
+            e.mem.write(dest, value.encode() + b"\0")
+            return dest
+
+        def cd_find(e):
+            requested = e.mem.cstr(e.r[4] & 0xFFFFFFFF)
+            searches.append(requested)
+            return int(len(searches) == hit_on and requested.lower() == available.lower())
+
+        def lump_load(e):
+            loads.append(e.mem.cstr(e.r[4] & 0xFFFFFFFF))
+            return 0x01010000
+
+        def res_find(e):
+            label = e.mem.cstr(e.r[5] & 0xFFFFFFFF)
+            handle = e.alloc(64)
+            resources[label] = handle
+            return handle
+
+        emu.stub(0x3B7EF0, function=sprintf)
+        emu.stub(0x3B8278, function=strcat)
+        emu.stub(0x1724FC, function=cd_find)
+        emu.stub(0x173558, function=lump_load)
+        emu.stub(0x17365C, function=res_find)
+        assert emu.run(0x321E60, until=(0x322400,), max_steps=50000) == "stop"
+        candidate = ("l" + R.picture_alias(name))[:8] + ".lmp"
+        assert searches == [candidate] * (1 if hit_on == 1 else 2), \
+               (name, language, hit_on, searches)
+        assert loads == [candidate if hit_on else "lmiss.lmp", "loadmisc.lmp"], loads
+        handles = [resources[key] for key in (titles[language], "shot.tex",
+                                                "scrollbar.tex", "scrollbar2.tex",
+                                                "scrollbar3.tex")]
+        assert len(resources) == 5, resources
+        draws = [c for c in emu.calls if c.target == SPRITE]
+        assert len(draws) == 15
+        assert [c.site for c in draws] == [0x3220D0, 0x3220EC, 0x322108,
+                                            0x322124, 0x322140] * 3
+        for index, draw in enumerate(draws):
+            assert tuple(x & 0xFFFFFFFF for x in draw.args[:5]) == \
+                   (handles[index % 5], 0, 0, 6, 0x80606060)
+        assert len([c for c in emu.calls if c.target == 0x19D8B0]) == 3
+        assert len([c for c in emu.calls if c.target == 0x19DA78]) == 3
+    return len(cases)
 
 
 def check_draw(path, seed):
@@ -66,6 +134,19 @@ def check_draw(path, seed):
         assert [c.args[1] & 0xFFFFFFFF for c in draws[2:6]] == \
                [x0, x1 & 0xFFFFFFFF, x0, x1 & 0xFFFFFFFF]
         assert [c.args[2] for c in draws[2:6]] == [0, 0, 352, 352]
+        assert [c.args[0] & 0xFFFFFFFF for c in draws] == \
+               [0x8ED900, 0x8ED940, 0x8ED9C0, 0x8ED9C0, 0x8EDA00, 0x8EDA00] + \
+               [0x8ED980] * 8
+        assert [c.args[3] & 0xFFFFFFFF for c in draws[:6]] == [6] * 6
+        assert [c.args[4] & 0xFFFFFFFF for c in draws[:6]] == \
+               [0x80808080] * 2 + [0x14808080] * 4
+        assert [(c.args[1] & 0xFFFFFFFF, c.args[2] & 0xFFFFFFFF)
+                for c in draws[6:]] == [(6, 0x80808080)] * 8
+        trig = [c for c in emu.calls if c.target in (0x1666E0, 0x166630)]
+        assert [c.target for c in trig] == [0x1666E0, 0x166630]
+        assert [c.args[0] & 0xFFFFFFFF for c in trig] == \
+               [((seed + frame) * 100) & 0xFFFFFFFF] * 2
+        assert all(c.fargs[2:4] == (0x3F800000, 0x3F800000) for c in draws[6:])
         assert emu.mem.u32(0x506098) == frame + 1
         assert not any(0x181000 <= c.target < 0x182000 for c in emu.calls)  # no font/text
     return len(frames)
@@ -127,11 +208,12 @@ def main(path):
         assert hashlib.sha256(source.read()).hexdigest() == SHA256, "wrong executable"
     for seed in (20973, 7):
         aliases = check_alias(path, seed)
+        starts = check_start(path, seed)
         fade = check_fade(path, seed)
         draws = check_draw(path, seed)
         music = check_entry_music(path, seed)
-        print("PASS seed=%d alias=%d draw=%d fade=%d entry_music=%d" %
-              (seed, aliases, draws, fade, music))
+        print("PASS seed=%d alias=%d start=%d draw=%d fade=%d entry_music=%d" %
+              (seed, aliases, starts, draws, fade, music))
 
 
 if __name__ == "__main__":
