@@ -99,15 +99,27 @@ each routed slot (four players × 0x58). **Observed:** repeated address
 construction at 0x1a36f8–0x1a3aa4. `eqcache_lookupModel` reads the header
 from `EQCACHE.HDR` or `EQCACHE2.HDR`, and the model/texture payload from
 `EQCACHE.DAT` or `EQCACHE2.DAT` (0x1a2680–0x1a2810,
-0x1a2d48–0x1a2f68). Its header groups names and variant numbers; a
-name/variant absent from that header has no cached mesh. The complete
-name/variant directory is enumerated in the generated, ignored
-`local/appearance/item-models.json`: 243 groups in `EQCACHE.HDR`, 245 in
-`EQCACHE2.HDR`, and 155 in the separately loaded `WCACHE.HDR`. It also gives
-all 134 static `g_itemModels` filename pairs by row. The exact packed
-mesh/texture payload format and live load timing are **Unknown** in this
-trace. **Disc observed:** the three headers, their paired data files, and
-134 static model/texture names are present.
+0x1a2d48–0x1a2f68). Its header has a group count at +0, then 12-byte
+groups `{entryOffset, nameOffset, entryCount}`. Each group points to an
+ASCII stem and an even count of 8-byte entries. A pair shares one signed
+variant id: `{id, textureSectorCount, textureStartSector}`, then
+`{id, modelSectorCount, modelStartSector}`. Sectors are 2,048 bytes and
+the model begins immediately after the texture. **Observed:** pointer
+relocation 0x1a2748–0x1a2810; `eqcache_findEntry` 0x1a2600–0x1a2648;
+sector arithmetic 0x1a2ea8–0x1a2eec; `tex_relocate` at 0x1a2f34 and
+`model_relocate` at 0x1a2f44. **Disc observed:** all 16,945 texture/model
+pairs in the three headers satisfy the shared id, adjacency, and DAT bounds.
+
+A name/variant absent from the selected header has no cached part. The
+generated, ignored `local/appearance/item-models.json` enumerates the
+stem, variant id, texture/model sector offsets and lengths for each pair:
+243 groups in `EQCACHE.HDR`, 245 in `EQCACHE2.HDR`, and 155 in the
+separately loaded `WCACHE.HDR`. It also gives all 134 static
+`g_itemModels` filename pairs by row. The cache API returns the model
+handle and texture handle to the draw loop in that order
+(0x1a2d88–0x1a2da0). **Unknown:** the live frame on which an asynchronous
+cache miss resolves. The `.vif` and `.tex` payload formats are already
+documented in `docs/formats/model-texture.md`; no payload bytes are tracked.
 
 `Player_drawEquipped` draws a part only when both handles exist
 (0x1a3b90–0x1a3b9c). It applies equipment-specific tests and effects before
@@ -141,7 +153,7 @@ that broader draw path is **Unknown** here and needs a native frame trace.
    same-basename guess. Keep animation poses from the player-model mapping.
 3. Read all 17 equipped pointers and the underlying item definitions.
    Resolve item variants through `item_buildPictureFilename` and the equipment
-   cache, or `g_itemModels` where the code takes that route. Treat an
+   cache directory/sector pair, or `g_itemModels` where the code takes that route. Treat an
    unresolved asynchronous cache entry as absent for that frame.
 4. Reproduce the `Player_draw`/`Creature_draw` call order. Draw routed
    equipment on the body's current pose, including the second-weapon attach
@@ -159,7 +171,8 @@ that broader draw path is **Unknown** here and needs a native frame trace.
 "$HOME/Library/Application Support/Play-RTA/Champions - Return to Arms (v2.00).iso"
 --manifest local/appearance/item-models.json` compares 96 constructor
 requests/handles and 1,072 item-index calls with original functions, across
-seeds 20973 and 7. It also enumerates 643 disc cache-header name groups.
+seeds 20973 and 7. It also validates 643 disc cache-header name groups and
+16,945 texture/model sector pairs.
 The record is authored in test memory; world setup and
 resource lookup are isolated, and equipment drawing itself was read rather
 than executed. Original disc bytes, disassembly, and the generated filename

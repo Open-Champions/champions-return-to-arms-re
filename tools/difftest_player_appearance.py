@@ -67,18 +67,27 @@ def item_indices(elf):
 
 
 def cache_groups(image, files, name):
-    """Read only the name/variant directory of a packed equipment cache."""
+    """Read name and texture/model sector pairs from a packed cache header."""
     off, size, _ = files['/BG/DATA/' + name]
+    data_size = files['/BG/DATA/' + name.replace('.HDR', '.DAT')][1]
     header = image[off:off + size]
     count, = struct.unpack_from('<I', header)
     groups = []
     for index in range(count):
         variants_at, name_at, length = struct.unpack_from('<III', header, 4 + index * 12)
-        assert variants_at + 8 * length <= size and name_at < size
+        assert length % 2 == 0 and variants_at + 8 * length <= size and name_at < size
         end = header.index(b'\0', name_at)
         stem = header[name_at:end].decode('ascii')
-        variants = [struct.unpack_from('<h', header, variants_at + 8 * j)[0]
-                    for j in range(length)]
+        variants = []
+        for j in range(0, length, 2):
+            texture_id, texture_sectors, texture_at = struct.unpack_from('<hhI', header, variants_at + 8 * j)
+            model_id, model_sectors, model_at = struct.unpack_from('<hhI', header, variants_at + 8 * (j + 1))
+            assert texture_id == model_id and texture_sectors > 0 and model_sectors > 0
+            assert texture_at + texture_sectors == model_at
+            assert (model_at + model_sectors) * 2048 <= data_size
+            variants.append({'id': texture_id, 'texture_sector': texture_at,
+                             'texture_sectors': texture_sectors,
+                             'model_sector': model_at, 'model_sectors': model_sectors})
         groups.append({'stem': stem, 'variants': variants})
     return groups
 
