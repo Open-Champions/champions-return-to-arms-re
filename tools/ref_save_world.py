@@ -13,6 +13,70 @@ LEVEL_DIRECTORY_AT = 0x16010
 LEVEL_SLOTS = 10
 
 
+def chest_state(obj):
+    """0x292284: hide mask, gold remainder, two kind bytes, opened word."""
+    return struct.pack('<IHBBI', obj['hide_mask'], obj['gold'],
+                       obj['bomb'], obj['variant'], obj['opened'])
+
+
+def itemprop_item(item):
+    """0x1596a4: a 0x48-byte item with its definition pointer encoded."""
+    if len(item) != 0x48:
+        raise ValueError('ItemProp item must be 0x48 bytes')
+    out = bytearray(item)
+    definition = struct.unpack_from('<I', item)[0]
+    struct.pack_into('<I', out, 0, ((definition - 0x3f7650) >> 6) & 0xffffffff)
+    return bytes(out)
+
+
+def creature_state(variant, hp_fraction, flags64, byte231, half312, dead_anim=-1):
+    """0x116780: dead records add an animation string handle before packed flags."""
+    bits = sum(1 << out for out, mask in enumerate((0x1000000, 0x100000000,
+                                                     0x400000, 0x800000,
+                                                     0x2000000000000)) if flags64 & mask)
+    bits |= 0x20 if byte231 & 1 else 0
+    bits |= 0x40 if half312 else 0
+    out = bytearray(struct.pack('<If', variant, hp_fraction))
+    if hp_fraction <= 0:
+        out += struct.pack('<i', dead_anim)
+    out += struct.pack('<I', bits)
+    if half312:
+        out += struct.pack('<i', half312)
+    return bytes(out)
+
+
+def prop_suffix(handles, mask, quaternion, position):
+    """0x158d8c: string handles, compact mask and quantized pose."""
+    out = bytearray(struct.pack('<III', *handles))
+    if mask and mask & (mask - 1) == 0:
+        out.append(mask.bit_length() - 1)
+    else:
+        out += struct.pack('<iQb', -1, mask, 0)
+    out += struct.pack('<bbbh', *quaternion)
+    out += struct.pack('<hhh', *position)
+    return bytes(out)
+
+
+def directory_slot(names, name):
+    """0x217858-0x2178c8: first empty or exact match; overflow aliases slot 10."""
+    if len(names) != LEVEL_SLOTS + 1:
+        raise ValueError('ten visible entries and one extra gap are required')
+    for index in range(LEVEL_SLOTS):
+        if not names[index] or names[index] == name:
+            return index
+    return LEVEL_SLOTS
+
+
+def directory_lookup(names, name):
+    """0x2182fc-0x218340: readers inspect at most ten contiguous entries."""
+    for index, saved in enumerate(names[:LEVEL_SLOTS]):
+        if not saved:
+            break
+        if saved == name:
+            return index
+    return None
+
+
 def pack_level_body(world, decals, explored, reserved_size, initial=None):
     """0x218600: two 8-byte length frames followed by fixed-size automap."""
     if len(explored) != AUTOMAP_SIZE:
