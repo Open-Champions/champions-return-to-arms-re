@@ -1,6 +1,6 @@
 # Hub to the first story combat level
 
-US `SLUS_209.73` v2.00, research worktree `t3/research-story-route`, 2026-10-23.
+US `SLUS_209.73` v2.00, research worktree `t3/research-story-route-r3`, 2026-10-23.
 This is a function-level and disc-structure trace, not a running-game or native
 playthrough result. `tools/ref_story_route.py` models the fresh route and
 `tools/difftest_story_route.py` compares original EE functions at seeds 20973
@@ -66,11 +66,19 @@ generic functions were compared in `t3/research-exits-walkin` `ba48fe5`;
 their dispatch on this specific hub object is **Inferred**, not executed here.
 The `returnefa9` key entry returns 1 on the synthetic fresh state at both
 seeds. A rectangle `Trigger` record 12 separately calls
-`gatewaytrigger`, which invokes `trigger(portal,0)` and changes the portal
-visual state when its conditions hold. It does not name a destination. The
-standalone `Portal` record 6 belongs to the jump-gate system. The hub record
+`gatewaytrigger`. **Executed** with a synthetic named portal, this entry calls
+the `trigger` built-in with `portal` and `0`; the built-in invokes virtual
+trigger slot 3 on that object with argument 0. The request is guarded by
+`warncheck`, `lockDetect` and a one-shot script variable: no request occurs
+before mission 1 is offered or on a repeat call. A rendered visual change is
+**Inferred** from the portal object's generic behavior because the synthetic
+virtual method is a recording stub, not the shipped Portal implementation.
+`ee_emu.py` cannot establish the rendered effect with this stubbed virtual
+method and no renderer. The entry does not name a destination. The standalone
+`Portal` record 6 belongs to the jump-gate system. The hub record
 indices, links and key are asserted against the local archive; the two script
-wrappers and visual call are asserted against the shipped script image.
+wrappers are asserted against the shipped script image, and the guarded portal
+request is executed at both seeds.
 
 `warnDetect` calls `warncheck` at script offset 0x4234. It tests an available,
 incomplete mission with the matching `startedMissionN` variable set. In the
@@ -102,7 +110,7 @@ alternate is null; its medal and bonus destinations are different columns.
 |---|---|
 | **Observed** `mainloop_loadRequestedWorld` 0x320edc–0x3214c0 | Save the old `hub` level state; call `save_actChanged`; apply any pending character selection; copy `hub` into `g_prevLevelName` 0x41b7c2; split and clear the request; load base name `blood1`; then place players. |
 | **Executed** `save_findAct` 0x217d30; **Inferred** carryover | From current act 0, both `hub` and `blood1` resolve to act 0. The observed act-change branch should not clear mission bytes, quests, quest variables or non-quest inventory for this move, but their survival through a level load was not executed. `valor` resolves to act 6. |
-| **Observed** `g_entranceName` 0x4f8468 and `Player1_ctor` 0x158928; **Inferred** placement | The script sets `goodstart`. The archive check counts exactly three `blood1` `Player1` records: one default and two `from` records for `strife` and `drundar`; none has `name=goodstart` or `from=hub`. The default is the applicable authored marker under the documented ranking rules, subject to an actual construction test. |
+| **Observed** `g_entranceName` 0x4f8468 and `Player1_ctor` 0x158928; **Inferred** placement | The script sets `goodstart`. The archive check asserts the complete `Player1` census: zero-based record 227 has only `default=1`, record 287 only `from=strife`, and record 298 only `from=drundar`. No record has `name=goodstart` or `from=hub`. The default is the applicable authored marker under the documented ranking rules, subject to an actual construction test. |
 | **Observed** `mainloop_loadRequestedWorld` 0x321160–0x3214c0; `game_loadLevel` 0x1e55c0–0x1e6234 | Terrain height and `world_findFreeSpot` determine final spawn coordinates. An eligible living player gets a new `Player` object from the existing record. The loader sets record +0x4c27 to 30 (entry hit immunity). The orientation byte is copied to 0x41b7c1 and 0x41b720 becomes 0xfe; no gameplay reader of the copy was established in `t3/research-levels`. |
 | **Observed** private `BLOOD1.GOB` count only | 363 object records, including 140 records in four selected hostile class families. This establishes authored combat candidates, not successfully constructed or live enemies. |
 
@@ -115,6 +123,11 @@ menu comparison only established that its selected path did not advance the
 seed. Equipment construction, resource residency and actual blood1 actor
 binding remain unverified. See `t3/research-levels` `docs/level-flow.md`
 §§5–7 and `t3/research-quests` `docs/quests.md` §§1,5.
+
+The marker census is an exact assertion over `BLOOD1.GOB`'s `objects.ob` in
+`check_disc`, not an EE function result: `ee_emu.py` executes mapped functions
+and this harness does not load the archive into an original world. A loader and
+`Player1_ctor` run with those records would settle actual marker selection.
 
 ## 4. Ordered native port list
 
@@ -129,8 +142,10 @@ binding remain unverified. See `t3/research-levels` `docs/level-flow.md`
 3. Implement the hub PushTrigger's `key`/prompt/use path, `warnDetect` and
    `setEntrance`. Confirm the record 11 dispatch with a real hub interaction;
    only its archive link, key entry and script wrapper were checked here.
-   Keep its warning/deferred branch and the separate walk-in Trigger/portal
-   visuals. Do not treat the `Portal` gate as the story exit.
+   Keep its warning/deferred branch and the separate walk-in Trigger's guarded
+   `trigger(portal,0)` request. Check the actual Portal virtual method and
+   rendered effect in an integrated run; the executed synthetic object only
+   establishes the request. Do not treat the `Portal` gate as the story exit.
 4. Run `missionMenu_open`/`missionMenu_run` with the player's lockstep pad,
    availability gate, row/column, fade and state-8 direct pending-world write.
    For the fresh route, confirm row 0's story column to request `blood1`.
@@ -150,10 +165,12 @@ binding remain unverified. See `t3/research-levels` `docs/level-flow.md`
 
 Run with `PYTHONDONTWRITEBYTECODE=1` and the local owner-supplied ELF and
 archives. `difftest_story_route.py` pins the executable SHA-256, checks the
-shipped hub script/dialog/objects and blood1 records without outputting their
-bytes, executes `start`, the opening conditions, key, wrapper and both mission
-actions via the original interpreter, records the menu-open slot under closed
-and open dialog controls, then compares the original mission menu to the
+shipped hub script/dialog/objects and exact blood1 marker records without
+outputting their bytes. It executes `start`, the opening conditions, key,
+wrapper, both mission actions and guarded `gatewaytrigger` via the original
+interpreter. It records the portal virtual call under offered, unoffered and
+repeat controls and the menu-open slot under closed and open dialog controls,
+then compares the original mission menu to the
 reference state after every tick at seeds 20973 and 7. It checks the direct
 pending request and orientation, not a full `game_loadLevel` call.
 
@@ -175,9 +192,10 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_objects.py "$ELF" --quick --see
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools -p 'test_*.py'
 ```
 
-Results: story route 26/26 menu snapshots per seed; hub native comparison
-3/3 properties per seed (82/82 entry points and a 68-case scripted sequence
-each); marker comparison 4/4 properties per seed across four FPU models;
+Results: story route 26/26 menu snapshots and one guarded portal virtual call
+per seed; hub native comparison 3/3 properties per seed (82/82 entry points
+and a 68-case scripted sequence each); marker comparison 4/4 properties per
+seed across four FPU models;
 full unit suite 652/652. The `t3/research-exits-walkin` `ba48fe5` generic
 dispatch difftest also passed at both seeds (268 trigger, 64 gate prompt,
 48 PushTrigger prompt and 20 gate-arrival comparisons per seed). All were

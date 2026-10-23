@@ -121,12 +121,10 @@ def check_disc(hub, blood):
     assert {'action=callScri8e04', 'key=returnefa9'} <= set(hub_objects[11][1])
     assert hub_objects[12][0] == 'Trigger' and 't=callScri1ef1' in hub_objects[12][1]
     blood_objects = list(object_records(entry(blood, 'objects.ob')))
-    markers = [props for cls, props in blood_objects if cls == 'Player1']
-    assert len(markers) == 3
-    assert ['default=1'] in markers
-    assert {'from=strife', 'from=drundar'} == {prop for props in markers for prop in props
-                                                   if prop.startswith('from=')}
-    assert not any('from=hub' in props or 'name=goodstart' in props for props in markers)
+    markers = [(index, props) for index, (cls, props) in enumerate(blood_objects)
+               if cls == 'Player1']
+    assert markers == [(227, ['default=1']), (287, ['from=strife']),
+                       (298, ['from=drundar'])]
     hostile = sum(cls in {'Kobold', 'Koboldtough', 'koboldshaman', 'WarWraith'}
                   for cls, _props in blood_objects)
     assert hostile > 0
@@ -180,6 +178,56 @@ def run_hub_entry(elf, hub_script, seed, name, mission1_available=False, dialog_
             mem.u32(0x404464), mem.cstr(0x4f8468), tuple(menu_calls))
 
 
+def check_gateway_trigger(elf, hub_script, seed):
+    """Execute the guarded hub entry with one named portal and record its virtual call.
+
+    The virtual method is a recording stub: this proves the request and guard,
+    not the rendered state of the shipped Portal instance.
+    """
+    rig = N.Rig(elf)
+    rig.checkpoint()
+    image = hub_script + bytes(256)
+    assert rig.place(image) == (0, 0)
+    scene = N.Scene(rig, random.Random(seed), names=[b'portal'],
+                    variables=[b'firstmissionever'], objects=1, every_name=1)
+    machine = N.new_machine(image)
+    N.setup_model(scene, seed, machine)
+    rig.responder = N.Responder(seed, scene)
+    mem = rig.emu.mem
+    mem.write(PLAYERS, bytes(N.N.REC_SIZE * 4))
+    mem.write(N.N.G_QUEST_VARS, bytes(0x2000))
+    mem.w32(0x4d8ae0, 1)
+    mem.w32(0x4f719c, 0)
+    mem.w32(0x404464, seed)
+    portal = scene.objects[0]['addr']
+    # Scene may give its synthetic player the same name. Isolate one portal
+    # object so the call count and operand are unambiguous.
+    table = N.O.NameTable()
+    table.add(b'portal', scene.objects[0])
+    mem.write(N.O.G_NAME_KEYS, struct.pack('<512I', *[
+        scene.cstring(key) if key is not None else 0 for key in table.keys]))
+    mem.write(N.O.G_NAME_OBJS, struct.pack('<512I', *[
+        obj['addr'] if obj is not None else 0 for obj in table.objs]))
+
+    def run():
+        rig.calls = []
+        result = N.s32(rig.call(N.A['script_runByName'], scene.cstring(b'gatewaytrigger'),
+                                max_steps=40000000))
+        calls = [args for name, args in rig.calls if name == 'virtual'
+                 and args[0] == N.N.V_TRIGGER]
+        return result, calls
+
+    # With no mission offered, lockDetect blocks the portal request.
+    mem.w8(PLAYERS + MISSION + 1, 0)
+    assert run() == (0, [])
+    mem.w8(PLAYERS + MISSION + 1, 1)
+    first = run()
+    assert first == (0, [(N.N.V_TRIGGER, portal, 0)]), first
+    # The entry's one-shot variable suppresses the second request.
+    assert run() == (0, [])
+    return 1
+
+
 def compare_seed(elf, hub_script, seed):
     start = run_hub_entry(elf, hub_script, seed, b'start')
     assert start[0:4] == (0, 3, 0, 0)
@@ -194,6 +242,7 @@ def compare_seed(elf, hub_script, seed):
     guarded = run_hub_entry(elf, hub_script, seed, b'callScri8e04',
                             mission1_available=True, dialog_open=True)
     assert guarded[7] == 'goodstart' and guarded[8] == ()
+    assert check_gateway_trigger(elf, hub_script, seed) == 1
     actions = [run_hub_entry(elf, hub_script, seed, name)
                for name in (b'setMissi867e', b'setMissib670')]
     assert actions[0] == actions[1]
@@ -266,12 +315,13 @@ def main():
     assert hashlib.sha256(open(args.elf, 'rb').read()).hexdigest() == ELF_SHA256
     counts = check_disc(args.hub_gob, args.blood_gob)
     hub_script = entry(args.hub_gob, 'script.scr')
-    print('PASS disc route: indexed hub links, NPC choices, three blood1 markers; '
+    print('PASS disc route: indexed hub links, NPC choices, exact blood1 marker records; '
           'hub objects %d, blood1 objects %d, selected hostile records %d' % counts)
     for seed in (20973, 7):
         count = compare_seed(args.elf, hub_script, seed)
-        print('PASS seed %d: opening conditions, key and script wrapper, guarded menu open, '
-              'both ending actions, mission/quest/act/entrance, %d menu snapshots -> blood1' %
+        print('PASS seed %d: opening conditions, guarded gateway trigger(portal,0), '
+              'key and menu wrapper, both ending actions, mission/quest/act/entrance, '
+              '%d menu snapshots -> blood1' %
               (seed, count))
 
 
