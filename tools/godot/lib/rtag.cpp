@@ -283,6 +283,7 @@ struct Machine {
     std::mutex lock;
     std::condition_variable changed;
     std::deque<OutFrame*> ready;
+    int in_flight = 0;                                  // lists whose scene is being made off the decoder's thread (scene::take_later)
     std::vector<OutFrame*> spare;
     OutFrame* held = nullptr;                           // the frame the host is looking at
     // the host's view of it
@@ -459,6 +460,23 @@ void app_command(const std::string& text, uint64_t frame) {
     }
 }
 
+// the list goes to the host; the renderer gets an older one's vectors back to fill again
+void put_list(OutFrame& out, FrameList& frame) {
+    FrameList& slot = out.list;
+    if (g_m->lists) {
+        std::swap(slot.vertices, frame.vertices);
+        std::swap(slot.commands, frame.commands);
+        std::swap(slot.textures, frame.textures);
+        std::swap(slot.targets, frame.targets);
+        std::swap(slot.dead_textures, frame.dead_textures);
+        std::swap(slot.dead_targets, frame.dead_targets);
+    } else slot.clear();
+    slot.show_target = frame.show_target;
+    slot.aspect = frame.aspect;
+    memcpy(slot.show_rect, frame.show_rect, sizeof(slot.show_rect));
+    slot.number = frame.number;
+}
+
 // The decoder's thread: one list per vertical blank.
 void on_frame(FrameList& frame) {
     Machine& m = *g_m;
@@ -466,7 +484,7 @@ void on_frame(FrameList& frame) {
     {
         std::unique_lock<std::mutex> hold(m.lock);
         double w0 = now_ms();
-        m.changed.wait(hold, [&] { return (int)m.ready.size() < Machine::DEPTH; });
+        m.changed.wait(hold, [&] { return (int)m.ready.size() + m.in_flight < Machine::DEPTH; });
         m.waited_downstream_ms += now_ms() - w0;
         if (!m.spare.empty()) { out = m.spare.back(); m.spare.pop_back(); }
     }
@@ -484,11 +502,32 @@ void on_frame(FrameList& frame) {
     out->flags = note.flags;
     out->view = note.view;
     out->released_ms = note.released_ms;
+    m.vertices += frame.vertices.size();
+    m.commands += frame.commands.size();
+    // The scene off this thread (the default when the tap has its worker): the list goes into its slot now, the tap's
+    // worker cuts the frame's pieces when it gets there, and another thread makes the scene and puts the frame out - in
+    // order.  This thread goes on with the next list.
+    if (m.scene3d && m.lists && m.picture_w <= 0 && scene::can_take_later()) {
+        const double take0 = now_ms();
+        put_list(*out, frame);
+        { std::lock_guard<std::mutex> hold(m.lock); m.in_flight++; }
+        scene::take_later(out->list, out->scene, [out] {
+            Machine& m = *g_m;
+            out->ready_ms = now_ms();
+            {
+                std::lock_guard<std::mutex> hold(m.lock);
+                m.in_flight--;
+                m.ready.push_back(out);
+                m.frames_out++;
+            }
+            m.changed.notify_all();
+        });
+        m.take_ms += now_ms() - take0;
+        return;
+    }
     const double take0 = now_ms();
     if (m.scene3d) scene::take(frame, out->scene); else out->scene.clear();
     m.take_ms += now_ms() - take0;
-    m.vertices += frame.vertices.size();
-    m.commands += frame.commands.size();
     if (m.picture_w > 0 && !m.backend_failed) {
         double t0 = now_ms();
         if (!m.backend) {
@@ -522,20 +561,7 @@ void on_frame(FrameList& frame) {
         }
         m.backend_ms += now_ms() - t0;
     }
-    // the list goes to the host; the renderer gets an older one's vectors back to fill again
-    FrameList& slot = out->list;
-    if (m.lists) {
-        std::swap(slot.vertices, frame.vertices);
-        std::swap(slot.commands, frame.commands);
-        std::swap(slot.textures, frame.textures);
-        std::swap(slot.targets, frame.targets);
-        std::swap(slot.dead_textures, frame.dead_textures);
-        std::swap(slot.dead_targets, frame.dead_targets);
-    } else slot.clear();
-    slot.show_target = frame.show_target;
-    slot.aspect = frame.aspect;
-    memcpy(slot.show_rect, frame.show_rect, sizeof(slot.show_rect));
-    slot.number = frame.number;
+    put_list(*out, frame);
     out->ready_ms = now_ms();
     {
         std::lock_guard<std::mutex> hold(m.lock);
@@ -1146,8 +1172,9 @@ const char* rtag_info(void) {
              (unsigned long long)m.renderer.gs.stats.textures_made, (unsigned long long)m.renderer.gs.stats.textures_held,
              (unsigned long long)m.renderer.gs.stats.texture_missing, (int)m.ended.load(), apprt::sound_figures().c_str());
     m.info = text;
-    char said[160];
-    snprintf(said, sizeof said, " tap_ms=%.3f kick_ms=%.3f take_ms=%.3f skel_ms=%.3f", render::g_tap_ms / n, render::g_tap_kick_ms / n, m.take_ms / n, skel::g_build_ms / n);
+    char said[320];
+    snprintf(said, sizeof said, " tap_ms=%.3f kick_ms=%.3f take_ms=%.3f skel_ms=%.3f later_ms=%.3f copy_ms=%.3f worker_ms=%.3f lag_ms=%.3f", render::g_tap_ms / n, render::g_tap_kick_ms / n,
+             m.take_ms / n, skel::g_build_ms / n, scene::later_ms_per_frame(), render::g_tap_copy_ms / n, render::g_tap_worker_ms / n, scene::later_lag_ms_per_frame());
     m.info += said;
 #ifdef RTAG_HAVE_SOULS
     // the souls mode: wanted (this copy's setting) / active (the running game's)

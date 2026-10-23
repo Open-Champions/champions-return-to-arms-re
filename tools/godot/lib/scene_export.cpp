@@ -20,6 +20,16 @@
 //    Coarser (0.13 units at the usual distance) and without normals.
 #include "scene_export.h"
 
+#include <chrono>
+#ifdef __APPLE__
+#include <pthread/qos.h>
+#endif
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <mutex>
+#include <thread>
+
 #include "scene_tap.h"
 
 #include <cmath>
@@ -128,13 +138,87 @@ void drawn(const uint8_t* ram, float near_plane, float far_plane) {
 
 void at_blank(const uint8_t*, uint64_t) { g_first_after_blank = true; }
 
+static void build(render::FrameList& list, const render::TapFrame& tap, Frame& out);
+
 void take(render::FrameList& list, Frame& out) {
+    g_tap.take(g_tap_frame);
+    build(list, g_tap_frame, out);
+}
+
+// ---- the hand-over off the decoder's thread (take_later) ----
+// The decoder puts a cut into the tap's queue and goes on with the next list; the tap's worker, when it reaches the cut,
+// hands the frame's pieces here; this thread makes the scene of them (build) and says the frame is done, in the lists'
+// order (one tap worker, one of this).
+namespace {
+struct Later {
+    render::FrameList* list = nullptr;
+    Frame* out = nullptr;
+    render::TapFrame tap;
+    std::function<void()> done;
+    std::chrono::steady_clock::time_point handed;   // when the decoder cut the list (figures: the lag to its scene)
+};
+std::mutex g_later_lock;
+std::condition_variable g_later_wake;
+std::deque<Later*> g_later_queue;
+std::vector<Later*> g_later_spare;
+std::thread* g_later_thread = nullptr;
+double g_later_ms = 0, g_later_lag_ms = 0;
+uint64_t g_later_frames = 0;
+
+void later_loop() {
+#ifdef __APPLE__
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);     // a picture passes through here: as the decoder's thread
+#endif
+    for (;;) {
+        Later* job;
+        {
+            std::unique_lock<std::mutex> g(g_later_lock);
+            g_later_wake.wait(g, [] { return !g_later_queue.empty(); });
+            job = g_later_queue.front();
+            g_later_queue.pop_front();
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        build(*job->list, job->tap, *job->out);
+        g_later_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        g_later_frames++;
+        g_later_lag_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - job->handed).count();
+        std::function<void()> done;
+        std::swap(done, job->done);
+        { std::lock_guard<std::mutex> g(g_later_lock); g_later_spare.push_back(job); }
+        done();
+    }
+}
+}  // namespace
+
+bool can_take_later() {
+    static const bool on = !getenv("RTA_TAKE_LATER") || atoi(getenv("RTA_TAKE_LATER")) != 0;
+    return on && g_tap.async;
+}
+
+void take_later(render::FrameList& list, Frame& out, std::function<void()> done) {
+    Later* job = nullptr;
+    {
+        std::lock_guard<std::mutex> g(g_later_lock);
+        if (!g_later_thread) { g_later_thread = new std::thread(later_loop); g_later_thread->detach(); }
+        if (!g_later_spare.empty()) { job = g_later_spare.back(); g_later_spare.pop_back(); }
+    }
+    if (!job) job = new Later;
+    job->list = &list; job->out = &out; job->done = std::move(done); job->handed = std::chrono::steady_clock::now();
+    g_tap.cut([job](render::TapFrame& frame) {
+        std::swap(job->tap, frame);
+        { std::lock_guard<std::mutex> g(g_later_lock); g_later_queue.push_back(job); }
+        g_later_wake.notify_one();
+    });
+}
+
+double later_ms_per_frame() { return g_later_frames ? g_later_ms / (double)g_later_frames : 0.0; }
+double later_lag_ms_per_frame() { return g_later_frames ? g_later_lag_ms / (double)g_later_frames : 0.0; }
+
+static void build(render::FrameList& list, const render::TapFrame& tap, Frame& out) {
     out.clear();
     g_frames++;
     for (const render::TargetInfo& t : list.targets) g_target_width[t.id] = t.width;
     for (uint32_t id : list.dead_targets) g_target_width.erase(id);
-    g_tap.take(g_tap_frame);
-    const render::TapFrame& tap = g_tap_frame;
     static const bool digest = getenv("RTA_TAP_DIGEST") != nullptr;     // test aid: a figure over everything the tap made
     if (digest) {
         static uint64_t h = 0xCBF29CE484222325ull;

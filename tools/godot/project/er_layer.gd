@@ -422,6 +422,8 @@ func _find_targets() -> void:
 		if want_set == "auto" or want_set == "":
 			set_name = String(CLASS_SETS[t.cls]) if t.cls >= 0 and t.cls < CLASS_SETS.size() else "default"
 		var model := _model(set_name)
+		if model.is_empty() and _loading(set_name):
+			continue
 		if model.is_empty() and set_name != "default":
 			set_name = "default"
 			model = _model(set_name)
@@ -541,16 +543,18 @@ func _principal(m: Basis, start: Vector3) -> Vector3:
 func _weapon_model(cls: String) -> Dictionary:
 	if weapon_models.has(cls):
 		return weapon_models[cls]
-	weapon_models[cls] = {}
 	var path := _er_folder().path_join("weapons").path_join(cls + ".glb")
 	var info_path := path.get_basename() + ".json"
 	if not FileAccess.file_exists(path) or not FileAccess.file_exists(info_path):
+		weapon_models[cls] = {}
 		return {}
-	var doc := GLTFDocument.new()
-	var state := GLTFState.new()
-	if doc.append_from_file(path, state) != OK:
+	var got = _gltf(path)
+	if got == null:
+		return {}                       # being read (the game's weapon until then)
+	weapon_models[cls] = {}
+	if not (got is Node):
 		return {}
-	var root := doc.generate_scene(state)
+	var root: Node = got
 	var found: Array = []
 	_meshes(root, found)
 	if found.is_empty():
@@ -575,6 +579,32 @@ func _weapon_model(cls: String) -> Dictionary:
 		"side": Vector3(s[0], s[1], s[2]).normalized(), "length": float(info.length), "shift": shift, "size": size, "model": String(info.get("model", ""))}
 	print("rta_godot: er: weapon %s loaded (%s, %.2f m)" % [cls, String(info.get("model", "")), float(info.length)])
 	return weapon_models[cls]
+
+
+# A glTF file read and made into nodes on a worker thread (it took 50 to 100 ms each on the main thread: the outfit, the
+# weapon and the creatures' figures at the moment the layer was turned on or a new kind came into view, one stop of 0.2 s
+# in a picture).  Returns the scene's root when it is there, null while it is being read, false when it could not be.
+var loads := {}                     # path -> {"task": WorkerThreadPool task, "out": {"root": Node}}
+func _gltf(path: String) -> Variant:
+	if loads.has(path):
+		var l: Dictionary = loads[path]
+		if not WorkerThreadPool.is_task_completed(int(l.task)):
+			return null
+		WorkerThreadPool.wait_for_task_completion(int(l.task))
+		loads.erase(path)
+		return (l.out as Dictionary).get("root", false)
+	var out := {}
+	var task := WorkerThreadPool.add_task(func() -> void:
+		var doc := GLTFDocument.new()
+		var state := GLTFState.new()
+		if doc.append_from_file(path, state) == OK:
+			out["root"] = doc.generate_scene(state))
+	loads[path] = {"task": task, "out": out}
+	return null
+
+
+func _loading(set_name: String) -> bool:
+	return loads.has(_er_folder().path_join(set_name).path_join("figure.glb"))
 
 
 func _holder() -> Node:
@@ -871,18 +901,19 @@ func _model(set_name: String) -> Dictionary:
 		return {} if m.has("failed") else m
 	var dir := _er_folder().path_join(set_name)
 	var figure_path := dir.path_join("figure.glb")
-	models[set_name] = {"failed": "no " + figure_path}
 	if not FileAccess.file_exists(figure_path):
+		models[set_name] = {"failed": "no " + figure_path}
 		if not said.has("no " + set_name):
 			said["no " + set_name] = true
 			print("rta_godot: er: no outfit %s (%s): its figures are the game's" % [set_name, figure_path])
 		return {}
-	var doc := GLTFDocument.new()
-	var state := GLTFState.new()
-	if doc.append_from_file(figure_path, state) != OK:
+	var got = _gltf(figure_path)
+	if got == null:
+		return {}                       # being read (the game's figure until then)
+	if not (got is Node):
 		models[set_name] = {"failed": "could not read " + figure_path}
 		return {}
-	var root := doc.generate_scene(state)
+	var root: Node = got
 	var found := {"skeleton": null}
 	var instances: Array = []
 	_collect(root, instances, found)

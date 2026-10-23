@@ -803,7 +803,12 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     // quad the CPU projects) go when Godot throws real ones
     if (sc.shadows && d.tex_is_target && d.scene_kind == RTAG_SCENE_DEPTH && d.blend) { sc.blob_shadows_dropped++; return true; }
     const bool normals = d.scene_kind == RTAG_SCENE_EXACT && sc.tap->normals != nullptr;
-    if (sc.batch_on && normals && sc.packets && batch_take(pass, f, d, target, texture, order)) return true;
+    if (sc.batch_on && normals && sc.packets && batch_take(pass, f, d, target, texture, order)) {
+        // (test aid, RTA_BATCH_SINGLE=1: each chunk a batch of its own, at its own place - fused, but not gathered)
+        static const bool single = getenv("RTA_BATCH_SINGLE") && atoi(getenv("RTA_BATCH_SINGLE")) != 0;
+        if (single) sc.segment++;
+        return true;
+    }
     if (!draw_commutes(d)) sc.segment++;
     // kept meshes are made only of whole packets with normals: with tween on they carry 16 bytes more a corner (CUSTOM2)
     const bool carry = sc.tween_on && sc.keep && normals && sc.packets && d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count;

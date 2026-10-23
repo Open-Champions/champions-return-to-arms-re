@@ -6,6 +6,7 @@
 #include "skeleton_export.h"
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 namespace scene {
@@ -34,6 +35,12 @@ void at_blank(const uint8_t* ram, uint64_t number);     // the game's thread, at
 // block is taken now - the game puts its own camera back right after - with the projection's near and far plane.
 void drawn(const uint8_t* ram, float near_plane, float far_plane);
 void take(render::FrameList& list, Frame& out);         // the decoder's thread, when a list is closed
+// The same off the decoder's thread: `list` and `out` are left alone by the caller until `done` is called (on another
+// thread; the lists in the order they were handed in).  can_take_later(): whether this way is on (RTA_TAKE_LATER=0 off).
+bool can_take_later();
+void take_later(render::FrameList& list, Frame& out, std::function<void()> done);
+double later_ms_per_frame();                            // the scene made off the decoder's thread: ms a list
+double later_lag_ms_per_frame();                        // ... from the decoder's cut to the frame put out: ms a list
 void fill(const Frame& frame, rtag_scene& view, rtag_draw* draws, size_t count);   // the host's thread
 void report();
 

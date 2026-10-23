@@ -9,6 +9,119 @@ Nothing derived from the game is in the repository. `tools/godot/` holds glue, b
 scripts, the Godot project's scripts and shaders. The translated code, the libraries, the
 staged project, exported applications, pictures and logs are under `local/godot-spike/`.
 
+## THIRTEENTH ROUND (2026-10-22, late night): the hand-over off the decoder, the batches' picture, the stop at the teleport
+
+Built into `local/godot-r15/` (a fresh snapshot of `tools/recomp`, this round's `recomp.patch`). Tests and logs:
+`local/godot-r15/test/` - `fire.sh` (`ROUTE=mkfire15.py`: the looks set two seconds before the teleport), `fight.sh`,
+`final15.sh` + `mktable15.py` (the table: this build and round 12's `local/godot-r14`, one after the other on the same
+machine), `lint.py` (the library's figures per 64 blanks: decoder, the tap's copies, its worker, the scene made off the
+decoder, the lag from the cut to the frame), `secs.py` (per second: pictures, the main thread, its wait, Godot's drawing),
+`tapcheck/` (the tap's output compared), `room1.log`. Another agent's programs were busy on the machine throughout: the
+same build measured twice differs by 1 to 3 pictures a second in the slowest second; the table's runs are back to back.
+
+| Asked | State |
+|---|---|
+| fire1's crowd at a steady 60 at the rate 60 | **not reached, Ran**: 59.3 a second (was 58.4 in the same session with round 12's build), the slowest second 56.2 (57.0), the 1 %-low 32.1 (18.8), the worst interval 35 ms (214). The decoder's thread at the heaviest moment **15.0 -> 12.3 to 13.1 ms** a blank; what is left there is the main thread (below) |
+| move the hand-over off the decoder's thread | **Ran**: done (below); the tap's output is the same bytes |
+| measure in fire1's crowd, the boar fight, the hub, at 60 and auto | **Ran**, table below |
+| batches in the draw order the game implies; the picture as unbatched | **looked at, Ran; the suspected cause is not it**: a batch placed at its last chunk's place instead of its first gives the same picture to the pixel; split at every draw that is not batched: 78.5 -> 78.6 batches, the same picture; depth first off: the same. What differs is the fused two-pass draw and the gathering (below). Not fixed |
+| the 0.2-0.5 s stop when teleporting into the crowd | **Ran**: it was not the teleport. In the route the view, `er_models` and `er_creatures` are switched on in the same frame as the teleport; with them two seconds earlier the teleport has no turn over 25 ms. The stop was the Elden Ring layer reading three glTF files on the main thread (outfit, creature, weapon: 186 ms in one turn). Now read on a worker thread: the worst turn 186 -> 53 ms, the crowd's worst interval 214 -> 35 ms, the hub's 259 -> 68 ms |
+| simulation untouched | **Ran**: two Godot copies in one room (A at auto, B at 60), 1,836 ticks through a level change: no shared column differs (`room1.log`) |
+
+### 1. The hand-over off the decoder's thread
+
+- `tools/recomp/render/scene_tap` (`recomp.patch`): the camera blocks go into the worker's queue (they used to make the
+  decoder wait for the worker at the start of every frame), and so does a **cut** (`SceneTap::cut`): when the worker gets
+  to it, it hands the frame's pieces on. The decoder never waits for the worker. The worker's thread asks for the
+  user-interactive class (macOS), as the decoder's does.
+- `tools/godot/lib/scene_export.cpp` (`scene::take_later`) and `rtag.cpp` (`on_frame`): the list goes into its slot at
+  once; one more thread makes the scene from the cut pieces (what `scene::take` did on the decoder: 2 to 4 ms at the
+  heaviest moment) and puts the frame out, in order. `RTA_TAKE_LATER=0` keeps the old way. The library's figures now
+  carry `copy_ms`, `worker_ms`, `later_ms`, `lag_ms`.
+- **Found on the way**: the copy of round 12's patch merged into `tools/recomp` lacked its last steps (the second pass's
+  vertices taken from the first, the writes in place: 57.6 -> 58.5 then). They are in this round's `recomp.patch` again.
+  Without them the worker was the slowest stage (15 to 17 ms a blank) and the crowd slower than round 12.
+- Checked: the figure over everything the tap made (`RTA_TAP_DIGEST`, `rtag_host`, the fire route, 3,550 lists) is the
+  same with the tap on the decoder's thread (`RTA_TAP_ASYNC=0`), on its worker with the old hand-over
+  (`RTA_TAKE_LATER=0`) and with the new one.
+- At the heaviest moment (blanks 3,200 to 3,400): decoder 12.3 to 13.1 ms a blank (the GS model's strips 6.5 to 6.9, the
+  copies 1.6), the worker 11.5 to 12.1, the scene 2.7 to 3.0, from the cut to the frame out 2.8 to 3.0 ms.
+- **What stops 60 now** (`secs.py`): in the heaviest second the main thread's turn is 16 to 18 ms - handing the list to
+  Godot 8 to 9 ms, waiting for the frame 2 to 3 ms, Godot's drawing 5 ms. Two other dips (57 at blanks 2,810 and 2,985)
+  are Godot's drawing (8.5 ms) with every build. Tried and dropped: the rate 60's clock kept its debt after long turns
+  (no gain); one blank more of lead when frames come late (worse: 50 in the slowest second).
+
+### 2. The batches and the Elden Ring creatures' picture
+
+Window pictures at ticks 300, 500, 800 (`SHOTS`), compared with `imgdiff.py` (pixels off by more than 32):
+
+| Compared | 500 | 800 |
+|---|---|---|
+| two runs, batches off, capes swinging (`er_springs` on: their motion follows the frame times) | 0.11 % | 0.16 % |
+| two runs, batches off, `er_springs` off | 0.06 % | 0.06 % |
+| batches on against off (`er_springs` off) | 0.29 % | 0.31 % |
+| ... a batch at its last chunk's place / split at every other draw / depth first off | 0.29 % (the same pixels) | 0.31 % |
+| ... each fused chunk a batch of its own, at its own place (`RTA_BATCH_SINGLE=1`, test aid) | 0.19 % | 0.19 % |
+| ... two-pass chunks not fused (`RTA_FUSE=0`; 519 batches, 16 pictures a second) | 0.11 % | 0.08 % |
+| the Elden Ring creatures off (`NOER=1`), batches on against off | 0.000 % (largest difference 21 of 255) | - |
+
+So the level is the same; what differs is only inside the Elden Ring figures' see-through parts (fur, hair): which of
+them show the sky behind. It does not follow where a batch is placed; it follows how many draws the pass holds (fusing,
+gathering). Suspected, not shown: Godot's sort of the transparent pass is not stable, and all of a figure's surfaces
+have one sorting place, so which see-through surface goes first depends on what else is in the pass. Giving each of a
+figure's meshes a place of its own did not change it (a mesh's surfaces still share one). Also tried and dropped: a
+"glow" draw for a second pass with no depth test (fire1 has none: both passes test depth); a fused chunk's near fade.
+Seen twice with four games running at once: the whole sky purple in one run (not with two at once; not looked into).
+
+### 3. The stop at the teleport
+
+`er_layer.gd` `_gltf`: the outfit's, the creature's and the weapon's glTF are read and made into nodes on Godot's
+WorkerThreadPool; until then the game's own figure is drawn (the player's: not the default outfit in the meantime). The
+rest (the skeleton, the materials) stays on the main thread: 16 to 53 ms over four turns. `RTA_SUBMIT_LOG=MS`: a list
+whose hand-over to Godot takes longer is logged with its parts (textures, draws, scene end, materials and meshes made).
+
+### Figures (`fstats.py`; paced; 3024 x 1964; shoulder; art pack, cleaner models, Elden Ring players and creatures)
+
+| Part | Run | pictures a second: min / mean / 1 %-low | over budget | worst interval | judder | controller to picture |
+|---|---|---|---|---|---|---|
+| hub | round 12, rate 60 (`o60`) | 39.5 / 54.1 / 3.9 | 4 (2.1 %) | 259 ms | 49.1 ms | 35 ms |
+| hub | round 12, rate auto (120) (`o120`) | 72.0 / 100.3 / 8.9 | 12 (3.5 %) | 225 ms | 33.0 ms | 31 ms |
+| hub | now, rate 60 (`f60`) | 49.5 / 56.7 / 14.8 | 6 (3.1 %) | 68 ms | 20.6 ms | 34 ms |
+| hub | now, rate auto (120) (`f120`) | 82.9 / 103.6 / 18.6 | 17 (5.1 %) | 69 ms | 14.9 ms | 29 ms |
+| valor, walking | round 12, rate 60 (`o60`) | 59.3 / 60.0 / 37.6 | 9 (0.4 %) | 35 ms | 3.9 ms | 33 ms |
+| valor, walking | round 12, rate auto (120) (`o120`) | 105.1 / 110.4 / 59.3 | 120 (2.8 %) | 28 ms | 4.3 ms | 24 ms |
+| valor, walking | now, rate 60 (`f60`) | 58.8 / 60.0 / 38.8 | 3 (0.1 %) | 43 ms | 3.9 ms | 33 ms |
+| valor, walking | now, rate auto (120) (`f120`) | 98.9 / 109.8 / 60.0 | 152 (3.6 %) | 19 ms | 4.3 ms | 22 ms |
+| valor, the boar fight (the heaviest fight) | round 12, rate 60 (`o60`) | 59.2 / 60.0 / 40.1 | 2 (0.3 %) | 25 ms | 5.7 ms | 34 ms |
+| valor, the boar fight (the heaviest fight) | round 12, rate auto (120) (`o120`) | 101.8 / 105.5 / 57.7 | 201 (15.9 %) | 18 ms | 4.5 ms | 25 ms |
+| valor, the boar fight (the heaviest fight) | now, rate 60 (`f60`) | 59.5 / 60.1 / 39.0 | 4 (0.5 %) | 28 ms | 4.4 ms | 34 ms |
+| valor, the boar fight (the heaviest fight) | now, rate auto (120) (`f120`) | 99.4 / 106.4 / 57.7 | 157 (12.2 %) | 17 ms | 4.6 ms | 24 ms |
+| fire1, the goblin band | round 12, rate 60 (`abA1`) | 57.0 / 58.4 / 18.8 | 103 (11.3 %) | 214 ms | 10.0 ms | 35 ms |
+| fire1, the goblin band | round 12, rate auto (120) (`oc120`) | 58.1 / 71.6 / 22.7 | 10 (1.0 %) | 192 ms | 10.7 ms | 39 ms |
+| fire1, the goblin band | now, rate 60 (`c60`) | 56.2 / 59.3 / 32.1 | 101 (11.1 %) | 35 ms | 6.8 ms | 35 ms |
+| fire1, the goblin band | now, rate auto (120) (`c120`) | 57.5 / 69.9 / 31.0 | 17 (1.7 %) | 43 ms | 8.8 ms | 38 ms |
+
+### Files changed (tracked)
+
+`tools/godot/recomp.patch` (scene tap: round 12's last steps, camera and cut in the worker's queue, the worker's class,
+figures), `tools/godot/lib/scene_export.{h,cpp}` (`take_later`), `tools/godot/lib/rtag.cpp` (the hand-over, figures),
+`tools/godot/project/er_layer.gd` (glTF on a worker thread), `tools/godot/project/main.gd` (the new figures in the frame
+log), `tools/godot/extension/src/rta_drawer.cpp` (`RTA_SUBMIT_LOG`), `tools/godot/extension/src/rta_scene.cpp`
+(`RTA_BATCH_SINGLE`), this file, `docs/PROGRESS.md`.
+
+### For the coordinator (tools/recomp)
+
+- Merge `tools/godot/recomp.patch` into `render/scene_tap.{h,cpp}` (it applies to `tools/recomp` as it is now and gives
+  the snapshot's files exactly).
+
+### Still wrong / not done
+
+- fire1's crowd: 56 to 61 a second at the rate 60, not a steady 60; now the main thread at the heaviest moment (the list
+  handed to Godot, 8 to 9 ms) and Godot's drawing in two places.
+- The Elden Ring creatures' see-through parts: batches on still differ from off in 0.3 % of a crowd picture (above).
+- The purple sky seen twice under heavy load.
+- Windows and Linux libraries not rebuilt.
+
 ## TWELFTH ROUND (2026-10-22, night): fire1's crowd at 60, the boar fight past 100 at 120
 
 Built into `local/godot-r14/` (`RTA_GODOT_OUT=local/godot-r14`; a fresh snapshot of `tools/recomp` with round 11's patch

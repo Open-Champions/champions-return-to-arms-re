@@ -12,6 +12,9 @@
 #include "scene_tap.h"
 #include "xxh3_64.h"
 #include <chrono>
+#ifdef __APPLE__
+#include <pthread/qos.h>
+#endif
 
 #include "renderer.h"
 
@@ -86,7 +89,27 @@ void SceneTap::note(uint32_t num, uint32_t imm) {
 
 void SceneTap::camera(const uint32_t* words, size_t count) {
     if (count < CAMERA_WORDS) return;
-    drain();                                    // (the frame's camera: the kicks before it are made with the one before)
+    {   // the decoder's own view of it (program()'s figures), as apply_camera() will make it
+        float f[CAMERA_WORDS];
+        memcpy(f, words, sizeof f);
+        double vp[16], vpw[16], a[16], b[16];
+        for (int k = 0; k < 16; k++) { vp[k] = k % 4 == 2 ? f[46 + k] * DEPTH_SCALE : f[46 + k]; vpw[k] = k % 4 == 2 ? f[30 + k] * DEPTH_SCALE : f[30 + k]; }
+        memcpy(dec_camera_world, f + 30, sizeof dec_camera_world);
+        dec_have_camera = invert4(vp, a) && invert4(vpw, b);
+    }
+    if (!async) { apply_camera(words, count); return; }
+    // into the worker's queue after the kicks so far (the frame's camera: the kicks before it are made with the one before)
+    Job job;
+    memset(&job, 0, sizeof job);
+    job.kind = JOB_CAMERA;
+    job.own = buffer();
+    job.vu = job.own;
+    job.qword = (uint32_t)std::min<size_t>(count, 0x4000 / 4);
+    memcpy(job.own, words, (size_t)job.qword * 4);
+    pending.push_back(job);
+}
+
+void SceneTap::apply_camera(const uint32_t* words, size_t count) {
     float f[CAMERA_WORDS];
     memcpy(f, words, sizeof f);
     frame.proj_scale = f[0];
@@ -128,7 +151,7 @@ void SceneTap::program(int entry) {
             // the depth row and the translation row of a chunk are the camera's own (its turn is in rows 0 and 1):
             // if they are, the camera block that came with the frame is the one these packets were made with
             stats.level_setups++;
-            if (frame.have_camera && !memcmp(rows + 8, camera_world + 8, 32)) stats.level_rows_equal++;
+            if (dec_have_camera && !memcmp(rows + 8, dec_camera_world + 8, 32)) stats.level_rows_equal++;
         }
     } else if (entry == 0x3c) {                 // the chunk again, mirrored in z
         for (int k = 8; k < 12; k++) rows[k] = -rows[k];
@@ -140,6 +163,7 @@ void SceneTap::program(int entry) {
 }
 
 double g_tap_kick_ms = 0, g_tap_ms = 0;        // decoder thread: in the GS model's xgkick, and in the tap (figures)
+double g_tap_copy_ms = 0, g_tap_worker_ms = 0; // async: the decoder's copies for the worker, and the worker's own time (figures)
 
 static inline double tap_now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
@@ -152,6 +176,7 @@ SceneTap::~SceneTap() {
     for (uint8_t* b : spare) delete[] b;
     for (uint8_t* b : mine) delete[] b;
     for (const Job& j : pending) delete[] j.own;
+    for (const Job& j : queue) delete[] j.own;
 }
 
 void SceneTap::drain() {
@@ -162,8 +187,12 @@ void SceneTap::drain() {
 }
 
 void SceneTap::work() {
+#ifdef __APPLE__
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);     // a picture passes through here: as the decoder's thread
+#endif
     std::deque<Job> jobs;
     std::vector<uint8_t*> used;
+    double cut_ms = 0;
     for (;;) {
         {
             std::unique_lock<std::mutex> g(lock);
@@ -176,9 +205,24 @@ void SceneTap::work() {
             busy = true;
         }
         const double t0 = tap_now_ms();
-        for (const Job& job : jobs) { kicked(job); used.push_back(job.own); }
+        for (const Job& job : jobs) {
+            if (job.kind == JOB_KICK) kicked(job);
+            else if (job.kind == JOB_CAMERA) apply_camera((const uint32_t*)job.own, job.qword);
+            else {
+                std::function<void(TapFrame&)> then;
+                { std::lock_guard<std::mutex> g(lock); then = std::move(cuts.front()); cuts.pop_front(); }
+                take_now(cut_frame);
+                const double t1 = tap_now_ms();
+                then(cut_frame);
+                cut_ms += tap_now_ms() - t1;        // (what the cut's receiver does is its own: left out of g_tap_ms)
+                continue;
+            }
+            if (job.own) used.push_back(job.own);
+        }
         jobs.clear();
-        g_tap_ms += tap_now_ms() - t0;
+        g_tap_ms += tap_now_ms() - t0 - cut_ms;
+        g_tap_worker_ms += tap_now_ms() - t0 - cut_ms;
+        cut_ms = 0;
     }
 }
 
@@ -206,20 +250,14 @@ void SceneTap::kick(void* user, uint32_t qword) {
     memcpy(job.rows, tap->rows, sizeof job.rows);
     job.have_rows = tap->have_rows; job.mirrored = tap->mirrored; job.clip_flag = tap->clip_flag; job.rows_kind = tap->rows_kind;
     job.object = tap->object; job.joint_epoch = tap->joint_epoch;
+    job.kind = JOB_KICK;
     if (!tap->async) {
         tap->kicked(job);
         g_tap_ms += tap_now_ms() - t1;
         return;
     }
     // what kicked() reads of VU1 memory, into a copy of its own (at the same addresses)
-    if (tap->mine.empty()) {
-        std::unique_lock<std::mutex> g(tap->lock);
-        if (tap->spare.empty() && tap->buffers >= 4096) tap->done.wait(g, [&] { return !tap->spare.empty(); });
-        while (!tap->spare.empty() && tap->mine.size() < 64) { tap->mine.push_back(tap->spare.back()); tap->spare.pop_back(); }
-    }
-    uint8_t* copy;
-    if (!tap->mine.empty()) { copy = tap->mine.back(); tap->mine.pop_back(); }
-    else { copy = new uint8_t[0x4000]; tap->buffers++; }
+    uint8_t* copy = tap->buffer();
     auto grab = [&](uint32_t from, uint32_t count) {    // quadwords from..from + count, round the end of the memory
         count = std::min<uint32_t>(count, 0x400);
         from &= 0x3FF;
@@ -254,7 +292,28 @@ void SceneTap::kick(void* user, uint32_t qword) {
     job.vu = copy; job.own = copy;
     tap->pending.push_back(job);
     if (tap->pending.size() >= 32) tap->hand_over();
-    if (timed) g_tap_ms += (tap_now_ms() - t1) * 8;
+    if (timed) { const double ms = (tap_now_ms() - t1) * 8; g_tap_ms += ms; g_tap_copy_ms += ms; }
+}
+
+uint8_t* SceneTap::buffer() {
+    if (mine.empty()) {
+        std::unique_lock<std::mutex> g(lock);
+        if (spare.empty() && buffers >= 4096) done.wait(g, [&] { return !spare.empty(); });
+        while (!spare.empty() && mine.size() < 64) { mine.push_back(spare.back()); spare.pop_back(); }
+    }
+    if (!mine.empty()) { uint8_t* b = mine.back(); mine.pop_back(); return b; }
+    buffers++;
+    return new uint8_t[0x4000];
+}
+
+void SceneTap::cut(std::function<void(TapFrame&)> then) {
+    if (!async) { take_now(cut_frame); then(cut_frame); return; }
+    { std::lock_guard<std::mutex> g(lock); cuts.push_back(std::move(then)); }
+    Job job;
+    memset(&job, 0, sizeof job);
+    job.kind = JOB_CUT;
+    pending.push_back(job);
+    hand_over();
 }
 
 // the kicks gathered so far, to the worker
@@ -367,11 +426,28 @@ void SceneTap::kicked(const Job& job) {
     }
     if (!drawn && !complete) return;
 
+    // (XXH3 over the packet's words: a byte-at-a-time figure over a few kilobytes a kick was most of the tap's time in a
+    // fight; the identity is only compared within a run, never kept)
+    uint64_t h = 0xCBF29CE484222325ull ^ (uint64_t)entry;
+    const uint32_t body = 3 * N + 2;                                          // positions, normals, slot rows
+    if ((in & 0x3FF) + body <= 0x400) h = (h * 0x100000001B3ull) ^ xxh3::hash64(U(in), (size_t)body * 16);
+    else h = fnv((const uint8_t*)U(in), (size_t)body * 16, h);              // (round the end of VU1 memory: as before)
+    if (model) {
+        const uint32_t extra = (uint32_t)((at - (in + 3 * N + 2)) & 0xFF);
+        if (((in + body) & 0x3FF) + extra <= 0x400) h = (h * 0x100000001B3ull) ^ xxh3::hash64(U(in + body), (size_t)extra * 16);
+        else h = fnv((const uint8_t*)U(in + body), (size_t)extra * 16, h);
+    }
+    // The second kick of a two-pass packet (the same words, the same set-up, right after the first): its vertices are the
+    // first's - taken from it, not computed again (the same computation on the same inputs: the same bytes)
+    const bool reuse = nreg == 4 && reuse_ok && !frame.pieces.empty() && frame.pieces.back().mesh == h && frame.pieces.back().object == object &&
+                       (frame.pieces.back().flags & TAP_FIRST_PASS) && reuse_n == N && reuse_in == in && reuse_epoch == job.joint_epoch && reuse_model == model;
     // ---- the vertices, through the matrices the program used ----
     struct Made { double clip[4], normal[4]; };
+    static_assert(sizeof(Made) * 64 == sizeof(reuse_made), "the kept vertices");
     Made made[64];
     TapSource source[64];
-    for (uint32_t v = 0; v < N; v++) {
+    if (reuse) { memcpy(made, reuse_made, sizeof(Made) * N); memcpy(source, reuse_source, sizeof(TapSource) * N); }
+    for (uint32_t v = 0; v < (reuse ? 0 : N); v++) {
         const int32_t* ps = S(in + v);
         const int32_t* ns = S(in + N + v);
         double p[3] = {ps[0] / 16.0, ps[1] / 16.0, ps[2] / 16.0};
@@ -433,17 +509,6 @@ void SceneTap::kicked(const Job& job) {
     piece.entry = (uint8_t)entry;
     piece.flags = (uint8_t)((nreg == 4 ? TAP_TWO_PASS : 0) | (skinned ? TAP_SKINNED : 0) | (mirrored ? TAP_MIRRORED : 0) | (clip_flag ? TAP_CLIP_FLAG : 0));
     piece.object = object;
-    // (XXH3 over the packet's words: a byte-at-a-time figure over a few kilobytes a kick was most of the tap's time in a
-    // fight; the identity is only compared within a run, never kept)
-    uint64_t h = 0xCBF29CE484222325ull ^ (uint64_t)entry;
-    const uint32_t body = 3 * N + 2;                                          // positions, normals, slot rows
-    if ((in & 0x3FF) + body <= 0x400) h = (h * 0x100000001B3ull) ^ xxh3::hash64(U(in), (size_t)body * 16);
-    else h = fnv((const uint8_t*)U(in), (size_t)body * 16, h);              // (round the end of VU1 memory: as before)
-    if (model) {
-        const uint32_t extra = (uint32_t)((at - (in + 3 * N + 2)) & 0xFF);
-        if (((in + body) & 0x3FF) + extra <= 0x400) h = (h * 0x100000001B3ull) ^ xxh3::hash64(U(in + body), (size_t)extra * 16);
-        else h = fnv((const uint8_t*)U(in + body), (size_t)extra * 16, h);
-    }
     piece.mesh = h;
     bool second = false;
     if (nreg == 4) {
@@ -476,14 +541,15 @@ void SceneTap::kicked(const Job& job) {
     // geometry: the same computation, done once, gives the same bytes)
     TapVertex world_of[64];
     bool world_done[64];
-    for (uint32_t v = 0; v < N; v++) world_done[v] = false;
-    auto emit = [&](uint32_t p) {
-        const int sv = slot[p];
-        if (world_done[sv]) { frame.vertices.push_back(world_of[sv]); return; }
+    if (reuse) { memcpy(world_of, reuse_world, sizeof(TapVertex) * N); memcpy(world_done, reuse_done, N); }
+    else for (uint32_t v = 0; v < N; v++) world_done[v] = false;
+    // (the list's vertices and the corners are written in place: the counts are known - drawn, complete)
+    auto make = [&](int sv) -> const TapVertex& {
+        if (world_done[sv]) return world_of[sv];
         const Made& m = made[sv];
         TapVertex out;
         memset(&out, 0, sizeof out);
-        out.source = (uint16_t)slot[p];
+        out.source = (uint16_t)sv;
         out.clip[0] = (float)m.clip[0]; out.clip[1] = (float)m.clip[1]; out.clip[2] = (float)(m.clip[2] * DEPTH_SCALE); out.clip[3] = (float)m.clip[3];
         if (frame.have_camera) {
             const double c[4] = {m.clip[0], m.clip[1], m.clip[2] * DEPTH_SCALE, m.clip[3]};
@@ -498,42 +564,59 @@ void SceneTap::kicked(const Job& job) {
         }
         world_of[sv] = out;
         world_done[sv] = true;
-        frame.vertices.push_back(out);
+        return world_of[sv];
     };
-    for (uint32_t p = 2; p < nloop; p++)
-        if (!(U(strip + p * nreg + nreg - 1)[3] & 0x8000)) { emit(p - 2); emit(p - 1); emit(p); }
+    {
+        const size_t first = frame.vertices.size();
+        frame.vertices.resize(first + (size_t)drawn * 3);
+        TapVertex* o = frame.vertices.data() + first;
+        for (uint32_t p = 2; p < nloop; p++)
+            if (!(U(strip + p * nreg + nreg - 1)[3] & 0x8000)) { *o++ = make(slot[p - 2]); *o++ = make(slot[p - 1]); *o++ = make(slot[p]); }
+    }
     // ---- the complete geometry: every triangle of the strip, with what the program wrote beside each position ----
     piece.full_first = (uint32_t)frame.full.size();
     if (frame.have_camera) {
         const uint64_t regs = (uint64_t)tag[2] | (uint64_t)tag[3] << 32;
         uint32_t uv_at = 0, rgba_at = nreg - 2;
         for (uint32_t k = 0; k < nreg; k++) { uint32_t d = (uint32_t)(regs >> (4 * k)) & 15; if (d == 3) uv_at = k; else if (d == 1) rgba_at = k; }
-        const size_t taken = frame.vertices.size();
+        const size_t first = frame.full.size();
+        frame.full.resize(first + (size_t)complete * 3);
+        frame.full_source.resize(first + (size_t)complete * 3);
+        TapFull* fo = frame.full.data() + first;
+        uint16_t* so = frame.full_source.data() + first;
         auto corner = [&](uint32_t p) {
-            if (!world_done[slot[p]]) { emit(p); frame.vertices.pop_back(); }     // (made as a list vertex: one way of computing it)
-            const TapVertex& made_vertex = world_of[slot[p]];
-            TapFull out;
+            const TapVertex& made_vertex = make(slot[p]);
+            TapFull& out = *fo++;
             memcpy(out.world, made_vertex.world, 12);
             memcpy(out.normal, made_vertex.normal, 12);
             const uint32_t* uv = U(strip + p * nreg + uv_at);
             const uint32_t* colour = U(strip + p * nreg + rgba_at);
             out.uv[0] = (float)(uv[0] & 0x3FFF) * (1.0f / 16.0f); out.uv[1] = (float)(uv[1] & 0x3FFF) * (1.0f / 16.0f);
             out.rgba[0] = (uint8_t)colour[0]; out.rgba[1] = (uint8_t)colour[1]; out.rgba[2] = (uint8_t)colour[2]; out.rgba[3] = (uint8_t)colour[3];
-            frame.full.push_back(out);
-            frame.full_source.push_back((uint16_t)slot[p]);
+            *so++ = (uint16_t)slot[p];
         };
         for (uint32_t p = 2; p < nloop; p++)
             if (!hidden[p] && slot[p] >= 0 && slot[p - 1] >= 0 && slot[p - 2] >= 0) { corner(p - 2); corner(p - 1); corner(p); }
-        (void)taken;
     }
     piece.full_count = (uint32_t)frame.full.size() - piece.full_first;
     frame.pieces.push_back(piece);
+    // a first pass: its vertices kept for its second
+    reuse_ok = (piece.flags & TAP_FIRST_PASS) != 0;
+    if (reuse_ok) {
+        memcpy(reuse_made, made, sizeof(Made) * N); memcpy(reuse_source, source, sizeof(TapSource) * N);
+        memcpy(reuse_world, world_of, sizeof(TapVertex) * N); memcpy(reuse_done, world_done, N);
+        reuse_n = N; reuse_in = in; reuse_epoch = job.joint_epoch; reuse_model = model;
+    }
     stats.pieces++;
     stats.vertices += piece.list_count;
 }
 
 void SceneTap::take(TapFrame& out) {
     drain();
+    take_now(out);
+}
+
+void SceneTap::take_now(TapFrame& out) {
     std::swap(out.pieces, frame.pieces);
     std::swap(out.vertices, frame.vertices);
     std::swap(out.sources, frame.sources);
@@ -550,6 +633,7 @@ void SceneTap::take(TapFrame& out) {
     frame.clear();
     seen.clear();
     joints_at = -1;
+    reuse_ok = false;
 }
 
 }  // namespace render

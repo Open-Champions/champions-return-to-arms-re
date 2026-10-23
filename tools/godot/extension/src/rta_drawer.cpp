@@ -474,6 +474,11 @@ void RtaDrawer::submit() {
     RenderingServer* s = rs();
     uint64_t t0 = Time::get_singleton()->get_ticks_usec();
     frames++;
+    // (a list that takes long, logged with its parts: RTA_SUBMIT_LOG=MS)
+    static const int slow_log = getenv("RTA_SUBMIT_LOG") ? atoi(getenv("RTA_SUBMIT_LOG")) : 0;
+    const size_t materials_before = materials.size(), shaders_before = shaders.size();
+    const uint64_t meshes_before = meshes_made;
+    uint64_t t_textures = 0, t_draws = 0, t_end = 0;
 
     for (uint32_t k = 0; k < f.texture_count; k++) {
         const rtag_texture& t = f.textures[k];
@@ -508,6 +513,7 @@ void RtaDrawer::submit() {
         }
     }
     pack_frame(f);                                      // the art pack's pictures and mip maps (rta_pack.h)
+    if (slow_log) t_textures = Time::get_singleton()->get_ticks_usec();
     if (scene_mode && std::fabs(f.aspect - last_aspect) > 0.001f) {     // the view's shape changed: the 3-D surface's viewport follows
         last_aspect = f.aspect;
         for (auto& entry : targets) if (entry.second.screen) size_target(entry.second);
@@ -685,7 +691,9 @@ void RtaDrawer::submit() {
         add_draw(*node.pass, f, d, *node.target, texture_of[i], d.tex_is_target && flip_surfaces, order_in_pass);
     }
     draw_space = 0;
+    if (slow_log) t_draws = Time::get_singleton()->get_ticks_usec();
     if (scene_mode) scene_end(f);
+    if (slow_log) t_end = Time::get_singleton()->get_ticks_usec();
     frame_texture_of = nullptr;
 
     // instances left over from a frame with more draws show nothing
@@ -743,7 +751,13 @@ void RtaDrawer::submit() {
     auto show = targets.find(f.show_target);
     shown = show == targets.end() ? nullptr : &show->second;
     memcpy(shown_rect, f.show_rect, sizeof shown_rect);
-    submit_usec += (double)(Time::get_singleton()->get_ticks_usec() - t0);
+    const uint64_t t1 = Time::get_singleton()->get_ticks_usec();
+    submit_usec += (double)(t1 - t0);
+    if (slow_log && t1 - t0 > (uint64_t)slow_log * 1000)
+        UtilityFunctions::print(vformat("rta_drawer: list %d took %.1f ms: textures %.1f (%d new), runs and draws %.1f, scene end %.1f, rest %.1f; %d materials, %d shaders, %d meshes made",
+                                        (int64_t)frames, (t1 - t0) / 1000.0, (t_textures - t0) / 1000.0, (int64_t)f.texture_count, (t_draws - t_textures) / 1000.0,
+                                        (t_end - t_draws) / 1000.0, (t1 - t_end) / 1000.0, (int64_t)(materials.size() - materials_before),
+                                        (int64_t)(shaders.size() - shaders_before), (int64_t)(meshes_made - meshes_before)));
 }
 
 RID RtaDrawer::get_shown_texture() const { return shown && shown->latest && shown->latest->drawn_once ? shown->latest->texture : RID(); }

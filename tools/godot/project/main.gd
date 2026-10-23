@@ -1142,7 +1142,7 @@ func _frame_row(t0: int, took: bool, shown_new := false) -> void:
 		var lib := {}
 		for word in machine.info().split(" "):
 			var kv := word.split("=")
-			if kv.size() == 2 and kv[0] in ["blanks", "game_ms", "decode_wall_ms", "decode_cpu_ms", "tap_ms", "kick_ms", "take_ms", "skel_ms"]:
+			if kv.size() == 2 and kv[0] in ["blanks", "game_ms", "decode_wall_ms", "decode_cpu_ms", "tap_ms", "kick_ms", "take_ms", "skel_ms", "later_ms", "copy_ms", "worker_ms", "lag_ms"]:
 				lib[kv[0]] = kv[1]
 		var pairs := PackedStringArray()
 		for key in lib:

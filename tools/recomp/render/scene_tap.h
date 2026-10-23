@@ -48,12 +48,14 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
 namespace render {
 
 class Renderer;
+extern double g_tap_copy_ms, g_tap_worker_ms;     // async: the decoder's copies, the worker's time
 extern double g_tap_kick_ms, g_tap_ms;      // decoder thread, all frames: ms in the GS model's xgkick and in the tap itself
 
 enum : uint8_t { TAP_LEVEL = 1, TAP_MODEL = 2 };
@@ -153,6 +155,10 @@ class SceneTap {
     // The frame's pieces so far; the caller swaps them out at a vertical blank (after the FrameList's
     // on_frame, before the next transfer) and the tap starts again.
     void take(TapFrame& out);
+    // The same without waiting (async only): the cut goes into the worker's queue after the kicks so far, and when the
+    // worker reaches it, `done` is called on the worker's thread with the frame's pieces (swap them out; what is left in
+    // the frame given is reused).  The camera blocks go through the same queue: the decoder waits for nothing.
+    void cut(std::function<void(TapFrame&)> done);
     TapStats stats;
     bool check = true;                      // compare every piece with the program's own output (leave on: it is cheap)
 
@@ -179,7 +185,8 @@ class SceneTap {
     uint32_t note_expect = 0, note_half = 0, note_low = 0;
     std::unordered_map<uint64_t, uint32_t> seen;    // identities of this frame, for the occurrence count
     static void kick(void* user, uint32_t qword);
-    struct Job {                            // one kick, and the state it is read with
+    enum { JOB_KICK = 0, JOB_CAMERA = 1, JOB_CUT = 2 };
+    struct Job {                            // one kick, and the state it is read with (or a camera block, or a cut)
         const uint8_t* vu;                  // VU1 memory (16 KB; a copy of what the tap reads, when async)
         uint8_t* own;                       // the copy's buffer (async), returned to `spare` once done
         uint32_t qword, entry, itop, top;
@@ -188,8 +195,16 @@ class SceneTap {
         bool have_rows, mirrored, clip_flag;
         uint8_t rows_kind;
         uint32_t object, joint_epoch;
+        uint8_t kind;
     };
     void kicked(const Job& job);
+    void apply_camera(const uint32_t* words, size_t count);     // the camera block into the frame (worker, or no worker)
+    void take_now(TapFrame& out);
+    TapFrame cut_frame;                     // the worker's: what a cut hands on
+    std::deque<std::function<void(TapFrame&)>> cuts;    // under `lock`, one per JOB_CUT in the queue
+    bool dec_have_camera = false;           // the decoder's own view of the last camera (program()'s figures)
+    float dec_camera_world[16];
+    uint8_t* buffer();                      // a 16 KB copy buffer for the decoder (from `spare`, or new)
     // set-ups that make the joint matrices again (program()), and the last one the kicks have seen (kicked())
     uint32_t joint_epoch = 0, joints_epoch_seen = 0;
     // the worker
@@ -200,6 +215,13 @@ class SceneTap {
     std::vector<uint8_t*> mine;             // the decoder's, taken from `spare` some at a time
     std::vector<Job> pending;               // kicks not handed over yet (hand_over: 32 at a time, and at drain())
     uint32_t kick_count = 0;
+    // the last first pass of a two-pass packet: its vertices, for its second (kicked())
+    alignas(8) uint8_t reuse_made[64 * 64];
+    TapSource reuse_source[64];
+    TapVertex reuse_world[64];
+    bool reuse_done[64];
+    uint32_t reuse_n = 0, reuse_in = 0, reuse_epoch = 0;
+    bool reuse_ok = false, reuse_model = false;
     void hand_over();
     size_t buffers = 0;
     bool stop = false, busy = false;
