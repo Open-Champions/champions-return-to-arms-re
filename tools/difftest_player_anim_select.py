@@ -15,6 +15,9 @@ import ref_player_anim_select as model
 EXPECTED_SHA256 = '292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675'
 RESET = 0x1B2470
 RELEASE = 0x171118
+EQUIP = 0x1C27C0
+PASSIVE = 0x1BED48
+PROCESS_DAMAGE = 0x1B2CC0
 
 
 def one(elf, rng, weapon_class, alive, has_object):
@@ -55,6 +58,97 @@ def one(elf, rng, weapon_class, alive, has_object):
     return not failures, failures
 
 
+def equip_then_select(elf, rng, weapon_class, *, dual=False, ammunition=False):
+    """Follow the original equip store into the original base-clip selector.
+
+    The item and resolved clip words are synthetic. Other equip callees are
+    recording stubs, so this checks the class handoff, not item eligibility.
+    """
+    emu = EE(elf)
+    mem = emu.mem
+    slot = rng.randrange(4)
+    record = model.G_PLAYERS + slot * model.RECORD_SIZE
+    player = emu.alloc(0x600)
+    table = emu.alloc(0x400)
+    item = emu.alloc(0x48)
+    definition = emu.alloc(0x40)
+    equipment_slot = 8 if ammunition else (0 if dual or weapon_class in (0, 5, 7) else 2)
+    mem.w32(item, definition)
+    mem.w8(definition + 0x1C, equipment_slot)
+    mem.w8(definition + 0x1D, 0)
+    mem.w8(definition + 0x1E, 0 if dual else weapon_class)
+    mem.w8(record + 0x4A86, 5)
+    mem.w32(record + 0x43D8, player)
+    mem.wf32(record + 0xAC, 10.0)
+    mem.w32(player + 0x24, table)
+    if dual:
+        first = emu.alloc(0x48)
+        first_definition = emu.alloc(0x40)
+        mem.w32(first, first_definition)
+        mem.w8(first_definition + 0x1C, 0)
+        mem.w8(first_definition + 0x1D, 0)
+        mem.w8(first_definition + 0x1E, 0)
+        mem.w32(record + 0x4434, first)
+        mem.w32(record + 0x43F0, first)
+        emu.stub(PASSIVE, ret=1, name='player_getPassiveLevel')
+    emu.follow = {EQUIP}
+    emu.call(EQUIP, slot, item, 1)
+    expected_class = 5 if ammunition else 7 if dual else weapon_class
+    failures = []
+    if mem.u8(record + 0x4A86) != expected_class:
+        failures.append(('class', mem.u8(record + 0x4A86), expected_class))
+    class_stores = [(pc, value) for pc, address, size, value in emu.writes
+                    if address == record + 0x4A86 and size == 1]
+    if (not ammunition and not class_stores) or (ammunition and class_stores):
+        failures.append(('class stores', class_stores))
+    if not ammunition and not any(c.target == RESET for c in emu.calls):
+        failures.append('missing reset call')
+
+    # Use different pointers in every row so selecting the old class is visible.
+    for cls in range(8):
+        for k in model.BASE_SLOTS:
+            mem.w32(table + model.resource_offset(cls, k),
+                    0x20000000 + cls * 0x1000 + k)
+    emu.reset_log()
+    emu.stub(RELEASE, name='anim_releaseCaches')
+    emu.follow = {RESET}
+    emu.call(RESET, slot)
+    for i, k in enumerate(model.BASE_SLOTS):
+        got = mem.u32(player + 0x11C + 0x20 * i)
+        want = mem.u32(table + model.resource_offset(expected_class, k))
+        if got != want:
+            failures.append(('clip', i, got, want))
+    return not failures, failures
+
+
+def death_entry(elf, seed):
+    """Execute the original lethal-damage entry to action state 4.
+
+    Callees are stubbed; this verifies the player state store, not the death
+    clip or a full damage simulation.
+    """
+    emu = EE(elf)
+    mem = emu.mem
+    player = emu.alloc(0x600)
+    table = emu.alloc(0x400)
+    record = model.G_PLAYERS
+    mem.w32(0x404464, seed)
+    mem.w32(player + 0xC, 0x60)
+    mem.w32(player + 0x3C8, 0)
+    mem.w32(player + 0x24, table)
+    mem.w32(player + 0x58C, 2)
+    mem.wf32(player + 0xC8, 500.0)
+    mem.wf32(record + 0xAC, 100.0)
+    mem.w32(record + 0x43D8, player)
+    emu.follow = set()
+    emu.call(PROCESS_DAMAGE, player)
+    state_stores = [(pc, value) for pc, address, size, value in emu.writes
+                    if address == player + 0x58C and size == 4]
+    ok = (state_stores == [(0x1B34FC, 4)] and mem.u32(player + 0x58C) == 4
+          and mem.u32(record + 0xAC) == 0)
+    return ok, state_stores
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('elf')
@@ -76,9 +170,30 @@ def main():
                     if failures <= 4:
                         print('FAIL class=%d alive=%s object=%s: %s' %
                               (weapon_class, alive, has_object, detail))
+    equip_cases = equip_failures = 0
+    for weapon_class in range(8):
+        ok, detail = equip_then_select(args.elf, rng, weapon_class)
+        equip_cases += 1
+        if not ok:
+            equip_failures += 1
+            print('FAIL equip class=%d: %s' % (weapon_class, detail))
+    for kind in ('dual', 'ammunition'):
+        ok, detail = equip_then_select(args.elf, rng, 0, dual=kind == 'dual',
+                                        ammunition=kind == 'ammunition')
+        equip_cases += 1
+        if not ok:
+            equip_failures += 1
+            print('FAIL equip %s: %s' % (kind, detail))
     print('%s player base selection seed=%d cases=%d mismatches=%d' %
           ('PASS' if failures == 0 else 'FAIL', args.seed, cases, failures))
-    return 1 if failures else 0
+    print('%s equip to base selection seed=%d cases=%d mismatches=%d' %
+          ('PASS' if equip_failures == 0 else 'FAIL', args.seed, equip_cases,
+           equip_failures))
+    death_ok, death_detail = death_entry(args.elf, args.seed)
+    print('%s lethal damage state entry seed=%d cases=1 %s' %
+          ('PASS' if death_ok else 'FAIL', args.seed,
+           '' if death_ok else death_detail))
+    return 1 if failures or equip_failures or not death_ok else 0
 
 
 if __name__ == '__main__':

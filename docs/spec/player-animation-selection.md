@@ -158,6 +158,75 @@ and the header death clip. `Player_run` state 3 steps at 1.0 until marker
 
 ## 4. Native port order and evidence boundary
 
+### 4.1 Record and state handoff for game-folder play (round 2, 2026-10-23)
+
+The class and action fields have different owners. **Observed:** the player's slot
+at `P+0x3c8` indexes `R = 0x4d8af0 + slot*0x4c30`; `R+0x43d8` points back to
+the player. `R+0x4a86` is the signed weapon animation class byte. `P+0x58c`
+is the 32-bit action state. The model index at `R+0x54` selects the body and
+animation definition, but does not supply either field. A game-folder player
+needs its own record, equipped item definitions, and an executed player object;
+the Full fixture's synthetic player cannot be used as that owner's state.
+
+**Observed equip chain:** an inventory message type 1 calls
+`inventory_equipItem` 0x1c27c0 with a slot and item-record pointer. The item
+points at a definition; definition `+0x1c` is the equipment slot, `+0x1d`
+the category, and `+0x1e` the weapon animation class. After the equip check,
+a new category-0 weapon other than ammunition (equipment slot 8) writes the
+definition's class to `R+0x4a86` at 0x1c2ad4, calls
+`player_resetIdleAnim` at 0x1c2b80, and stores the equipped pointer. Bow
+and thrown classes 4/6 choose weapon set 1, while other weapon classes
+choose set 0 (0x1c2948–0x1c29e8). A second one-hand weapon with the dual
+wield passive overrides the class with 7 at 0x1c2b64. Shield/unequip paths
+can set class 5 (unarmed), 0 or a swapped weapon's class; an equip of an
+already equipped pointer skips the class rewrite. See `ref_messages.py`
+`_equip_item` / `unequip_item` and `game-messages.md` section 5.3 for the
+complete order and guards. **Executed:** the focused class handoff in
+`difftest_player_anim_select.py` runs original equip and then original
+`player_resetIdleAnim` on ten synthetic cases per seed. Its other equip
+callees are stubs; item permission and real bag ownership are not covered.
+
+**Observed selector reads:** `player_resetIdleAnim` reads the class byte at
+0x1b24b4, then reads the definition pointer at `P+0x24` (0x1b25b0 and
+0x1b25c4) and fills four base cells using `class*0x68 + {0x44,0x4c,
+0x54,0x5c}`. In action paths, `Player_run` reads `P+0x58c` for its state
+switch at 0x1a5e80; its row clip helper reads `R+0x4a86` and
+`*(P+0x24) + class*0x68 + role` (`ref_player.py:anim_name`). The two fields
+are inputs to the original state machine and clip lookup, not a standalone
+pose enum. The original animation flags, frame timers, and track phases
+decide when a state finishes.
+
+| Action | State write and exit in the original | Clip selection |
+|---|---|---|
+| Melee / heavy | Neutral state 2 enters 1 on accepted attack at 0x1a7804–0x1a7fb8; heavy skill 0x25 also enters 1 at 0x1a7308. State 1 returns to 2 on the elapsed-frame, movement, deadline or forced-action checks at 0x1aacdc–0x1aafe0. | First swing uses class row `+0x74`; heavy uses `+0x64`; continuation uses `Player_pickAttackAnim` 0x1bba88 then a model animation-lump name lookup. |
+| Bow / thrown | Accepted shot enters 0 from 2 at 0x1a7804–0x1a7fb8; state 0 returns to 2 only after its flag `0x10` clears and the minimum interval passes (0x1a80e0 onward). A close-range hit can enter melee state 1 instead. | Class row `+0x74`, or the separate close-range named clip. |
+| Spell | An accepted cast enters 5 from 2 at 0x1a6c30–0x1a7804. Skill-object and older-skill branches return to 2 on refusal, release, mana/phase completion, or missing track marker at 0x1ab4f8–0x1ac13c. Skill kind 6 can omit the cast clip while remaining in state 5. | Class row `+0x6c` when the branch starts a cast animation; track flag `0x8000` and its blend value govern the cast point. |
+| Hit / knockdown | `Player_processDamage` 0x1b2cc0 enters 3 at 0x1b2ed8 or 0x1b380c; `Player_run` returns 3 to 2 after animation marker 8 clears at 0x1ab1f0–0x1ab2f0. | Class row `+0x7c` for a reaction or a named angle-dependent knockdown. |
+| Death | `Player_processDamage` writes 4 at 0x1b34fc. State 4 at 0x1ab2f0–0x1ab3f0 has no transition to 2; `player_respawn` 0x1bd040 replaces the object. | Definition header `+0xc` or the class-2 special `+0x14`, as in section 3. |
+
+The state timings above come from `Player_run` and `Player_processDamage`
+instruction reads. The player difftest scripts `Player_processDamage` and
+animation callbacks, so it does not execute state-3 or state-4 entry.
+The focused selector difftest separately executes lethal damage in original
+`Player_processDamage` and observes its state-4 store at 0x1b34fc on both
+seeds, with callees stubbed; state-3 entry remains an instruction-read claim.
+Original `Player_run`
+state reads/exits and `ref_player.py` agree on both seeds. The full equip
+reference is `ref_messages.py`; `difftest_messages.py` executes original
+`inventory_equipItem`, but is a broader seeded message comparison rather
+than a game-folder play session. Neither test supplies a loaded, owned
+game-folder player or proves rendered playback.
+
+The native port order for this handoff is: (1) construct the selected
+game-folder player's record, slot link and item-definition pointers from
+verified session data; (2) run equip/unequip and weapon swap so class
+changes and base-cell resets follow the original guards; (3) execute that
+same owner's `Player_run` and damage/skill producers, exposing `P+0x58c`
+and the frame/track markers; (4) feed those owned values, model definition
+and clip slots to the animation dispatch; (5) compare rendered transitions
+for weapon swap, melee, cast, hit and death. A missing owner link or action
+producer remains an explicit refusal.
+
 1. Bind the actual model-index animation definition and its ordered
    111 resource slots to the class body. Preserve duplicates and absent
    resources; resolve each clip from the model's animation lump. Use the
@@ -196,8 +265,8 @@ checked by each difftest. No generated data was placed in tracked files.
 
 | Command (prefix omitted) | Result |
 |---|---|
-| `python3 tools/difftest_player_anim_select.py /Users/syndicatemike/champions-re/SLUS_209.73 --seed 20973` | 96/96 base selection cases; 0 mismatches |
-| same with `--seed 7` | 96/96; 0 mismatches |
+| `python3 tools/difftest_player_anim_select.py /Users/syndicatemike/champions-re/SLUS_209.73 --seed 20973` | 96/96 base selection, 10/10 equip-to-selector cases and 1/1 lethal state entry; 0 mismatches |
+| same with `--seed 7` | 96/96 base selection, 10/10 equip-to-selector cases and 1/1 lethal state entry; 0 mismatches |
 | `python3 tools/difftest_player.py /Users/syndicatemike/champions-re/SLUS_209.73 --seed 20973` | 31,990 compared ticks; all reported properties pass, including 2,500 isolated `Player_pickAttackAnim` calls; scripted animation responses as described above |
 | same with `--seed 7` | 31,991 compared ticks; all reported properties pass, including 2,500 isolated `Player_pickAttackAnim` calls |
 | `python3 -m unittest discover -s tools -p 'test_*.py'` | 652 tests, OK |
@@ -209,3 +278,11 @@ It compares only the other ticks' writes/calls/seeds. No extracted `.anm`
 set was present in this worktree, so `difftest_anim.py`'s clip-dependent
 pose comparison was not run here; its earlier branch evidence is cited,
 not represented as a fresh result.
+
+Round 2 reran the two player difftest seeds (31,990 and 31,991 compared
+ticks, plus 2,500 isolated attack-variant calls per seed), the selector
+including ten equip-to-base handoffs and one original lethal state entry per
+seed, and the 652-test unit suite.
+All passed with `PYTHONDONTWRITEBYTECODE=1`. The ten focused handoffs use
+synthetic item definitions, including class-byte probes that do not assert
+the existence of a corresponding shipped item.
