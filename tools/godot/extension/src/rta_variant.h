@@ -19,6 +19,12 @@ enum : uint32_t {
     // what reads it decodes the sRGB curve Godot puts on it (docs/issues/native-godot.md, ninth round)
     V_STORED = 16384,   // the colour is written as stored values (the pass is a stored-space one)
     V_DECODE = 32768,   // the texture is such a surface: its sRGB curve is taken off when it is read
+    // scene mode, the level's batches (rta_scene.cpp): a chunk the game draws in two passes over the same triangles (a
+    // first pass that covers, a second blended over it) drawn as one, both textures read in one fragment
+    V_FUSED = 65536,    // the first pass's coordinates and colour in CUSTOM2, its state in the "2" parameters
+    V_REPEAT2 = 131072, // ... its texture repeats on both axes
+    V_SOLID = 262144,   // ... a batch that covers whatever is under it, with no alpha test: no discard (early depth)
+    V_PREPASS = 524288, // ... its depth alone, before it is drawn: what lies behind other chunks is shaded once, not twice
 };
 
 }  // namespace rta_variant

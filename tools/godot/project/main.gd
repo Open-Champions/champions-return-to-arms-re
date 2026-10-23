@@ -126,7 +126,7 @@ var opt := {
 	"no_sound": false, "test": "", "stop_after": 0, "figures": "", "args": PackedStringArray(),
 	"view": "", "game_hud": true, "light": false, "shadow": false, "pull_back": 1.0, "orbit": 0.0,
 	"look": "", "hud": true, "speed_log": 0, "net2_flow": "", "art_pack": "", "mipmaps": true,
-	"combat": "", "aim": "", "look_presets": "", "frame_log": "", "display_rate": "", "no_vsync": false,
+	"combat": "", "aim": "", "look_presets": "", "frame_log": "", "display_rate": "", "display_upscale": "", "no_vsync": false,
 }
 var speed := {"usec": 0, "cpu": 0.0, "blanks": 0, "last": 0, "late": 0, "worst": 0}
 signal session_over(why: String)
@@ -175,6 +175,10 @@ var post_draw_usec := 0
 var grants := 0                         # blanks let go (step); against the frame's own number: how far ahead the machine runs
 # ---- the display rate (above 60: pictures between game frames) ----
 var rate := "auto"                      # --display-rate / settings.cfg [display] rate: 60 | 120 | auto
+# --display-upscale / settings.cfg [display] upscale / RTA_DISPLAY_UPSCALE: off | metalfx | fsr - only while pictures are
+# drawn between game frames (the rate above 60): the 3-D surface drawn at 3/4 of the pixels each way and enlarged (MetalFX
+# spatial on Metal, else FSR 1); at 60 every pixel is drawn (scene_view.gd _post)
+var upscale := "off"
 var tween_n := 1                        # refreshes a game frame; > 1: the pictures between are drawn from the last two
 var refresh_s := 1.0 / 60.0             # the display's interval
 var game_clock := 0.0                   # seconds since the last game frame was shown
@@ -290,6 +294,7 @@ func _parse_arguments() -> void:
 			"--frame-log": opt.frame_log = value; k += 1
 			"--no-vsync": opt.no_vsync = true             # test aid: pictures as fast as they come, the game still at 60
 			"--display-rate": opt.display_rate = value; k += 1
+			"--display-upscale": opt.display_upscale = value; k += 1
 			"--view": opt.view = value; k += 1
 			"--no-game-hud": opt.game_hud = false
 			"--combat": opt.combat = value; k += 1
@@ -435,6 +440,14 @@ func _display_rate(refresh: float) -> void:
 	if asked == "" and OS.has_environment("RTA_DISPLAY_RATE"):
 		asked = OS.get_environment("RTA_DISPLAY_RATE")
 	rate = asked if asked in ["60", "120", "auto"] else "auto"
+	var up := String(opt.display_upscale)
+	if up == "":
+		var ucfg := ConfigFile.new()
+		if ucfg.load("user://settings.cfg") == OK:
+			up = str(ucfg.get_value("display", "upscale", ""))
+	if up == "" and OS.has_environment("RTA_DISPLAY_UPSCALE"):
+		up = OS.get_environment("RTA_DISPLAY_UPSCALE")
+	upscale = up if up in ["off", "metalfx", "fsr"] else "off"
 	refresh_s = 1.0 / refresh
 	var n := int(round(refresh / 60.0))
 	tween_n = 1

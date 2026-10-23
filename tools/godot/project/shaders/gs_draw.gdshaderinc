@@ -17,6 +17,12 @@
 //   GS_MODEL            ... a solid model: form light per pixel by the game's own normals, a rim light, a sharper
 //                       texture (rta_model; scene_view.gd "models")
 //   GS_CONTACT          ... a solid piece of the level: darkened under the figures standing on it (rta_contacts)
+//   GS_FUSED            ... a level chunk the game draws in two passes over the same triangles - a first pass that
+//                       covers (its result does not depend on what was there) and a second blended over it - drawn as
+//                       one: the first pass's coordinates and colour in CUSTOM2, its state in the "2" parameters, the
+//                       blend done here (rta_scene.cpp, the level's batches)        GS_REPEAT2  its texture repeats
+//   GS_SOLID            ... a batch that covers, without an alpha test: no discard (the GPU tests depth first)
+//   GS_PREPASS          ... a solid batch's depth alone, drawn before its stretch of batches (a whole shader of its own)
 //   GS_STORED_SPACE     Forward+ / Mobile, a surface with no 3-D scene in it: the colour is written as the stored values
 //                       themselves, so that blending - which these renderers do in linear light - works on stored values
 //                       as the GS's does (a translucent overlay, an additive glow; the shop's lists).  Godot puts its sRGB
@@ -27,6 +33,25 @@
 // colour a texture is multiplied by.
 // ("shader_type spatial;" is put in front, before the defines, by the drawer.)
 
+#ifdef GS_PREPASS
+// The depth of a solid batch of the level (rta_scene.cpp, the level's batches), drawn before the batches of its stretch
+// of the list: the batches are then shaded only where they are in front (the same position as GS_WORLD computes it,
+// the same depth: the test passes where equal).  The colour is left as it is.
+render_mode unshaded, cull_disabled, depth_draw_always, blend_premul_alpha, shadows_disabled, fog_disabled;
+uniform float depth_bias = 0.0;
+void vertex() {
+	POSITION = PROJECTION_MATRIX * (MODELVIEW_MATRIX * vec4(VERTEX, 1.0));
+#if CURRENT_RENDERER == RENDERER_COMPATIBILITY
+	POSITION.z += depth_bias * POSITION.w;
+#else
+	POSITION.z -= depth_bias * POSITION.w * 0.5;
+#endif
+}
+void fragment() {
+	ALBEDO = vec3(0.0);
+	ALPHA = 0.0;
+}
+#else
 #ifdef GS_CASTER
 // a twin of an opaque draw of the scene that only goes into Godot's shadow maps
 render_mode unshaded, cull_disabled;
@@ -102,6 +127,29 @@ uniform vec4 blend = vec4(0.0, 1.0, 0.0, 0.0);      // source: coefficient of C,
 uniform int blend_c = 2;                            // 0 source alpha, 1 destination alpha (taken as 1), 2 fix
 uniform float fix = 1.0;
 uniform float mask_rgb = 0.0;                       // 1: the colour is not written
+#ifdef GS_FUSED
+// the first of the two passes (the one drawn underneath): its texture and state; it covers, and has no alpha test or fog
+#ifdef GS_REPEAT2
+uniform sampler2D tex2 : filter_linear_mipmap_anisotropic, repeat_enable;
+#else
+uniform sampler2D tex2 : filter_linear_mipmap_anisotropic, repeat_disable;
+#endif
+uniform int textured2 = 0;
+uniform int tfx2 = 0;
+uniform int tcc2 = 0;
+uniform vec2 st_scale2 = vec2(1.0, 1.0);
+uniform vec2 tex_size2 = vec2(1.0, 1.0);
+uniform vec2 tex_offset2 = vec2(0.0, 0.0);
+uniform ivec2 wrap_mode2 = ivec2(0, 0);
+uniform vec4 region2 = vec4(0.0);
+uniform float weave_half2 = 0.0;
+uniform vec4 texa2 = vec4(0.0);
+uniform vec4 blend2 = vec4(0.0, 1.0, 0.0, 0.0);
+uniform int blend_c2 = 2;
+uniform float fix2 = 1.0;
+varying vec2 v_st2;
+varying vec4 v_col2;
+#endif
 #ifdef GS_WORLD
 uniform float depth_bias = 0.0;                     // toward the camera, in clip space: what lies on a surface is drawn on it
 global uniform vec4 rta_tween;                      // x: game frames past the last one, for a picture drawn between two (RtaDrawer::redraw)
@@ -160,7 +208,18 @@ void vertex() {
 #endif
 	// A kept model that moved carries where each corner was in the game frame before (CUSTOM2, w 2: rta_scene.cpp); a
 	// picture between game frames puts the corner rta_tween.x frames on along that motion (0 in a game frame's own)
+#ifdef GS_FUSED
+	// the first pass: its texel position (q = 1) and its colour (r + 256 g + 65536 b, and a)
+	v_st2 = CUSTOM2.xy;
+	{
+		float rgb = CUSTOM2.z;
+		float b = floor(rgb / 65536.0);
+		float g = floor((rgb - b * 65536.0) / 256.0);
+		v_col2 = vec4(rgb - b * 65536.0 - g * 256.0, g, b, CUSTOM2.w);
+	}
+#else
 	if (CUSTOM2.w > 1.5) VERTEX = mix(CUSTOM2.xyz, VERTEX, 1.0 + rta_tween.x);
+#endif
 	v_pos = vec2(0.0);
 #ifndef GS_CASTER
 	v_world = VERTEX;
@@ -192,6 +251,53 @@ float gs_wrap(float c, int mode, float lo, float hi, float size) {
 #endif
 	return c;
 }
+
+#ifdef GS_FUSED
+float gs_wrap2(float c, int mode, float lo, float hi, float size) {
+	if (mode == 2) return clamp(c, lo, hi + 0.999);
+	if (mode == 3) return float((int(floor(c)) & int(lo)) | int(hi)) + fract(c);
+#ifndef GS_REPEAT2
+	if (mode == 0) return c - floor(c / size) * size;
+#endif
+	return c;
+}
+
+// the first pass's colour, as fragment() makes the draw's own (texture function; no fog, no alpha test), times its
+// source factor of the blend
+vec3 gs_first_pass() {
+	vec4 c = v_col2;
+	if (textured2 != 0) {
+		vec2 tc = v_st2 * st_scale2;
+		if (weave_half2 > 0.0) {
+			float line = floor(tc.y);
+			tc.y = floor(line * 0.5) + mod(line, 2.0) * weave_half2 + 0.5;
+		} else if (weave_half2 < 0.0) {
+			tc.y *= 0.5;
+		}
+		tc.x = gs_wrap2(tc.x, wrap_mode2.x, region2.x, region2.y, tex_size2.x);
+		tc.y = gs_wrap2(tc.y, wrap_mode2.y, region2.z, region2.w, tex_size2.y);
+		vec2 uv = (tc + tex_offset2) / tex_size2;
+		vec2 raw = (v_st2 * st_scale2 + tex_offset2) / tex_size2;      // the footprint before the wrap
+		vec4 t = textureGrad(tex2, uv, dFdx(raw), dFdy(raw)) * 255.0;
+		if (texa2.x > 0.5) {
+			bool black = texa2.w > 0.5 && t.r + t.g + t.b < 0.5;
+			t.a = (texa2.x > 1.5 && t.a >= 127.5) ? texa2.z : (black ? 0.0 : texa2.y);
+		}
+		if (tfx2 == 0) {
+			c.rgb = min(t.rgb * v_col2.rgb / 128.0, 255.0);
+			c.a = tcc2 != 0 ? min(t.a * v_col2.a / 128.0, 255.0) : v_col2.a;
+		} else if (tfx2 == 1) {
+			c.rgb = t.rgb;
+			c.a = tcc2 != 0 ? t.a : v_col2.a;
+		} else {
+			c.rgb = min(t.rgb * v_col2.rgb / 128.0 + v_col2.a, 255.0);
+			c.a = tcc2 == 0 ? v_col2.a : (tfx2 == 2 ? min(t.a + v_col2.a, 255.0) : t.a);
+		}
+	}
+	float factor = blend_c2 == 0 ? c.a / 128.0 : (blend_c2 == 1 ? 1.0 : fix2);
+	return clamp(c.rgb / 255.0 * abs(blend2.x * factor + blend2.y), 0.0, 1.0);
+}
+#endif
 
 vec3 to_linear(vec3 c) {
 #ifdef GS_STORED_COLOURS
@@ -270,6 +376,7 @@ void fragment() {
 		}
 	}
 	if (fog_colour.w > 0.5) c.rgb = c.rgb * v_fog + fog_colour.rgb * (1.0 - v_fog);
+#ifndef GS_SOLID
 	if (atst != 1) {
 		bool pass = true;
 		float a = floor(c.a + 0.01);
@@ -282,6 +389,7 @@ void fragment() {
 		else pass = a != aref;
 		if (!pass) discard;
 	}
+#endif
 #ifdef GS_CASTER
 	ALBEDO = vec3(0.0);
 #else
@@ -292,6 +400,10 @@ void fragment() {
 	vec3 rgb = clamp(c.rgb / 255.0 * source, 0.0, 1.0);
 	if (mask_rgb > 0.5) { rgb = vec3(0.0); destination = 1.0; }
 	vec3 haze = vec3(0.0);
+#ifdef GS_FUSED
+	vec3 rgb2 = gs_first_pass();       // what the second pass is blended over: the result is rgb + rgb2 x destination
+	vec3 haze2 = vec3(0.0);
+#endif
 #ifdef GS_MODEL
 	{
 		// the game lit the model per vertex; the same normals per pixel give it its form back between them: a soft key
@@ -305,7 +417,13 @@ void fragment() {
 	}
 #endif
 #ifdef GS_CONTACT
-	rgb *= rta_contact_keep(v_world);
+	{
+		float keep = rta_contact_keep(v_world);
+		rgb *= keep;
+#ifdef GS_FUSED
+		rgb2 *= keep;
+#endif
+	}
 #endif
 #ifdef GS_WORLD
 	vec3 to_surface = v_world - CAMERA_POSITION_WORLD;
@@ -329,6 +447,10 @@ void fragment() {
 	float f = rta_haze(dist, v_world.z);
 	haze = rta_haze_colour(to_surface / max(dist, 0.001)) * f * (1.0 - destination);
 	rgb *= 1.0 - f;
+#ifdef GS_FUSED
+	haze2 = rta_haze_colour(to_surface / max(dist, 0.001)) * f;     // the first pass covers: its haze is whole
+	rgb2 *= 1.0 - f;
+#endif
 #endif
 #endif
 #ifdef GS_LIT
@@ -350,15 +472,23 @@ void fragment() {
 	// values; the sun's pass then adds its share of ALBEDO (light() below).
 	ALBEDO = to_linear(rgb);
 	EMISSION = to_linear(clamp(rgb * rta_light_ambient.rgb + haze, 0.0, 1.0));
+#ifdef GS_FUSED
+	// both passes take the same light: the blend of the two lit colours is the light of the blend of the two
+	ALBEDO += to_linear(rgb2) * destination;
+	EMISSION += to_linear(clamp(rgb2 * rta_light_ambient.rgb + haze2, 0.0, 1.0)) * destination;
+#endif
 #else
 #ifdef GS_STORED_SPACE
 	ALBEDO = clamp(rgb + haze, 0.0, 1.0);              // the stored values as they are: blended as the GS blends them
 #else
 	ALBEDO = to_linear(clamp(rgb + haze, 0.0, 1.0));
+#ifdef GS_FUSED
+	ALBEDO += to_linear(clamp(rgb2 + haze2, 0.0, 1.0)) * destination;
 #endif
 #endif
-#ifdef GS_BLEND_SUB
-	ALPHA = 1.0;                                        // destination - source
+#endif
+#if defined(GS_BLEND_SUB) || defined(GS_FUSED)
+	ALPHA = 1.0;                                        // destination - source; a fused pair covers
 #else
 	ALPHA = 1.0 - destination;                          // source + destination x (1 - alpha)
 #endif
@@ -383,4 +513,5 @@ void light() {
 	else DIFFUSE_LIGHT += ATTENUATION * LIGHT_COLOR / PI * (0.35 + 0.65 * max(facing, 0.0));
 #endif
 }
+#endif
 #endif

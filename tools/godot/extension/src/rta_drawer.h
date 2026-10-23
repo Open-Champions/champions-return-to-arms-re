@@ -119,6 +119,7 @@ class RtaDrawer : public RefCounted {
     struct Pass {                                   // one viewport
         RID viewport, scenario, camera, environment, texture;
         std::vector<RID> instances, meshes;
+        std::vector<uint64_t> shapes;               // per mesh of the pool: the vertex count and primitive it holds (mesh_for_flat), 0 other
         std::vector<uint8_t> overridden;            // per instance: it carries a material of its own (place_mesh)
         size_t used = 0;                            // instances with something to draw this frame
         bool drawn_once = false;
@@ -191,13 +192,17 @@ class RtaDrawer : public RefCounted {
     void free_pass(Pass* pass);
     void size_target(Target& target);
     RID shader_for(uint32_t variant);
-    RID material_for(const rtag_draw& draw, const Target& target, bool inverted, RID texture, bool texture_flipped, uint32_t extra = 0);
+    RID material_for(const rtag_draw& draw, const Target& target, bool inverted, RID texture, bool texture_flipped, uint32_t extra = 0,
+                     const rtag_draw* second = nullptr, RID second_texture = RID());
+    static bool blend_of(const rtag_draw& d, float& sc, float& sk, float& dc, float& dk, float& fix, int& blend_c, bool& subtract);
     void add_draw(Pass& pass, const rtag_frame& frame, const rtag_draw& draw, const Target& target, RID texture, bool texture_flipped, float order);
     void add_copy(Pass& pass, const rtag_draw& draw, const Target& target, const Target& source, RID texture, float order);
     RID place(Pass& pass, RID material, float order);
     RID place_mesh(Pass& pass, RID mesh, RID material, float order);
     RID instance_for(Pass& pass);
     RID mesh_for(Pass& pass);
+    RID mesh_for_flat(Pass& pass, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count);
+    uint64_t flat_reused = 0;
 
     // ---- scene mode ----
     struct Scene;
@@ -208,6 +213,13 @@ class RtaDrawer : public RefCounted {
     void scene_scan_sky(const rtag_frame& frame, const Target& world);
     bool scene_take(Pass& pass, const rtag_frame& frame, const rtag_draw& draw, const Target& target, RID texture, float order);
     void scene_end(const rtag_frame& frame);
+    // the level's batches (rta_scene.cpp, Scene::batch_on)
+    const std::vector<RID>* frame_texture_of = nullptr;     // submit(): this list's texture per draw
+    bool batch_take(Pass& pass, const rtag_frame& frame, const rtag_draw& draw, const Target& target, RID texture, float order);
+    void batch_flush(Pass& pass);
+    static bool draw_commutes(const rtag_draw& d);
+    void scene_learn_level(const rtag_draw& d, const rtag_scene_piece* pieces);
+    void scene_caster(Pass& pass, RID mesh, RID material);
     void scene_release();
     static void add_surface_bytes(RID mesh, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count, bool normals = false, const AABB* box = nullptr, bool carry = false);
     std::vector<Pass*> last_order;                  // the passes the last submit rendered, in order (redraw)

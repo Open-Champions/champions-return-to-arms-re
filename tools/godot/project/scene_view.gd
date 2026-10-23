@@ -29,6 +29,8 @@ extends Node
 #             wall texture, darkened, a crease where they meet the wall, lit by the point lights, hazed (RtaDrawer, rta_fill.cpp;
 #             shaders/fill.gdshader).  fill_light (0..1, default 0.42), fill_scale (swatch repeats per 64 units)
 #   aa        multisampling of the 3-D surface (0, 2, 4, 8)
+#   batch     on (default) | off: the level's draws gathered into batches, a two-pass chunk drawn as one (rta_scene.cpp,
+#             Scene::batch_on; RTA_BATCH=0 off).  prepass on (default) | off: the solid batches' depth drawn first
 #   models    cleaner models (on by default, in every view): the game's solid models are drawn with a form light per pixel
 #             by the game's own normals (model_form 0..1), a rim light in the sky's colour (model_rim 0..1), a texture
 #             sampled one mip step finer (model_sharp: footprint scale, 1 = as the level), and their skinned packets
@@ -86,7 +88,7 @@ const GLOBALS := {
 }
 
 var look := {
-	"sky": "auto", "fog": "auto", "sun": "auto", "lamp": "auto", "bloom": "auto", "grade": "auto", "foliage": "auto", "fill": "auto", "lights": "auto", "aa": "4", "scale3d": 1.0,
+	"sky": "auto", "fog": "auto", "sun": "auto", "lamp": "auto", "bloom": "auto", "grade": "auto", "foliage": "auto", "fill": "auto", "lights": "auto", "aa": "4", "scale3d": 1.0, "batch": "on", "prepass": "on",
 	"shade": -1.0, "fog_start": 380.0, "fog_end": 1350.0, "fog_amount": 1.0, "sun_az": -1000.0, "sun_el": -1000.0,
 	"bloom_strength": 1.0, "sky_sun": 1.0, "shadow_splits": 4.0, "shadow_far": 1100.0,
 	"fill_light": 0.36, "fill_scale": 1.0, "light_energy": 1.0, "light_shadows": 2.0, "light_max": 8.0,
@@ -350,6 +352,9 @@ func before_frame() -> void:
 		in_force.lamp = ground and level_dark
 	drawer.call("set_scene_option", "sky", 1.0 if in_force.sky else 0.0)
 	drawer.call("set_scene_option", "near_fade", 1.0 if _wants("foliage", ground) else 0.0)
+	# the level's draws gathered into batches, a two-pass chunk drawn as one (rta_scene.cpp, Scene::batch_on); off: each by itself
+	drawer.call("set_scene_option", "batch", 0.0 if String(look.batch) == "off" or OS.get_environment("RTA_BATCH") == "0" else 1.0)
+	drawer.call("set_scene_option", "prepass", 0.0 if String(look.prepass) == "off" or OS.get_environment("RTA_PREPASS") == "0" else 1.0)
 	drawer.call("set_scene_option", "fill", 1.0 if in_force.fill else 0.0)
 	for key in ["fill_light", "fill_scale"]:
 		if fill_sent.get(key, -1.0) != float(look[key]):
@@ -793,9 +798,16 @@ func _post() -> void:
 	RenderingServer.environment_set_adjustment(environment, grade, float(look.brightness), float(look.contrast), float(look.saturation), false, RID())
 	# the 3-D surface drawn at a share of its pixels and enlarged (FSR 1, sharpened): scale3d 1.0 = every pixel
 	var scale3d := clampf(float(look.scale3d), 0.5, 1.0)
+	# display.upscale (main.gd): above 60 pictures a second only, the 3-D surface at 3/4 each way, enlarged
+	var mode := RenderingServer.VIEWPORT_SCALING_3D_MODE_FSR
+	var up := String(main.get("upscale")) if main != null else "off"
+	if up != "off" and int(main.get("tween_n")) > 1 and scale3d >= 0.999:
+		scale3d = 0.75
+		if up == "metalfx" and RenderingServer.get_current_rendering_driver_name() == "metal" and RenderingServer.get_current_rendering_method() == "forward_plus":
+			mode = RenderingServer.VIEWPORT_SCALING_3D_MODE_METALFX_SPATIAL
 	if scale3d != scale_set and viewport.is_valid():
 		scale_set = scale3d
-		RenderingServer.viewport_set_scaling_3d_mode(viewport, RenderingServer.VIEWPORT_SCALING_3D_MODE_BILINEAR if scale3d >= 0.999 else RenderingServer.VIEWPORT_SCALING_3D_MODE_FSR)
+		RenderingServer.viewport_set_scaling_3d_mode(viewport, RenderingServer.VIEWPORT_SCALING_3D_MODE_BILINEAR if scale3d >= 0.999 else mode)
 		RenderingServer.viewport_set_scaling_3d_scale(viewport, scale3d)
 		RenderingServer.viewport_set_fsr_sharpness(viewport, 0.2)
 	var samples := int(String(look.aa).to_int())

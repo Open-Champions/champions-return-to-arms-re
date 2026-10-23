@@ -9,6 +9,145 @@ Nothing derived from the game is in the repository. `tools/godot/` holds glue, b
 scripts, the Godot project's scripts and shaders. The translated code, the libraries, the
 staged project, exported applications, pictures and logs are under `local/godot-spike/`.
 
+## TWELFTH ROUND (2026-10-22, night): fire1's crowd at 60, the boar fight past 100 at 120
+
+Built into `local/godot-r14/` (`RTA_GODOT_OUT=local/godot-r14`; a fresh snapshot of `tools/recomp` with round 11's patch
+merged, and this round's `recomp.patch`; `build.py snapshot --refresh`, `lib`, `extension`, `project`). Tests, logs and
+traces: `local/godot-r14/test/` - `fight.sh`, `fire.sh` (as round 11's; `SHOTS=...` takes window pictures at ticks),
+`final14.sh` (the table's runs and the room), `mktable14.py`, `cols.py` / `persec.py` (the frame log by column, pictures in
+each second), `imgdiff.py` (two pictures compared), `xfire.sh` + `tpsum.py` / `gpusum.py` / `encsum.py` (Instruments in
+fire1's crowd), `room14.py`, `tapcheck/` (the tap's output compared, `rtag_host`). The machine as in round 11 (M5 Pro,
+ProMotion up to 120 Hz; another agent's tests ran on it now and then).
+
+| Asked | State |
+|---|---|
+| fire1's crowd (and any big crowd) at a steady 60, display resolution, everything on | **nearly, Ran**: 58.5 pictures a second at the rate 60, the slowest second 56.4 (it was 41.2 / 34.4); per second 56 to 61. At the rate auto 72.9 (was 40.6). What is left is the decoder's thread at the heaviest moment (16 ms a blank, below) |
+| the boar fight / heavy fights closer to 120 | **Ran**: 106.1 pictures a second in the boar fight at the rate auto, the slowest second 100.1 (it was 90.7 / 87.7); 60.0 at the rate 60 with no picture over budget; walking in valor 110.5 (the slowest second 101.0, was 87.9) |
+| measure each change: min / mean / 1 %-low, over budget, draws a frame, in hub, valor walk, boar fight, fire1 crowd, at 60 and auto | **Ran**, table below; the steps were measured in fire1's crowd as they were made |
+| simulation untouched | **Ran**: two Godot copies in one room, A at the rate auto (7,754 pictures, 1,937 of them between game frames, the Elden Ring players and creatures on), B at 60: 1,842 ticks through a level change (hub, drunare), no shared column differs (`room1.log`). The tap on its thread makes the same bytes (below) |
+| the picture correct | **Ran**: window pictures at fixed ticks, batches on against off (and the old tap): the level the same (fire1 without the Elden Ring creatures: mean difference 0.05 of 255, no pixel over 32; valor's hub and boar fight: mean 0.02 / 0.27 / 0.15, the HUD's target label most of it). With the Elden Ring creatures on, their figures differ in 0.24 % of the pixels by more than 32 (see "Still wrong") |
+
+### What the crowd was made of (measured)
+
+The "2,500 to 4,500 draws" of round 11 are fire1's **level**, not the crowd: a list of the crowd (describe at tick 700)
+had 1,828 draws into the 3-D surface, 1,678 of them level chunks - 839 chunks drawn in **two passes** each (the first,
+the environment-map layer, covers: `(0 - 0) x fix + Cs`; the second over it: `Cs + Cd x As`) - and 142 model draws.
+The chunks' textures are shared: one texture for every first pass, about 70 for the second passes. And all 1,678 lie in
+one stretch of the list, with nothing between them that blends over them.
+
+Where the time went in the crowd (Instruments, round 11's code with the first batches): the decoder's thread **100 %
+busy** (the scene tap 45 % of it), Godot's main thread 65 %, the GPU **96 % busy** - one render pass of 16 ms of
+fragment work a picture (the boar fight's was 4.6). The level is drawn in Godot's transparent pass (the list's order),
+which has no depth pre-pass: every chunk behind another was shaded in full (the lights, the sun's shadow, the contact
+shadows, two textures).
+
+### What was done (each measured in the crowd at the rate 60)
+
+1. **The level's batches** (`rta_scene.cpp`, `Scene::batch_on`; look key `batch`, `RTA_BATCH=0` off). A level draw whose
+   result does not depend on what is under it and that tests and writes depth "commutes": any order of such draws gives
+   the same picture, but for exact ties of depth. Such draws go into the batch of their state (material) - one mesh per
+   batch, written again each list from the chunks of that list (only where its bytes changed; positions that moved less
+   than 0.01 unit are kept: the tap's positions differ in their last bits frame to frame) and drawn where the first of
+   them was in the list's order. A draw that does not commute ends the stretch in which batches gather. A two-pass
+   chunk is **one draw** (`GS_FUSED`, `V_FUSED`): the first pass's coordinates and colour ride in CUSTOM2, its state in
+   "2" parameters, and the shader does the GS blend of the second over the first (`rgb2nd + rgb1st x destination`, both
+   lit by the same light, so the blend of the lit colours is the light of the blend). No texture atlas or array is
+   needed for fire1 (the textures are shared); valor's chunks each have their own texture and gather little (70 draws
+   in 63 batches) - an array would be the next step there, if it is ever the limit. Crowd: 1,678 level draws in
+   **65 batches**; 41.2 -> 45.8 pictures a second; Godot's drawing time the same and the GPU still 96 % busy.
+2. **Depth first** (`GS_PREPASS`, look key `prepass`, `RTA_PREPASS=0` off): every solid batch (no alpha test: `GS_SOLID`,
+   the alpha test's discard compiled out, so the GPU tests depth before shading) has its depth drawn first, before the
+   first batch of its stretch, by a shader that writes depth and leaves the colour; the batches are then shaded only
+   where they are in front (the depth test passes on equal). The crowd's main pass **16.0 -> 6.8 ms** of GPU a picture
+   (the GPU 96 -> 61 % busy); 46.7 -> 52.4 pictures a second (with step 3's first form).
+3. **The scene tap on a thread of its own** (`recomp.patch`, `render/scene_tap.{h,cpp}`): at each kick of the four mesh
+   programs the decoder copies what the tap reads of VU1 memory (the strip, the packet's inputs and copy rows, a model's
+   joint matrices) with the set-up's state, 32 kicks at a time to one worker, which runs the same `kicked()` in the
+   same order. Then: the second kick of a two-pass packet takes the first's vertices instead of computing them again;
+   the list's vertices and the corners are written in place (their counts are known); the clock read for one kick in
+   eight. Checked: a figure over every piece, vertex, corner, joint matrix and source the tap made for 3,550 lists of
+   the fire route (`RTA_TAP_DIGEST`, `tools/godot/lib/scene_export.cpp`) is **the same** with the tap on the decoder's
+   thread and on its own (`RTA_TAP_ASYNC=0/1`), after each step; the skeleton check the same (194 million corners,
+   largest difference 0.00071). The crowd's decoder **18.4 -> 13.3 ms** a blank on average, 16.1 at the heaviest moment;
+   the worker 13.6 ms at that moment. In pictures a second: the thread itself 45.8 -> 46.7 (the GPU was the limit then),
+   the copies trimmed and handed over 32 at a time 52.4 -> 57.0, the second pass's vertices and the writes in place
+   57.6 -> 58.5.
+4. **The main thread**: the 2-D layer's draws (a mesh made anew each list: Godot made new buffers and pipelines for each)
+   are written again in place when they have as many vertices as the draw the pool's mesh held last
+   (`mesh_for_flat`); the cleaner models' welded normals in an open-addressing table, and only for packets near enough
+   to be curved and not left out for an Elden Ring figure (a crowd's hidden goblins were all welded). submit 6.4 ->
+   5.0 ms a game frame; 57.0 -> 57.6.
+5. **`display.upscale`** (`--display-upscale`, `settings.cfg [display] upscale`, `RTA_DISPLAY_UPSCALE`: off | metalfx |
+   fsr; default off): only while pictures are drawn between game frames, the 3-D surface at 3/4 each way and enlarged
+   (MetalFX spatial on Metal - Godot 4.5.2 has it - else FSR 1); at 60 every pixel. Measured with the batches and depth
+   first: the boar fight at auto 101.6 -> 103.0, the crowd 69.6 -> 74.8 - the GPU is no longer what stops 120, so it
+   stays off.
+
+**Evaluated and not done**: GPU instancing of repeated props and creatures (the crowd's creatures are 142 draws and
+the Elden Ring figures; switching the figures off changed nothing measurable); a texture array or atlas (above);
+persistent RIDs for unchanged static packets (the kept meshes did that already; the batches are kept meshes written only
+where they changed); cheaper shadows (the sun off was +3 pictures a second before the depth pass; not needed); Godot's
+occlusion culling (needs occluders; the depth pass does the job for the level).
+
+### Figures (`fstats.py`; paced; 3024 x 1964; shoulder; art pack, cleaner models, Elden Ring players and creatures)
+
+As round 11 (min = the slowest one-second window; over budget = intervals over 1.5 x the usual one). "Round 11" are
+its runs (`local/godot-r13/test`), on the same machine.
+
+| Part | Run | pictures a second: min / mean / 1 %-low | over budget | worst interval | judder | controller to picture |
+|---|---|---|---|---|---|---|
+| hub | round 11, rate 60 (`final60e`) | 42.9 / 55.2 / 4.3 | 3 (1.6 %) | 235 ms | 40.1 ms | 35 ms |
+| hub | round 11, rate auto (120) (`final120e`) | 71.2 / 98.7 / 9.5 | 8 (2.4 %) | 220 ms | 30.4 ms | 32 ms |
+| hub | now, rate 60 (`h60`) | 42.2 / 55.0 / 4.2 | 5 (2.6 %) | 238 ms | 43.8 ms | 35 ms |
+| hub | now, rate auto (120) (`h120`) | 68.1 / 97.9 / 8.3 | 12 (3.6 %) | 243 ms | 33.9 ms | 30 ms |
+| valor, walking | round 11, rate 60 (`final60e`) | 59.0 / 60.0 / 38.4 | 2 (0.1 %) | 36 ms | 4.0 ms | 34 ms |
+| valor, walking | round 11, rate auto (120) (`final120e`) | 87.9 / 110.7 / 62.8 | 49 (1.1 %) | 27 ms | 4.2 ms | 24 ms |
+| valor, walking | now, rate 60 (`h60`) | 59.2 / 60.0 / 39.5 | 3 (0.1 %) | 35 ms | 3.6 ms | 33 ms |
+| valor, walking | now, rate auto (120) (`h120`) | 101.0 / 110.5 / 59.3 | 159 (3.7 %) | 27 ms | 4.1 ms | 24 ms |
+| valor, the boar fight (the heaviest fight) | round 11, rate 60 (`final60e`) | 58.8 / 59.9 / 36.5 | 25 (3.3 %) | 29 ms | 5.5 ms | 35 ms |
+| valor, the boar fight (the heaviest fight) | round 11, rate auto (120) (`final120e`) | 87.7 / 90.7 / 66.8 | 1 (0.1 %) | 17 ms | 6.1 ms | 37 ms |
+| valor, the boar fight (the heaviest fight) | now, rate 60 (`h60`) | 59.3 / 60.0 / 40.0 | 0 (0.0 %) | 25 ms | 4.5 ms | 34 ms |
+| valor, the boar fight (the heaviest fight) | now, rate auto (120) (`h120`) | 100.1 / 106.1 / 57.6 | 175 (13.7 %) | 17 ms | 4.5 ms | 25 ms |
+| fire1, the goblin band | round 11, rate 60 (`fire60e`) | 34.4 / 41.2 / 18.8 | 3 (0.3 %) | 195 ms | 20.7 ms | 43 ms |
+| fire1, the goblin band | round 11, rate auto (120) (`fire120e`) | 31.7 / 40.6 / 17.3 | 6 (0.7 %) | 193 ms | 22.2 ms | 74 ms |
+| fire1, the goblin band | now, rate 60 (`c60b`) | 56.4 / 58.5 / 18.8 | 106 (11.7 %) | 203 ms | 10.0 ms | 35 ms |
+| fire1, the goblin band | now, rate auto (120) (`c120b`) | 58.7 / 72.9 / 21.5 | 17 (1.6 %) | 207 ms | 11.4 ms | 40 ms |
+
+At the rate 60 on a 120 Hz display ProMotion runs with the drawing; with the drawing faster now, more game frames fall on
+the turn after their time, 8 and 25 ms apart (the crowd's 11.7 % "over budget" at 60 are those; its judder 20.7 -> 10.0
+ms). **Draws a list**: fire route (mostly the crowd) 914 list draws, of them 696 in 65 batches, 65 depth-only; the fight
+route 181, of them 70 in 63 batches (52.5 depth-only).
+
+**Where the crowd stops now** (blank by blank, `cols.py`): the decoder's thread at the heaviest moment (blanks 3,264 to
+3,392: 16.1 ms a blank, its worker 13.6) - the GS model's strips (`Gs::world_run`), the copies for the tap, the hand-over
+(`scene::take`, 3 to 4 ms there). Next: the hand-over on the worker or a second worker for the strips.
+
+### Files changed (tracked)
+
+`tools/godot/extension/src/rta_scene.cpp` (batches, fused pairs, depth first, weld table), `rta_drawer.{h,cpp}` (the
+second pass's state in `material_for`, `blend_of`, `mesh_for_flat`), `rta_variant.h` (V_FUSED, V_REPEAT2, V_SOLID,
+V_PREPASS), `tools/godot/project/shaders/gs_draw.gdshaderinc` (GS_FUSED, GS_SOLID, GS_PREPASS), `scene_view.gd` (look
+keys `batch`, `prepass`; upscale), `main.gd` (`display.upscale`), `tools/godot/lib/scene_export.cpp` (`RTA_TAP_DIGEST`),
+`tools/godot/recomp.patch` (the tap's thread), this file, `docs/PROGRESS.md`.
+
+### For the coordinator (tools/recomp)
+
+- Merge `tools/godot/recomp.patch` (render/scene_tap.cpp, scene_tap.h): the tap on a thread of its own, the second pass's
+  vertices taken from the first, writes in place. Same bytes out (above). `RTA_TAP_ASYNC=0` keeps the old way.
+
+### Still wrong / not done
+
+- fire1's crowd: 56 to 61 a second, not a steady 60 at the heaviest moment (the decoder's thread). The 120 in the boar
+  fight: 106 (the main thread and the decoder at 120 pictures).
+- With the Elden Ring creatures on, their figures differ from before in a few places (0.24 % of the pixels of a crowd
+  picture by more than 32; with the creatures off the level is the same): lava shows through translucent parts of the
+  goblins' figures in other places. The figures are drawn in the transparent pass by the place of their game draws; a
+  batch is drawn where the first of its chunks was, so chunks that came after a figure's place come before it now.
+  Not looked at side by side by eye beyond crops; which of the two is right was not settled.
+- The first second of the crowd (a teleport into it): stops of 0.2 s (and in one run three of 0.5 s: new materials and
+  Godot's pipelines for the new shader variants); the hub's arrival stop as in round 11.
+- Windows and Linux libraries not rebuilt (nothing new is required of them).
+
 ## ELEVENTH ROUND (2026-10-22, evening): 60 in the heavy fight, and more than 60 on a faster display
 
 Built into `local/godot-r13/` (`RTA_GODOT_OUT=local/godot-r13`; the snapshot of `tools/recomp` is round 10's, taken

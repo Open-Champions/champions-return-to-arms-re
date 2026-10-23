@@ -138,6 +138,10 @@ RID RtaDrawer::shader_for(uint32_t variant) {
     if (variant & V_CONTACT) code += "#define GS_CONTACT\n";
     if (variant & V_STORED) code += "#define GS_STORED_SPACE\n";
     if (variant & V_DECODE) code += "#define GS_DECODE\n";
+    if (variant & V_FUSED) code += "#define GS_FUSED\n";
+    if (variant & V_REPEAT2) code += "#define GS_REPEAT2\n";
+    if (variant & V_SOLID) code += "#define GS_SOLID\n";
+    if (variant & V_PREPASS) code += "#define GS_PREPASS\n";
     if (stored_colours) code += "#define GS_STORED_COLOURS\n";
     code += shader_code;
     Ref<Shader> shader;
@@ -147,21 +151,28 @@ RID RtaDrawer::shader_for(uint32_t variant) {
     return shader->get_rid();
 }
 
-RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inverted, RID texture, bool texture_flipped, uint32_t extra) {
-    // the blend: colour = (A - B) * C + D, as tools/recomp/render/backend_gl.cpp sets it up
-    float sc = 0, sk = 1, dc = 0, dk = 0, fix = 1.0f;
-    int blend_c = 2;
-    bool subtract = false;
-    if (d.blend) {
-        sc = (d.ba == 0 ? 1.0f : 0.0f) - (d.bb == 0 ? 1.0f : 0.0f); sk = d.bd == 0 ? 1.0f : 0.0f;
-        dc = (d.ba == 1 ? 1.0f : 0.0f) - (d.bb == 1 ? 1.0f : 0.0f); dk = d.bd == 1 ? 1.0f : 0.0f;
-        bool src_negative = sc < 0 && sk == 0, dst_negative = dc < 0 && dk == 0;
-        if (src_negative && dst_negative) { sc = 0; dc = 0; }
-        else if (src_negative) subtract = true;         // destination x df - source x sf: exact where df is 1
-        else if (dst_negative) approximated++;          // source x sf - destination x df: drawn as their sum
-        blend_c = d.bc;
-        fix = (float)d.fix / 128.0f;
-    }
+// the blend: colour = (A - B) * C + D, as tools/recomp/render/backend_gl.cpp sets it up; returns false where it is drawn as
+// an approximation (source x sf - destination x df: drawn as their sum)
+bool RtaDrawer::blend_of(const rtag_draw& d, float& sc, float& sk, float& dc, float& dk, float& fix, int& blend_c, bool& subtract) {
+    sc = 0; sk = 1; dc = 0; dk = 0; fix = 1.0f; blend_c = 2; subtract = false;
+    if (!d.blend) return true;
+    sc = (d.ba == 0 ? 1.0f : 0.0f) - (d.bb == 0 ? 1.0f : 0.0f); sk = d.bd == 0 ? 1.0f : 0.0f;
+    dc = (d.ba == 1 ? 1.0f : 0.0f) - (d.bb == 1 ? 1.0f : 0.0f); dk = d.bd == 1 ? 1.0f : 0.0f;
+    bool src_negative = sc < 0 && sk == 0, dst_negative = dc < 0 && dk == 0, exact = true;
+    if (src_negative && dst_negative) { sc = 0; dc = 0; }
+    else if (src_negative) subtract = true;         // destination x df - source x sf: exact where df is 1
+    else if (dst_negative) exact = false;
+    blend_c = d.bc;
+    fix = (float)d.fix / 128.0f;
+    return exact;
+}
+
+RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inverted, RID texture, bool texture_flipped, uint32_t extra,
+                            const rtag_draw* second, RID second_texture) {
+    float sc, sk, dc, dk, fix;
+    int blend_c;
+    bool subtract;
+    if (!blend_of(d, sc, sk, dc, dk, fix, blend_c, subtract)) approximated++;
     uint32_t variant = extra;
     // stored-space blending (submit): a draw of the 3-D world reads such a surface too (V_DECODE), it is never drawn so (V_STORED)
     variant |= (extra & V_WORLD) ? (draw_space & V_DECODE) : draw_space;
@@ -200,6 +211,33 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
         key.weave_half = d.weave_half > 0 && woven_textures.count(texture.get_id()) ? -1.0f : d.weave_half;
     }
     std::string bytes((const char*)&key, sizeof key);
+    // a fused pair (rta_scene.cpp, the level's batches): the first pass's state too, as the "2" parameters
+    struct Key2 {
+        int64_t texture; uint8_t textured, tfx, tcc, wrap_s, wrap_t, texa_mode, ta0, ta1, aem, blend_c;
+        float st_scale[2], tex_size[2], tex_offset[2], region[4], weave_half, blend[4], fix;
+    } key2;
+    float sc2 = 0, sk2 = 1, dc2 = 0, dk2 = 0, fix2 = 1;
+    int blend_c2 = 2;
+    if (second) {
+        bool subtract2;
+        blend_of(*second, sc2, sk2, dc2, dk2, fix2, blend_c2, subtract2);
+        memset(&key2, 0, sizeof key2);
+        const rtag_draw& e = *second;
+        key2.textured = second_texture.is_valid(); key2.texture = key2.textured ? second_texture.get_id() : 0;
+        key2.blend_c = (uint8_t)blend_c2; key2.blend[0] = sc2; key2.blend[1] = sk2; key2.blend[2] = dc2; key2.blend[3] = dk2; key2.fix = fix2;
+        if (key2.textured) {
+            key2.tfx = e.tfx; key2.tcc = e.tcc; key2.wrap_s = e.wrap_s; key2.wrap_t = e.wrap_t;
+            key2.texa_mode = e.tex_is_target ? e.texa_mode : 0; key2.ta0 = e.ta0; key2.ta1 = e.ta1; key2.aem = e.aem;
+            memcpy(key2.st_scale, e.st_scale, sizeof key2.st_scale); memcpy(key2.tex_size, e.tex_size, sizeof key2.tex_size);
+            memcpy(key2.tex_offset, e.tex_offset, sizeof key2.tex_offset); memcpy(key2.region, e.region, sizeof key2.region);
+            key2.weave_half = e.weave_half > 0 && woven_textures.count(second_texture.get_id()) ? -1.0f : e.weave_half;
+            if (e.wrap_s == RTAG_WRAP_REPEAT && e.wrap_t == RTAG_WRAP_REPEAT) variant |= V_REPEAT2;
+        }
+        variant |= V_FUSED;
+        key.variant = variant;
+        bytes.assign((const char*)&key, sizeof key);
+        bytes.append((const char*)&key2, sizeof key2);
+    }
     auto found = materials.find(bytes);
     if (found != materials.end()) { found->second.last_used = frames; return found->second.rid; }
 
@@ -232,6 +270,25 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
     s->material_set_param(material, "fix", fix);
     s->material_set_param(material, "mask_rgb", d.mask_rgb ? 1.0f : 0.0f);
     if (extra & V_WORLD) s->material_set_param(material, "depth_bias", d.depth_write ? 0.0f : world_bias);       // what lies on a surface is drawn on it
+    if (second) {
+        const rtag_draw& e = *second;
+        s->material_set_param(material, "textured2", key2.textured ? 1 : 0);
+        if (key2.textured) {
+            s->material_set_param(material, "tex2", second_texture);
+            s->material_set_param(material, "tfx2", (int)e.tfx);
+            s->material_set_param(material, "tcc2", e.tcc ? 1 : 0);
+            s->material_set_param(material, "st_scale2", Vector2(e.st_scale[0], e.st_scale[1]));
+            s->material_set_param(material, "tex_size2", Vector2(e.tex_size[0], e.tex_size[1]));
+            s->material_set_param(material, "tex_offset2", Vector2(e.tex_offset[0], e.tex_offset[1]));
+            s->material_set_param(material, "wrap_mode2", Vector2i(e.wrap_s, e.wrap_t));
+            s->material_set_param(material, "region2", Quaternion(e.region[0], e.region[1], e.region[2], e.region[3]));
+            s->material_set_param(material, "weave_half2", key2.weave_half);
+            s->material_set_param(material, "texa2", Quaternion(e.tex_is_target ? (float)e.texa_mode : 0.0f, (float)e.ta0, (float)e.ta1, e.aem ? 1.0f : 0.0f));
+        }
+        s->material_set_param(material, "blend2", Quaternion(sc2, sk2, dc2, dk2));
+        s->material_set_param(material, "blend_c2", blend_c2);
+        s->material_set_param(material, "fix2", fix2);
+    }
     materials[bytes] = {material, frames};
     materials_made++;
     return material;
@@ -240,13 +297,34 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
 // ---- meshes and instances -------------------------------------------------------------------
 
 RID RtaDrawer::mesh_for(Pass& pass) {
+    if (pass.shapes.size() < pass.meshes.size()) pass.shapes.resize(pass.meshes.size(), 0);
     if (pass.used < pass.meshes.size()) {
         rs()->mesh_clear(pass.meshes[pass.used]);
+        pass.shapes[pass.used] = 0;
         return pass.meshes[pass.used];
     }
     RID mesh = rs()->mesh_create();
     pass.meshes.push_back(mesh);
+    pass.shapes.push_back(0);
     meshes_made++;
+    return mesh;
+}
+
+// The pool's mesh at pass.used holding this draw's vertices: written again in place when it has the same number of them
+// and the same kind of primitive as the draw it held last (a surface made anew makes Godot's buffers and pipelines anew)
+RID RtaDrawer::mesh_for_flat(Pass& pass, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count) {
+    const uint64_t shape = ((uint64_t)count << 8) | (uint64_t)primitive | 0x80;
+    if (pass.shapes.size() < pass.meshes.size()) pass.shapes.resize(pass.meshes.size(), 0);
+    if (pass.used < pass.meshes.size() && pass.shapes[pass.used] == shape) {
+        RID mesh = pass.meshes[pass.used];
+        rs()->mesh_surface_update_vertex_region(mesh, 0, 0, positions);
+        rs()->mesh_surface_update_attribute_region(mesh, 0, 0, attributes);
+        flat_reused++;
+        return mesh;
+    }
+    RID mesh = mesh_for(pass);
+    add_surface_bytes(mesh, primitive, positions, attributes, count);
+    pass.shapes[pass.used] = shape;
     return mesh;
 }
 
@@ -334,8 +412,7 @@ void RtaDrawer::add_draw(Pass& pass, const rtag_frame& frame, const rtag_draw& d
     bool twice = d.ztst == 1 && d.depth_write && inverted_depth_ok;     // "always, and write": where the default test passes, and where it fails
     if (twice) depth_always_writes++;
     for (int n = 0; n < (twice ? 2 : 1); n++) {
-        RID mesh = mesh_for(pass);
-        add_surface_bytes(mesh, primitive, positions, attributes, (int)d.count);
+        mesh_for_flat(pass, primitive, positions, attributes, (int)d.count);
         place(pass, material_for(d, target, n == 1, texture, texture_flipped), order + 0.25f * n);
     }
     draws_submitted++;
@@ -584,6 +661,7 @@ void RtaDrawer::submit() {
     // ---- the draws ----
     for (Pass* pass : all_passes) pass->used = 0;
     Target* world = scene_mode ? world_target() : nullptr;
+    frame_texture_of = &texture_of;
     if (scene_mode) scene_begin(f);
     for (uint32_t i = 0; i < f.draw_count; i++) {
         if (node_of[i] < 0 || skip[node_of[i]]) continue;
@@ -608,6 +686,7 @@ void RtaDrawer::submit() {
     }
     draw_space = 0;
     if (scene_mode) scene_end(f);
+    frame_texture_of = nullptr;
 
     // instances left over from a frame with more draws show nothing
     for (Pass* pass : all_passes)

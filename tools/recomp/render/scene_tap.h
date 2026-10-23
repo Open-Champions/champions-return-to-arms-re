@@ -41,8 +41,13 @@
 //   Vif1, NOP notes      NUM 0xA8 / 0xA9: words from the game side (the camera block)
 //   Vu1::kick            wrapped by install(): no change to the sources
 #pragma once
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <memory>
+#include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -130,6 +135,13 @@ struct TapStats {
 
 class SceneTap {
   public:
+    ~SceneTap();
+    // The tap's work on a thread of its own (default; RTA_TAP_ASYNC=0: on the decoder's thread, as before).  At each
+    // kick the decoder copies what the tap reads of VU1 memory - the packet, its strip, the joint matrices of a model -
+    // with the set-up's state, and goes on; one worker takes the kicks in their order, with the same code, so what it
+    // makes is the same bytes.  take() and camera() wait until it has caught up.
+    bool async = true;
+    void drain();
     // Attach to a renderer (before anything is fed).  The renderer's kick goes through the tap from here on.
     void install(Renderer& renderer);
     // The game's camera, as the game holds it when the packets that follow were made: the 62 words at
@@ -167,7 +179,32 @@ class SceneTap {
     uint32_t note_expect = 0, note_half = 0, note_low = 0;
     std::unordered_map<uint64_t, uint32_t> seen;    // identities of this frame, for the occurrence count
     static void kick(void* user, uint32_t qword);
-    void kicked(uint32_t qword, size_t before, size_t after);
+    struct Job {                            // one kick, and the state it is read with
+        const uint8_t* vu;                  // VU1 memory (16 KB; a copy of what the tap reads, when async)
+        uint8_t* own;                       // the copy's buffer (async), returned to `spare` once done
+        uint32_t qword, entry, itop, top;
+        size_t before, after;
+        float rows[16];
+        bool have_rows, mirrored, clip_flag;
+        uint8_t rows_kind;
+        uint32_t object, joint_epoch;
+    };
+    void kicked(const Job& job);
+    // set-ups that make the joint matrices again (program()), and the last one the kicks have seen (kicked())
+    uint32_t joint_epoch = 0, joints_epoch_seen = 0;
+    // the worker
+    std::mutex lock;
+    std::condition_variable wake, done;
+    std::deque<Job> queue;
+    std::vector<uint8_t*> spare;            // the worker's done buffers
+    std::vector<uint8_t*> mine;             // the decoder's, taken from `spare` some at a time
+    std::vector<Job> pending;               // kicks not handed over yet (hand_over: 32 at a time, and at drain())
+    uint32_t kick_count = 0;
+    void hand_over();
+    size_t buffers = 0;
+    bool stop = false, busy = false;
+    std::thread worker;
+    void work();
 };
 
 }  // namespace render

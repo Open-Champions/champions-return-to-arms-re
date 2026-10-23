@@ -36,6 +36,7 @@
 #include <godot_cpp/variant/packed_byte_array.hpp>
 
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <unordered_map>
 #include <unordered_set>
@@ -57,6 +58,37 @@ using namespace rta_variant;
 // the dome's draws are not hazed.
 struct SkyTexture { int w = 0, h = 0; std::vector<uint8_t> rgba; };
 enum { RING = 256 };
+
+// quantised position -> sum of normals: open addressing (a node-based map's allocations were most of scene_begin's time)
+struct WeldMap {
+    std::vector<uint64_t> keys;         // 0: empty
+    std::vector<Vector3> sums;
+    size_t used = 0, mask = 0;
+    void clear() { if (used) { std::fill(keys.begin(), keys.end(), 0); used = 0; } }
+    bool empty() const { return used == 0; }
+    void add(uint64_t key, const Vector3& n) {
+        key |= 1;
+        if ((used + 1) * 2 > keys.size()) grow();
+        size_t at = key & mask;
+        while (keys[at] && keys[at] != key) at = (at + 1) & mask;
+        if (!keys[at]) { keys[at] = key; sums[at] = n; used++; }
+        else sums[at] += n;
+    }
+    const Vector3* find(uint64_t key) const {
+        if (!used) return nullptr;
+        key |= 1;
+        size_t at = key & mask;
+        while (keys[at]) { if (keys[at] == key) return &sums[at]; at = (at + 1) & mask; }
+        return nullptr;
+    }
+    void grow() {
+        std::vector<uint64_t> k0; std::vector<Vector3> s0;
+        k0.swap(keys); s0.swap(sums);
+        const size_t size = std::max<size_t>(1 << 14, k0.size() * 2);
+        keys.assign(size, 0); sums.assign(size, Vector3()); mask = size - 1; used = 0;
+        for (size_t i = 0; i < k0.size(); i++) if (k0[i]) add(k0[i], s0[i]);
+    }
+};
 
 struct RtaDrawer::Scene {
     bool lit = false, shadows = false;
@@ -124,7 +156,7 @@ struct RtaDrawer::Scene {
     double model_crease = 0.35;
     double model_near = 520.0;          // curved only within this distance of the eye (units; a character is about 65 high)
     bool contacts_on = true;
-    std::unordered_map<uint64_t, Vector3> weld;     // this frame: quantised position -> sum of the skinned packets' normals there
+    WeldMap weld;                                   // this frame: quantised position -> sum of the skinned packets' normals there
     std::vector<float> contacts;                    // this frame: x, y, z (feet), radius per standing figure
     uint64_t smoothed_draws = 0, smoothed_corners = 0, model_draws = 0;
     int level_draws = 0, level_draws_last = 0;      // this frame / the last whole frame: draws of the level's own chunks
@@ -149,6 +181,33 @@ struct RtaDrawer::Scene {
     std::vector<RID> casters;           // shadow-only instances, in the world's scenario
     size_t casters_used = 0;
     RID caster_scenario;
+    // The level's batches.  The game draws its level chunk by chunk, each with its texture: 1,700 draws a list in fire1's
+    // wide halls (a chunk in two passes: a first that covers, a second blended over it), and Godot's cost - ours in
+    // submit(), and its own in drawing the frame - goes with the number of draws, not of triangles.  A level draw whose
+    // result does not depend on what is already in the picture and that tests and writes depth (it "commutes": any order
+    // of such draws gives the same picture, but for exact ties of depth) goes into the batch of its state - one mesh,
+    // written again each list from the chunks of that list, drawn where the first of them was in the list's order.  A
+    // draw that does not commute (a blend over the level, a draw without depth) ends the stretch of the list in which
+    // batches gather: what comes after it goes into new ones.  A two-pass chunk is one draw of both passes (GS_FUSED).
+    bool batch_on = true;
+    bool prepass = true;                // the solid batches' depth first (GS_PREPASS): each pixel of them shaded once
+    RID prepass_material;
+    struct BatchBuild {
+        uint64_t key = 0; RID material, caster_material; float order = 0; bool fused = false, solid = false; uint32_t segment = 0;
+        std::vector<uint8_t> pos, attr; float lo[3], hi[3]; int corners = 0, members = 0;
+    };
+    std::vector<BatchBuild> builds;     // this frame's (kept for their buffers)
+    size_t builds_used = 0;
+    std::unordered_map<uint64_t, size_t> build_of;
+    struct Batch {
+        RID mesh; int capacity = 0, stride = 0, corners = 0; uint64_t used = 0; AABB box;
+        std::vector<uint8_t> pos, attr;  // what the mesh holds now
+    };
+    std::unordered_map<uint64_t, Batch> batches;
+    uint32_t segment = 0;               // this frame: stretches of the list in which batches gather
+    int64_t fused_skip = -1;            // this frame: the second pass taken with the first
+    uint64_t batch_prepass = 0;
+    uint64_t batch_members = 0, batch_fused = 0, batch_draws = 0, batch_made = 0, batch_bytes = 0, batch_frames = 0;
     // figures
     uint64_t packet_draws = 0;
     int64_t packet_extra = 0;           // corners drawn beyond the list's (the triangles the programs had dropped)
@@ -186,6 +245,8 @@ void RtaDrawer::set_scene_option(const String& name, double value) {
     else if (name == "model_near") scene->model_near = value;
     else if (name == "contacts") scene->contacts_on = value != 0;
     else if (name == "tween") scene->tween_on = value != 0;
+    else if (name == "batch") scene->batch_on = value != 0;
+    else if (name == "prepass") scene->prepass = value != 0;
     else if (name == "tween_jump") scene->tween_jump = value;
     else if (name == "feet_x") scene->feet.x = (real_t)value;
     else if (name == "feet_y") scene->feet.y = (real_t)value;
@@ -201,11 +262,13 @@ static inline uint64_t weld_key(float x, float y, float z) {
     return h ^ (h >> 32);
 }
 
-// The welded normals and the standing figures of this frame: one pass over the skinned packets of the tap.
-static void scene_models_scan(const rtag_scene* tap, std::unordered_map<uint64_t, Vector3>& weld, std::vector<float>& contacts, bool want_weld) {
+// The welded normals and the standing figures of this frame: one pass over the skinned packets of the tap.  Welded are
+// only the packets that may be curved (near the eye: within `near` of it, the first corner of the packet; not left out)
+static void scene_models_scan(const rtag_scene* tap, WeldMap& weld, std::vector<float>& contacts, bool want_weld, const Vector3& eye, double near,
+                              const std::unordered_set<uint32_t>& hidden) {
     weld.clear();
-    if (want_weld) weld.reserve(1 << 15);
     contacts.clear();
+    const float near2 = (float)(near * near);
     struct Box { float lo[3], hi[3]; uint32_t object; };
     std::vector<Box> boxes;
     for (uint32_t k = 0; k < tap->piece_count; k++) {
@@ -213,8 +276,9 @@ static void scene_models_scan(const rtag_scene* tap, std::unordered_map<uint64_t
         if (piece.kind != 2 || !(piece.flags & 4) || !piece.full_count || piece.full_first + piece.full_count > tap->full_count) continue;
         const rtag_scene_full* v = tap->full + piece.full_first;
         Box b = {{v->x, v->y, v->z}, {v->x, v->y, v->z}, piece.object};
+        const bool welded = want_weld && Vector3(v->x, v->y, v->z).distance_squared_to(eye) < near2 && !hidden.count(piece.object);
         for (uint32_t n = 0; n < piece.full_count; n++, v++) {
-            if (want_weld) weld[weld_key(v->x, v->y, v->z)] += Vector3(v->nx, v->ny, v->nz);
+            if (welded) weld.add(weld_key(v->x, v->y, v->z), Vector3(v->nx, v->ny, v->nz));
             b.lo[0] = std::min(b.lo[0], v->x); b.lo[1] = std::min(b.lo[1], v->y); b.lo[2] = std::min(b.lo[2], v->z);
             b.hi[0] = std::max(b.hi[0], v->x); b.hi[1] = std::max(b.hi[1], v->y); b.hi[2] = std::max(b.hi[2], v->z);
         }
@@ -629,6 +693,8 @@ Dictionary RtaDrawer::get_scene_info() const {
     if (scene->tween_on)
         info["figures"] = String(info["figures"]) + vformat("; between game frames: %.1f kept draws a list carried on (moving), %.2f not (jumped), %.2f stopped",
                                   scene->tween_moving / n, scene->tween_jumped / n, scene->tween_stopped / n);
+    info["figures"] = String(info["figures"]) + vformat("; level batches: %.1f draws a list in %.1f batches (%.1f two-pass chunks drawn as one, %.1f with their depth first), %.2f meshes made, %.0f kB written a list",
+                              scene->batch_members / n, scene->batch_draws / n, scene->batch_fused / n, scene->batch_prepass / n, scene->batch_made / n, scene->batch_bytes / n / 1024.0);
     info["figures"] = String(info["figures"]) + vformat("; models: %.1f solid model draws a list in the cleaner look, %.1f of them curved (%d x %d), %.0f curved corners a list",
                               scene->model_draws / n, scene->smoothed_draws / n, (int64_t)scene->model_smooth, (int64_t)scene->model_smooth, scene->smoothed_corners / n);
     return info;
@@ -652,11 +718,17 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
     sc.ground_near = 0;
     sc.hidden_order = -1;
     sc.hidden_orders.clear();
+    sc.builds_used = 0;
+    sc.build_of.clear();
+    sc.segment = 0;
+    sc.fused_skip = -1;
     Target* world = world_target();
     if (!sc.valid || !world) { if (!sc.valid) sc.frames_without_camera++; return; }
     scene_scan_sky(f, *world);
     sc.sky_active = sc.sky && sc.fill_draw >= 0;
-    if (sc.packets && f.scene->full && (sc.model_smooth > 1 || sc.contacts_on)) scene_models_scan(f.scene, sc.weld, sc.contacts, sc.model_look && sc.model_smooth > 1);
+    if (sc.packets && f.scene->full && (sc.model_smooth > 1 || sc.contacts_on)) scene_models_scan(f.scene, sc.weld, sc.contacts, sc.model_look && sc.model_smooth > 1,
+                                                                                                   Vector3(f.scene->camera_position[0], f.scene->camera_position[1], f.scene->camera_position[2]),
+                                                                                                   sc.model_near + 300.0, sc.hidden);
     else { sc.weld.clear(); sc.contacts.clear(); }
     Pass* pass = world->passes[0];
     // The game's camera space is x right, y down, z forward; Godot's is x right, y up, z back.  world_to_view's
@@ -702,9 +774,11 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
 bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, const Target& target, RID texture, float order) {
     Scene& sc = *scene;
     const size_t index = (size_t)(&d - f.draws);
+    if ((int64_t)index == sc.fused_skip) return true;      // the second pass of a two-pass chunk: drawn with its first (batches)
     if (sc.sky_active && (int)index == sc.fill_draw) { sc.fills_dropped++; return true; }     // the sky is behind everything instead
     if (!sc.valid || d.scene_first < 0 || !d.count || (uint32_t)d.scene_first + d.count > sc.tap->vertex_count || d.first + d.count > f.vertex_count) {
         sc.flat_draws++;
+        sc.segment++;
         return false;
     }
     RenderingServer* s = RenderingServer::get_singleton();
@@ -715,6 +789,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         for (uint32_t k = 0; k < d.scene_piece_count; k++) hidden += sc.hidden.count(sc.tap->pieces[d.scene_piece_first + k].object) ? 1 : 0;
         if (hidden == d.scene_piece_count) {
             sc.hidden_draws++;
+            sc.segment++;
             if (sc.hidden_order < 0 || order < sc.hidden_order) sc.hidden_order = order;
             for (uint32_t k = 0; k < d.scene_piece_count; k++) {
                 auto it = sc.hidden_orders.find(sc.tap->pieces[d.scene_piece_first + k].object);
@@ -728,6 +803,8 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     // quad the CPU projects) go when Godot throws real ones
     if (sc.shadows && d.tex_is_target && d.scene_kind == RTAG_SCENE_DEPTH && d.blend) { sc.blob_shadows_dropped++; return true; }
     const bool normals = d.scene_kind == RTAG_SCENE_EXACT && sc.tap->normals != nullptr;
+    if (sc.batch_on && normals && sc.packets && batch_take(pass, f, d, target, texture, order)) return true;
+    if (!draw_commutes(d)) sc.segment++;
     // kept meshes are made only of whole packets with normals: with tween on they carry 16 bytes more a corner (CUSTOM2)
     const bool carry = sc.tween_on && sc.keep && normals && sc.packets && d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count;
     const int stride = (normals ? 32 : 20) + (carry ? 16 : 0);
@@ -804,8 +881,8 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
                     const rtag_scene_full* c[3] = {v + n, v + n + 1, v + n + 2};
                     Vector3 wn[3];
                     for (int i = 0; i < 3; i++) {
-                        auto w = sc.weld.find(weld_key(c[i]->x, c[i]->y, c[i]->z));
-                        wn[i] = w != sc.weld.end() && w->second.length_squared() > 1e-8f ? w->second.normalized() : Vector3(c[i]->nx, c[i]->ny, c[i]->nz);
+                        const Vector3* w = sc.weld.find(weld_key(c[i]->x, c[i]->y, c[i]->z));
+                        wn[i] = w && w->length_squared() > 1e-8f ? w->normalized() : Vector3(c[i]->nx, c[i]->ny, c[i]->nz);
                     }
                     pn_triangle(c, wn, smooth, sc.model_crease, p, a, stride);
                 }
@@ -824,34 +901,8 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         if (smooth > 1) sc.smoothed_draws++;
         sc.packet_draws++;
         sc.packet_extra += corners - (int)d.count;
-        if (pieces[0].kind == 1) sc.level_draws++;
-        if (pieces[0].kind == 1) fill_learn(sc.tap, d, pieces, d.scene_piece_count, sc.camera.origin);
+        if (pieces[0].kind == 1) { sc.level_draws++; scene_learn_level(d, pieces); }
         else card_take(sc.tap, d, pieces, d.scene_piece_count);   // the character card (rta_card.cpp)
-        // the painted light (see Scene::sun_sum): level chunks with a texture whose brightness is known
-        if (pieces[0].kind == 1 && d.texture && d.depth_write && sc.sun_samples < 400000) {
-            auto thumb = thumbs.find(d.texture);
-            if (thumb != thumbs.end() && d.tex_size[0] > 0 && d.tex_size[1] > 0) {
-                double sn[3] = {0, 0, 0}, sl = 0, sln[3] = {0, 0, 0};
-                int count = 0;
-                for (uint32_t k = 0; k < d.scene_piece_count; k++) {
-                    const rtag_scene_full* v = sc.tap->full + pieces[k].full_first;
-                    for (uint32_t n = 0; n < pieces[k].full_count; n += 5) {
-                        const rtag_scene_full& q = v[n];
-                        float tx = (q.u * d.st_scale[0] + d.tex_offset[0]) / d.tex_size[0], ty = (q.v * d.st_scale[1] + d.tex_offset[1]) / d.tex_size[1];
-                        tx -= std::floor(tx); ty -= std::floor(ty);
-                        float l = thumb->second.lum[std::min((int)(ty * THUMB), THUMB - 1) * THUMB + std::min((int)(tx * THUMB), THUMB - 1)] / 255.0f;
-                        sn[0] += q.nx; sn[1] += q.ny; sn[2] += q.nz; sl += l;
-                        sln[0] += l * q.nx; sln[1] += l * q.ny; sln[2] += l * q.nz;
-                        count++;
-                    }
-                }
-                if (count >= 24) {
-                    for (int a = 0; a < 3; a++) sc.sun_sum[a] += sln[a] - sl * sn[a] / count;
-                    sc.sun_weight += count;
-                    sc.sun_samples += count;
-                }
-            }
-        }
     } else {
         corners = (int)d.count;
         positions.resize((int64_t)d.count * 12);
@@ -970,24 +1021,8 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     if (sc.kept_key) place_mesh(pass, mesh, material_for(d, target, false, texture, false, extra), order);
     else place(pass, material_for(d, target, false, texture, false, extra), order);
     // what is opaque also throws a shadow: a twin of the same mesh that Godot only draws into its shadow maps
-    if (sc.shadows && d.depth_write && (!d.blend || d.alpha_test)) {
-        RID caster;
-        if (sc.caster_scenario != pass.scenario) {          // the surface was made again: instances of the old scenario are gone with it
-            for (RID old : sc.casters) s->free_rid(old);
-            sc.casters.clear();
-            sc.caster_scenario = pass.scenario;
-        }
-        if (sc.casters_used < sc.casters.size()) caster = sc.casters[sc.casters_used];
-        else {
-            caster = s->instance_create();
-            s->instance_set_scenario(caster, pass.scenario);
-            s->instance_geometry_set_cast_shadows_setting(caster, RenderingServer::SHADOW_CASTING_SETTING_SHADOWS_ONLY);
-            sc.casters.push_back(caster);
-        }
-        sc.casters_used++;
-        s->instance_set_base(caster, mesh);
-        s->instance_geometry_set_material_override(caster, material_for(d, target, false, texture, false, V_WORLD | V_CASTER | (normals ? V_NORMALS : 0)));
-    }
+    if (sc.shadows && d.depth_write && (!d.blend || d.alpha_test))
+        scene_caster(pass, mesh, material_for(d, target, false, texture, false, V_WORLD | V_CASTER | (normals ? V_NORMALS : 0)));
     sc.world_draws++;
     sc.world_vertices += d.count;
     draws_submitted++;
@@ -995,9 +1030,277 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     return true;
 }
 
+// What the level's chunks teach, whether they are drawn by themselves or in a batch: the fill's swatches (rta_fill.cpp)
+// and the painted light (see Scene::sun_sum)
+void RtaDrawer::scene_learn_level(const rtag_draw& d, const rtag_scene_piece* pieces) {
+    Scene& sc = *scene;
+    fill_learn(sc.tap, d, pieces, d.scene_piece_count, sc.camera.origin);
+    // the painted light (see Scene::sun_sum): level chunks with a texture whose brightness is known
+    if (pieces[0].kind == 1 && d.texture && d.depth_write && sc.sun_samples < 400000) {
+        auto thumb = thumbs.find(d.texture);
+        if (thumb != thumbs.end() && d.tex_size[0] > 0 && d.tex_size[1] > 0) {
+            double sn[3] = {0, 0, 0}, sl = 0, sln[3] = {0, 0, 0};
+            int count = 0;
+            for (uint32_t k = 0; k < d.scene_piece_count; k++) {
+                const rtag_scene_full* v = sc.tap->full + pieces[k].full_first;
+                for (uint32_t n = 0; n < pieces[k].full_count; n += 5) {
+                    const rtag_scene_full& q = v[n];
+                    float tx = (q.u * d.st_scale[0] + d.tex_offset[0]) / d.tex_size[0], ty = (q.v * d.st_scale[1] + d.tex_offset[1]) / d.tex_size[1];
+                    tx -= std::floor(tx); ty -= std::floor(ty);
+                    float l = thumb->second.lum[std::min((int)(ty * THUMB), THUMB - 1) * THUMB + std::min((int)(tx * THUMB), THUMB - 1)] / 255.0f;
+                    sn[0] += q.nx; sn[1] += q.ny; sn[2] += q.nz; sl += l;
+                    sln[0] += l * q.nx; sln[1] += l * q.ny; sln[2] += l * q.nz;
+                    count++;
+                }
+            }
+            if (count >= 24) {
+                for (int a = 0; a < 3; a++) sc.sun_sum[a] += sln[a] - sl * sn[a] / count;
+                sc.sun_weight += count;
+                sc.sun_samples += count;
+            }
+        }
+    }
+}
+
+// A draw whose result does not depend on what is in the picture already, and that tests and writes depth: any order of
+// such draws gives the same picture (but for exact ties of depth)
+bool RtaDrawer::draw_commutes(const rtag_draw& d) {
+    if (!d.depth_write || (d.ztst != 2 && d.ztst != 3) || d.mask_rgb) return false;
+    float sc, sk, dc, dk, fix;
+    int blend_c;
+    bool subtract;
+    if (!blend_of(d, sc, sk, dc, dk, fix, blend_c, subtract) || subtract) return false;
+    return dc == 0 && dk == 0;
+}
+
+// a twin of the mesh that only throws a shadow (see scene_take)
+void RtaDrawer::scene_caster(Pass& pass, RID mesh, RID material) {
+    Scene& sc = *scene;
+    RenderingServer* s = RenderingServer::get_singleton();
+    RID caster;
+    if (sc.caster_scenario != pass.scenario) {          // the surface was made again: instances of the old scenario are gone with it
+        for (RID old : sc.casters) s->free_rid(old);
+        sc.casters.clear();
+        sc.caster_scenario = pass.scenario;
+    }
+    if (sc.casters_used < sc.casters.size()) caster = sc.casters[sc.casters_used];
+    else {
+        caster = s->instance_create();
+        s->instance_set_scenario(caster, pass.scenario);
+        s->instance_geometry_set_cast_shadows_setting(caster, RenderingServer::SHADOW_CASTING_SETTING_SHADOWS_ONLY);
+        sc.casters.push_back(caster);
+    }
+    sc.casters_used++;
+    s->instance_set_base(caster, mesh);
+    s->instance_geometry_set_material_override(caster, material);
+}
+
+// The level's batches (see Scene::batch_on): a level chunk drawn whole from its packets that commutes - or the first pass
+// of a two-pass chunk, taken with its second - goes into the batch of its state.  Returns whether it was taken.
+bool RtaDrawer::batch_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, const Target& target, RID texture, float order) {
+    Scene& sc = *scene;
+    const rtag_scene* tap = sc.tap;
+    const size_t index = (size_t)(&d - f.draws);
+    if (!d.scene_piece_count || d.scene_piece_first + d.scene_piece_count > tap->piece_count) return false;
+    if (index < sc.is_dome.size() && sc.is_dome[index]) return false;
+    const rtag_scene_piece* pieces = tap->pieces + d.scene_piece_first;
+    for (uint32_t k = 0; k < d.scene_piece_count; k++)
+        if (pieces[k].kind != 1 || pieces[k].full_first + pieces[k].full_count > tap->full_count) return false;
+    if (!draw_commutes(d)) return false;
+    // a two-pass chunk: this is its first pass (it covers: commutes), the next draw its second over the same packets
+    const rtag_draw* second = nullptr;
+    RID second_texture;
+    static const bool fuse = !getenv("RTA_FUSE") || atoi(getenv("RTA_FUSE")) != 0;     // (a test aid: two-pass chunks as two draws)
+    if (fuse && (pieces[0].flags & 3) == 3 && index + 1 < f.draw_count && frame_texture_of) {
+        const rtag_draw& e = f.draws[index + 1];
+        bool ok = e.target == d.target && e.kind == d.kind && e.prim == d.prim && e.scene_kind == RTAG_SCENE_EXACT && e.scene_piece_count == d.scene_piece_count &&
+                  e.scene_piece_first + e.scene_piece_count <= tap->piece_count && !(e.alpha_test && e.atst != 1) && !e.fog && !d.fog &&
+                  !(d.alpha_test && d.atst != 1) && (e.ztst == 1 || e.ztst == 2) && !e.mask_rgb && !e.tex_is_target && !d.tex_is_target;
+        float esc, esk, edc, edk, efix;
+        int ebc;
+        bool esub = false;
+        if (ok) ok = blend_of(e, esc, esk, edc, edk, efix, ebc, esub) && !esub && ebc != 1;
+        const rtag_scene_piece* q = tap->pieces + e.scene_piece_first;
+        for (uint32_t k = 0; ok && k < d.scene_piece_count; k++)
+            ok = q[k].kind == 1 && (q[k].flags & 3) == 1 && q[k].mesh == pieces[k].mesh && q[k].full_count == pieces[k].full_count &&
+                 q[k].full_first + q[k].full_count <= tap->full_count;
+        if (ok && !sc.hidden.empty())
+            for (uint32_t k = 0; ok && k < d.scene_piece_count; k++) ok = !sc.hidden.count(q[k].object);
+        if (ok) { second = &e; second_texture = (*frame_texture_of)[index + 1]; }
+    }
+    const bool ground = sc.contacts_on && d.depth_write && !(index < sc.is_dome.size() && sc.is_dome[index]);
+    const bool cut_out = sc.near_fade && d.alpha_test && d.depth_write;
+    RID material, caster_material;
+    const bool solid = second || (!(d.alpha_test && d.atst != 1) && !cut_out);
+    if (second) {
+        // the material is the second pass's (blended over the first: GS_FUSED does the blend), with the first's depth test
+        rtag_draw top = *second;
+        top.ztst = d.ztst; top.depth_write = d.depth_write; top.depth_test = d.depth_test;
+        const bool lit = sc.lit;
+        material = material_for(top, target, false, second_texture, false, V_WORLD | V_SOLID | (lit ? V_LIT : 0) | V_NORMALS | (ground ? V_CONTACT : 0), &d, texture);
+    } else {
+        material = material_for(d, target, false, texture, false, V_WORLD | (solid ? V_SOLID : 0) | (sc.lit ? V_LIT : 0) | V_NORMALS | (cut_out ? V_NEARFADE : 0) | (ground ? V_CONTACT : 0));
+    }
+    if (sc.shadows && (!d.blend || d.alpha_test)) caster_material = material_for(d, target, false, texture, false, V_WORLD | V_CASTER | V_NORMALS);
+    if (cut_out) sc.near_faded++;
+    // the batch: by its state, and the stretch of the list
+    uint64_t key = ((uint64_t)material.get_id() * 0x9E3779B97F4A7C15ull) ^ ((uint64_t)caster_material.get_id() * 0xC2B2AE3D27D4EB4Full) ^ ((uint64_t)sc.segment << 48) ^ (second ? 0x5555 : 0);
+    auto at = sc.build_of.find(key);
+    Scene::BatchBuild* b;
+    if (at == sc.build_of.end()) {
+        if (sc.builds_used == sc.builds.size()) sc.builds.emplace_back();
+        b = &sc.builds[sc.builds_used];
+        sc.build_of[key] = sc.builds_used++;
+        b->key = key; b->material = material; b->caster_material = caster_material; b->order = order; b->fused = second != nullptr;
+        b->solid = solid; b->segment = sc.segment;
+        b->pos.clear(); b->attr.clear(); b->corners = 0; b->members = 0;
+        for (int a = 0; a < 3; a++) { b->lo[a] = 1e30f; b->hi[a] = -1e30f; }
+    } else b = &sc.builds[at->second];
+    const int stride = b->fused ? 48 : 32;
+    int corners = 0;
+    for (uint32_t k = 0; k < d.scene_piece_count; k++) corners += (int)pieces[k].full_count;
+    if (!corners) { if (second) sc.fused_skip = (int64_t)index + 1; return true; }
+    size_t p0 = b->pos.size(), a0 = b->attr.size();
+    b->pos.resize(p0 + (size_t)corners * 12);
+    b->attr.resize(a0 + (size_t)corners * stride);
+    uint8_t* p = b->pos.data() + p0;
+    uint8_t* a = b->attr.data() + a0;
+    float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+    const rtag_scene_piece* q = second ? tap->pieces + second->scene_piece_first : nullptr;
+    for (uint32_t k = 0; k < d.scene_piece_count; k++) {
+        // the second pass's corners carry the colour and coordinates drawn on top; the first's go along (CUSTOM2)
+        const rtag_scene_full* v = tap->full + (second ? q[k].full_first : pieces[k].full_first);
+        const rtag_scene_full* w = tap->full + pieces[k].full_first;
+        for (uint32_t n = 0; n < pieces[k].full_count; n++, v++, w++, p += 12, a += stride) {
+            memcpy(p, &v->x, 12);
+            for (int c = 0; c < 3; c++) { float x = (&v->x)[c]; lo[c] = std::min(lo[c], x); hi[c] = std::max(hi[c], x); }
+            memcpy(a, &v->r, 4);
+            float st[4] = {v->u, v->v, 1.0f, 1.0f};
+            memcpy(a + 4, st, 16);
+            memcpy(a + 20, &v->nx, 12);
+            if (second) {
+                float first[4] = {w->u, w->v, (float)w->r + 256.0f * (float)w->g + 65536.0f * (float)w->b, (float)w->a};
+                memcpy(a + 32, first, 16);
+            }
+        }
+    }
+    for (int c = 0; c < 3; c++) { b->lo[c] = std::min(b->lo[c], lo[c]); b->hi[c] = std::max(b->hi[c], hi[c]); }
+    b->corners += corners;
+    b->members++;
+    // what scene_take does for every draw of the level
+    sc.packet_draws++;
+    sc.packet_extra += corners - (int)d.count;
+    sc.level_draws++;
+    scene_learn_level(d, pieces);
+    if (d.depth_write) fill_note_level(order);
+    if (sc.feet.x > lo[0] - 60 && sc.feet.x < hi[0] + 60 && sc.feet.y > lo[1] - 60 && sc.feet.y < hi[1] + 60 && sc.feet.z > lo[2] - 80 && sc.feet.z < hi[2] + 400)
+        sc.ground_near++;
+    const int draws = second ? 2 : 1;
+    sc.exact_draws += draws;
+    sc.world_draws += draws;
+    sc.world_vertices += d.count + (second ? second->count : 0);
+    draws_submitted += draws;
+    vertices_submitted += d.count + (second ? second->count : 0);
+    sc.batch_members += draws;
+    if (second) { sc.batch_fused++; sc.fused_skip = (int64_t)index + 1; }
+    return true;
+}
+
+// The batches gathered in this list into their meshes, and placed: a batch's mesh is written again where it changed
+// (positions that moved less than a hundredth of a unit are left as they were: the tap's positions come back through the
+// camera of each frame and differ in their last bits)
+void RtaDrawer::batch_flush(Pass& pass) {
+    Scene& sc = *scene;
+    RenderingServer* s = RenderingServer::get_singleton();
+    // the depth of a stretch's solid batches goes first, before the first of them (GS_PREPASS)
+    std::unordered_map<uint32_t, float> first_of;
+    if (sc.prepass) {
+        if (!sc.prepass_material.is_valid()) {
+            sc.prepass_material = s->material_create();
+            s->material_set_shader(sc.prepass_material, shader_for(V_WORLD | V_PREPASS | V_DEPTH_WRITE));
+            s->material_set_param(sc.prepass_material, "depth_bias", 0.0f);
+        }
+        for (size_t i = 0; i < sc.builds_used; i++) {
+            const Scene::BatchBuild& b = sc.builds[i];
+            if (!b.solid || !b.corners) continue;
+            auto f = first_of.find(b.segment);
+            if (f == first_of.end() || b.order < f->second) first_of[b.segment] = b.order;
+        }
+    }
+    for (size_t i = 0; i < sc.builds_used; i++) {
+        Scene::BatchBuild& b = sc.builds[i];
+        if (!b.corners) continue;
+        const int stride = b.fused ? 48 : 32;
+        Scene::Batch& m = sc.batches[b.key];
+        AABB box(Vector3(b.lo[0], b.lo[1], b.lo[2]), Vector3(b.hi[0] - b.lo[0] + 0.01f, b.hi[1] - b.lo[1] + 0.01f, b.hi[2] - b.lo[2] + 0.01f));
+        if (!m.mesh.is_valid() || m.stride != stride || b.corners > m.capacity) {
+            int capacity = std::max(b.corners + b.corners / 4, 768);
+            capacity -= capacity % 3;
+            m.pos.assign((size_t)capacity * 12, 0);
+            m.attr.assign((size_t)capacity * stride, 0);
+            memcpy(m.pos.data(), b.pos.data(), b.pos.size());
+            memcpy(m.attr.data(), b.attr.data(), b.attr.size());
+            PackedByteArray positions, attributes;
+            positions.resize((int64_t)m.pos.size());
+            attributes.resize((int64_t)m.attr.size());
+            memcpy(positions.ptrw(), m.pos.data(), m.pos.size());
+            memcpy(attributes.ptrw(), m.attr.data(), m.attr.size());
+            if (m.mesh.is_valid()) s->mesh_clear(m.mesh);
+            else m.mesh = s->mesh_create();
+            add_surface_bytes(m.mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, capacity, true, &box, b.fused);
+            m.capacity = capacity; m.stride = stride; m.box = box;
+            sc.batch_made++;
+            sc.batch_bytes += m.pos.size() + m.attr.size();
+        } else {
+            const int n = std::min(b.corners, m.corners);
+            float* np = (float*)b.pos.data();
+            const float* op = (const float*)m.pos.data();
+            for (int k = 0; k < n * 3; k += 3)
+                if (std::fabs(np[k] - op[k]) < 0.01f && std::fabs(np[k + 1] - op[k + 1]) < 0.01f && std::fabs(np[k + 2] - op[k + 2]) < 0.01f) {
+                    np[k] = op[k]; np[k + 1] = op[k + 1]; np[k + 2] = op[k + 2];
+                }
+            // what follows the batch's corners is zero (no triangle)
+            const int upto = std::max(b.corners, m.corners);
+            b.pos.resize((size_t)upto * 12, 0);
+            b.attr.resize((size_t)upto * stride, 0);
+            auto span = [&](const std::vector<uint8_t>& now, std::vector<uint8_t>& had, int unit, bool vertex) {
+                const size_t total = (size_t)upto * unit;
+                size_t first = 0, last = total;
+                while (first < total && !memcmp(now.data() + first, had.data() + first, unit)) first += unit;
+                if (first == total) return;
+                while (last > first && !memcmp(now.data() + last - unit, had.data() + last - unit, unit)) last -= unit;
+                memcpy(had.data() + first, now.data() + first, last - first);
+                PackedByteArray part;
+                part.resize((int64_t)(last - first));
+                memcpy(part.ptrw(), now.data() + first, last - first);
+                if (vertex) s->mesh_surface_update_vertex_region(m.mesh, 0, (int)first, part);
+                else s->mesh_surface_update_attribute_region(m.mesh, 0, (int)first, part);
+                sc.batch_bytes += last - first;
+            };
+            span(b.pos, m.pos, 12, true);
+            span(b.attr, m.attr, stride, false);
+            if (!(m.box.position.is_equal_approx(box.position) && m.box.size.is_equal_approx(box.size))) { s->mesh_set_custom_aabb(m.mesh, box); m.box = box; }
+        }
+        m.corners = b.corners;
+        m.used = frames;
+        place_mesh(pass, m.mesh, b.material, b.order);
+        if (sc.prepass && b.solid) { place_mesh(pass, m.mesh, sc.prepass_material, first_of[b.segment] - 0.5f); sc.batch_prepass++; }
+        if (b.caster_material.is_valid()) scene_caster(pass, m.mesh, b.caster_material);
+        sc.batch_draws++;
+    }
+    sc.batch_frames++;
+    // batches no list gathered for half a second go
+    if ((frames & 15) == 0)
+        for (auto k = sc.batches.begin(); k != sc.batches.end();) {
+            if (frames - k->second.used > 30) { s->free_rid(k->second.mesh); k = sc.batches.erase(k); }
+            else ++k;
+        }
+}
+
 void RtaDrawer::scene_end(const rtag_frame&) {
     Scene& sc = *scene;
     RenderingServer* s = RenderingServer::get_singleton();
+    if (Target* world = world_target(); world && sc.valid) batch_flush(*world->passes[0]);
     for (size_t k = sc.casters_used; k < sc.casters.size(); k++) s->instance_set_base(sc.casters[k], RID());
     fill_order();
     if (Target* world = world_target()) card_end(*world);
@@ -1038,6 +1341,8 @@ void RtaDrawer::scene_release() {
     RenderingServer* s = RenderingServer::get_singleton();
     if (s) for (RID caster : scene->casters) s->free_rid(caster);
     if (s) for (auto& k : scene->kept) s->free_rid(k.second.mesh);
+    if (s) for (auto& k : scene->batches) s->free_rid(k.second.mesh);
+    if (s && scene->prepass_material.is_valid()) s->free_rid(scene->prepass_material);
     delete scene;
     scene = nullptr;
 }

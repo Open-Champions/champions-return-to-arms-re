@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 namespace render {
@@ -58,6 +59,7 @@ bool invert4(const double* m, double* out) {
 
 void SceneTap::install(Renderer& renderer) {
     r = &renderer;
+    if (const char* e = getenv("RTA_TAP_ASYNC")) async = atoi(e) != 0;
     renderer.vif.vu.user = this;
     renderer.vif.vu.kick = kick;
     renderer.vif.tap_user = this;
@@ -84,6 +86,7 @@ void SceneTap::note(uint32_t num, uint32_t imm) {
 
 void SceneTap::camera(const uint32_t* words, size_t count) {
     if (count < CAMERA_WORDS) return;
+    drain();                                    // (the frame's camera: the kicks before it are made with the one before)
     float f[CAMERA_WORDS];
     memcpy(f, words, sizeof f);
     frame.proj_scale = f[0];
@@ -120,7 +123,7 @@ void SceneTap::program(int entry) {
         clip_flag = vu.itop != 0;
         rows_kind = entry == 0x16 ? TAP_LEVEL : TAP_MODEL;
         object++;
-        joints_at = -1;
+        joint_epoch++;
         if (entry == 0x16) {
             // the depth row and the translation row of a chunk are the camera's own (its turn is in rows 0 and 1):
             // if they are, the camera block that came with the frame is the one these packets were made with
@@ -132,7 +135,7 @@ void SceneTap::program(int entry) {
         mirrored = true;
         object++;
     } else if (entry == 0x0c || entry == 0x1e || entry == 0x1a) {
-        joints_at = -1;                         // the joint matrices are made again
+        joint_epoch++;                          // the joint matrices are made again
     }
 }
 
@@ -140,34 +143,150 @@ double g_tap_kick_ms = 0, g_tap_ms = 0;        // decoder thread: in the GS mode
 
 static inline double tap_now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
+SceneTap::~SceneTap() {
+    if (worker.joinable()) {
+        { std::lock_guard<std::mutex> g(lock); stop = true; }
+        wake.notify_all();
+        worker.join();
+    }
+    for (uint8_t* b : spare) delete[] b;
+    for (uint8_t* b : mine) delete[] b;
+    for (const Job& j : pending) delete[] j.own;
+}
+
+void SceneTap::drain() {
+    hand_over();
+    if (!worker.joinable()) return;
+    std::unique_lock<std::mutex> g(lock);
+    done.wait(g, [&] { return queue.empty() && !busy; });
+}
+
+void SceneTap::work() {
+    std::deque<Job> jobs;
+    std::vector<uint8_t*> used;
+    for (;;) {
+        {
+            std::unique_lock<std::mutex> g(lock);
+            for (uint8_t* b : used) spare.push_back(b);
+            used.clear();
+            if (queue.empty()) { busy = false; done.notify_all(); }
+            wake.wait(g, [&] { return stop || !queue.empty(); });
+            if (queue.empty()) return;
+            std::swap(jobs, queue);
+            busy = true;
+        }
+        const double t0 = tap_now_ms();
+        for (const Job& job : jobs) { kicked(job); used.push_back(job.own); }
+        jobs.clear();
+        g_tap_ms += tap_now_ms() - t0;
+    }
+}
+
 void SceneTap::kick(void* user, uint32_t qword) {
     SceneTap* tap = (SceneTap*)user;
     Renderer* r = tap->r;
     size_t before = r->gs.frame.vertices.size();
-    const double t0 = tap_now_ms();
+    // (the clock is read for one kick in eight, and that counted eight times: reading it was 5 % of the decoder's thread)
+    const bool timed = !tap->async || (++tap->kick_count & 7) == 0;
+    const double t0 = timed ? tap_now_ms() : 0;
     r->gs.xgkick(r->vif.vu.data, qword);
-    const double t1 = tap_now_ms();
-    tap->kicked(qword, before, r->gs.frame.vertices.size());
-    g_tap_kick_ms += t1 - t0;
-    g_tap_ms += tap_now_ms() - t1;
-}
-
-void SceneTap::kicked(uint32_t qword, size_t before, size_t after) {
+    const double t1 = timed ? tap_now_ms() : 0;
+    const size_t after = r->gs.frame.vertices.size();
     const int entry = r->gs.debug_entry;
+    if (timed) g_tap_kick_ms += (t1 - t0) * (tap->async ? 8 : 1);
     if (entry != 0x42 && entry != 0x44 && entry != 0x46 && entry != 0x48) {
-        if (after > before) stats.other_entries++;
+        if (after > before) tap->stats.other_entries++;
         return;
     }
     const Vu1& vu = r->vif.vu;
+    Job job;
+    job.vu = vu.data; job.own = nullptr;
+    job.qword = qword; job.entry = (uint32_t)entry; job.itop = vu.itop; job.top = vu.top;
+    job.before = before; job.after = after;
+    memcpy(job.rows, tap->rows, sizeof job.rows);
+    job.have_rows = tap->have_rows; job.mirrored = tap->mirrored; job.clip_flag = tap->clip_flag; job.rows_kind = tap->rows_kind;
+    job.object = tap->object; job.joint_epoch = tap->joint_epoch;
+    if (!tap->async) {
+        tap->kicked(job);
+        g_tap_ms += tap_now_ms() - t1;
+        return;
+    }
+    // what kicked() reads of VU1 memory, into a copy of its own (at the same addresses)
+    if (tap->mine.empty()) {
+        std::unique_lock<std::mutex> g(tap->lock);
+        if (tap->spare.empty() && tap->buffers >= 4096) tap->done.wait(g, [&] { return !tap->spare.empty(); });
+        while (!tap->spare.empty() && tap->mine.size() < 64) { tap->mine.push_back(tap->spare.back()); tap->spare.pop_back(); }
+    }
+    uint8_t* copy;
+    if (!tap->mine.empty()) { copy = tap->mine.back(); tap->mine.pop_back(); }
+    else { copy = new uint8_t[0x4000]; tap->buffers++; }
+    auto grab = [&](uint32_t from, uint32_t count) {    // quadwords from..from + count, round the end of the memory
+        count = std::min<uint32_t>(count, 0x400);
+        from &= 0x3FF;
+        const uint32_t first = std::min<uint32_t>(count, 0x400 - from);
+        memcpy(copy + from * 16, vu.data + from * 16, (size_t)first * 16);
+        if (count > first) memcpy(copy, vu.data, (size_t)(count - first) * 16);
+    };
     auto U = [&](uint32_t q) { return (const uint32_t*)(vu.data + (q & 0x3FF) * 16); };
-    auto S = [&](uint32_t q) { return (const int32_t*)(vu.data + (q & 0x3FF) * 16); };
-    auto F = [&](uint32_t q) { return (const float*)(vu.data + (q & 0x3FF) * 16); };
-    qword &= 0x3FF;
+    const uint32_t q = qword & 0x3FF;
+    const uint32_t* tag = U(q);
+    const uint32_t nloop = tag[0] & 0x7FFF, nreg = (tag[1] >> 28) & 15;
+    grab(q, 1 + (nloop <= 96 && nreg <= 4 ? nloop * nreg : 0));
+    const uint32_t N = vu.itop;
+    if (N >= 1 && N <= 64) {
+        // positions, normals, slot rows; the weight entries (models), walked as kicked() walks them; the copy rows
+        uint32_t at = vu.top + 3 * N + 2;
+        if (entry == 0x42 || entry == 0x44) {
+            uint32_t v = 0, guard = 0;
+            while (v < N && guard++ < 200) {
+                const uint32_t* e = U(at++);
+                if ((e[2] & 0xFF) == 0xFF) { v += e[3] & 0xFF; continue; }
+                if ((e[1] & 0xFF) + (e[3] & 0xFF) != 255) at++;
+                v++;
+            }
+            const uint32_t* pad = U(at);
+            if ((pad[0] & 0xFFFF) == 0 && (pad[1] & 0xFF) == 255 && (pad[2] & 0xFF) == 255 && (pad[3] & 0xFF) == 255) at++;     // the unused entry
+            grab(0, 260);                               // the joint matrices (the weight entries' joint bytes are their addresses)
+        }
+        const uint32_t copies = std::min<uint32_t>(U(at)[0] & 0xFFFF, 96);
+        grab(vu.top, std::min<uint32_t>(at + 1 + copies - vu.top, 0x400));
+    }
+    job.vu = copy; job.own = copy;
+    tap->pending.push_back(job);
+    if (tap->pending.size() >= 32) tap->hand_over();
+    if (timed) g_tap_ms += (tap_now_ms() - t1) * 8;
+}
+
+// the kicks gathered so far, to the worker
+void SceneTap::hand_over() {
+    if (pending.empty()) return;
+    {
+        std::lock_guard<std::mutex> g(lock);
+        if (!worker.joinable()) worker = std::thread([this] { work(); });
+        for (const Job& j : pending) queue.push_back(j);
+    }
+    pending.clear();
+    wake.notify_one();
+}
+
+void SceneTap::kicked(const Job& job) {
+    const int entry = (int)job.entry;
+    const size_t before = job.before, after = job.after;
+    const float* rows = job.rows;
+    const bool have_rows = job.have_rows, mirrored = job.mirrored, clip_flag = job.clip_flag;
+    const uint8_t rows_kind = job.rows_kind;
+    const uint32_t object = job.object;
+    if (job.joint_epoch != joints_epoch_seen) { joints_at = -1; joints_epoch_seen = job.joint_epoch; }
+    const uint8_t* data = job.vu;
+    auto U = [&](uint32_t q) { return (const uint32_t*)(data + (q & 0x3FF) * 16); };
+    auto S = [&](uint32_t q) { return (const int32_t*)(data + (q & 0x3FF) * 16); };
+    auto F = [&](uint32_t q) { return (const float*)(data + (q & 0x3FF) * 16); };
+    uint32_t qword = job.qword & 0x3FF;
     const uint32_t* tag = U(qword);
     const uint32_t nloop = tag[0] & 0x7FFF, nreg = (tag[1] >> 28) & 15;
     if (!nloop || qword == 0x3F6) return;           // the empty packet between two passes
     stats.kicks++;
-    const uint32_t N = vu.itop, in = vu.top & 0x3FF;
+    const uint32_t N = job.itop, in = job.top & 0x3FF;
     if ((nreg != 3 && nreg != 4) || N < 1 || N > 64 || nloop > 96) { stats.rejected_layout++; return; }
     const uint32_t strip = qword + 1;
     uint32_t drawn = 0;
@@ -414,6 +533,7 @@ void SceneTap::kicked(uint32_t qword, size_t before, size_t after) {
 }
 
 void SceneTap::take(TapFrame& out) {
+    drain();
     std::swap(out.pieces, frame.pieces);
     std::swap(out.vertices, frame.vertices);
     std::swap(out.sources, frame.sources);

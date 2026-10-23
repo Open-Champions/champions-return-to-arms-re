@@ -135,6 +135,17 @@ void take(render::FrameList& list, Frame& out) {
     for (uint32_t id : list.dead_targets) g_target_width.erase(id);
     g_tap.take(g_tap_frame);
     const render::TapFrame& tap = g_tap_frame;
+    static const bool digest = getenv("RTA_TAP_DIGEST") != nullptr;     // test aid: a figure over everything the tap made
+    if (digest) {
+        static uint64_t h = 0xCBF29CE484222325ull;
+        auto fold = [&](const void* p, size_t n) { const uint64_t* w = (const uint64_t*)p; for (size_t k = 0; k < n / 8; k++) h = (h ^ w[k]) * 0x100000001B3ull; };
+        fold(tap.pieces.data(), tap.pieces.size() * sizeof(render::TapPiece));
+        fold(tap.vertices.data(), tap.vertices.size() * sizeof(render::TapVertex));
+        fold(tap.full.data(), tap.full.size() * sizeof(render::TapFull));
+        fold(tap.joints.data(), tap.joints.size() * sizeof(float));
+        fold(tap.sources.data(), tap.sources.size() * sizeof(render::TapSource));
+        if (g_frames % 500 == 0) fprintf(stderr, "tap digest %llu: %016llx (%zu pieces)\n", (unsigned long long)g_frames, (unsigned long long)h, tap.pieces.size());
+    }
     if (!tap.have_camera) return;
     Camera cam;
     memcpy(cam.m, tap.world_to_view, sizeof cam.m);
