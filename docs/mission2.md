@@ -5,8 +5,9 @@ menu's row 1 story pointer is `innovat1` (`t3/research-story-route`,
 `76d4447`); the separate medal and bonus pointers are `innmedal` and
 `innpit`. Mission 2 must first be made available by one of the hub actions
 identified in `t3/research-quest-log` (`03c2304`); mission 1 completion by
-itself does not prove that action ran. The shipped story object/script links
-then lead `innovat1` → `inmine1` → `inmine2` → `innovat2`.
+itself does not prove that action ran. The shipped story object/script cells
+support an **Inferred** `innovat1` → `inmine1` → `inmine2` → `innovat2`
+route; the exact record-to-entry links and call containment remain Unknown.
 
 The four archives and their object/script records were **Observed** in the
 owner's read-only disc. `tools/difftest_mission2.py` asserts the counts,
@@ -19,35 +20,45 @@ script argument; this check does not resolve its runtime destination.
 
 ## Story route and objectives
 
-| From | Authored link and addressed call | Limit |
+The difftest checks each addressed call cell and the aggregate action-link
+set separately. It does not establish which individual record carries each
+link or that a call cell lies inside the listed entry. Those pairings are
+**Unknown** until checked against per-record properties and parsed entry
+boundaries.
+
+| From | Addressed call cell and aggregate action link | Limit |
 |---|---|---|
 | Mission menu | Row 1 story pointer `innovat1` | The menu requires mission 2 availability; the hub dialog path is not executed here. |
-| `innovat1` | One `PushTrigger` action calls `newWorld('inmine1')` at script offset `0x154` | Physical use and level load untested. |
-| `inmine1` | Two `PushTrigger` actions call `newWorld(0)` at `0x02c` and `newWorld('inmine2')` at `0x070` | The zero argument's resolved destination is Unknown here. |
-| `inmine2` | Two `PushTrigger` actions call `newWorld(0)` at `0x02c` and `newWorld('innovat2')` at `0x070` | The zero argument's resolved destination is Unknown here. |
-| `innovat2` | One `PushTrigger` action calls `newWorld('inmine2')` at `0x070`; its `Portal` script reads the boss gate variable | The destination selected by the portal is Unknown. |
+| `innovat1` | `PushTrigger` action-link set includes entry `0x128`; `newWorld('inmine1')` call cell is at `0x154` | Physical use and level load untested. |
+| `inmine1` | Action-link set includes entries `0x000`, `0x044`; `newWorld(0)` and `newWorld('inmine2')` cells are at `0x02c`, `0x070` | The zero argument's resolved destination is Unknown here. |
+| `inmine2` | Action-link set includes entries `0x000`, `0x044`; `newWorld(0)` and `newWorld('innovat2')` cells are at `0x02c`, `0x070` | The zero argument's resolved destination is Unknown here. |
+| `innovat2` | Action-link set includes entry `0x044`; `newWorld('inmine2')` cell is at `0x070`; its `Portal` script link is separately checked | The destination selected by the portal is Unknown. |
 
-**Observed and statically asserted** in `innovat1`: `start` calls
-`setMissionAvailable(2,1)` at `0x0b34`, sets two distinct mission variables
-to 1 and 2, and posts the action at `0x0be0`. That action contains a
-`cutScene('innovat1')` call at `0x0c4c`. Two NPC records link to distinct
-dialog entries; two branch actions add the same quest title key with
-different body keys. A turn-in action removes the quest and a
-`coppersprocket`, then defers the entry at `0x0c98`; that entry gives an
-item and calls `grantMission(2)` at `0x0d00`. These are addressed call and
-object-property assertions, not execution of the entry or proof of the
-dialog choice and conditions. Other branch actions exchange quest items;
-their reachability is Unknown here.
+**Observed and statically asserted** in `innovat1`: `start` begins at
+`0x0b00`; addressed cells call `setMissionAvailable(2,1)` at `0x0b34`, set
+two distinct mission variables to 1 and 2, and post the entry at `0x0be0`.
+A `cutScene('innovat1')` call cell is at `0x0c4c`. The combined properties
+of two NPC records include two distinct dialog entries; **which record
+links to which entry is Unknown** to this test. Two addressed `addQuest`
+cells use the same title key and different body keys. Addressed cells
+remove that quest and a `coppersprocket`, defer the entry at `0x0c98`, give
+an item, and call `grantMission(2)` at `0x0d00`. Assigning those cells to
+specific branch or turn-in entries is **Inferred** until entry containment
+is asserted. Dialog choices, conditions, execution and other branch
+reachability remain Unknown.
 
 **Observed and statically asserted** in `innovat2`: the one
 `IronGuardian` record has a `coppersprocket` drop property and a deathscript
-link. Two `Trigger` records link to script wrappers at `0x150` and `0x194`;
-those wrappers call the boss and portal-message entries. The boss entry
-contains the `iron` cutscene call, and a linked entry calls save inhibit on.
-The entry at `0x46c` sets the same variable read by the portal gate and
-calls save inhibit off. The miniboss flag call is **Observed**, not asserted
-by this test. No script entry, boss death or portal is executed here; actual
-item drop, quest completion, save behavior and portal travel remain Unknown.
+link. The combined properties of two `Trigger` records include links to
+entries at `0x150` and `0x194`; **which record carries which link is
+Unknown** to this test. Addressed cells at `0x17c` and `0x1c0` call the
+boss and portal-message entries. Other addressed cells call the `iron`
+cutscene and save inhibit on. The entry at `0x46c` is asserted separately
+from cells that set the variable read by the portal gate and call save
+inhibit off. Which entry contains each call cell is **Unknown** to this
+test. The miniboss flag call is **Observed**, not asserted by this test. No
+script entry, boss death or portal is executed here; actual item drop,
+quest completion, save behavior and portal travel remain Unknown.
 
 ## Authored object census and required constructors
 
@@ -145,11 +156,13 @@ IronGuardian construction here.
    `innovat1` load. Preserve all 699 object records and metadata side
    effects, the seven conditional `Player1` markers and the real level seed.
    Refuse any unsupported selected class explicitly.
-2. Before native objective claims, execute the addressed start, two NPC
-   branches, turn-in/deferred grant, boss/portal wrappers, and both boss gate
-   states through the original script host on controlled state. Compare
-   native effects and prove the two `innovat2` Trigger links reach their
-   entries. Static cells alone do not establish ordering or reachability.
+2. Before native objective claims, assert each NPC, `PushTrigger` and
+   `innovat2` `Trigger` link per record, and locate each claimed call cell
+   inside its parsed entry bounds. Then execute the start, two NPC branches,
+   turn-in/deferred grant, boss/portal wrappers, and both boss gate states
+   through the original script host on controlled state. Compare native
+   effects and prove both Trigger links reach their entries. Static cells
+   alone do not establish ordering or reachability.
 3. Port blockers, three character-light markers, save points, triggers,
    portals, NPC dialog hooks, weather, smoke effects, PowderKegs,
    AutoContainers and AutoChests with their property/resource and save
@@ -195,7 +208,17 @@ not a running-game mission or native port.
 
 **Audit FIX rerun, 2026-10-23:** seeds 20973 and 7 each passed the mission
 difftest with the 22,156-byte total now asserted. The test also pins the
-addressed objective calls, NPC, Trigger, deathscript and portal links described
-above. The full Python unit suite passed 652/652. Ordered resource names are
+addressed objective call cells and aggregate NPC/Trigger links described
+above, plus the deathscript and portal properties. Per-record link pairing
+and call containment are Unknown. The full Python unit suite passed 652/652.
+Ordered resource names are
 derived only in memory from owner inputs; dynamic Critter/container member
 presence and all objective execution remain Unknown.
+
+**Second-round audit fix, 2026-10-23:** the report now labels the candidate
+route Inferred and leaves per-record link pairing and call containment
+Unknown until directly asserted. The mission difftest again passed seeds
+20973 and 7 (699 records, 22,156 consumed bytes, 660 factory selections,
+96 constructor requests and six addressed exits per seed); the full Python
+unit suite passed 652/652. Both ran serially with
+`PYTHONDONTWRITEBYTECODE=1`.
