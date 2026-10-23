@@ -28,10 +28,13 @@ established by these probes; its contact boundary depends on movement
 collision and object geometry. Treat that radius as **Unknown** until a
 targeted movement/contact test measures it.
 
-**Observed** (`Chest_interactPrompt` 0x29297c–0x292a2c): unopened chests show
+**Observed/Executed** (`Chest_interactPrompt` 0x29297c–0x292a2c;
+`tools/difftest_pickups.py` on seeds 20973/7): unopened chests show
 `OpenChest`; opened chests with positive remaining gold show `PickUpGold`
 formatted with that amount. An opened, zero-gold chest still returns a true
-prompt status, but the object's interactable flag controls reachability.
+prompt status without requesting text or formatting, but the object's
+interactable flag controls reachability. These are direct synthetic-state
+prompt calls, not proof that the prompt reaches a player in a level.
 `ItemProp` prompt and interact are virtual slots 13/14 at 0x159870 and
 0x159b38; the flying `PhProp` item uses slot 14 at 0x155020.
 
@@ -45,8 +48,9 @@ with `g_simFrame` 0x44fdcc. If +0x4c gold is zero or negative, it clears
 interactable bit `0x100000` at +0x0c. The item sequence is the chest's placed
 `item` descriptors, `potions`, placed `random` worth entries, then one
 `loot_generateDrops` 0x100d54 call. That Chest call passes zero gold scale
-and chance at 0x2930d0–0x293120, so it is an item roll. The chest's +0x4c
-gold is a separate second-use award, not an item placed in a bag. Named,
+and chance at 0x2930d0–0x293120 (both zero in the recorded call on seeds
+20973/7), so it is an item roll. The chest's +0x4c gold is a separate
+second-use award, not an item placed in a bag. Named,
 consumable and equipment items become flying item props. Second use sets
 hide mask +0x54 to 1, calls `hud_addGoldFloater` 0x1dc268 for the interacting
 slot and remaining amount, and zeroes +0x4c. `Chest_run` advances the lid
@@ -57,6 +61,7 @@ run to a timed explosion; this probe does not execute that path.
 **Executed** (`tools/difftest_pickups.py`, both seeds): with no placed item,
 potion or random properties and called services stubbed, opening at frame 100
 made exactly one animation push, run-list request and generator request;
+the generator's gold scale and chance arguments were both zero;
 state became 1. Zero chest gold cleared the interactable bit, positive gold
 kept it. A second interaction with nine gold made one HUD floater request,
 zeroed gold and set hide mask 1. A non-trapped completed lid made one action
@@ -113,8 +118,10 @@ accepted, count 63 refused, load 90 + weight 11 at limit 100 refused,
 and 90 + 10 accepted. Success made one give-item and load-recalculation
 request; refusal made neither. A two-player `ItemProp_interact` with player 0
 full and player 1 eligible gave only to player 1 and invoked the object's
-destructor once, with and without the shared-item bit. World grid removal and
-inventory mutation are stubbed here; `tools/difftest_messages.py` executes
+destructor once, with and without the shared-item bit. With both players
+eligible and player 1 chosen, the ordinary item gave only to player 1, while
+bit 39 gave to players 0 then 1; each path invoked one destructor. World grid
+removal and inventory mutation are stubbed here; `tools/difftest_messages.py` executes
 `inventory_giveItem` itself.
 
 **Observed** (`inventory_giveItem` 0x1c1868; [game messages](spec/game-messages.md)
@@ -164,9 +171,11 @@ this research branch changes neither native implementation nor its tests.
 
 1. Expose the real-level object query and pad-edge path to `Player_interact`:
    ±48 query, nearest interactable, prompt slot 13, then slot 14 on use.
-   Keep the known K1 input gate explicit.
+   Keep the known K1 input gate explicit. Preserve the ordinary Chest prompt's
+   closed, opened-with-gold, and opened-with-zero-gold branches.
 2. Represent ordinary Chest, AutoChest and AutoContainer as distinct states.
-   Port their own opening, action, trap and loot timing; restore each saved
+   Port their own opening, action, trap and loot timing, including the ordinary
+   Chest's zero gold scale and chance at its generator call; restore each saved
    payload with branch-specific executable evidence before claiming parity.
 3. Connect shared/own RNG, item definition tables and the verified
    `ref_items` generator to terrain/free-spot placement, bounded pool
@@ -175,8 +184,9 @@ this research branch changes neither native implementation nor its tests.
 4. Tick flying-item settle/conversion and Gold countdown/touch in world order.
    Implement manual item pickup and automatic Gold touch as separate paths.
 5. Give a successful item through the correct bag/stack/weight rules. Test
-   62/63/64 cells, exact load limit, unique-item refusal, shared items and
-   deletion only against a real object registry. Credit Gold through the HUD
+   62/63/64 cells, exact load limit, unique-item refusal, and shared items
+   with both players eligible and a chosen slot. Test deletion against a real
+   object registry. Credit Gold through the HUD
    floater timing and also test the eight-floater-full case.
 6. Supply a real typed `world_findFreeSpot` result and `ItemProp_ctor2` world
    registration to native inventory mode-0 drop; test stack decrement,
@@ -201,12 +211,14 @@ The 2026-10-23 serial background run passed with zero failures:
 
 | Check | Seed 20973 | Seed 7 |
 | --- | ---: | ---: |
-| New bounded pickup/chest probe | 11/11 cases | 11/11 cases |
+| Initial bounded pickup/chest probe | 11/11 cases | 11/11 cases |
 | Existing `difftest_items.py -k loot` | 5/5 properties, including 150 generator calls | 5/5 properties, including 150 generator calls |
 | Existing message difftest, 100 messages in each run | 44/44 properties | 44/44 properties |
 | Save-world difftest | Chest 16, ItemProp 16 plus body/reload and other object cases passed | Same cases passed |
 
 The explicit `-k gold` and `-k named` reruns also passed (one property each
-per seed); both were already included by `-k loot`. The full repository unit
-suite passed **652/652** once. Logs and the serial runner remain ignored under
-this worktree's `local/`; no executable or derived game bytes are committed.
+per seed); both were already included by `-k loot`. After the audit fix, the
+expanded pickup difftest passed **17/17** cases on each seed, and the full
+repository unit suite passed **652/652** in a serial background run. Logs and
+the initial serial runner remain ignored under this worktree's `local/`; no
+executable or derived game bytes are committed.
