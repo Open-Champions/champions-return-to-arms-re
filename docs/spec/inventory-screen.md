@@ -36,7 +36,7 @@ pixels have not been compared. The fixture uses panel x = 80.
 
 | Evidence | Submission |
 |---|---|
-| **Observed** `itemList_draw` 0x1cd3a0/0x1cd3d0 | Looks up `inventry.lmp` / `mousecursor.tex` twice. `ui_drawSprite` 0x17fb18 submits layer-7 copies tinted `0x80808080` and `0x34000000`. In drag state, `itemList_draw` 0x1cd4b0–0x1cd524 also draws the held item's picture at the free cursor, as the icon research established. |
+| **Observed** `itemList_draw` 0x1cd3a0/0x1cd3d0 | Looks up `inventry.lmp` / `mousecursor.tex` twice. `ui_drawSprite` 0x17fb18 submits layer-7 copies tinted `0x80808080` and `0x34000000`. The held-item path is specified below. |
 | **Executed** `itemList_draw` 0x1cd728 | 65 layer-4 one-pixel strips: x = panel x + 15 through panel x + 305; y = 413 through 477. Alpha rises from 1 to 127; `strip_rects` models the exact integer sequence. `check_draw` asserts the `inventoryunderbar.tex` lookup at 0x1cd754 and its layer-5 submission at 0x1cd774. |
 | **Observed** format at 0x5394a8 and calls 0x1ccb04/0x1ccb18; **Executed** with `sprintf` replaced only for this format | `inventry.lmp` / `inventrybox%d.tex`, with the suffix from 1–3. Five rows at y = 116, 184, 252, 320, 388; each row has numbered pieces at x = panel x + 15, +111, +207, then `inventryboxend.tex` (lookup 0x1ccb68) at x = panel x + 303. `check_draw` asserts all 20 clipped sprite submissions at layer 0 with tint `0x80808080`. The bounded zero-state sequence is in the reference; it is an executed list, not a guessed general random algorithm. |
 | **Observed** 0x1cd79c and 0x1ccaf8; **Executed** both seeds | The draw resets cosmetic state 0x86a6a4 to zero and writes it 15 times while choosing numbered box pieces, ending at `0xeef6843f` in this fixture. Shared `g_randSeed` 0x404464 remains at the input seed. The update includes arithmetic beyond a plain LCG, so the reference does not claim a general recurrence. |
@@ -57,6 +57,61 @@ precedence matched the reference.
 The icon research also records its width/height footprint, pulse, placeholder
 and picture-name rules; this screen probe does not rerun the private picture
 cache or decode icon pixels.
+
+## Display-grid copies and bag-slot placement
+
+**Observed** `itemGrid_build` 0x1cbbe8 (name descriptive, not a symbol) takes
+player slot, panel index and a shop-stock flag. The inventory call at
+0x1bfd18 passes the local slot, panel 0 and flag 0. It reads the machine-local
+display-buffer pointer at 0x4ebbb0 (0x1cbc64); panel stride is 0x23988 and
+each of its three pages is 0xbdd8 bytes. In inventory mode, source records
+start at player record +0x130, source counts at +0x1330, and the builder
+advances both by 0x1208 per bag (0x1cbca0, 0x1cbf20–0x1cbf30). The
+shop-stock flag selects 0x866e78 instead (0x1cbc88–0x1cbc9c); that mode is
+outside this fixture.
+
+**Observed** 0x1cbcb0–0x1cbce8 clears the definition word and +0x22 stamp in
+all 9 × 75 cells of each page before placement. At 0x1cbd28 the builder asks
+`item_getPictureDimensions` 0x1083a4 for each bag record's footprint, using the
+viewer's body type at player record +0x54. The fit search at
+0x1cbd98–0x1cbe48 scans rows and columns for a vacant rectangle. The copy
+loop at 0x1cbe88–0x1cbeec writes the 0x48-byte bag record into each covered
+cell and replaces copy +0x22 with its **bag slot index**. This is a separate
+copy; a bag record is not itself the draw cell.
+
+**Executed** `check_grid_builder` on seeds 20973 and 7 sets five distinct
+records in each of three bags, with controlled 0-, 32- and 64-pixel widths
+and a one-row height. `bounded_grid_placement` matches every definition word
+and +0x22 stamp in all 2,025 cells: one-column records occupy successive
+columns; two- and three-column records repeat into their covered cells; when
+the remaining row is too narrow, placement resumes on the next row. The
+fixture replaces `item_getPictureDimensions` and the final float-to-row rounding
+callee to isolate the fit/copy loop. The exact placement for taller, unusual
+or overflowing footprints remains **Unknown** without another fixture.
+
+**Observed** `itemList_draw` passes the selected page's grid cell at 0x1cd914
+to `itemList_drawGrid` 0x1cc7e0; that function reads the cell definition
+at 0x1cc8c0 and passes the **display copy** to `item_getPicture` 0x108358 at
+0x1cc8ec. **Executed** `check_grid_draw_source` puts different definitions
+in each page's display first cell and counted-bag first record: on pages 0,
+1 and 2, the picture argument is the display address computed from pointer
+0x4ebbb0, panel × 0x23988 and page × 0xbdd8. The selected-row call at 0x1cd8c8
+also receives a display-cell pointer. This resolves the native page-1/2
+render source; the first-cell action's separate bag address remains as
+tested below.
+
+## Held-item picture while dragging
+
+**Observed** `itemList_draw` branches on panel +0x58 at 0x1cd48c. When set,
+the call at 0x1cd4b0 gives `item_getPicture` 0x108358 the viewing player's
+body type (record +0x54) and the item pointer held in panel +0x64. It sends
+the returned picture to `ui_drawSprite` 0x17fb68 twice, at 0x1cd4e8
+and 0x1cd520. Both are layer 7; the first uses tint `0x80808080`, the
+second `0x34000000`. For the fixture's free cursor (112,132), their integer
+positions are (134,154) and (134,157), respectively: +22 to x, +22/+25 to
+y. **Executed** `check_held_picture` on both seeds sees no such call when
+panel +0x58 is clear, and exactly those two calls from the panel +0x64 pointer
+when set. The cache and final raster pixels are not executed here.
 
 ## Hover, item text and detail frame
 
@@ -109,10 +164,15 @@ grid-object filter; its possible shared-seed use remains **Unknown**.
 1. Load the selected disc's `inventry.lmp` and both font resources at runtime;
    use the original small-font page and glyph layout from `ui-fonts.md`. Keep
    absent assets as an explicit refusal.
-2. Implement the panel/page state and input cursor mapping with the mode-2
-   `page*0xbdd8` display-grid offset and the separate `page*0x1208` bag
-   offset for the tested first-cell action. Retain exact item/equipment
-   pointers; pages 3–5 dispatch the stat/skill sheet.
+2. Build and retain the machine-local display buffer from the selected
+   player's counted bags: panel × `0x23988`, page × `0xbdd8`, 9 × 75 cells
+   per page, copied item records with their +0x22 bag-slot stamps. The
+   bounded one-row first-fit model is executable; trace remaining footprint
+   cases before claiming the whole packer. Draw pages 0–2 from those copies,
+   including pages 1–2; never substitute their first bag record for a grid
+   cell. Keep the mode-2 hover grid offset and the separate `page*0x1208`
+   source-bag offset for the tested first-cell action. Retain exact item and
+   equipment pointers; pages 3–5 dispatch the stat/skill sheet.
 3. Draw the panel's cursor, scrollbar gradient, underbar, numbered box strips
    and end pieces at the submitted layers and coordinates. Use the observed
    zero-state box sequence for this bounded path; trace the general cosmetic
@@ -125,8 +185,11 @@ grid-object filter; its possible shared-seed use remains **Unknown**.
    Extend emulation to modifier, gem, requirement and language branches before
    exposing those as exact.
 6. Wire equip, unequip, drag and drop sender conditions to the already
-   specified message handlers; keep the drop-space and stat-point gates
-   refused until their remaining paths are traced.
+   specified message handlers. While dragging, resolve the picture from the
+   panel +0x64 item with the viewer's body type and submit both layer-7
+   copies at the free cursor offsets and tints above. Refuse drag-state
+   rendering if that picture path is absent. Keep the drop-space and
+   stat-point gates refused until their remaining paths are traced.
 7. Compare actual original and native screen captures with a known item list,
    selected language, body type and frame field. The current function-level
    tests establish submissions, not final raster parity.
@@ -134,13 +197,16 @@ grid-object filter; its possible shared-seed use remains **Unknown**.
 ## Validation and open bounds
 
 `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_inventory_screen.py`
-compared **32 properties, 0 failures** across seeds 20973 and 7: draw
+compared **38 properties, 0 failures** across seeds 20973 and 7: draw
 submissions including underbar, box layer/tint and text batch, cosmetic/shared
 seed writes, font/selection, five highlight states with both cells, three item
 categories/detail frames, six mode-2 actions, pages 0–5 and three page-specific
-hover/action targets. The test stubs resource lookup, the one box-name
+hover/action targets, the three-page grid builder and draw source, and the
+held picture. The test stubs resource lookup, the one box-name
 `sprintf` format, original text drawing and gameplay/world callees; it does
-not load the disc, execute the complete render packet or run a game. No
+not load the disc, execute the complete render packet or run a game. The
+grid-builder fixture additionally stubs item-picture dimensions and the
+last height-rounding callee to isolate the bounded one-row layout. No
 disassembly, executable data, text payload, font page or image is tracked.
 
 Related reruns with `PYTHONDONTWRITEBYTECODE=1`: prior
@@ -155,3 +221,5 @@ and localized field content; exact stat-point edge/cursor gate; the general
 box variant arithmetic outside the reset zero-state draw; final interlaced
 pixel geometry and live screen parity; drop preflight seed effect. These need
 targeted fixtures or original-game captures before exact native claims.
+The general display packer for taller/overflowing footprints also remains
+**Unknown** outside the executed bounded one-row cases.

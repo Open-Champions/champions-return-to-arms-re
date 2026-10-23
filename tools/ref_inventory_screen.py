@@ -12,6 +12,7 @@ GRID_COL_STRIDE = 0x1518
 GRID_PAGE_STRIDE = 0xBDD8
 BAG_PAGE_STRIDE = 0x1208
 GRID_COLS = 9
+GRID_ROWS = 75
 VISIBLE_ROWS = 10
 TEXT_LAYER = 6
 GRID_LAYER = 5
@@ -49,9 +50,49 @@ def box_variants():
 
 
 def grid_cell(base, column, row, page=0):
-    if not (0 <= page < 3 and 0 <= column < GRID_COLS and 0 <= row < 75):
+    if not (0 <= page < 3 and 0 <= column < GRID_COLS and 0 <= row < GRID_ROWS):
         return None
     return base + page * GRID_PAGE_STRIDE + column * GRID_COL_STRIDE + row * ITEM_SIZE
+
+
+def display_grid_base(pointer, panel, page):
+    """Machine-local display copies, separate from the counted player bags."""
+    if not (0 <= panel < 4 and 0 <= page < 3):
+        return None
+    return pointer + panel * 0x23988 + page * GRID_PAGE_STRIDE
+
+
+def bounded_grid_placement(width_pixels):
+    """First-fit copies for one-row item footprints in the executed builder fixture.
+
+    Each entry is (column, row, bag index). Widths 0, 32 and 64 occupy one,
+    two and three columns. The fixture replaces the original size/rounding
+    callees; height, nonzero scroll and oversized items remain outside it.
+    """
+    occupied = set()
+    result = {}
+    for index, width in enumerate(width_pixels):
+        columns = width // 32 + 1
+        for row in range(GRID_ROWS):
+            for col in range(GRID_COLS - columns + 1):
+                if any((col + dx, row) in occupied for dx in range(columns)):
+                    continue
+                for dx in range(columns):
+                    cell = (col + dx, row)
+                    occupied.add(cell)
+                    result[cell] = index
+                break
+            else:
+                continue
+            break
+    return result
+
+
+def held_picture_sprites(picture, cursor_x, cursor_y):
+    """Two layer-7 submissions in the executed integer-cursor drag fixture."""
+    x = int(cursor_x + 22)
+    return [(picture, x, int(cursor_y + offset), 7, tint)
+            for offset, tint in ((22, 0x80808080), (25, 0x34000000))]
 
 
 def bag_page_base(base, page):
