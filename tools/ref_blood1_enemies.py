@@ -32,6 +32,14 @@ DEATH_FLOATS = {
 TICK_PREFIX = (0x110D30, 0x112948, 0x10C0F0)
 KOBOLD_ACTIVE = (0x1162B0, 0x115EB8, 0x10DED0, 0x10E2C0)
 WRAITH_ACTIVE = (0x11B2A8, 0x1162B0, 0x10DED0, 0x115EB8, 0x1187E0)
+TARGETED_ATTACK = {
+    "Kobold": (KOBOLD_ACTIVE + (0x119E38, 0x119938, 0x1187E0,
+                                 SET_STATE["Kobold"])),
+    "WarWraith": (WRAITH_ACTIVE + (0x11B180, 0x1196E8, 0x1187E0,
+                                   0x14F028, SET_STATE["WarWraith"])),
+}
+KOBOLD_HIT_FLAGS = {"Kobold": 8, "Koboldtough": 0x440008,
+                    "koboldshaman": 8}
 
 
 def balance_factors(name):

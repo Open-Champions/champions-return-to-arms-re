@@ -156,8 +156,12 @@ For **run/AI**, the new test executes Kobold_run 0x27f52c and WarWraith_run
 inputs and an animation event stub. It asserts the ordered processDamage,
 Creature_run, active, stepAnim, target-pick and state-specific calls. This
 covers five branch routes per class string (20 probes), including the wraith's
-holder update and fade/deletion path. Target selection, pathing, shaman ally
-healing, weapon descriptors, hit resolution and live animation timing remain
+holder update and fade/deletion path. A second synthetic target-handle and
+event-bit-1 probe reaches `Creature_hitTargetInArc` 0x119938 for each Kobold
+variant (flags 8, 0x440008, 8) and `Creature_hitTargetAtReach` 0x1196e8
+for WarWraith (flags 8). The hit functions return stubs; target selection,
+pathing, shaman ally healing, weapon descriptors, landed damage and live
+animation timing remain
 **Unknown** to this test; the manually observed state descriptions in
 `docs/monsters-2.md` are port leads, not claims of executed blood1 combat.
 
@@ -286,8 +290,9 @@ script entries. The same command with `--seed 7` passed with those counts.
 `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_blood1_enemies.py
 local/SLUS_209.73 local/BLOOD1.GOB local/BALANCE.LMP --seed 20973`
 passed with 140 placements, four class selections, 84 constructor requests
-across those selections, 37 event setups, four balance rows, 20 synthetic
-ticks/176 observed calls, four death routes and one base damage probe. The
+across those selections, 37 event setups, four balance rows, 20 no-target
+ticks/176 observed calls, four targeted attack dispatches, four death routes
+and one base damage probe. The
 same command with `--seed 7` passed with those counts.
 `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_objects.py
 local/SLUS_209.73 -k load --seed 20973` passed five of five properties

@@ -135,6 +135,32 @@ def check_death(exe, name, seed):
     return drop.target
 
 
+def check_targeted_attack(exe, name, seed):
+    # Synthetic handle and target. The hit service is a recording stub: only
+    # attack dispatch and arguments are established, never landed damage.
+    emu, obj, _requests = make(exe, name, seed, base=False)
+    family = "WarWraith" if name == "WarWraith" else "Kobold"
+    emu.follow = {R.RUN[family]}
+    emu.stub(0x10C0F0, ret=1)
+    emu.stub(0x1162B0, ret=1)
+    target, node = emu.alloc(0x500), emu.alloc(20)
+    emu.mem.w32(node + 0xC, target)
+    emu.mem.w32(obj + 0x234, node)
+    emu.mem.w16(obj + 0x232, 6)
+    emu.mem.wf32(obj + 0x228, 100.)
+    emu.mem.wf32(obj + 0x22C, 100.)
+    emu.reset_log()
+    emu.call(R.RUN[family], obj, max_steps=200000)
+    got = tuple(c.target for c in emu.calls)
+    assert got == R.TICK_PREFIX + R.TARGETED_ATTACK[family], (name, got)
+    hit = next(c for c in emu.calls if c.target ==
+               (0x1196E8 if family == "WarWraith" else 0x119938))
+    assert hit.args[0] == obj
+    assert hit.args[4 if family == "WarWraith" else 6] == (
+        8 if family == "WarWraith" else R.KOBOLD_HIT_FLAGS[name])
+    return hit.target
+
+
 def check_damage(exe):
     emu = EE(exe)
     emu.follow = {0x116638}
@@ -167,6 +193,7 @@ def main():
         events += e
         for state, event in ((0, 0), (3, 0), (6, 1), (7, 1), (20, 0)):
             ticks += check_tick(args.executable, name, args.seed, state, event)
+        check_targeted_attack(args.executable, name, args.seed)
         check_death(args.executable, name, args.seed)
     blob = find_in_lump(open(args.balance_lmp, "rb").read(), "monsters.bal")
     assert blob is not None
@@ -174,7 +201,8 @@ def main():
     check_damage(args.executable)
     print(f"PASS seed {args.seed}: 140 placements/4 class selections; "
           f"{resources} constructor resource requests, {events} event setups; "
-          f"4 balance rows, 20 synthetic ticks/{ticks} calls, 4 death routes, "
+          f"4 balance rows, 20 no-target ticks/{ticks} calls, "
+          "4 targeted attack dispatches, 4 death routes, "
           "1 base damage probe; downstream services stubbed")
 
 
