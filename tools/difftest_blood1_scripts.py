@@ -35,9 +35,39 @@ def authored(gob):
     parsed = scr.parse(image)
     entries = {name: off for off, name in parsed["internals"]}
     imports = {name for _off, name in parsed["externals"]}
-    assert len(entries) == 21 and len(imports) == 21
-    assert {"start", "absorb", "ifdcc4", "setEvil3024", "setEvil1037",
-            "newWorld1c57", "newWorldbcf6"} <= entries.keys()
+    assert entries == {
+        "start": 0x0000, "gooddoor": 0x027c, "evildoor": 0x02c0,
+        "giveshard": 0x0330, "absorb": 0x03b0, "removeActors": 0x048c,
+        "checkShardCount": 0x04d0, "startDia1ce": 0x05e4,
+        "returnab41": 0x0638, "newWorld1c57": 0x0674,
+        "returnc2d4": 0x06b8, "newWorldbcf6": 0x06f0,
+        "ifdcc4": 0x0734, "ifb5cc": 0x07f4,
+        "setEvil3024": 0x0868, "setEvil1037": 0x08fc,
+        "ifb7fd": 0x0a24, "if3877": 0x0a98,
+        "ifa824": 0x0b4c, "setva4d6": 0x0c04,
+        "dummyEntryPoint": 0x0c50,
+    }
+    assert len(imports) == 21
+    # Assert the addressed built-in calls reported in the flow table against
+    # the authored image, not only against traces from entry dispatch.
+    code_start, code_end = parsed["code"]
+    external_names = [name for _off, name in parsed["externals"]]
+    for offset, name in {
+        0x002c: "getMissionComplete", 0x005c: "getEvil",
+        0x0098: "addQuest", 0x00d4: "addQuest",
+        0x0108: "setMissionAvailable", 0x013c: "setv",
+        0x0170: "setv", 0x019c: "postAction",
+        0x01c0: "getMadeDecision", 0x01ec: "getEvil",
+        0x0228: "autoPropSetState", 0x0264: "autoPropSetState",
+        0x02a8: "cutScene", 0x03dc: "getv",
+        0x0414: "cutScene", 0x0448: "setv",
+        0x0474: "postAction", 0x04b8: "deleteMonster",
+        0x0620: "startDialog", 0x08e4: "postAction",
+        0x0a0c: "postAction",
+    }.items():
+        assert code_start + offset + 8 <= code_end, (offset, name)
+        opcode, import_index = struct.unpack_from("<II", image, code_start + offset)
+        assert opcode == 0x7b and external_names[import_index] == name, (offset, name)
     # No script-owned spawn, kill gate, mission grant, or direct hub request.
     assert not ({"generateMonster", "showMonster", "trigger", "killMonster",
                  "grantMission", "newWorldPost"} & imports)
@@ -45,10 +75,14 @@ def authored(gob):
     named = [(r["class"], r["properties"].split(";")) for r in rows]
     assert sum(cls == "NPC" and "dialogscript=startDia1ce" in props for cls, props in named) == 1
     assert sum(cls == "Trigger" and "t=ifdcc4" in props for cls, props in named) == 1
-    for action in ("newWorld1c57", "newWorldbcf6"):
-        assert sum(cls == "PushTrigger" and "action=" + action in props
-                   for cls, props in named) == 1
-    assert sum(cls == "Player1" for cls, _props in named) == 3
+    assert [(next(p for p in props if p.startswith("key=")),
+             next(p for p in props if p.startswith("action=")))
+            for cls, props in named if cls == "PushTrigger"] == [
+                ("key=returnab41", "action=newWorld1c57"),
+                ("key=returnc2d4", "action=newWorldbcf6")]
+    assert [(cls, props) for cls, props in named if cls == "Player1"] == [
+        ("Player1", ["default=1"]), ("Player1", ["from=strife"]),
+        ("Player1", ["from=drundar"])]
     staged = [cls for cls, props in named if "name=actor" in props]
     assert sorted(staged) == sorted(["Kobold"] * 8 + ["Koboldtough"] * 2 +
                                     ["koboldshaman"])
@@ -81,6 +115,7 @@ def authored(gob):
                 (2, "setEvil3024"), (5, "setEvil1037"), (8, "setva4d6")]
 
     cuts = {}
+    camera_types = {}
     for name in ("blood1", "gooddoor", "evildoor"):
         data = payload(gob, name + ".cut")
         flags, key_off, key_count, actor_off, actor_count = struct.unpack_from("<IIIII", data)
@@ -89,9 +124,19 @@ def authored(gob):
         cuts[name] = (flags, key_count, actor_count,
                       sum(key[1] == -100 for key in keys),
                       round(keys[-1][0], 2))
+        camera_types[name] = tuple(sorted((kind, sum(key[1] == -100 and key[2] == kind
+                                                      for key in keys))
+                                           for kind in {key[2] for key in keys
+                                                        if key[1] == -100}))
     assert cuts == {"blood1": (8, 143, 12, 32, 31.30),
                     "gooddoor": (8, 13, 2, 12, 8.47),
                     "evildoor": (8, 12, 2, 11, 7.59)}
+    assert camera_types == {
+        "blood1": ((0, 7), (1, 6), (2, 6), (4, 2), (5, 1),
+                   (6, 2), (7, 3), (9, 5)),
+        "gooddoor": ((0, 2), (1, 2), (2, 2), (4, 2), (7, 2), (9, 2)),
+        "evildoor": ((0, 2), (1, 2), (2, 2), (4, 1), (7, 2), (9, 2)),
+    }
     opening = payload(gob, "blood1.cut")
     _flags, _key_off, _key_count, actor_off, actor_count = struct.unpack_from(
         "<IIIII", opening)
@@ -105,9 +150,10 @@ def authored(gob):
         data = payload(gob, name + ".cut")
         _flags, key_off, key_count, actor_off, actor_count = struct.unpack_from("<IIIII", data)
         assert actor_count == 2
-        actors = tuple(data[actor_off + i * 0x2C + 8:actor_off + i * 0x2C + 0x1C]
-                       .split(b"\0")[0].decode("ascii") for i in range(2))
-        assert actors == ("BFhappydoor", "BFfiredoor")
+        actors = tuple((data[actor_off + i * 0x2C + 8:actor_off + i * 0x2C + 0x1C]
+                        .split(b"\0")[0].decode("ascii"),
+                        data[actor_off + i * 0x2C + 0x2B]) for i in range(2))
+        assert actors == (("BFhappydoor", 0), ("BFfiredoor", 0))
         key3 = [(round(time, 2), actor, kind) for time, actor, kind, _a, _b, _c
                 in (struct.unpack_from("<fhhiii", data, key_off + 20 * i)
                     for i in range(key_count)) if kind == 3]

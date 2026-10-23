@@ -47,9 +47,10 @@ The cutscene files are **Observed**: `blood1.cut` has 143 keys, 12 actors,
 2 actors, 12 camera keys and ends at about 8.47 seconds; `evildoor.cut` has
 12 keys, 2 actors, 11 camera keys and ends at about 7.59 seconds. Its type-3
 key at 4.91 s targets actor 1, `BFfiredoor`, by the same slot-3 path. Both
-door cutscenes bind existing `BFhappydoor` / `BFfiredoor` objects by name.
-All three
-have header flag 8. Camera actor −100 keys include position/yaw/pitch,
+door cutscenes request binding existing `BFhappydoor` / `BFfiredoor` objects
+by name (both actor flags at +0x2b are zero). Whether binding succeeds in a
+loaded level is **Unknown** here. All three have header flag 8. Camera actor
+−100 keys include position/yaw/pitch,
 fade/cut and field-of-view types. `cut_evalCamera` 0x19712c and
 `cut_runTask` 0x199928 are the host paths described in `docs/engine.md`;
 the focused test asserts metadata and calls to `cutScene`, not frames or
@@ -89,7 +90,9 @@ blood1 exit just because the player reached it.
 
 1. Load `blood1` records, arrival markers, script image and object identities
    in authored order; keep explicit refusals for unsupported constructors.
-   Preserve the default/from-level and JumpGate arrival priority.
+   Preserve the asserted default/from-level marker variants, each keyed
+   PushTrigger action pair, and JumpGate arrival priority. Check the authored
+   entry and built-in call offsets before accepting a different script image.
 2. Implement `start` and post-action timing with mission/quest/variable state,
    then the opening cutscene and actor cleanup. Keep the camera, player
    freeze/unfreeze and cutscene key scheduler tied to the original host.
@@ -98,8 +101,9 @@ blood1 exit just because the player reached it.
    paths and repeated visit conditions.
 4. Bind both AutoProp doors to the named objects. Compare door state after
    each cutscene and on a revisit; execute cutscene object slot-3 keys and
-   the explicit `autoPropSetState` restore. Do not infer an opened collision
-   path from a cutscene request alone.
+   the explicit `autoPropSetState` restore. Preserve the zero create flags
+   and the asserted camera-key type sets for each cutscene. Do not infer an
+   opened collision path from a cutscene request alone.
 5. Instantiate and fight the authored hostiles with real handles, targeting,
    damage, death, drops and credit. Their absence from script imports means
    no synthetic spawn event should stand in for the authored records.
@@ -120,10 +124,13 @@ claim that this task reran a live level.
 
 ## Verification
 
-All checks used `PYTHONDONTWRITEBYTECODE=1` and ran serially. The focused
-script trace passed 36 branch cases on **each** seed (20973 and 7), both
-through the interpreter and the game dispatch wrapper. The existing blood1
-loader/factory and enemy difftests passed on both seeds (363 records, 351
+All checks used `PYTHONDONTWRITEBYTECODE=1` and ran serially. The audit-fix
+rerun asserted all 21 entry offsets, 21 reported built-in call sites, three
+arrival variants, both keyed exit/action pairs, both door actor create flags
+and all three camera-key type counts. The focused script trace passed 36/36
+branch cases on **each** seed (20973 and 7), both through the interpreter and
+the game dispatch wrapper; the full unit suite passed 652/652. Earlier
+blood1 loader/factory and enemy difftests passed on both seeds (363 records, 351
 factory selections, 140 hostile placements). The focused `difftest_amx.py`
 shipped-script group passed A1–A6 for this one script: all 21 entries,
 84 compared runs and 174 native calls. `difftest_dialog.py` passed 10/10
