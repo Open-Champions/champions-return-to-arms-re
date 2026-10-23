@@ -80,8 +80,9 @@ eight vertex orders; colour (255, 255, 255, cell high byte). So the explored nib
 | `0x4044a8/ac` | float, cell origin | level load | 0x16a7dc, prologue | Executed |
 | `0x4044dc/e0` | int, grid W/H | `automap_loadGrid` | prologue | Executed |
 | `0x4044f0` | 216×216 u16 cells | load, reveal | icon alpha, strip upload | Executed |
-| `0x6e0f90 + i·0x1c` | icon {x, y, tex, rotate, ?, var, script} | `0x1689a4` (I) | phase B | Executed (+0x10 unread) |
-| `0x6e14d0` | icon count | U | phase B | Executed |
+| `0x6e0f90 + i·0x1c` | icon {x, y, tex, rotate, scale/value at +0x10, var, script} | `0x1689a4` from `PushTrigger_ctor` 0x1eca64, `JumpGate_ctor` 0x27c834, `Savepoint_ctor` 0x28ccf0 | phase B | O; projector Executed (+0x10 unread by projector) |
+| `0x6e14d0` | icon count | `0x1689a4` increments at 0x168c64; `0x168990` clears | phase B | O; projector Executed |
+| `0x6e14d4` | reveal-all flag | `automap_revealAll` 0x16a7d8 sets 1; `0x168990` clears | `minimap_draw` 0x1e4ae8 picks 960 or 3840 query radius | O; feed Executed (`difftest_hud_inputs.py`) |
 | `0x44fd74/78` | full scissor y0, y1 | frame setup | packet ends | Executed |
 | `0x44fd60` | ZBUF value (`g_zbufNoWrite`) | | strips | Executed |
 | `0x44fe10` / `0x44fe0c` / `0x44fda4` | cursor / base / capacity | | gate, all | Executed |
@@ -151,7 +152,8 @@ applied. **Simulation risk:** phase B calls `vars_get` (it appends unknown names
 - The atlas layout of world +0x6c (10-texel tiles assumed from the code): decode one .world.
 - `gfx_addSortedPacket` was stubbed. Whether it moves `0x44fe10` was not run.
 - Whether icon scripts draw from a generator: depends on the script; it was stubbed.
-- Icon table writer and +0x10: read `0x1689a4` fully.
+- The icon table writer is `0x1689a4` (O, three constructor callers above). The
+  projector does not read +0x10; what other consumers do with it is Unknown.
 
 ## Native client: what to implement
 
