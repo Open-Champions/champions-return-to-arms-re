@@ -40,6 +40,7 @@ def one(elf, rng, weapon_class, alive, has_object):
     before = [mem.read(player + 0x11C + i * 0x20, 0x20) for i in range(4)]
     emu.stub(RELEASE, name='anim_releaseCaches')
     emu.follow = {RESET}
+    emu.reads = []
     emu.call(RESET, slot)
     if not alive or not has_object:
         return (all(mem.read(player + 0x11C + i * 0x20, 0x20) == before[i]
@@ -55,6 +56,15 @@ def one(elf, rng, weapon_class, alive, has_object):
         failures.append(('count', mem.u8(player + 0x118)))
     if [c.target for c in emu.calls] != [RELEASE]:
         failures.append(('calls', [hex(c.target) for c in emu.calls]))
+    class_reads = [(pc, value) for pc, address, size, value in emu.reads
+                   if address == record + 0x4A86 and size == 1]
+    if (0x1B24B4, weapon_class) not in class_reads:
+        failures.append(('selector class read', class_reads))
+    definition_reads = [(pc, value) for pc, address, size, value in emu.reads
+                        if address == player + 0x24 and size == 4]
+    if not {0x1B25B0, 0x1B25C4}.issubset(
+            {pc for pc, value in definition_reads if value == definition}):
+        failures.append(('selector definition reads', definition_reads))
     return not failures, failures
 
 
@@ -99,10 +109,22 @@ def equip_then_select(elf, rng, weapon_class, *, dual=False, ammunition=False):
         failures.append(('class', mem.u8(record + 0x4A86), expected_class))
     class_stores = [(pc, value) for pc, address, size, value in emu.writes
                     if address == record + 0x4A86 and size == 1]
-    if (not ammunition and not class_stores) or (ammunition and class_stores):
+    expected_stores = ([] if ammunition else
+                       [(0x1C2AD4, 0 if dual else weapon_class)] +
+                       ([(0x1C2B64, 7)] if dual else []))
+    if class_stores != expected_stores:
         failures.append(('class stores', class_stores))
-    if not ammunition and not any(c.target == RESET for c in emu.calls):
-        failures.append('missing reset call')
+    reset_sites = [c.site for c in emu.calls if c.target == RESET]
+    if reset_sites != ([] if ammunition else [0x1C2B80]):
+        failures.append(('reset call sites', reset_sites))
+    set_stores = [(pc, value) for pc, address, size, value in emu.writes
+                  if address == record + 0x4A7C and size == 1]
+    expected_set = 1 if weapon_class in (4, 6) and not dual else 0
+    if ammunition:
+        if set_stores:
+            failures.append(('ammunition set stores', set_stores))
+    elif set_stores != [(0x1C29E8, expected_set)]:
+        failures.append(('set stores', set_stores, expected_set))
 
     # Use different pointers in every row so selecting the old class is visible.
     for cls in range(8):
@@ -112,7 +134,17 @@ def equip_then_select(elf, rng, weapon_class, *, dual=False, ammunition=False):
     emu.reset_log()
     emu.stub(RELEASE, name='anim_releaseCaches')
     emu.follow = {RESET}
+    emu.reads = []
     emu.call(RESET, slot)
+    class_reads = [(pc, value) for pc, address, size, value in emu.reads
+                   if address == record + 0x4A86 and size == 1]
+    if (0x1B24B4, expected_class) not in class_reads:
+        failures.append(('selector class read', class_reads))
+    definition_reads = [(pc, value) for pc, address, size, value in emu.reads
+                        if address == player + 0x24 and size == 4]
+    if not {0x1B25B0, 0x1B25C4}.issubset(
+            {pc for pc, value in definition_reads if value == table}):
+        failures.append(('selector definition reads', definition_reads))
     for i, k in enumerate(model.BASE_SLOTS):
         got = mem.u32(player + 0x11C + 0x20 * i)
         want = mem.u32(table + model.resource_offset(expected_class, k))

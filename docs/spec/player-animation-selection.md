@@ -176,7 +176,7 @@ a new category-0 weapon other than ammunition (equipment slot 8) writes the
 definition's class to `R+0x4a86` at 0x1c2ad4, calls
 `player_resetIdleAnim` at 0x1c2b80, and stores the equipped pointer. Bow
 and thrown classes 4/6 choose weapon set 1, while other weapon classes
-choose set 0 (0x1c2948–0x1c29e8). A second one-hand weapon with the dual
+choose set 0 (store at 0x1c29e8). A second one-hand weapon with the dual
 wield passive overrides the class with 7 at 0x1c2b64. Shield/unequip paths
 can set class 5 (unarmed), 0 or a swapped weapon's class; an equip of an
 already equipped pointer skips the class rewrite. See `ref_messages.py`
@@ -185,6 +185,9 @@ complete order and guards. **Executed:** the focused class handoff in
 `difftest_player_anim_select.py` runs original equip and then original
 `player_resetIdleAnim` on ten synthetic cases per seed. Its other equip
 callees are stubs; item permission and real bag ownership are not covered.
+The difftest asserts the class-store PCs, reset call site, active-set store PC
+and value, and absence of those stores on the ammunition guard. Its dual-wield
+case checks both the ordinary class store and the class-7 override.
 
 **Observed selector reads:** `player_resetIdleAnim` reads the class byte at
 0x1b24b4, then reads the definition pointer at `P+0x24` (0x1b25b0 and
@@ -195,12 +198,14 @@ switch at 0x1a5e80; its row clip helper reads `R+0x4a86` and
 are inputs to the original state machine and clip lookup, not a standalone
 pose enum. The original animation flags, frame timers, and track phases
 decide when a state finishes.
+The focused difftest asserts the class and definition read PCs in the original
+reset function on the live selector path, with synthetic resolved pointers.
 
 | Action | State write and exit in the original | Clip selection |
 |---|---|---|
 | Melee / heavy | Neutral state 2 enters 1 on accepted attack at 0x1a7804–0x1a7fb8; heavy skill 0x25 also enters 1 at 0x1a7308. State 1 returns to 2 on the elapsed-frame, movement, deadline or forced-action checks at 0x1aacdc–0x1aafe0. | First swing uses class row `+0x74`; heavy uses `+0x64`; continuation uses `Player_pickAttackAnim` 0x1bba88 then a model animation-lump name lookup. |
 | Bow / thrown | Accepted shot enters 0 from 2 at 0x1a7804–0x1a7fb8; state 0 returns to 2 only after its flag `0x10` clears and the minimum interval passes (0x1a80e0 onward). A close-range hit can enter melee state 1 instead. | Class row `+0x74`, or the separate close-range named clip. |
-| Spell | An accepted cast enters 5 from 2 at 0x1a6c30–0x1a7804. Skill-object and older-skill branches return to 2 on refusal, release, mana/phase completion, or missing track marker at 0x1ab4f8–0x1ac13c. Skill kind 6 can omit the cast clip while remaining in state 5. | Class row `+0x6c` when the branch starts a cast animation; track flag `0x8000` and its blend value govern the cast point. |
+| Spell | An accepted cast enters 5 from 2 at 0x1a6c30–0x1a7804. The skill-object branch can return to 2 on refusal; in phase 2 it returns to 2 when flag `0x8000` clears. In phase 0, a missing flagged track starts the cast animation (except kind 6) and advances to phase 1 while staying in state 5. Older-skill branches have their own release and mana/phase exits at 0x1ab4f8–0x1ac13c. | Class row `+0x6c` when the branch starts a cast animation; track flag `0x8000` and its blend value govern the cast point. |
 | Hit / knockdown | `Player_processDamage` 0x1b2cc0 enters 3 at 0x1b2ed8 or 0x1b380c; `Player_run` returns 3 to 2 after animation marker 8 clears at 0x1ab1f0–0x1ab2f0. | Class row `+0x7c` for a reaction or a named angle-dependent knockdown. |
 | Death | `Player_processDamage` writes 4 at 0x1b34fc. State 4 at 0x1ab2f0–0x1ab3f0 has no transition to 2; `player_respawn` 0x1bd040 replaces the object. | Definition header `+0xc` or the class-2 special `+0x14`, as in section 3. |
 
@@ -286,3 +291,11 @@ seed, and the 652-test unit suite.
 All passed with `PYTHONDONTWRITEBYTECODE=1`. The ten focused handoffs use
 synthetic item definitions, including class-byte probes that do not assert
 the existence of a corresponding shipped item.
+
+2026-10-23 audit FIX: `difftest_player_anim_select.py` now asserts the exact
+equip class-store, dual-wield override, reset call, active-set store and
+selector-read sites on both seeds, including the ammunition guard. Reruns
+passed 96/96 base cases, 10/10 equip handoffs and 1/1 lethal entry per seed;
+`difftest_player.py` compared 31,990 and 31,991 ticks respectively; the full
+unit suite passed 652/652. The spell row above now separates the phase-0
+missing-track cast start from the phase-2 flag-clear exit.
