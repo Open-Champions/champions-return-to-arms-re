@@ -18,7 +18,9 @@ research inputs, not commits merged into this branch.
 
 **Observed** in the private `HUB.GOB` `objects.ob`: hub object 10 is an `NPC`
 with `name=firiona`, `dialogscript=startDia3314`, and `shop=1`. This is the
-only `NPC` record in that archive. `Creature_interact` 0x116bd8 reaches
+only `NPC` record in that archive. `tools/difftest_vendors.py:hub_vendor`
+checks these properties and the NPC count against the SHA-256-pinned private
+`HUB.GOB`; it does not commit archive data. `Creature_interact` 0x116bd8 reaches
 `script_startDialog` 0x143824; `dialog_start` 0x22fa50 owns the dialog.
 The story-route research executed the fresh-state dialog conditions and its
 two ending script actions, one of which calls `activateStore`. It did not
@@ -46,8 +48,10 @@ each followed by a count, stride 0x1208. Count addresses are 0x868078,
 
 **Observed** stock mode reads quest variable `storeLevel` through `vars_get`
 0x1ed778 (0x1c7b40/0x1c7bc0). The fresh hub script initializes this
-variable to zero only on its fresh-state branch. The stock path seeds four
-fixed items through `item_parseDescriptor` at 0x1c7cd4–0x1c7d74, then fills
+variable to zero only on its fresh-state branch. The code at
+0x1c7cd4–0x1c7d74 calls `item_parseDescriptor` in the fixed-item seed path;
+its exact call count and descriptor arguments are **Unknown** until a bounded
+stock-mode trace executes modes 1/2/3. The stock path then fills
 the lists with `item_generateWithAffixes` 0x104ca4 and
 `item_generateFromSpecialTable` 0x104758, using difficulty and store level for
 the budget/level cap. It sorts each list by value. The stock loops call
@@ -78,9 +82,11 @@ checks, so it establishes writes and call arguments, not successful I/O.
 `buttontop.tex` at 0x1c6c4c, `buysell.tex` at 0x1c6f50, and `front.tex`
 at 0x1c6398. Sprite submissions are respectively (66,210,layer 0),
 (60,174,layer 0), and (320,0,layer 1). The choice code begins a text batch
-at 0x1c6ce0 and makes two localized text draws at 0x1c6d20/0x1c6e8c;
+at 0x1c6ce0 and makes two localized text draws at 0x1c6d20/0x1c6e8c
+(`tools/difftest_vendors.py:screen` checks both call sites and positions);
 the fixture does not resolve font glyphs or localized strings. The resource
-path also requests `coins.vag` and `shoptick.vag` at 0x1c883c/0x1c8854.
+path also requests `coins.vag` and `shoptick.vag` at 0x1c883c/0x1c8854
+(`tools/difftest_vendors.py:open_close` checks both call sites and names).
 
 **Observed** `shop_run` uses the second panel table at 0x86a4b0 for the
 choice and enters the common `itemList_update` 0x1d14c8/
@@ -132,33 +138,39 @@ port; any safety change needs a separately stated rule.
 **Executed** `shop_close` 0x1d0ab8 after the opened fixture. It clears
 `g_shopOpen` and menu flag 0x41b4f8, sets input lockout 0x41b4fc to 60,
 removes task 0x1c6068 at 0x1d0b58 and clears offline pause at 0x1d0b7c.
-It calls the inventory resource unload path. **Observed** in net mode it
+It calls `inventory_unloadResources` 0x1c54d0 at 0x1d0b4c; the probe checks
+the call but stubs its internals. **Observed** in net mode it
 sends a null-channel shop-closed message, whose receiver is empty
 (`docs/ui.md`). The exact local close button path and death-close timing are
 outside this bounded probe.
 
 1. Keep the authored hub NPC/dialog/script route, including deferred
-   `activateStore`, actual local-slot gates and quest `storeLevel`. Verify
+   `activateStore`, the disc-checked vendor properties, actual local-slot
+   gates and quest `storeLevel`. Verify
    NPC use through shop opening in an integrated hub run.
 2. Port mode 1/2/3 stock generation from the original item functions and
-   value/sort rules. Resolve budget arithmetic, seeded duplicate retries and
-   stock-mode packing with a focused comparison before accepting stock parity.
+   value/sort rules. Trace the fixed-descriptor call count and arguments;
+   resolve budget arithmetic, seeded duplicate retries and stock-mode packing
+   with a focused comparison before accepting stock parity.
 3. Load the selected disc's shop textures, inventory item pictures and fonts;
-   render the Buy/Sell choice and shared item grid by their submitted layers,
-   cursor and copy addresses. Compare original/native captures with known
+   request the two checked audio resources, and render the Buy/Sell choice and
+   shared item grid by their submitted layers, text-draw positions, cursor and
+   copy addresses. Compare original/native captures with known
    stock, language and frame before claiming visual parity.
 4. Wire raw local input to the observed Buy/Sell messages. Preserve channel
    routing, stock addresses, gold arithmetic, bag insertion/removal and the
    ignored insertion result. Validate stacks, full bags and zero-credit kinds.
-5. Implement `shop_close`, task/resource release, menu-state message and
-   input lockout; test both explicit exit and shopper-death exit in an
-   integrated session.
+5. Implement `shop_close`, task removal, inventory resource unload,
+   menu-state message and input lockout; test both explicit exit and
+   shopper-death exit in an integrated session.
 
 ## Verification boundary
 
-`PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_vendors.py` compared 24
-bounded checks across the two seeds with zero mismatches. The controlled
-item value, resource handles and service stubs are named in the probe.
+`PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_vendors.py` passed one
+disc-backed archive check and 24 bounded EE checks across the two seeds with
+zero mismatches on the 2026-10-23 audit-fix rerun. The controlled item value,
+resource handles and service stubs are named in the probe. The full unit suite
+passed 652 tests in the same serial background run with bytecode writes off.
 Serial background rerun with `PYTHONDONTWRITEBYTECODE=1` and the pinned
 executable: `difftest_inventory_screen.py` on `4a8a78a` passed 38/38;
 `difftest_items.py --quick --jobs 1 -k shop` passed 1/1 property with five
