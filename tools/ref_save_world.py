@@ -51,7 +51,7 @@ def unpack_level_body(body):
 
 def reload_events(saved, level_objects_present=True, skip_scripts=False):
     """0x217978 call order. A saved body replaces most placed objects."""
-    events = ['script_set_current', 'player_start_rank', 'preStart']
+    events = ['script_set_current', 'preStart']
     if skip_scripts:
         events.remove('preStart')
     if saved:

@@ -18,8 +18,11 @@ directory at +0x16010 and level bodies at +0x16118. Keys are qualified level
 names; the act table supplies each reserved body size. The current level is
 stored when building a checkpoint or card image, and the old level is stored
 before a normal transition (`mainloop_loadRequestedWorld` 0x320edc). State is
-not stored while card state is 4 or the level flag 0x800 is set. A level outside
-the current act's list is not stored. The finite directory and total buffer
+not stored while card state is 4 or the level flag 0x800 is set. Ordinary level
+names require a match in the current act's list. **Executed** in the prior
+`t3/research-saves` save difftest: a qualified name beginning `hub` uses act row
+0 even when the name is absent from that list (`hub_west` stored under row 0
+named `town`; `save_storeLevelState` 0x21777c). The finite directory and total buffer
 mean that the original does **not** promise state for an unlimited set of levels.
 
 **Observed** (0x218620–0x218690): a body has `u32 world_length`, four unused
@@ -63,8 +66,10 @@ scratch, unpacks the explored map, constructs saved object records with
 `world_loadRecords(blob, 0)`, and loads decals. It then passes `objects.ob` to
 `world_loadRecords` with `filterOnly=1`; without a saved entry the flag is 0.
 Finally `start` runs. The rank byte from a card load is consumed and cleared
-before `preStart`. **Executed:** `difftest_save_world.py` compared this call
-order, record selection, scratch bytes and rank for 32 synthetic cases per
+before `preStart`. **Executed:** `difftest_save_world.py` observes rank 3 and
+the cleared loaded byte inside the original `preStart` callback (or the first
+load callback when scripts are skipped), and compares the original's call
+order, record selection and scratch bytes for 32 synthetic cases per
 seed, including no saved entry and the script-skip byte.
 
 **Observed** (`world_loadRecords` 0x14e808): saved records are constructed by
@@ -81,11 +86,11 @@ revisit, provided the saved entry was retained and the class is not filtered.
 
 | Case | Original treatment and evidence |
 |---|---|
-| Opened chests | **Observed:** `Chest_saveState` 0x292284 writes 12 bytes including gold/open state; `Chest_loadState` 0x2922cc restores them and finishes the lid animation. `AutoChest_saveState` 0x23b06c / load 0x23b0b4 stores its own 12-byte hide mask, gold and state. A deleted chest has no eligible live record to save. **Inferred:** it stays absent when the level's saved entry is used. An AutoChest trap fuse timer is outside its saved bytes (`docs/monsters-2.md` 9.2). |
+| Opened chests | **Observed:** the vtable slots identify `Chest_saveState` 0x292284 and `Chest_loadState` 0x2922cc (see `symbols/monsters.tsv`). **Unknown:** the Chest payload size, fields, load effects and lid-animation behavior need an addressed body trace or class-state execution. `AutoChest_saveState` 0x23b06c / load 0x23b0b4 has a separately documented 12-byte hide mask, gold and state (`docs/monsters-2.md` 9.2); its trap fuse timer is outside those bytes. A deleted chest has no eligible live record to save. **Inferred:** it stays absent when the level's saved entry is used. |
 | Killed enemies | **Observed:** `Creature_saveState` 0x116780 writes variant, HP fraction, selected flags and dead animation; `Creature_loadState` 0x116920 puts a dead record into corpse state. Corpse flag 0x2000 can be thinned at 0x14e140; transient 0x4000 objects are omitted. **Inferred:** a dead or removed enemy need not reappear from `objects.ob`, but corpse presentation and timers are not a full live-tick snapshot. |
 | Triggered scripts | **Observed:** `Trigger_saveState` 0x1ecf18 / load 0x1ecef4 saves five bytes (delay and inside flag). Quest variables are in the main save, via `save_build` 0x221cf0 and `save_load` 0x221d60. A deleted one-use object is represented by absence. `script_setCurrent` 0x1ed650 loads a new machine and `preStart`/`start` run again at 0x217acc/0x217bac. The instruction pointer, call stack, deferred queue and active dialog are not a level-state section. **Inferred:** scripts re-derive effects from variables and object state; an in-flight script cannot resume at its old instruction. |
 | Doors and gates | **Observed:** `DoorSwing_saveState` 0x28ae3c writes angle, direction and speed; its load 0x28ae74 re-enables motion. `DoorSecret_saveState` 0x28b1a0 writes the open byte and load 0x28b1b8 moves its piece to the open pose. `RollDoor_saveState` 0x28dee8 writes its open state, piece index, speed and counter; load 0x28df24 rebuilds motion/collision. `JumpGate_saveState` 0x27d974 saves two object bytes; the destination list is separately in the save header (`jumpgate_saveDestinations` 0x27dcf4 / load 0x27dd30). The moving-piece geometry itself is from `.world`. |
-| Dropped items | **Observed:** `ItemProp_saveState` 0x1596a4 writes the 0x48-byte item record with an encoded definition index, then `Prop_saveState` 0x158d8c. `ItemProp_loadState` 0x159758 decodes the item and rebuilds its transform. Picked-up items delete the world object (`itemprop_tryPickup` 0x154dbc), so the saved eligible-object pass does not recreate that drop. **Unknown:** exact retention of every temporary drop under thinning/flag policies. |
+| Dropped items | **Observed:** the vtable slots identify `ItemProp_saveState` 0x1596a4 and `ItemProp_loadState` 0x159758 (see `symbols/objects.tsv`). **Unknown:** the ItemProp payload size, encoded definition, delegation to Prop, decode and transform effects need an addressed body trace or class-state execution. Picked-up items delete the world object (`itemprop_tryPickup` 0x154dbc), so the saved eligible-object pass does not recreate that drop. **Unknown:** exact retention of every temporary drop under thinning/flag policies. |
 
 ## Multi-surface terrain on reload
 
@@ -114,8 +119,8 @@ display, save and revisit every shipped level with full object fidelity.
 
 1. **Load the actual level data first.** Decode `.GOB`/`.lmp` and `.world`, retain every terrain cell, height-field element, chunk, piece and texture reference, then remove the one-plain-element presentation refusal through a measured multi-element renderer. Keep simulation terrain and rendered surfaces separate.
 2. **Define the native world-state envelope.** Key by qualified level name and version the native schema. Preserve current player/quest/position fields; add per-level object records, decals and explored map. Do not silently inherit the original ten-slot / 0x4bc78-byte capacity as an all-level guarantee.
-3. **Implement the object registry and save policy.** Match stable class/property/pose identity, transient and filtered classes, deletion, save ordering and overflow behavior. Export only class states with observed slot-9/slot-8 contracts; refuse unknown classes rather than fabricating state.
-4. **Restore in original order.** Fresh script machine, `preStart`, explored map, saved object construction/state, decals, filtered `objects.ob` construction, `start`, then player placement using saved spawn rank. Rebuild moving-piece collision and doors through their object load callbacks after `.world` exists.
+3. **Implement the object registry and save policy.** Match stable class/property/pose identity, transient and filtered classes, deletion, save ordering and overflow behavior. Export only class states with verified slot-9/slot-8 payloads and load effects; the Chest and ItemProp slot identities alone do not establish their payloads. Refuse unknown classes rather than fabricating state.
+4. **Restore in original order.** Restore saved player spawn poses from the main save, load the actual level and a fresh script machine, consume and clear the saved spawn rank before `preStart`, then unpack the explored map, construct saved objects and their state, load decals, construct filtered `objects.ob` records, and run `start`. Rebuild moving-piece collision and doors through their object load callbacks after `.world` exists.
 5. **Port persistent script effects.** Quest variables, trigger delay/inside flag, one-use deletion, jump-gate list and class-specific counters belong to their documented stores. Treat the interpreter PC, stack, pending dialog and deferred work as fresh on reload unless a separately evidenced native feature requires a different policy.
 6. **Validate at real-level scale.** For a first visit, a checkpoint, a cross-level revisit and a card load, compare object counts/identities and states, map exploration, piece collision, terrain height and visible geometry. Include a multi-element level and capacity cases; record explicit refusals for missing constructors or unsupported state. Only then claim every-real-level save/load.
 
