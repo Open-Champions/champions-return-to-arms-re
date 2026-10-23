@@ -653,15 +653,21 @@ disc bytes remain ignored under `work/valor-capture/`.
    enter `valor` through a campaign gate or a legitimate saved character and
    capture the requested level, player, shared seed and `hud.lmp` residency at
    `game_loadLevel` 0x1e55c0. This capture used a pending-level write.
-2. **Ran in the scripted loader session:** resolve the 20 boar and 26
-   Minotaur slots through `res_find` 0x17365c, then run `GameObject_ctor`
-   0x14cb10 and `Creature_ctor` 0x109d68 before class constructors
-   0x2ba03c / 0x288fdc. The table above pins this session's nonzero returns;
-   a native port must obtain its own allocator addresses.
+2. **Ran in the scripted loader session:** constructor calls nest as class
+   constructor 0x2ba03c / 0x288fdc → `Creature_ctor` 0x109d68 →
+   `GameObject_ctor` 0x14cb10 → `res_find` 0x17365c for the first
+   definition resolution (20 boar or 26 Minotaur slots). Resource calls
+   return before `GameObject_ctor`; base initialization then completes before
+   the class constructor returns. The trace records the class and base
+   entries and their returns, plus `GameObject_ctor`'s return address in
+   `Creature_ctor`; it did not break at `Creature_ctor` entry. The table
+   pins this session's nonzero returns; a native port must obtain its own
+   allocator addresses.
 3. **Ran in the same session:** retain the one object identity in the grid
-   and 60-frame list through 0x14f2b8, and dispatch that identity from
-   `runObjects` 0x14b910. The first actors' link values above are captured;
-   full AI, terrain and animation service behavior remain Unknown.
+   and 60-frame list through 0x14f2b8. **Observed call-site contract:**
+   `runObjects` 0x14b910 dispatches virtual slot 4; this trace did not
+   capture a direct dispatch of these actors. The first actors' link values
+   above are captured; full AI, terrain and animation behavior remains Unknown.
 4. **Ran for the entry player:** keep the actual class/model, `club` item,
    active set and the `Player_recalcDamage` 38 / 19–24 result. The normal
    campaign route's equipped player remains Unknown.

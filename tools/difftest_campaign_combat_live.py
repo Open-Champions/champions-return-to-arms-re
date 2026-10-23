@@ -48,14 +48,38 @@ def check_loader(lines):
         assert len(found) == DEFINITION_SLOTS[lump], (lump, len(found))
         assert all(found) and len(set(found)) == len(found), lump
 
-        actors = {field(line, "a0") for line in lines
-                  if f"pc={constructor:08x} " in line}
+        class_calls = [(index, field(line, "a0"))
+                       for index, line in enumerate(lines)
+                       if f"pc={constructor:08x} " in line]
+        actors = {actor for _, actor in class_calls}
         run60 = {field(line, "a0") for line in lines
                  if "bp=obj_runEvery60 " in line and label in line}
         assert len(actors) == expected, (label, len(actors))
         assert actors <= base_objects and actors == run60, label
+        for call_number, (class_at, actor) in enumerate(class_calls):
+            end = (class_calls[call_number + 1][0]
+                   if call_number + 1 < len(class_calls) else len(lines))
+            # Creature_ctor is identified by GameObject_ctor's live return
+            # address; this trace did not break at Creature_ctor entry.
+            base_at = next(index for index in range(class_at + 1, end)
+                           if "bp=GameObject_ctor " in lines[index]
+                           and "ra=00109dbc(Creature_ctor+0x54)" in lines[index]
+                           and field(lines[index], "a0") == actor)
+            base_ret = next(index for index in range(base_at + 1, end)
+                            if "ret=GameObject_ctor " in lines[index])
+            class_ret = next(index for index in range(base_ret + 1, end)
+                             if f"ret={label} " in lines[index])
+            assert class_at < base_at < base_ret < class_ret
+            if call_number == 0:
+                lookups = [index for index in range(base_at + 1, base_ret)
+                           if "bp=res_find " in lines[index]
+                           and "ra=0014cbfc" in lines[index]
+                           and field(lines[index], "a2") == definition]
+                assert len(lookups) == DEFINITION_SLOTS[lump], (label, len(lookups))
+                assert all("ret=res_find " in lines[index + 1]
+                           for index in lookups), label
         print(f"{label}: {expected} base/derived/run60 identities; "
-              f"{len(found)} nonzero {lump} lookups")
+              f"{len(found)} nonzero {lump} lookups; nested entry/return order")
 
 
 def check_entry(text):
