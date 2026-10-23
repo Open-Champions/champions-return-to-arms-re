@@ -58,9 +58,9 @@ Both rings have `action1`, `actionatend` and `triggerable`; `hub` also has
 once; the associated dialogs hold 31 nodes/54 choices (`hub`) and 26
 nodes/48 choices (`hub2`). Static calls respectively include
 `activateStore` 23/19, `activateMissionMenu` 2/2, `addQuest` 11/5 and
-`setMissionAvailable` 35/30 and `removePlayerItem` 19/19. The latter is
-concentrated in each script's `start` entry; the bounded NPC choice-action
-reach scan did not find it behind a dialog choice. Those are call sites across
+`setMissionAvailable` 35/30 and `removePlayerItem` 19/19. These are static
+script call counts. Whether a dialog choice can reach `removePlayerItem` is
+**Unknown** without a choice-action reach check. Those are call sites across
 mutually exclusive branches, not counts of services delivered in one
 playthrough. Neither hub
 script calls `healPlayer`, `giveFullHealth`, `givePlayerExp`, `saveGame`,
@@ -87,7 +87,7 @@ alternate hub, not a second quest-giver standing beside the first.
 
 | Service | Original path and screen | Cost and effect |
 |---|---|---|
-| Quest conversation, both NPCs | **Observed** `Player_interact` 0x1b2640 picks the nearest flagged object in its bounded box; `Creature_interactPrompt` 0x116d50 applies display-name, facing, hostile-nearby and shop-busy gates. Use enters `Creature_interact` 0x116bd8, acquires menu mutex, runs the record's `dialogScript`; `script_startDialog` 0x143824 and `dialog_onMsg` 0x22ee2c load the associated `.dbin`. `dialog_showNode` 0x230c74 submits the dialog box, localized line, voice and eligible choices. `docs/dialog.md` records the message-driven close and deferred store open. The `hub2` object-to-dialog-to-choice route is **Unknown** here. | **Observed/Executed in `t3/research-story-route`:** the fresh `hub` ending actions set mission 1 available and add one quest; mission byte at `g_players` 0x4d8af0 +0x4bbf becomes 1, count at +0x43d0 becomes 1, and one title/body pair starts at +0x41d0. The later hub and alternate-hub action calls also reach `setMissionAvailable`, `setv` and `addQuest`, but their full state-to-choice mapping is **Unknown** without an integrated dialog traversal. No quest-dialog gold, XP or item fee is established. The optional store choice uses the separate vendor pricing contract. |
+| Quest conversation, both NPCs | **Observed** `Player_interact` 0x1b2640 picks the nearest flagged object in its bounded box; `Creature_interactPrompt` 0x116d50 applies display-name, facing, hostile-nearby and shop-busy gates. Use enters `Creature_interact` 0x116bd8, acquires menu mutex, runs the record's `dialogScript`; `script_startDialog` 0x143824 and `dialog_onMsg` 0x22ee2c load the associated `.dbin`. `dialog_showNode` 0x230c74 submits the dialog box, localized line, voice and eligible choices. `docs/dialog.md` records the message-driven close and deferred store open. The `hub2` object-to-dialog-to-choice route is **Unknown** here. | **Observed/Executed in `t3/research-story-route`:** the fresh `hub` ending actions set mission 1 available and add one quest; mission byte at `g_players` 0x4d8af0 +0x4bbf becomes 1, count at +0x43d0 becomes 1, and one title/body pair starts at +0x41d0. Effects of `hub2` dialog choices, including whether any reaches `setMissionAvailable`, `setv` or `addQuest`, are **Unknown**. No quest-dialog gold, XP or item fee is established; whether a choice can reach the statically counted `removePlayerItem` calls is **Unknown**. The verified `hub` optional store choice uses the separate vendor pricing contract. |
 | Savepoint use | **Executed here** `Savepoint_interactPrompt` 0x28da58 submits a localized prompt through `text_lookup` 0x173c84 and 0x19e854. `Savepoint_interact` 0x28dc30 requires `memcard_isBusy` 0x217518 and `menuMutex_isHeld` 0x22fc2c to return zero. Accepted use writes object +0x84=1 and +0xc4=1, calls `memcard_requestSave` 0x2175b4 for the player and dispatches object actions at 0x14dcc8. Busy/mutex controls call neither. **Observed** the shipped points have no action script. The requested screen is the memory-card save flow, not an NPC dialog; its successful card UI, disk write and pixels were not run here. | **Executed:** prompt and accepted/busy/mutex use cases wrote no byte of the constructed player record, including gold +0xe4; no fee is in this path. **Observed** `Savepoint_run` 0x28cdd0 can auto-save near living players when armed and allowed. A completed save changes save/card and point state, not a purchase or skill record. Actual card persistence is **Unknown** in this probe. |
 | Savepoint resurrection | **Observed** `Savepoint_scanPlayers` 0x28d6dc checks nearby living players every eighth frame. With at least two players, a live teammate near the point, an active dead slot whose countdown is zero, and a suitable free spot, `Savepoint_run` 0x28d528–0x28d618 calls `player_respawn` 0x1bd040. This is automatic; no healer conversation, charge screen or resurrection menu appears in this path. | **Observed** `player_respawn` replaces the dead object, sets player-record HP +0xac to half of maximum +0xb0 in the normal campaign path, starts spawn protection and rebuilds the alive list. No gold, XP or item debit occurs in this branch (`t3/research-death-flow/docs/spec/player-death-flow.md` §2). The current probe does not execute the full point-to-respawn branch, so its live timing and placement remain **Unknown** here. |
 | Mission map PushTrigger | **Observed/Executed separately** the record's ordered `key` is evaluated by `PushTrigger_prompt` 0x1eca94; eligible use reaches `PushTrigger_interact` 0x1ecc70 and the authored `action`. The fresh `hub` wrapper sets the entrance and calls `activateMissionMenu` 0x143fa8. `missionMenu_open` 0x231520 presents `MSEL.LMP`'s map, locked nodes, detail and selection; `t3/research-story-route` checks 26 state snapshots per seed and the row-zero story request for `blood1`. The `hub2` record has `key` and `action`, but their route to the menu is **Unknown**. | **Observed** opening the map writes menu/task state, not HP, gold, XP or quest records. Confirming a selected destination writes `g_pendingLevel` 0x41b6d0 and orientation 0x41b720; later level loading carries the player record subject to act rules (`t3/research-quest-log` §4). No travel fee was found in the verified `hub` trigger path. Proximity/use through this specific disc object and full level transition are **Inferred** from separate checks. |
@@ -114,9 +114,11 @@ offsets. Vendor purchases and sales change gold and bags according to
    dialog machine. Run the authored hub scripts and `.dbin` conditions/actions;
    persist quest variables, mission rows and journal entries in their
    documented owners. Verify later and alternate-hub choices through the
-   actual dialog, including any deferred store branch. Treat `hub2` quest and
-   store choices as unported until object-to-dialog-to-choice reachability is
-   verified.
+   actual dialog, including any deferred store branch. Treat `hub2` quest
+   effects and store choices as unported until object-to-dialog-to-choice
+   reachability and effects are verified. Check both hubs' choice-action
+   reachability to `removePlayerItem` before assigning any dialog item cost
+   or claiming its absence.
 3. Port Savepoint prompt/use, card-state gates, local save UI and auto-save.
    Then implement the co-op countdown/proximity resurrection, free-spot
    placement and `player_respawn` half-max-HP rule. Compare a two-player
@@ -157,3 +159,9 @@ Python unit suite passed 652/652. The final run is recorded at the end of
 `local/hub-npc-checks.log` in this worktree, ignored by Git. These are
 separate function-level checks; `hub2` choice/action reachability, the effect
 rings, co-op resurrection and native visual result remain open.
+
+**Second-round audit FIX rerun, 2026-10-23, with
+`PYTHONDONTWRITEBYTECODE=1`:** the focused probe passed two pinned archives
+and eight bounded EE cases over seeds 20973/7 with zero mismatches; the full
+Python unit suite passed 652/652. These checks do not resolve `hub2` choice
+effects or choice-action reachability to `removePlayerItem` in either hub.
