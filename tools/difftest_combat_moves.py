@@ -6,6 +6,8 @@ replaced by recording stubs so this checks the move's handoff, not a real fight.
 """
 import argparse
 import hashlib
+from pathlib import Path
+import re
 
 from ee_emu import EE
 
@@ -19,6 +21,58 @@ DAMAGE = 0x1E8230
 RAY = 0x18A5C0
 TAKE_DAMAGE = 0x1B5330
 SEED = 0x404464
+ROOT = Path(__file__).resolve().parent.parent
+CLASS_NAMES = ('barbarian', 'cleric', 'shadowknight', 'ranger', 'wizard',
+               'berserker', 'shaman')
+MOVE_SKILLS = {35, 36, 37, 38, 41, 42, 43, 44, 45, 46, 47, 48, 49,
+               54, 62, 64, 65, 67, 71, 79, 84}
+
+
+def class_skill_table_probe():
+    """Check every move-table class assignment against the pinned skill specs."""
+    moves = (ROOT / 'docs/spec/player-combat-moves.md').read_text()
+    skills_b = (ROOT / 'docs/spec/skills-35-68.md').read_text()
+    skills_c = (ROOT / 'docs/spec/skills-69-101.md').read_text()
+    class_index = re.search(r'Class indices:.*?6 shaman', skills_b, re.S)
+    assert class_index, 'missing pinned class-index mapping'
+    for index, name in enumerate(CLASS_NAMES):
+        assert re.search(r'\b%d %s\b' % (index, name), class_index.group()), (index, name)
+
+    pinned = {}
+    skill_tree = skills_b.split('### 1.7 Who can learn each skill', 1)[1].split('### 1.8', 1)[0]
+    for line in skill_tree.splitlines():
+        match = re.match(r'^\| (\d+) \| [^|]+ \| ([^|]+) \|$', line)
+        if match and int(match[1]) in MOVE_SKILLS:
+            pinned[int(match[1])] = {name for name in CLASS_NAMES
+                                     if re.search(r'\b%s\b' % name, match[2])}
+    for skill_id in (71, 79):
+        match = re.search(r'^\| %d \| [^|]+ \| [^|]+ \| ([^|]+) \|' % skill_id,
+                          skills_c, re.M)
+        assert match, ('missing pinned passive', skill_id)
+        pinned[skill_id] = {name for name in CLASS_NAMES
+                            if re.search(r'\b%s\b' % name, match[1])}
+    cyclone = re.search(r'^### 84 — .*?\n\n(.*?) tree:', skills_c, re.M | re.S)
+    assert cyclone, 'missing pinned Berserker Cyclone tree'
+    pinned[84] = {cyclone[1].lower()}
+    assert set(pinned) == MOVE_SKILLS, ('missing pinned skills', MOVE_SKILLS - set(pinned))
+    assert all(pinned.values()), ('empty pinned class assignment', pinned)
+
+    section = moves.split('| Record class (`R+0x50`) |', 1)[1].split('\n\nThis table', 1)[0]
+    found = {}
+    for index, name, description in re.findall(r'^\| ([0-6]) (\w+) \| (.+) \|$', section, re.M):
+        index = int(index)
+        assert name == CLASS_NAMES[index], (index, name)
+        ids = set()
+        for first, last in re.findall(r'(?<![\w])([3-9]\d|10[01])(?:[–-]([3-9]\d|10[01]))?', description):
+            ids.update(range(int(first), int(last) + 1) if last else (int(first),))
+        assert index not in found, ('duplicate class row', index)
+        found[index] = ids
+    assert set(found) == set(range(7)), ('missing class rows', found)
+    actual = {skill_id: {CLASS_NAMES[index] for index, ids in found.items()
+                         if skill_id in ids} for skill_id in MOVE_SKILLS}
+    assert set().union(*found.values()) == MOVE_SKILLS, ('move skill ids', found)
+    assert actual == pinned, ('class-to-skill mismatch', actual, pinned)
+    return sum(map(len, found.values()))
 
 
 def probe(executable, seed, weapon_class, step, heavy, scale, copy=False):
@@ -107,6 +161,7 @@ def main():
     args = parser.parse_args()
     with open(args.executable, 'rb') as stream:
         assert hashlib.sha256(stream.read()).hexdigest() == EXPECTED_SHA256
+    class_assignments = class_skill_table_probe()
     count = 0
     for weapon_class in (0, 1, 5):
         for step in (0, 1, 2, 3):
@@ -121,8 +176,9 @@ def main():
             for front in (True, False):
                 guard_probe(args.executable, args.seed, state, flags, front)
                 guards += 1
-    print('PASS seed %d: %d original melee handoffs, 1 prediction-copy refusal, %d guard hits' %
-          (args.seed, count, guards))
+    print('PASS seed %d: %d pinned class-skill assignments, %d original melee handoffs, '
+          '1 prediction-copy refusal, %d guard hits' %
+          (args.seed, class_assignments, count, guards))
 
 
 if __name__ == '__main__':

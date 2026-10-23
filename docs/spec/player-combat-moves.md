@@ -165,8 +165,8 @@ the weapon state machine above is shared, while learned actions vary.
 | 2 shadowknight | Darkness 36, Harm Touch 42 (next melee hit), Bash 49, Shadow Step 67 |
 | 3 ranger | Fire/Cold/Poison Arrow 43–45, Multi Fire 46, Explode Arrow 47; Archery 48 modifies bow damage |
 | 4 wizard | Shock 37 and other cast attacks; its class-4 weapon conditional also changes `Player_recalcDamage` |
-| 5 berserker | Berserker Rage 71 modifies swing speed and damage; the skill table also has Berserker Cyclone 84 |
-| 6 shaman | Giant Growth 65 modifies state-1 damage; Throwing 79 modifies thrown damage |
+| 5 berserker | Berserker Rage 71 modifies swing speed and damage; Throwing 79 modifies thrown damage; the skill table also has Berserker Cyclone 84 |
+| 6 shaman | Giant Growth 65 modifies state-1 damage |
 
 This table names the move-relevant routes, not every spell in the seven
 skill trees. Each skill's target, statistic, projectile, mana cost and
