@@ -184,6 +184,7 @@ def script_contract(gob, rows):
     parsed = scr.parse(image)
     imports = {name for _off, name in parsed["externals"]}
     entries = {name for _off, name in parsed["internals"]}
+    assert len(entries) == 21
     assert {"cutScene", "addQuest", "removeQuest", "setMissionAvailable",
             "givePlayerItem", "startDialog", "newWorld", "setEvil",
             "autoPropSetState"} <= imports
@@ -213,7 +214,10 @@ def main():
     assert hashlib.sha256(open(args.executable, "rb").read()).hexdigest() == SHA256
     gob = open(args.gob, "rb").read()
     rows = objects_from_file(args.gob, gob)
-    assert len(rows) == 363 and len(Counter(r["class"] for r in rows)) == 29
+    assert Counter(r["class"] for r in rows) == Counter(R.CLASS_COUNTS)
+    assert len(R.FACTORY) == 20
+    assert all(any(row["class"].lower() == key for row in rows)
+               for key in R.FACTORY)
     assert sum(r["class"] in {"Kobold", "Koboldtough", "koboldshaman", "WarWraith"}
                for r in rows) == 140
     consumed = loader(args.executable, lump(gob, "objects.ob"), rows)

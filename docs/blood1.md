@@ -10,7 +10,8 @@ ignored `local/` only.
 ## Record census and constructor selection
 
 **Observed** in the private `BLOOD1.GOB` `objects.ob`: 363 records, 29 class
-strings. **Executed** by `tools/difftest_blood1.py`: `world_loadRecords`
+strings. **Asserted** by the committed `tools/difftest_blood1.py` per-class
+`Counter` against the counts below. **Executed** by that test: `world_loadRecords`
 0x14e808 consumed 10,632 bytes and passed all 363 classes, angles and
 property lists in file order to a recording factory. The original factory
 0x159c94 then selected one pool size and constructor per row, or no object,
@@ -66,8 +67,9 @@ level-light records and four `TestLocation` records also make no object.
 `native/src/script_commands_objects.cpp` on branch `codex/playable-integration`:
 the script host's `kPorted` contains SmallSpider, Gnaw, Mosquito, Scorpion,
 Badger, Skelight, Zek and Horsemen. None of the **20 constructor selections
-above** is in that table, so all 351 selected `blood1` records currently
-reach its unsupported-class path. The native client has partial support for
+above** is in that table. The three `Player1` markers have a separate gated
+path; the other 348 selected records lack a constructor route in this snapshot.
+The native client has partial support for
 related systems (mission menu, generic script commands, moving-piece
 passability, and some combat functions); that is not an executed constructor
 for any `blood1` class. Other codex branches/reports under the same worktree
@@ -92,36 +94,39 @@ three type names share class definition 0x500af0; `WarWraith` uses 0x5034f0
 | `Kobold`, `Koboldtough`, `koboldshaman` | `kobold.lmp`: `kobold.vif`, `kobold.tex`, `attack1.anm`–`attack5.anm`, `death1.anm`–`death4.anm`, `evade.anm`, `evade_lft.anm`, `evade_ryt.anm`, `hitreact.anm`, `hitreact2.anm`, `knockdown.anm`, `idle1.anm`, `idle2.anm`, `run.anm`, `spell1.anm`, `walk.anm` (22) |
 | `WarWraith` | `wwraith.lmp`: `warwraith.vif`, `warwraith.tex`, `ataklong.anm`, `atakswd1.anm`, `atakswd2.anm`, `death.anm`, `deathtouch.anm`, `fly.anm`, `forward.anm`, `hitreaction.anm`, `idle_axcythe.anm`, `idleweap.anm`, `cythe.vif`, `cythe.tex`, `dhaxe.vif`, `dhaxe.tex`, `dhsword1.vif`, `dhsword1.tex` (18) |
 
-For the other constructors, these are **Observed constructor rules** in
-`docs/objects.md` and `docs/monsters-2.md` plus **Inferred instance names**
-from the archive's short class/property identifiers. The bounded direct
-constructor probe in ignored `local/` saw the named direct `res_find` pairs
-for Barrel and PowderKeg; it stubbed lower services for the other classes.
-An entry listed here must still be checked through the full real constructor
-and resource service before native port values are accepted.
+For the other constructors, `docs/objects.md` and `docs/monsters-2.md` give
+**Observed general constructor rules**. This report's instance-specific names
+and archive-presence notes are **unverified hypotheses** except for the four
+classes named in `ref_blood1.py` `DIRECT_REQUESTS`: the committed difftest
+checks direct requests for Barrel and PowderKeg, and zero named direct
+requests for Blocker and smokeBomb, with lower services stubbed. The remaining
+rows need committed direct-constructor and archive checks before native use.
 
 | Class(es) | Constructor-stage request or resource boundary |
 |---|---|
 | `Barrel` | `barrel.lmp`: `barrel.vif`, `barrel.tex` (direct requests at 0x290c24) |
 | `PowderKeg` | `powderk.lmp`: `powderkeg.vif`, `powderkeg.tex` (direct requests at 0x290c24) |
-| `BFfiredoor`, `BFhappydoor` | `AutoObject_ctor` 0x23a354 derives `blodanim.lmp` from `lumpname` and `<class>.vif` / `<class>.tex`; `AutoProp_ctor` 0x23c44c probes numbered state `.anm` names. The private archive has both models/textures and `bfhappydoor0.anm`, `bfhappydoor1.anm`; it has no `bffiredoor*.anm`. Whether missing animation entries are optional is Unknown. Light/particle attachments are a separate LP path to verify. |
-| `orkbox` | `AutoObject_ctor` derives `orkbox.lmp`: `orkbox.vif`, `orkbox.tex`; `AutoChest_ctor` 0x23ad18 probes `orkbox.anm`. All three entries exist in the private archive. Loot, trap and gold rolls are later behavior. |
-| `NPC` | `NPC_ctor` 0x29df04 derives `natasla.lmp`: `natasla.vif`, `natasla.tex` and role animation `idle.anm` from its `name`; entries exist. Its dialog archive is separate from these model entries. |
-| `Portal` | `JumpGate_ctor` 0x27c694 uses the authored `lump=jumpgate`; `jumpgate.lmp` contains `jumpgate.vif`, `jumpgate.tex`, `jumpgate_idle.anm`, `jumpgate_activate.anm`. The exact constructor versus later-state lookup sequence remains unexecuted here. |
-| `Savepoint` | Constructor 0x28cb90 directly requests `savepoint.vif`, `savepoint.tex` (observed call arguments); both occur in private `savepnt.lmp` and `savepnt2.lmp`. The archive choice in a full level load remains unverified. |
-| `Blocker`, `Player1`, `PushTrigger`, `Trigger`, three `char*Light` markers, `smokeBomb` | The bounded direct constructors reached no named `res_find` request. `smokeBomb`'s later particle/effect dependencies remain Unknown; zero direct requests is not a complete effects contract. |
+| `BFfiredoor`, `BFhappydoor` | Inferred `blodanim.lmp` model, texture and state animation requests; exact instance requests and archive presence are Unknown in this committed test. |
+| `orkbox` | Inferred `orkbox.lmp` model, texture and chest animation requests; exact instance requests and archive presence are Unknown here. |
+| `NPC` | Inferred `natasla.lmp` model, texture and idle animation requests; exact instance requests and archive presence are Unknown here. |
+| `Portal` | Authored `lump=jumpgate` is asserted, but `jumpgate.lmp` request order and archive presence are Unknown here. |
+| `Savepoint` | Prior manual probe suggested `savepoint.vif` and `savepoint.tex`; no committed instance check establishes requests or archive choice. |
+| `Blocker`, `smokeBomb` | Bounded direct constructors make no named `res_find` request in the committed test. Later particle/effect dependencies remain Unknown. |
+| `Player1`, `PushTrigger`, `Trigger`, three `char*Light` markers | Named direct requests are Unknown pending a committed probe. |
 
-The absent `BFfiredoor` numbered animation entries and the stubbed pointer
-services are explicit resource gaps, not invented assets.
+The possible absence of `BFfiredoor` numbered animations still needs a
+committed archive check; stubbed pointer services cannot establish loading.
 Audio, cutscene and dialog resources are outside the `res_find` constructor
 table and still matter for full play.
 
 ## Scripted events and objectives
 
-**Observed** in the private `blood1` script image using `tools/scr.py` and
-**asserted** by `difftest_blood1.py`: 21 entry points, including these event
-links. Only short identifiers and paraphrased behavior are recorded here.
-The script is not executed end-to-end in this research worktree.
+**Observed by manual inspection** of the private `blood1` script image with
+`tools/scr.py`: the following is a proposed event sequence, not a committed
+body-level or end-to-end execution result. `difftest_blood1.py` asserts 21
+entry names, selected imports and four object-property links only. Each
+objective, branch action, cutscene effect, item change and destination below
+is **Unknown to the committed difftest** until body or runtime checks land.
 
 1. `start` checks mission 1 completion and the current good/evil state,
    offers the appropriate objective, marks mission 1 available, sets
@@ -148,7 +153,7 @@ The script is not executed end-to-end in this research worktree.
    `t3/research-story-route`; exact arrival placement in a live native load
    remains unverified.
 
-The script imports `getMissionComplete`, `addQuest`/`removeQuest`, item
+Manual inspection suggests the script imports `getMissionComplete`, `addQuest`/`removeQuest`, item
 grant/check/remove, `autoPropSetState`, `cutScene`, `startDialog`, `newWorld`
 and related decision/variable calls. Cutscene names correspond to entries in
 the level archive; the NPC dialog has its own `.dbin` entry. The authored
@@ -184,12 +189,26 @@ the native client.
    playthrough with a real enemy hit, death, drop/credit and objective/exit
    completion. Report each reached state and each remaining refusal.
 
+## Audit fixes (census)
+
+2026-10-23: The focused census audit found three medium and two low gaps.
+The committed difftest now checks all 29 class frequencies, all 20 selected
+class names and the 21-entry count. This document narrows the other resource
+and objective claims to the direct requests and links actually asserted,
+and corrects the native unsupported count to 348 non-marker records.
+The paired results and exact commands are recorded below.
+
 ## Verification boundary
 
 The paired `difftest_blood1.py` runs use `--seed 20973` and `--seed 7`.
 The existing `difftest_story_route.py` checks the hub-to-`blood1` script/menu
 route at both seeds. `difftest_objects.py -k load` checks the generic loader and
 marker model. The full Python unit suite is the analysis-tool regression gate.
-All test commands use `PYTHONDONTWRITEBYTECODE=1`; results and the exact
-command list are in the local commit and coordination line. None is a native
+`PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_blood1.py
+local/SLUS_209.73 local/BLOOD1.GOB local/KOBOLD.LMP local/WWRAITH.LMP
+--seed 20973` passed: 363 records/10,632 bytes, 351 factory objects, 140
+hostile records, 40 hostile resource requests, four direct probes and 21
+script entries. The same command with `--seed 7` passed with those counts.
+The full unit suite is reported with the follow-on enemy research commit.
+None is a native
 client combat, terrain or cutscene test.

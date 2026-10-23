@@ -27,6 +27,22 @@ FACTORY = {
     "smokebomb": (0x4AC, 0x2C54F8),
 }
 
+# Authored class-string frequencies in BLOOD1.GOB objects.ob. Counts only;
+# no positions, properties or record payloads are retained.
+CLASS_COUNTS = {
+    "Ambient_Light": 1, "Ambient_Light2": 1, "Barrel": 87,
+    "BFfiredoor": 1, "BFhappydoor": 1, "Blocker": 33,
+    "charAmbient_Light": 1, "charDirectional_Light": 1,
+    "charDirectional_LightD": 1, "clearColor": 1, "customVars": 1,
+    "Directional_Light": 1, "Directional_Light2": 1,
+    "Directional_LightD": 1, "Directional_LightD2": 1,
+    "Kobold": 118, "koboldshaman": 5, "Koboldtough": 8,
+    "NPC": 1, "orkbox": 18, "Player1": 3, "Portal": 1,
+    "PowderKeg": 13, "PushTrigger": 2, "Savepoint": 3,
+    "smokeBomb": 44, "TestLocation": 4, "Trigger": 1,
+    "WarWraith": 9,
+}
+
 # Six level-light records, four test locations, and the two metadata records
 # are consumed without producing an object.  The factory side effects of the
 # metadata records are outside this constructor comparison.
