@@ -9,6 +9,8 @@ PANEL_BASE = 0x4F4040
 PLAYER_BASE = 0x4D8AF0
 ITEM_SIZE = 0x48
 GRID_COL_STRIDE = 0x1518
+GRID_PAGE_STRIDE = 0xBDD8
+BAG_PAGE_STRIDE = 0x1208
 GRID_COLS = 9
 VISIBLE_ROWS = 10
 TEXT_LAYER = 6
@@ -46,10 +48,17 @@ def box_variants():
     return ['inventrybox%d.tex' % n for n in BOX_ZERO_STATE_VARIANTS]
 
 
-def grid_cell(base, column, row):
-    if not (0 <= column < GRID_COLS and 0 <= row < 75):
+def grid_cell(base, column, row, page=0):
+    if not (0 <= page < 3 and 0 <= column < GRID_COLS and 0 <= row < 75):
         return None
-    return base + column * GRID_COL_STRIDE + row * ITEM_SIZE
+    return base + page * GRID_PAGE_STRIDE + column * GRID_COL_STRIDE + row * ITEM_SIZE
+
+
+def bag_page_base(base, page):
+    """Selected bag base used by the bounded first-cell action fixture."""
+    if not 0 <= page < 3:
+        return None
+    return base + page * BAG_PAGE_STRIDE
 
 
 def cursor_cell(panel_x, cursor_x, cursor_y, texture_height=0, scroll=0):

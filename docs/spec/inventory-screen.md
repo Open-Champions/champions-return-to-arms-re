@@ -37,8 +37,8 @@ pixels have not been compared. The fixture uses panel x = 80.
 | Evidence | Submission |
 |---|---|
 | **Observed** `itemList_draw` 0x1cd3a0/0x1cd3d0 | Looks up `inventry.lmp` / `mousecursor.tex` twice. `ui_drawSprite` 0x17fb18 submits layer-7 copies tinted `0x80808080` and `0x34000000`. In drag state, `itemList_draw` 0x1cd4b0–0x1cd524 also draws the held item's picture at the free cursor, as the icon research established. |
-| **Executed** `itemList_draw` 0x1cd728 | 65 layer-4 one-pixel strips: x = panel x + 15 through panel x + 305; y = 413 through 477. Alpha rises from 1 to 127; `strip_rects` models the exact integer sequence. `inventoryunderbar.tex` is looked up at 0x1cd754 and submitted at 0x1cd774, layer 5. |
-| **Observed** format at 0x5394a8 and calls 0x1ccb04/0x1ccb18; **Executed** with `sprintf` replaced only for this format | `inventry.lmp` / `inventrybox%d.tex`, with the suffix from 1–3. Five rows at y = 116, 184, 252, 320, 388; each row has numbered pieces at x = panel x + 15, +111, +207, then `inventryboxend.tex` (lookup 0x1ccb68) at x = panel x + 303. All 20 clipped sprite submissions are layer 0 in this fixture, tint `0x80808080`. The bounded zero-state sequence is in the reference; it is an executed list, not a guessed general random algorithm. |
+| **Executed** `itemList_draw` 0x1cd728 | 65 layer-4 one-pixel strips: x = panel x + 15 through panel x + 305; y = 413 through 477. Alpha rises from 1 to 127; `strip_rects` models the exact integer sequence. `check_draw` asserts the `inventoryunderbar.tex` lookup at 0x1cd754 and its layer-5 submission at 0x1cd774. |
+| **Observed** format at 0x5394a8 and calls 0x1ccb04/0x1ccb18; **Executed** with `sprintf` replaced only for this format | `inventry.lmp` / `inventrybox%d.tex`, with the suffix from 1–3. Five rows at y = 116, 184, 252, 320, 388; each row has numbered pieces at x = panel x + 15, +111, +207, then `inventryboxend.tex` (lookup 0x1ccb68) at x = panel x + 303. `check_draw` asserts all 20 clipped sprite submissions at layer 0 with tint `0x80808080`. The bounded zero-state sequence is in the reference; it is an executed list, not a guessed general random algorithm. |
 | **Observed** 0x1cd79c and 0x1ccaf8; **Executed** both seeds | The draw resets cosmetic state 0x86a6a4 to zero and writes it 15 times while choosing numbered box pieces, ending at `0xeef6843f` in this fixture. Shared `g_randSeed` 0x404464 remains at the input seed. The update includes arithmetic beyond a plain LCG, so the reference does not claim a general recurrence. |
 
 The item icons are separate from the box art. **Observed** `itemList_drawGrid`
@@ -49,8 +49,11 @@ viewing player's body type +0x54 to form equipment art. A cache miss uses the
 layer-5 icon within (0,102,640,600), and an underlay rectangle. The tint is
 `0x20008000` when equipped, `0x20000080` when the equip check returns a reason
 and item flag 41 is clear, otherwise `0x20445558`. The original code takes the
-equipped branch first. **Executed** four constructed states, two populated
-cells each; layer, colour, and the branch precedence matched the reference.
+equipped branch first. **Executed** five constructed states, two populated
+cells each; `check_highlight` also covers equipped plus blocked and compares
+both fills, including the flag-41 split between the first and second cell.
+The two baseline icons' layer and all five states' colours and equipped-branch
+precedence matched the reference.
 The icon research also records its width/height footprint, pulse, placeholder
 and picture-name rules; this screen probe does not rerun the private picture
 cache or decode icon pixels.
@@ -60,13 +63,19 @@ cache or decode icon pixels.
 **Observed** at `itemList_input` 0x1cdd40–0x1cdf70 and **Executed** for one
 cell: `column = trunc((cursorX - panelX - 17)/32)` and
 `row = trunc((cursorY - textureHeight/2 + 140 + panelScroll - 229)/34)`.
-The cell pointer is `base + column*0x1518 + row*0x48`, bounded to 9 columns
-and 75 rows; pages 3–5 skip it. In mode 2 the base comes from 0x4ebbb0.
-The fixture's x 97, y 100, panel x 80 selects record +0x130.
+The mode-2 hover cell pointer is `base + page*0xbdd8 + column*0x1518 +
+row*0x48`, bounded to pages 0–2, 9 columns and 75 rows; pages 3–5 skip it.
+The base comes from the pointer word at 0x4ebbb0. The page stride is nine
+column strides. **Executed** `check_cursor` uses distinct sentinels on all
+three pages on each seed; x 97, y 100, panel x 80 selects the first cell,
+record +0x130 on page 0. For this first-cell equip fixture, the sender's
+item argument instead uses bag base `record + 0x130 + page*0x1208`. The probe
+checks that argument against separate bag sentinels on pages 1 and 2; do not
+substitute the display-grid stride for the action's bag stride.
 
 | Evidence | Text and item field |
 |---|---|
-| **Observed** `itemList_drawRows` 0x1cc250/0x1cc2e8, 0x1cc310–0x1cc3cc; **Executed** one selected item | Calls `itemName_buildLocalizedName` 0x101e48. `text_widthWide` 0x181bf8 measures it. `text_begin` reads the small-font pointer word 0x4f7104, layer 6, base colour `0x80464646`, icon alpha -1. The selected colour set at 0x1cc330 is `0x805c2913`; `text_drawWrappedCentered` 0x181530 submits the name/description field. The exact glyphs depend on the disc's text and font resources. |
+| **Observed** `itemList_drawRows` 0x1cc250/0x1cc2e8, 0x1cc310–0x1cc3cc; **Executed** one selected item | Calls `itemName_buildLocalizedName` 0x101e48. `text_widthWide` 0x181bf8 measures it. `check_draw` asserts `text_begin` with the small-font pointer word 0x4f7104, layer 6, base colour `0x80464646`, icon alpha -1; the selected colour at 0x1cc330 is `0x805c2913`. It also asserts the `text_drawWrappedCentered` 0x181530 call and its fixture geometry. The text pointer is zero in this stubbed fixture, so the actual name/description content and glyphs are **Unknown** here. |
 | **Observed** 0x1cc3f8–0x1cc6c0 | `item_getValue` 0x1024a8 supplies the monetary field; `ui_insertThousandsSeparators` 0x1c7128 formats its integer. The row calls `text_drawAscii` 0x181aa0 twice and `text_widthAscii` 0x181af8 before closing its second small-font batch. Which localized label accompanies every numeric field is **Unknown** without the real language/text state. |
 | **Observed** `itemList_drawRows` 0x1cc7a0 calls `itemList_drawItemInfo` 0x1c8d38; **Executed** category probes | The detail pane calls `player_itemWeight` 0x1b6338. Weapon category 0 calls `item_getDamageRange` 0x104100; armour category 1 calls `item_getArmorValue` 0x103ec8; other category 2 calls neither. There are branches for modifier/stat lines, requirements and gem slots from 0x1c96e8–0x1caef0 that the zero-modifier fixture does not settle. Do not fabricate absent labels or values. |
 | **Executed** `itemList_drawItemInfo` 0x1cb05c | For the selected item, `ui_drawFrameImpl` 0x17c118 gets `(infoX - 109, infoY, 223, 77, 6, 0x80000000)` for category 0 and height 57 for categories 1–2. `itemList_drawRows` passes infoX = 244 and infoY = 230 with panel x 80, yielding `(135,230,223,77)` for the weapon fixture. All reached detail text batches use the small-font word 0x4f7104 on layer 6. A second frame call site 0x1cb008 was not reached. |
@@ -100,8 +109,10 @@ grid-object filter; its possible shared-seed use remains **Unknown**.
 1. Load the selected disc's `inventry.lmp` and both font resources at runtime;
    use the original small-font page and glyph layout from `ui-fonts.md`. Keep
    absent assets as an explicit refusal.
-2. Implement the panel/page state and input cursor mapping with exact item
-   record and equipment pointers; pages 3–5 dispatch the stat/skill sheet.
+2. Implement the panel/page state and input cursor mapping with the mode-2
+   `page*0xbdd8` display-grid offset and the separate `page*0x1208` bag
+   offset for the tested first-cell action. Retain exact item/equipment
+   pointers; pages 3–5 dispatch the stat/skill sheet.
 3. Draw the panel's cursor, scrollbar gradient, underbar, numbered box strips
    and end pieces at the submitted layers and coordinates. Use the observed
    zero-state box sequence for this bounded path; trace the general cosmetic
@@ -123,10 +134,11 @@ grid-object filter; its possible shared-seed use remains **Unknown**.
 ## Validation and open bounds
 
 `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_inventory_screen.py`
-compared **26 properties, 0 failures** across seeds 20973 and 7: draw
-submissions, box names/positions, cosmetic/shared seed writes, font/selection,
-four highlight states, three item categories/detail frames, six mode-2 actions,
-pages 0–5 and one cursor cell. The test stubs resource lookup, the one box-name
+compared **32 properties, 0 failures** across seeds 20973 and 7: draw
+submissions including underbar, box layer/tint and text batch, cosmetic/shared
+seed writes, font/selection, five highlight states with both cells, three item
+categories/detail frames, six mode-2 actions, pages 0–5 and three page-specific
+hover/action targets. The test stubs resource lookup, the one box-name
 `sprintf` format, original text drawing and gameplay/world callees; it does
 not load the disc, execute the complete render packet or run a game. No
 disassembly, executable data, text payload, font page or image is tracked.

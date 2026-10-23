@@ -96,17 +96,28 @@ def check_draw(elf, seed):
     small_font_sites = {0x1CC310, 0x1CC3F0, 0x1C911C, 0x1C92D0, 0x1CA2B4}
     begins = [c for c in e.calls if c.site in small_font_sites and c.target == BEGIN]
     selected = [c for c in e.calls if c.site == 0x1CC330 and c.target == COLOR]
+    wrapped = [c for c in e.calls if c.site == 0x1CC380 and c.target == 0x181530]
     icons = [c for c in e.calls if c.site == 0x1CCEC0 and c.target == CLIP]
-    box_sprites = [c for c in e.calls if c.site in (0x1CCB4C, 0x1CCBA0)]
+    box_sprites = [c for c in e.calls if c.site in (0x1CCB4C, 0x1CCBA0) and c.target == CLIP]
+    underbar = [c for c in e.calls if c.site == 0x1CD774 and c.target == 0x17FB68]
     placements = [(u(c.args[1]), u(c.args[2]), 'end' if c.site == 0x1CCBA0 else 'numbered')
                   for c in box_sprites]
     checks = {
         'scrollbar': rects == R.strip_rects(80),
+        'underbar': [(site, name) for site, name in names if site == 0x1CD754] ==
+                    [(0x1CD754, 'inventoryunderbar.tex')] and len(underbar) == 1 and
+                    u(underbar[0].args[3]) == 5,
         'box names': boxes == variants and ends == ['inventryboxend.tex'] * 5,
         'box positions': sorted(placements) == sorted(R.box_placements(80)),
+        'box layer and tint': len(box_sprites) == 20 and all(
+            u(c.args[3]) == 0 and u(c.args[4]) == 0x80808080 for c in box_sprites),
         'grid calls': len(grid_calls) == R.GRID_COLS * R.VISIBLE_ROWS,
-        'small font': len(begins) == 5 and all(u(c.args[0]) == font and u(c.args[1]) == 6 for c in begins),
+        'small font': len(begins) == 5 and all(
+            tuple(u(a) for a in c.args[:4]) == (font, 6, 0x80464646, 0xFFFFFFFF)
+            for c in begins),
         'selected colour': len(selected) == 1 and u(selected[0].args[0]) == 0x805C2913,
+        'selected wrap': len(wrapped) == 1 and tuple(u(a) for a in wrapped[0].args[:6]) ==
+                         (244, 229, 0, 203, 0xFFFFFF9C, 580),
         'grid icons': len(icons) == 2 and all(u(c.args[3]) == R.GRID_LAYER for c in icons),
         'seed separation': e.mem.u32(0x404464) == seed and e.mem.u32(0x86A6A4) == R.BOX_ZERO_STATE_FINAL,
     }
@@ -116,7 +127,8 @@ def check_draw(elf, seed):
 
 def check_highlight(elf, seed):
     bad = []
-    for equipped, blocked, flag41 in ((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 1, 1)):
+    for equipped, blocked, flag41 in ((0, 0, 0), (1, 0, 0), (0, 1, 0),
+                                      (0, 1, 1), (1, 1, 0)):
         e, _names, tex, font, definition = fixture(
             elf, seed, equip_result=equipped, allowed_result=blocked)
         e.follow = {GRID}
@@ -125,10 +137,12 @@ def check_highlight(elf, seed):
         e.call(DRAW, 0, 2, 0, PANEL, max_steps=3_000_000)
         fills = [u(c.args[5]) for c in e.calls
                  if c.site in (0x1CCE4C, 0x1CCE78, 0x1CCF04) and c.target == RECT]
-        want = R.grid_tint(equipped=bool(equipped), blocked=bool(blocked), flag41=bool(flag41))
-        if not fills or fills[0] != want:
-            bad.append((equipped, blocked, flag41, fills[:2], hex(want)))
-    return not bad, str(bad[:2]) if bad else '4 states'
+        want = [R.grid_tint(equipped=bool(equipped), blocked=bool(blocked),
+                            flag41=bool(flag41)),
+                R.grid_tint(equipped=bool(equipped), blocked=bool(blocked))]
+        if fills != want:
+            bad.append((equipped, blocked, flag41, fills, [hex(v) for v in want]))
+    return not bad, str(bad[:2]) if bad else '5 states, 2 cells each'
 
 
 def check_info(elf, seed):
@@ -191,16 +205,39 @@ def check_pages(elf, seed):
 
 
 def check_cursor(elf, seed):
-    e, names, tex, font, definition = fixture(elf, seed)
-    e.follow = set()
-    e.mem.map(0x4028D0, 0x80)
-    e.mem.wf32(PANEL + 0x44, 97)
-    e.mem.wf32(PANEL + 0x48, 100)
-    e.call(INPUT, 0, 2, 0, PANEL, max_steps=2_000_000)
+    bad = []
     col, row = R.cursor_cell(80, 97, 100, 32)
-    expected = R.grid_cell(RECORD + 0x130, col, row)
-    got = e.mem.u32(PANEL + 0x60)
-    return got == expected, 'hover=%#x expected=%#x' % (got, expected)
+    for page in (0, 1, 2):
+        e, names, tex, font, definition = fixture(elf, seed)
+        e.follow = set()
+        e.mem.w32(PANEL + 0x50, page)
+        e.mem.map(0x4028D0, 0x80)
+        for off in (8, 12, 16):
+            e.mem.w32(0x4028D0 + off, R.CROSS['equip'])
+        e.mem.w32(0x41B960, R.CROSS['equip'])
+        e.mem.w32(0x41B968, R.CROSS['drop'])
+        e.mem.w32(0x41BFBC, R.CROSS['equip'])
+        e.mem.wf32(PANEL + 0x44, 97)
+        e.mem.wf32(PANEL + 0x48, 100)
+        e.mem.w32(RECORD + 0x1330, 1)
+        # Page-specific pointers in the display grid and source bags make a
+        # missing page term observable, even when both records look populated.
+        sentinels = [e.alloc(0x40) for _ in range(6)]
+        for other in (0, 1, 2):
+            e.mem.w32(R.grid_cell(RECORD + 0x130, col, row, other), sentinels[other])
+            e.mem.w32(R.bag_page_base(RECORD + 0x130, other),
+                      sentinels[other if other == 0 else 3 + other])
+        e.call(INPUT, 0, 2, 0, PANEL, max_steps=2_000_000)
+        expected = R.grid_cell(RECORD + 0x130, col, row, page)
+        sends = [c for c in e.calls if c.site == 0x1CE87C and c.target == 0x1C5800]
+        bag = R.bag_page_base(RECORD + 0x130, page)
+        if (e.mem.u32(PANEL + 0x60) != expected or
+                e.mem.u32(expected) != sentinels[page] or
+                len(sends) != 1 or u(sends[0].args[1]) != bag or
+                e.mem.u32(bag) != sentinels[page if page == 0 else 3 + page]):
+            bad.append((page, hex(e.mem.u32(PANEL + 0x60)), hex(expected),
+                        [hex(u(c.args[1])) for c in sends], hex(bag)))
+    return not bad, str(bad[:2]) if bad else 'pages 0-2: hover and action targets'
 
 
 def main(argv):
@@ -227,7 +264,7 @@ def main(argv):
             print('%s seed=%d %s %s' % ('PASS' if good else 'FAIL', seed, name, detail))
             if not good:
                 failed.append((seed, name))
-    print('%d properties; %d failed' % (26, len(failed)))
+    print('%d properties; %d failed' % (32, len(failed)))
     return 1 if failed else 0
 
 
