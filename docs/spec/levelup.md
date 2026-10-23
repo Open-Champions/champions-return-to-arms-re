@@ -70,15 +70,16 @@ cannot select those. Message-handler behavior is modeled by
 
 ## Skill point spending
 
-**Observed** `skills_screen` 0x1d4660 reads the owner input and selected skill
-tree node. Its send sites 0x1d580c and 0x1d58dc call
-`invmsg_sendSkillPoint` 0x1c57b8 for passive-mask and skill-id paths.
-The screen checks node availability and rank/level conditions before sending
-(0x1d54d8–0x1d57c0). The skill path compares a virtual-call result with the
-record float at `R+0xc4` before its send (0x1d5850–0x1d58dc).
-**Unknown**: full class-specific screen pricing and prerequisite behavior
-have not been independently executed here; do not
-replace them with the handler's simpler acceptance rule.
+**Unknown**: the skill-screen sender contract has no committed original-code
+probe. Prior address notes place `skills_screen` at 0x1d4660 and candidate
+`invmsg_sendSkillPoint` 0x1c57b8 calls at 0x1d580c (passive mask) and
+0x1d58dc (skill ID). They describe node availability, rank/level checks at
+0x1d54d8–0x1d57c0, and a virtual-call result compared with `R+0xc4` at
+0x1d5850–0x1d58dc. These candidate call sites, their arguments, and the
+conditions that permit each send still need a bounded `skills_screen` probe
+with positive and suppressing cases on seeds 20973 and 7. Full class-specific
+screen pricing and prerequisites remain Unknown. Do not substitute the
+handler's acceptance rule for the screen's sender rule.
 
 **Observed** inventory message 7 calls `inventory_onSkillPoint` 0x1c2648.
 It returns when points `R+0xe8 <= 0`. With kind 0, its value is a passive
@@ -106,6 +107,10 @@ seeds. `difftest_levelup.py` passed 15 sender-gate cases per seed.
 The quick comparisons are bounded samples; the full suite is the Python
 unit suite, not a full game integration run.
 
+Audit fix rerun on 2026-10-23: `PYTHONDONTWRITEBYTECODE=1` level-up difftest
+passed 15 stat sender cases on each seed; the full Python unit suite passed
+652 tests. The skill sender remains unprobed and Unknown as described above.
+
 ## Ordered native port list
 
 1. Read the original XP curve and class/skill tables from the authorized
@@ -119,10 +124,13 @@ unit suite, not a full game integration run.
 4. Port the owner-local level-up panel and stat sender gate, then apply
    messages 6 and 9 in the simulation's message order. Keep `R+0xee` as
    presentation bookkeeping.
-5. Port the skill tree's availability/cost checks and message 7 sender,
-   followed by the handler's passive/skill-rank and ability-list changes.
-6. Compare each layer against the existing `ref_combat` and `ref_messages`
-   difftests and this gate probe on seeds 20973 and 7; verify integration
+5. Probe the original `skills_screen` sender on seeds 20973 and 7. Assert both
+   candidate call sites and arguments, then isolate the node, rank, level and
+   virtual-result gates with positive and suppressing cases before porting
+   availability, cost, or message 7 sending. Port the separately verified
+   handler's passive/skill-rank and ability-list changes.
+6. Compare verified layers against the existing `ref_combat` and `ref_messages`
+   difftests and the stat gate probe on seeds 20973 and 7; verify integration
    separately in a real level and multiplayer tick before claiming play parity.
 
 Related prior research: `t3/research-player-state` 9c23686,
