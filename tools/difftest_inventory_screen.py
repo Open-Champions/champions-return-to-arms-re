@@ -245,7 +245,9 @@ def check_grid_builder(elf, seed):
     e, _names, _tex, _font, _definition = fixture(elf, seed)
     pointer = e.alloc(0x23988)
     e.mem.w32(0x4EBBB0, pointer)
-    widths = ((0, 32, 0, 64, 0), (32, 0, 32, 0, 0), (64, 0, 0, 32, 0))
+    # Page 0 leaves one column; its last two-column item must start row 1.
+    widths = ((0, 32, 0, 64, 0, 32),
+              (32, 0, 32, 0, 0), (64, 0, 0, 32, 0))
     by_item = {}
     definitions = {}
     for page, sizes in enumerate(widths):
@@ -281,6 +283,10 @@ def check_grid_builder(elf, seed):
         bad.append(('size calls', len(size_calls)))
     for page, sizes in enumerate(widths):
         expected = R.bounded_grid_placement(sizes)
+        if page == 0 and (any((col, 0) not in expected for col in range(8)) or
+                          (8, 0) in expected or
+                          (expected.get((0, 1)), expected.get((1, 1))) != (5, 5)):
+            bad.append(('next-row fixture', expected.get((0, 1)), expected.get((1, 1))))
         for col in range(R.GRID_COLS):
             for row in range(R.GRID_ROWS):
                 cell = R.display_grid_base(pointer, 0, page) + col * R.GRID_COL_STRIDE + row * R.ITEM_SIZE
@@ -292,7 +298,7 @@ def check_grid_builder(elf, seed):
                 if index is not None and (e.mem.u16(cell + 4) != index + 1 or
                         e.mem.u32(cell + 0x28) != 0xBEEF0000 + page * 16 + index):
                     bad.append((page, col, row, 'record copy'))
-    return not bad, str(bad[:2]) if bad else 'three bags, mixed 1-3 column footprints, 2025 cells'
+    return not bad, str(bad[:2]) if bad else 'three bags, mixed 1-3 column footprints, next-row copy/stamp, 2025 cells'
 
 
 def check_grid_draw_source(elf, seed):

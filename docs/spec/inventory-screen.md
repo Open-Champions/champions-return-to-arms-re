@@ -79,12 +79,15 @@ loop at 0x1cbe88–0x1cbeec writes the 0x48-byte bag record into each covered
 cell and replaces copy +0x22 with its **bag slot index**. This is a separate
 copy; a bag record is not itself the draw cell.
 
-**Executed** `check_grid_builder` on seeds 20973 and 7 sets five distinct
-records in each of three bags, with controlled 0-, 32- and 64-pixel widths
+**Executed** `check_grid_builder` on seeds 20973 and 7 sets six distinct
+records in the first bag and five in each other bag, with controlled 0-, 32-
+and 64-pixel widths
 and a one-row height. `bounded_grid_placement` matches every definition word
 and +0x22 stamp in all 2,025 cells: one-column records occupy successive
-columns; two- and three-column records repeat into their covered cells; when
-the remaining row is too narrow, placement resumes on the next row. The
+columns; two- and three-column records repeat into their covered cells. In
+the first bag, five records fill columns 0–7 of row 0; the last two-column
+record cannot fit column 8, so bag slot 5 copies to columns 0–1 of row 1
+with its +0x22 slot stamp. The
 fixture replaces `item_getPictureDimensions` and the final float-to-row rounding
 callee to isolate the fit/copy loop. The exact placement for taller, unusual
 or overflowing footprints remains **Unknown** without another fixture.
