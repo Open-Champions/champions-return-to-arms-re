@@ -119,6 +119,79 @@ committed archive check; stubbed pointer services cannot establish loading.
 Audio, cutscene and dialog resources are outside the `res_find` constructor
 table and still matter for full play.
 
+## Hostile constructor and combat reference (2026-10-23)
+
+`tools/ref_blood1_enemies.py` and `tools/difftest_blood1_enemies.py` compare
+isolated original functions on seeds 20973 and 7. **Executed** for one
+representative of each authored hostile class string: the derived constructor,
+`Creature_ctor` 0x109d68, `GameObject_ctor` 0x14cb10 and its `res_find`
+0x17365c calls. The resource service returns zero; animation, model, AI and
+loot services below the class method are also stubs. This is a reference for
+a future port, not an instantiated or fighting level creature.
+
+| Priority / class | Placements | Constructor chain and class layout |
+|---|---:|---|
+| 1 `Kobold` | 118 | 0x27f0c0 → 0x109d68 (definition 0x500af0, initial HP argument 10) → 0x14cb10 → 22 ordered `kobold.lmp` requests. Size 0x3d0, vtable 0x515ef0; +0x3cc variant 0, +0xe8 0, radius +0x1c 12, kind +0xb4 9. |
+| 2 `Koboldtough` | 8 | Same chain and resource definition; +0x3cc variant 1, +0xe8 1, radius 20 and scale +0xdc 1.5. |
+| 3 `koboldshaman` | 5 | Same chain and resource definition; +0x3cc variant 2, +0xe8 2, radius 18 and scale +0xdc 1.2. |
+| 4 `WarWraith` | 9 | 0x2c07a8 → 0x109d68 (definition 0x5034f0, initial HP argument 4) → 0x14cb10 → 18 ordered `wwraith.lmp` requests. Size 0x468, vtable 0x517f80; fade +0x3c8 100, radius 18, speed +0xb8 140, home range +0x3c0 600, embedded Weapon1 at +0x3d0 and +0x50 points to it. |
+
+The two definitions' 40 distinct entry names and archive presence are checked
+by `difftest_blood1.py`; the new test confirms each request within the actual
+derived→base constructor chain. **Executed** separately against the private
+`monsters.bal`: original balance lookup 0x223a4c returns five signed
+percentage factors for each class, compared at the raw float bit level:
+`Kobold` (69, 100, 60, 69, 80), `Koboldtough` (250, 80, 100, 179, 189),
+`koboldshaman` (179, 179, 120, 139, 189), `WarWraith` (200, 200, 160, 100,
+200). `Creature_ctor` reaches that lookup and calls stat scaling 0x10a620,
+but the constructor-chain test stubs those downstream results. Final HP,
+damage and equipment-derived stats for a loaded blood1 actor are **Unknown**.
+The original WarWraith own-object RNG picks holder part type 15 from a fresh
+synthetic object on seed 20973 and type 13 on seed 7. Those are probe results,
+not the weapon distribution of the nine level placements; preceding level
+objects consume shared draws.
+
+For **run/AI**, the new test executes Kobold_run 0x27f52c and WarWraith_run
+0x2c0c2c in states 0, 3, 6, 7 and 0x14, with synthetic active/no-target
+inputs and an animation event stub. It asserts the ordered processDamage,
+Creature_run, active, stepAnim, target-pick and state-specific calls. This
+covers five branch routes per class string (20 probes), including the wraith's
+holder update and fade/deletion path. Target selection, pathing, shaman ally
+healing, weapon descriptors, hit resolution and live animation timing remain
+**Unknown** to this test; the manually observed state descriptions in
+`docs/monsters-2.md` are port leads, not claims of executed blood1 combat.
+
+For **damage/death**, the base `Creature_takeDamage` 0x116638 probe with a
+synthetic 100 HP object, no attacker, 25 damage and flags 8 reaches 75 HP,
+records 25 accumulated damage and ORs flags 8. Both classes inherit this slot;
+an actual attacker, defense or kill transition is **Unknown** here.
+`Kobold_setState` 0x27ff6c with state 0x14 calls `Creature_dropLoot`
+0x10f2c8 with six asserted raw float arguments; `WarWraith_setState`
+0x2c1648 first calls holder drop slot 0x11b080 and then
+`loot_generateDrops` 0x100d54 with its own six asserted arguments. Those
+callees and their item/Gold returns are stubs, so drop creation and credit
+remain **Unknown**. The wraith's subsequent dead tick calls `obj_delete`
+0x14f200 with the synthetic fade state; world removal is not executed.
+
+### Ordered native port list by class
+
+1. `Kobold` (118): one world-owned 0x3d0 identity; load `kobold.lmp` and the
+   balance row; port the base constructor chain and variant 0 fields; connect
+   idle/chase/melee/retreat/death tick, base damage, event markers and
+   `Creature_dropLoot`. Verify actual target and player damage before enabling
+   the class in a strict blood1 load.
+2. `Koboldtough` (8): reuse that identity and chain with variant 1 scale,
+   radius, event and charged-target logic; check its two-hit branch and loot.
+3. `koboldshaman` (5): reuse the chain with variant 2; port ally selection,
+   corpse and wounded-ally checks, revive/Healing requests and their real
+   skill/resource dependencies. Refuse the unverified FrostArmor entry path
+   until its requester is established.
+4. `WarWraith` (9): load `wwraith.lmp` and its balance row, construct the
+   embedded holder and selected weapon part, port fade, target arbitration,
+   flight/chase and drain attack, then holder-part drop, loot generation and
+   deletion. Compare real handle, drop and Gold outcomes against original
+   execution before calling the class playable.
+
 ## Scripted events and objectives
 
 **Observed by manual inspection** of the private `blood1` script image with
@@ -201,14 +274,24 @@ The paired results and exact commands are recorded below.
 ## Verification boundary
 
 The paired `difftest_blood1.py` runs use `--seed 20973` and `--seed 7`.
-The existing `difftest_story_route.py` checks the hub-to-`blood1` script/menu
-route at both seeds. `difftest_objects.py -k load` checks the generic loader and
+The separate `t3/research-story-route` branch has a hub-to-`blood1`
+script/menu difftest; it was not rerun in this worktree. `difftest_objects.py
+-k load` checks the generic loader and
 marker model. The full Python unit suite is the analysis-tool regression gate.
 `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_blood1.py
 local/SLUS_209.73 local/BLOOD1.GOB local/KOBOLD.LMP local/WWRAITH.LMP
 --seed 20973` passed: 363 records/10,632 bytes, 351 factory objects, 140
 hostile records, 40 hostile resource requests, four direct probes and 21
 script entries. The same command with `--seed 7` passed with those counts.
-The full unit suite is reported with the follow-on enemy research commit.
+`PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_blood1_enemies.py
+local/SLUS_209.73 local/BLOOD1.GOB local/BALANCE.LMP --seed 20973`
+passed with 140 placements, four class selections, 84 constructor requests
+across those selections, 37 event setups, four balance rows, 20 synthetic
+ticks/176 observed calls, four death routes and one base damage probe. The
+same command with `--seed 7` passed with those counts.
+`PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_objects.py
+local/SLUS_209.73 -k load --seed 20973` passed five of five properties
+for the generic loader/marker model. `PYTHONDONTWRITEBYTECODE=1 python3
+-m unittest discover -s tools -p 'test_*.py'` passed 652 of 652 tests.
 None is a native
 client combat, terrain or cutscene test.
