@@ -700,3 +700,89 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_arena_engagement.py local/SLUS_
    death. The current original walker sees two living creatures. The bounded
    authored `0x612b` reuse branch from round 8 is the only executed wave-2
    transition, and a live match remains unverified.
+
+## Round 11: assisted Goblin deaths, empty wave, and result hand-off (2026-10-23)
+
+US `SLUS_209.73` v2.00. **Executed** in `tools/ee_emu.py` by
+`tools/difftest_arena_round11.py` on seeds 20973 and 7. This continues the
+round-10 disc terrain and animation fixture after its 181 intro-task visits.
+The player record is initialized through the original class-0 unarmed path;
+the driver raises only its HP and maximum HP to 10,000 so attacks do not end
+the observation. It writes no Goblin HP, state, score, or seed. Controller
+presses produce 12 and 15 original `Player_meleeHit` calls, respectively.
+The reduced fixture then stops producing enough controller hits, so the
+driver schedules the **original** `Player_meleeHit` body 14 and 16 further
+times, with the same player and a living Goblin as target. The body still
+performs collision, attack rolls, `damage_apply` `0x1e8230`, and
+`Creature_takeDamage` `0x116638`; some calls miss. This is an assisted
+function-level kill, **not** a controller-only natural kill or a live match.
+
+| Seed | Goblin death frames | Score after both | Empty-wave scan / intermission start | Wave 1 start | New creature classes |
+|---:|---|---:|---:|---:|---|
+| 20973 | 1120, 1408 | 2 | 1408 / 1408 | 1888 | 3, 3, 1 |
+| 7 | 1084, 1480 | 2 | 1536 / 1536 | 2016 | 3, 3, 1 |
+
+**Executed:** the original hit body accumulates damage at Goblin HP `+0x228`
+until each crosses zero. The next `Goblin_run` call enters
+`Creature_processDamage` `0x110d30`, reaches death state `+0x232 = 20`, and
+sets death flag `0x8`. Each death segment calls original
+`Creature_onDeath` `0x10beb8`, `arena_addKill` `0x3056cc`,
+`Creature_dropLoot` `0x10f2c8`, and `loot_generateDrops` `0x100d54` once.
+The score record at `0x503898` reaches two kills; the fixture records one
+loot-pool allocation across the two deaths, but does not tick that object,
+collect it, or establish a Gold credit. The campaign boar research at
+`t3/research-campaign-combat` `328b072` confirms the shared
+`Player_meleeHit` → `damage_apply` → `Creature_takeDamage` → next-tick
+death and loot order in a separate assisted Play! session. Its later Gold
+credit came from an AutoContainer, so it is no evidence of Goblin Gold here.
+
+**Executed:** original `world_forEachGridObject` `0x14a610` and empty-wave
+callback `0x3069e8` count zero after both deaths. `arena_runTask` `0x306b78`
+checks on frames divisible by 128 and starts intermission. After 480 offline
+task visits, original `arena_nextWave` `0x305e9c`, preparation `0x3063fc`,
+and `arena_startWave` `0x305ed4` advance wave halfword `0x8e7338` from 0
+to 1, decrease waves-left `0x8e733a` from 2 to 1, and construct the recipe's
+next three creatures. The original score snapshot becomes two. The test does
+not tick those newly constructed creatures or run a later wave to completion.
+
+**Observed/Executed end rules**, checked in fresh bounded states by the same
+driver and independently modelled in `ref_arena_modes.py`: mode A ends when
+the signed kill count reaches the signed limit byte `0x4f8408` (4/5 stays
+open; 5/5 opens `arena_openEndPrompt` `0x307ebc`). Mode B's player-out scan
+retries with `arena_nextWave(0)` when a saved life snapshot is positive;
+with lives `-1`, zero HP, zero countdown, and no snapshot, it sets end flag
+`0x503894` and opens that prompt. At full fade, confirm copies the saved
+player record, calls shutdown `0x304fb0`, and requests the arena level name
+through `strcpy` `0x3b868c`; cancel clears mode B `0x4f7120` and sets session
+exit code `0x41b508 = 1`. These are isolated original task-body executions
+with UI, active-slot, saved-record lookup, and string services supplied by
+the fixture. They do not show a displayed results screen, normal save, or
+successful next-level load. The separate `difftest_arena_modes.py` also
+checks final-wave `waves-left = 0` pending-level hand-off.
+
+Run this comparison and the earlier arena comparisons with
+`PYTHONDONTWRITEBYTECODE=1`; the executable and disc remain ignored inputs:
+
+```text
+python3 tools/difftest_arena_round11.py local/SLUS_209.73 "$ISO" --seed 20973
+python3 tools/difftest_arena_round11.py local/SLUS_209.73 "$ISO" --seed 7
+```
+
+### Native port order after round 11
+
+1. Preserve the original class-0 player initialization, equipment boundary,
+   controller input and every-frame player/creature scheduling. The assisted
+   direct melee calls must be replaced by normal animation events before
+   claiming a natural controller-only kill.
+2. Port the shared damage chain, queued damage consumption, death state and
+   flag transitions, `Creature_onDeath`, arena score, loot generation and
+   actual loot-object lifetime. Keep Goblin rewards distinct from the
+   campaign boar and AutoContainer observations.
+3. Run the original empty-wave grid scan at the 128-frame clock, preserve the
+   480-visit offline intermission, saved-object walker, `arena_nextWave` and
+   next-wave constructors. Resolve the corpse `0x612b` reuse branch with a
+   complete object and animation scheduler.
+4. Implement mode-A kill-limit and mode-B wipe/snapshot end paths, ranking,
+   fade, confirm/cancel and pending-level hand-off. Verify a full match and
+   displayed results in a running game before promoting the bounded task
+   executions to gameplay proof.
