@@ -57,9 +57,12 @@ last argument is zero (0x15b904). Its mounted branch at 0x27211c is skipped, so 
 builds one `Horsemen` with variant +0x470, state 0, no +0x3c8 mount link and no Nightmare.
 The record's property pointer reaches `Creature_ctor` / `GameObject_ctor` (0x271cec,
 0x109d68); the level record, not the factory type, determines its properties. A read-only
-scan of the v2.00 disc's level GOB files found exactly one `objects.ob` placement per
-on-foot type, all in `DRUNARE.GOB::drunare.lmp`. **Observed** record-relative offsets and
-decoded fields (the offset is within that lump's `objects.ob`, not an EE address):
+scan of the v2.00 disc's 120 level GOB files (120 `objects.ob` lumps, 18,675 records)
+found exactly one `objects.ob` placement per on-foot type, all in
+`DRUNARE.GOB::drunare.lmp`. `tools/difftest_horsemen_onfoot.py` asserts the whole scan,
+the exact records and fields, then executes the original property parser in `ee_emu.py`
+on both seeds (section 9.5). **Observed** record-relative offsets and decoded fields
+(the offset is within that lump's `objects.ob`, not an EE address):
 
 | Type | Record / property-pointer array | Ordered property fields | `dropitem` |
 |---|---|---|---|
@@ -441,8 +444,8 @@ rider flags 9). The on-foot checks assert one `GameObject_ctor`, the passed-thro
 property pointer, variant, state 0 and no mount link. 9 / 9 rows pass on both seeds. The
 factory test passes the list pointer through a stubbed `GameObject_ctor`; section 9.3
 separately executes that constructor, the property parser and `Creature_ctor` on the
-four fixed **mount** lists. The on-foot row's record list varies by placement and was not
-decoded by that mount-list probe.
+four fixed **mount** lists. The on-foot row's record list varies by placement; its four
+shipped GOB lists and the original parser are checked separately in section 9.5.
 
 ### 9.3 Property-list execution and unit tests
 
@@ -473,6 +476,20 @@ the presence of that flag in a shipped scene. It observes four `player_giveExp` 
 after the linked rider's lethal hit, followed by a dismount on mount death and rider
 state 0x14 after a new on-foot hit. This remains function-level execution.
 
+### 9.5 On-foot placement and property evidence
+
+`PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_horsemen_onfoot.py
+<owner SLUS_209.73> <owner v2.00 ISO> --seed N` for N=20973 and 7: both pass.
+The read-only ISO scan walks all 120 GOBs, all 120 `objects.ob` lumps and 18,675
+placement records, asserting exactly one of each `UndeadKnight1`–`4`, all in Drundar.
+It checks the four exact record/property-array offsets, all six ordered property keys,
+`wait=1`, `name=knight`, alternating potion drops, four distinct nonempty death scripts
+and identical two-light values. For each list it places its disc strings in scratch
+memory and executes the original `obj_getPropInt` / `obj_getPropStr` in `ee_emu.py`:
+24 parser reads per seed, no mismatch. The executable SHA-256 is pinned; scan coverage
+counts and content assertions reject a changed disc. This proves the shipped GOB
+placements and parser behavior, not properties of objects created by scripts.
+
 ## 10. Open
 
 - Integrated run-list order after activity changes (section 3).
@@ -498,8 +515,9 @@ success alone does not verify movement, combat or lifecycle.
    variants 0–3 of the same 0x478 `Horsemen` constructor, with mounted = 0, one pool
    allocation and the record's own property list. Do not attach the fixed Nightmare
    MiniBoss lists or infer every level's properties from the Drundar arena. Compare the
-   four factory paths in `difftest_horsemen_mount.py -k factory` and the existing on-foot
-   run / cast paths in `difftest_arena_monsters.py`.
+   four factory paths in `difftest_horsemen_mount.py -k factory`, the Drundar record
+   pointers, fields and whole-level count in `difftest_horsemen_onfoot.py` (both seeds),
+   and the existing on-foot run / cast paths in `difftest_arena_monsters.py`.
 2. **Schedule both objects by ordinary run-list rules** (section 3): the constructor
    assigns consecutive slow-list slots; activity can independently relink each to the
    every-frame list. Verify the first active ticks and later relinks in an actual scene,
