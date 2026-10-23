@@ -54,6 +54,9 @@ MSEL_SIZES = {
     'amulet3.tex': (53, 52), 'bonus.tex': (33, 34),
     'mainglow.tex': (256, 146),
     'amuletglow.tex': (88, 88), 'bonusglow.tex': (64, 62),
+    'missair.tex': (411, 156), 'pipe3.tex': (249, 74),
+    'pipe4.tex': (91, 250), 'pipe5.tex': (324, 16),
+    'pipe6.tex': (84, 228),
 }
 MSEL_SIZES.update({name: (411, 156) for name, _, _ in MISSION_PICTURES})
 MSEL_SIZES['missairend.tex'] = (411, 156)

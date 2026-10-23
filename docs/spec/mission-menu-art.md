@@ -82,7 +82,8 @@ submits it at `(70,40)` at 0x2328a8, and switches the detail key from
 state, not confirmed in a retail playthrough.
 
 `MSEL.LMP` has 32 `.tex` entries in the read-only disc check. The test
-asserts the relevant header dimensions and named lookup sites; it does not
+asserts the complete name set and every header dimension, including the
+otherwise unsubmitted `missair.tex` and `pipe3`–`pipe6.tex`; it does not
 copy textures. The prior `t3/research-menus-layout` result for general
 `INTERFAC.LMP` list frames concerns other menus. This mission map has its
 own frame strips and node sprites. The `t3/research-menus` flow contract
@@ -140,9 +141,11 @@ at 0x231a4c–0x231a78 remains the known lockstep caveat from
 
 ## Ordered native port
 
-1. Load `MSEL.LMP` from the owned disc and validate all 32 named `.tex`
-   headers; bind the UI coordinate/layer/tint semantics from
-   `t3/research-ui` before presenting them.
+1. Load `MSEL.LMP` from the owned disc and validate the exact 32-name set
+   and each `.tex` header dimension. Bind the UI coordinate/layer/tint
+   semantics from `t3/research-ui` before presenting them. Match the
+   executed frame, cosmic/starfield and dark medal-overlay tint arguments,
+   title's seventh argument, and prompt colour in the controlled state.
 2. Port the 13-row `g_missionTable` and row/column helper gates. Keep the
    row-zero special case, story/evil/medal/bonus destination pointers and
    the nameless terminator. Derive locked art from actual player mission and
@@ -155,8 +158,10 @@ at 0x231a4c–0x231a78 remains the known lockstep caveat from
    description and local/network prompt, including the evil alternative.
    Compare actual glyph layout and alpha across fade, scroll and locale.
 5. Connect lockstep input, availability gates, sounds, fade/close and direct
-   pending-level write to the existing route contract. Validate confirm and
-   cancel in an integrated native hub session, then test the `blood1` load.
+   pending-level write to the existing route contract. Compare the
+   mission-2 opening row, nine cancel snapshots through zero, and primary
+   and alternate down/right bits before integrated hub validation. Then
+   validate confirm/cancel in a native hub session and test the `blood1` load.
 
 ## Verification
 
@@ -167,7 +172,10 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools -p 'test_*.py'
 ```
 
 The art comparison pins the ELF SHA-256, compares the 13 table records,
-checks 32 private-disc texture entries, and checks 39 draw fixtures
-and twelve input fixtures per seed. The reference contains only identifiers,
+checks the exact set and dimensions of 32 private-disc texture entries,
+and checks 39 draw fixtures and twenty input fixtures per seed. The draw
+fixtures also check controlled tints, full title arguments and prompt colour;
+the input fixtures check the opening row, cancel fade and alternate bits.
+The reference contains only identifiers,
 dimensions, coordinates and bounded state rules. Full rendered art, scroll
 animation, localization, a real controller and native parity remain open.

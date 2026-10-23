@@ -60,6 +60,9 @@ def disc_sizes(path):
         blob = mm[offset:offset + size]
     dimensions = {name.lower(): struct.unpack_from('<HH', blob, at)
                   for name, at, size in lmp_entries(blob) if name.lower().endswith('.tex')}
+    assert len(dimensions) == 32, len(dimensions)
+    assert set(dimensions) == set(R.MSEL_SIZES), (set(dimensions) - set(R.MSEL_SIZES),
+                                                   set(R.MSEL_SIZES) - set(dimensions))
     for name, expected in R.MSEL_SIZES.items():
         assert dimensions[name] == expected, (name, dimensions.get(name), expected)
     return len(dimensions)
@@ -112,15 +115,35 @@ def check_draw(path, seed):
         pipe_calls = [args for site, args in sprites if site == 0x232bc0]
         assert pipe_names == [p[0] for p in pipes]
         assert pipe_calls == [(x, y, 4, tint) for _, x, y, tint in pipes], pipe_calls
-        assert [args[:3] for site, args in sprites if site in (0x232474, 0x2324bc)] == list(R.FRAME_STRIPS)
-        assert [name for _, name in tex].count('cosmiclines.tex') == 4
-        assert [name for _, name in tex].count('starfield.tex') == 4
-        assert [name for _, name in tex].count('starsparkle.tex') == 1
+        assert [args for site, args in sprites if site in (0x232474, 0x2324bc)] == [
+            (*strip, 0x7f808080) for strip in R.FRAME_STRIPS]
+        assert [(site, name) for site, name in tex if site in (0x232420, 0x232480)] == [
+            (0x232420 if x == 0 else 0x232480, 'frame.tex')
+            for x, _, _ in R.FRAME_STRIPS]
+        backdrop_names = ((0x233280, 'cosmiclines.tex'),
+                          (0x23334c, 'cosmiclines.tex'),
+                          (0x2333d0, 'cosmiclines.tex'),
+                          (0x233454, 'cosmiclines.tex'),
+                          (0x2334e8, 'starfield.tex'),
+                          (0x23359c, 'starfield.tex'),
+                          (0x233620, 'starfield.tex'),
+                          (0x2336a4, 'starfield.tex'),
+                          (0x23372c, 'starsparkle.tex'))
+        assert tuple((site, name) for site, name in tex if 0x233280 <= site <= 0x23372c) == backdrop_names
+        assert [(c.site, c.args[1:3]) for c in e.calls if c.target == 0x17fb18
+                and 0x233280 <= c.site <= 0x23372c] == [
+                    (site, (3, tint)) for site, tint in
+                    ((0x233340, 0x14808080), (0x2333c4, 0x14808080),
+                     (0x233448, 0x14808080), (0x2334cc, 0x14808080),
+                     (0x233590, 0x7f808080), (0x233614, 0x7f808080),
+                     (0x233698, 0x7f808080), (0x23371c, 0x7f808080))]
         assert keys == ['Plane_of_War_mis', 'Plane_of_War_mis_title', 'AcceptBack']
         assert any(c.site == 0x232f2c and c.args[0] == 0x12345678 and c.args[1] == 5
                    and c.args[2] == 0x49616a for c in e.calls)
-        assert any(c.site == 0x233044 and c.args[:6] == (320, 267, 0, 550, 262, 365)
+        assert any(c.site == 0x233044 and c.args[:7] == (320, 267, 0, 550, 262, 365, 21)
                    for c in e.calls)
+        assert any(c.site == 0x233094 and c.target == 0x1802e0
+                   and c.args[0] == 0x64464646 for c in e.calls)
         assert any(c.site == 0x233074 and c.args[:2] == (320, 235) for c in e.calls)
         assert any(c.site == 0x2330f8 and c.args[:2] == (320, 410) for c in e.calls)
         assert any(c.site == 0x2331a8 and c.args[:4] == (25, 230, 590, 215)
@@ -149,6 +172,8 @@ def check_draw(path, seed):
         actual_xy = [(args[0], args[1]) for site, args in sprites if site in sprite_sites]
         assert actual_names == [name for name, _, _ in expected], actual_names
         assert actual_xy == [(x, y) for _, x, y in expected], actual_xy
+        if (mission1, medal) == (3, 3):
+            assert (0x2327a4, (215, 91, 4, 0x7f3c3c3c)) in sprites
         count += 1
     for row in range(12):
         for unlocked in (False, True):
@@ -210,7 +235,30 @@ def check_input(path, seed):
         m.w32(0x41bfe4, 0x8000)
         e.call(0x2316fc, max_steps=400000)
         assert m.s8(0x8e2f0d) == expected
-    return len(cases) + 4
+    for mission2, opening_row in ((0, 0), (1, 1)):
+        e = scene(path, seed, mission2=mission2)
+        input_phase(e)
+        assert (e.mem.s8(0x8e2f0c), e.mem.s8(0x8e2f0d),
+                e.mem.s32(0x8e2f04)) == (opening_row, 0, 127)
+    for button in (0x20, 0x100):
+        e = scene(path, seed)
+        input_phase(e)
+        m = e.mem
+        for tick, fade in enumerate((127, 111, 95, 79, 63, 47, 31, 15, 0)):
+            m.w32(0x41bfe4, button if tick == 0 else 0)
+            e.call(0x2316fc, max_steps=400000)
+            assert (m.s8(0x8e2efc), m.s32(0x8e2f04)) == (4, fade), (button, tick)
+    for primary, alternate in ((0x4000, 0x200000), (0x8000, 0x400000)):
+        for button in (primary, alternate):
+            e = scene(path, seed, mission1=3, mission2=1, medal=3)
+            input_phase(e)
+            m = e.mem
+            m.w8(0x8e2f0c, 0)
+            m.w32(0x41bfe4, button)
+            e.call(0x2316fc, max_steps=400000)
+            assert (m.s8(0x8e2efc), m.s8(0x8e2f0c), m.s8(0x8e2f0d)) == (
+                2, 1 if primary == 0x4000 else 0, 0 if primary == 0x4000 else 1)
+    return len(cases) + 4 + 2 + 2 + 4
 
 
 def main():
@@ -221,7 +269,7 @@ def main():
     with open(args.elf, 'rb') as f:
         assert hashlib.sha256(f.read()).hexdigest() == ELF_SHA256
     if args.iso:
-        print('PASS disc MSEL.LMP: %d texture entries; selected dimensions match' % disc_sizes(args.iso))
+        print('PASS disc MSEL.LMP: %d named texture entries; all dimensions match' % disc_sizes(args.iso))
     for seed in (20973, 7):
         e = scene(args.elf, seed)
         table(e)
