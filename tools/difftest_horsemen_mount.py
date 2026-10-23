@@ -24,6 +24,10 @@ What is compared
     set-state reaches the rider's set-state through the rider's own virtual table.
 
 Scenarios (the run names)
+    factory     four mounted Rider rows, four on-foot UndeadKnight rows and the
+                standalone Nightmare row, each through its real constructor.
+    damage      directed lethal rider hit while linked, lethal mount hit, then
+                the on-foot rider's death after one more hit.
     nightmare   a Nightmare the factory builds on its own (no rider): the object under test
                 is the mount.  Its property list is the driver's or one of the four the
                 mounted Horsemen hand over.
@@ -364,12 +368,13 @@ class Driver(DA.Driver):
             mem.w32(c + 0x50, c + 0x3D0)
 
 
-# The five factory rows that build a Nightmare: the four rider rows (class-string address,
-# row entry, constructor call, variant) reach Horsemen_ctor with mounted = 1; the
-# `Nightmare` row reaches Nightmare_ctor directly.  (Addresses from
-# tools/difftest_horsemen_factory.py, research commit dfcc8d3, and the row at 0x15b1b0.)
+# Factory rows (class-string address, row entry, constructor call, variant).  The
+# on-foot rows pass the record's property-list pointer through unchanged and set
+# the final Horsemen_ctor argument to zero.  The rider rows set it to one.
 RIDER_ROWS = ((0x532CC8, 0x15B2D8, 0x15B3D4, 0), (0x532CD8, 0x15B318, 0x15B3D4, 1),
               (0x532CE8, 0x15B358, 0x15B3D4, 2), (0x532CF8, 0x15B398, 0x15B3D4, 3))
+ON_FOOT_ROWS = ((0x532DC8, 0x15B804, 0x15B900, 0), (0x532DD8, 0x15B844, 0x15B900, 1),
+                (0x532DE8, 0x15B884, 0x15B900, 2), (0x532DF8, 0x15B8C4, 0x15B900, 3))
 NIGHTMARE_ROW = (0x532C98, 0x15B1B0, 0x15B1E4)
 
 
@@ -380,9 +385,12 @@ def factory_chain(elf, seed, story):
     pool_new followed by Model.horsemen_ctor / Model.nightmare_ctor; calls, writes, seed
     and faults are compared as for every other call, and the link is then checked on the
     original's memory: both handles, the rider's state 0x1b and variant, the mount's state
-    0, and the property list the mount's GameObject_ctor received."""
+    0, and the property list the mount's GameObject_ctor received.  The four on-foot rows
+    also prove the record's property pointer reaches their GameObject_ctor unchanged."""
     bad = []
-    rows = [(a, e, s, v, 1) for a, e, s, v in RIDER_ROWS] + [NIGHTMARE_ROW + (None, 0)]
+    rows = ([(a, e, s, v, 1) for a, e, s, v in RIDER_ROWS] +
+            [(a, e, s, v, 0) for a, e, s, v in ON_FOOT_ROWS] +
+            [NIGHTMARE_ROW + (None, 0)])
     for index, (string_at, entry, site, variant, mounted) in enumerate(rows):
         rig = Rig(elf, seed + index, 'mounted', 0, 1)
         world, emu = rig.world, rig.emu
@@ -406,9 +414,9 @@ def factory_chain(elf, seed, story):
             return 0
 
         def model_run(model):
-            if mounted:
+            if variant is not None:
                 model.call('pool_new', 0x478)
-                model.horsemen_ctor(c, name_at, pos, facing, props, variant, 1)
+                model.horsemen_ctor(c, name_at, pos, facing, props, variant, mounted)
             else:
                 model.call('pool_new', 0x3D8)
                 model.nightmare_ctor(c, name_at, pos, facing, props)
@@ -426,17 +434,77 @@ def factory_chain(elf, seed, story):
                       mem.u32(c + 0x48) == AM.VT_HORSEMEN, mem.u32(mount + 0x48) == HM.VT_NIGHTMARE,
                       len(ctor) == 2 and ctor[1][2] == HM.DEF_NIGHTMARE and ctor[1][3] == HM.MOUNT_PROPS + 12 * variant,
                       mem.u32(c + 0xC) & 9 == 9)
+        elif variant is not None:
+            checks = (mem.u32(c + 0x48) == AM.VT_HORSEMEN, mem.u32(c + 0x3C8) == 0,
+                      mem.u16(c + 0x232) == 0, mem.u8(c + 0x470) == variant,
+                      len(ctor) == 1 and ctor[0][3] == props,
+                      not any(n == 'Nightmare_ctor' for n, _ in result['emu_calls']))
         else:
             checks = (mem.u32(c + 0x48) == HM.VT_NIGHTMARE, mem.u32(c + 0x3C8) == 0, mem.u16(c + 0x232) == 0,
                       len(ctor) == 1 and ctor[0][3] == props)
         if not all(checks):
             bad.append('row %x: link checks %s' % (entry, ['ok' if x else 'FAIL' for x in checks]))
         else:
-            story['factory row built and linked (%s)' % ('rider variant %d' % variant if mounted else
-                                                         'Nightmare alone')] = 1
-    DC.report('factory rows', len(bad), len(rows), 'four rider rows and the Nightmare row, real constructors '
-              'underneath; calls, writes, seed, links', bad)
+            kind = ('rider variant %d' % variant if mounted else
+                    'on-foot variant %d' % variant if variant is not None else 'Nightmare alone')
+            story['factory row built (%s)' % kind] = 1
+    DC.report('factory rows', len(bad), len(rows), 'four rider rows, four on-foot rows and the Nightmare row; '
+              'real constructors underneath; calls, writes, seed, links', bad)
     return len(rows)
+
+
+def damage_routing_chain(elf, seed, story):
+    """Execute separate lethal blows to rider and mount, then the on-foot rider.
+
+    The scripted property lookup can set IgnoreDamage, so clear that synthetic
+    flag explicitly; this probe is about the original damage and state code.
+    """
+    rig = Rig(elf, seed, 'mounted', 0, 1)
+    world, mem = rig.world, rig.emu.mem
+    rider, mount = world.C, world.mount
+    world.clear_creature()
+    world.factory_pool = {0x3D8: mount}
+    pos = (f32(2.0), f32(3.0), f32(10.0))
+    bad = []
+
+    def compare(key, args, index):
+        result = rig.compare(key, args, seed * 1000003 + index)
+        for prop in ('fault', 'calls', 'writes', 'seed', 'result'):
+            if result[prop]:
+                bad.append('%s: %s %s' % (key, prop, result[prop]))
+        return result
+
+    compare('Horsemen_ctor', (rider, world.strings['type'], pos, 0, world.props, 0, 1), 0)
+    for obj in (rider, mount):
+        mem.w8(obj + 0x231, 0)
+        mem.wf32(obj + 0x228, 300.0)
+        mem.wf32(obj + 0x22C, 300.0)
+        mem.w64(obj + 0xA8, mem.u64(obj + 0xA8) & ~0x1000000000000)
+    compare('Creature_takeDamage', (rider, 0, 0, f32(5000.0)), 1)
+    hit = compare('Horsemen_run', (rider,), 2)
+    rider_still_riding = (mem.u16(rider + 0x232) == 0x1B and mem.u32(rider + 0x3C8) != 0 and
+                          mem.u16(mount + 0x232) == 0 and fl(mem.u32(rider + 0x228)) < 0 and
+                          fl(mem.u32(mount + 0x228)) == 300.0)
+    award = sum(name == 'player_giveExp' for name, _args in hit['emu_calls'])
+    if not rider_still_riding or not award:
+        bad.append('lethal rider hit: riding=%s experience calls=%d' % (rider_still_riding, award))
+    compare('Creature_takeDamage', (mount, 0, 0, f32(5000.0)), 3)
+    compare('Nightmare_run', (mount,), 4)
+    dismounted = (mem.u16(mount + 0x232) == 0x14 and mem.u16(rider + 0x232) == 0x23 and
+                  mem.u32(rider + 0x3C8) == mem.u32(mount + 0x3C8) == 0)
+    if not dismounted:
+        bad.append('lethal mount hit: mount/rider state or links differ')
+    compare('Creature_takeDamage', (rider, 0, 0, f32(1.0)), 5)
+    compare('Horsemen_run', (rider,), 6)
+    if mem.u16(rider + 0x232) != 0x14:
+        bad.append('on-foot rider did not enter death state after fresh damage')
+    if not bad:
+        story['lethal rider hit leaves linked rider alive in state 0x1b'] = 1
+        story['lethal mount hit dismounts rider; later rider damage kills on foot'] = 1
+        story['lethal linked rider hit called player_giveExp'] = award
+    DC.report('directed damage routing', len(bad), 7,
+              'rider HP, award, mount death, dismount, on-foot death; calls, writes, seed', bad)
+    return 7
 
 
 RUNS = (('nightmare', 0, 1), ('nightmare', 1, 0), ('mounted', 0, 1), ('mounted', 1, 1), ('mounted', 0, 0),
@@ -659,6 +727,8 @@ def main(argv):
     total = 0
     if not OPTIONS['filter'] or OPTIONS['filter'].lower() in 'factory':
         total += factory_chain(elf, OPTIONS['seed'], story)
+    if not OPTIONS['filter'] or OPTIONS['filter'].lower() in 'damage':
+        total += damage_routing_chain(elf, OPTIONS['seed'], story)
     for index, (kind, machine, net) in enumerate(RUNS):
         name = '%s/%s/%s' % (kind, 'B' if machine else 'A', 'net' if net else 'off')
         if OPTIONS['filter'] and OPTIONS['filter'].lower() not in name.lower():

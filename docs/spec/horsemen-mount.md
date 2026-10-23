@@ -1,6 +1,6 @@
 # Mounted Horsemen: the Nightmare mount, the rider–mount link and its lifecycle
 
-Status (2026-10-22): **Executed** in `tools/ee_emu.py` against the reference model
+Status (2026-10-23): **Executed** in `tools/ee_emu.py` against the reference model
 `tools/ref_horsemen_mount.py` by `tools/difftest_horsemen_mount.py`, seeds 20973 and 7, no
 mismatch (section 9). Nothing here has run on a console or a full emulator. Addresses are
 SLUS_209.73 US v2.00 (SHA-256 `292f6f48…d7`). No raw game bytes are in this document;
@@ -36,9 +36,47 @@ constructor stubbed). **Executed here end to end** (section 9.2): each rider row
 name compare through the real `Horsemen_ctor`, which allocates and builds the real mount
 with the real `Nightmare_ctor`; and the `Nightmare` row through the real `Nightmare_ctor`.
 
-The current native-horsemen checkout counts these four rider records as unbuilt at its
-mount property-list refusal (round 2 report: four records over the disc's 111 levels;
-disc counts only). Section 11 gives the remaining native work after this decode.
+Native-horsemen r3 (`codex/native-horsemen` 8c2ae9f) builds these four pairs; its focused
+audit passed. That is a constructor result, not a play-scene run. Section 11 lists the
+remaining runtime work.
+
+### 1.2 Four on-foot rows (Observed factory, Executed comparison)
+
+| Class text at | Name | Entry / constructor site | Pool | Variant / mounted |
+|---|---|---|---|---|
+| 0x532dc8 | `UndeadKnight1` | 0x15b804 / 0x15b900 | 0x478 | 0 / 0 |
+| 0x532dd8 | `UndeadKnight2` | 0x15b844 / 0x15b900 | 0x478 | 1 / 0 |
+| 0x532de8 | `UndeadKnight3` | 0x15b884 / 0x15b900 | 0x478 | 2 / 0 |
+| 0x532df8 | `UndeadKnight4` | 0x15b8c4 / 0x15b900 | 0x478 | 3 / 0 |
+
+Each branch compares the record type with `libc_strcasecmp` (0x3b81a0), allocates one
+0x478 block through `pool_new` (0x14fdb8), and calls the same `Horsemen_ctor` (0x271c70).
+The record's type-name pointer, position, facing and property-list pointer are passed
+through; there is **no fixed property list in these factory rows**. The constructor's
+last argument is zero (0x15b904). Its mounted branch at 0x27211c is skipped, so it
+builds one `Horsemen` with variant +0x470, state 0, no +0x3c8 mount link and no Nightmare.
+The record's property pointer reaches `Creature_ctor` / `GameObject_ctor` (0x271cec,
+0x109d68); the level record, not the factory type, determines its properties. A read-only
+scan of the v2.00 disc's level GOB files found exactly one `objects.ob` placement per
+on-foot type, all in `DRUNARE.GOB::drunare.lmp`. **Observed** record-relative offsets and
+decoded fields (the offset is within that lump's `objects.ob`, not an EE address):
+
+| Type | Record / property-pointer array | Ordered property fields | `dropitem` |
+|---|---|---|---|
+| `UndeadKnight1` | 0x124 / 0x138 | `deathscript`, `wait=1`, `light1`, `light2`, `name=knight`, `dropitem` | `rejuvpotion` |
+| `UndeadKnight2` | 0x154 / 0x168 | same fields | `healingpotion` |
+| `UndeadKnight3` | 0x184 / 0x198 | same fields | `rejuvpotion` |
+| `UndeadKnight4` | 0x1b4 / 0x1c8 | same fields | `healingpotion` |
+
+The four `deathscript` values are distinct and nonempty; the two light properties are
+identical across the four placements. `docs/spec/arena-monsters.md` section 1 documents
+their arena role. A record constructed by script or from other unexamined sources could
+carry different properties: the factory does not choose this table by type.
+
+The four branches through the real constructor match `ref_arena_monsters.Model` for
+calls, writes and shared seed on both seeds, 4/4 each; section 9.2 gives the probe.
+An allocation failure branches to 0x15d9a4 without a constructor call (Observed at
+0x15b824, 0x15b864, 0x15b8a4, 0x15b8e4).
 
 ### 1.1 What one rider record consumes (Executed, section 9.2)
 
@@ -161,14 +199,17 @@ the shared class definition — `obj_runEvery60` 0x270b18, `Creature_init` 0x270
 
 ## 3. Tick order
 
-The objects tick in their run-list order (`docs/spec/object-system.md`); the difftest runs
-mount then rider, which is what the rider's head assumes (it copies the mount's position
-of this tick). Which order the game's run lists give a rider and its mount is **Unknown**:
-both join `obj_runEvery60` in the one factory call, the rider first (its own
-`obj_runEvery60` in `Horsemen_ctor`, `docs/spec/arena-monsters.md` 3.2 step 9, before the
-mount is allocated) and the mount second (0x270b18); since a link goes to the front of a
-list (`docs/spec/object-system.md`), settling it needs that document's run-list rules
-applied to the two calls and to the later move to the active list.
+The objects tick in their run-list order (`docs/spec/object-system.md` section 5). The
+constructor calls `obj_runEvery60` for the rider first (0x271f10), then for the mount
+(0x270b18); that function (0x14f2b8) steps a shared 0..59 cursor **before** linking to
+the front of its selected slow list. Thus the pair starts in adjacent slow lists, rider
+then mount in the cyclic 60-list order (**Inferred** from these Observed calls and the
+executed object-system model). When `Creature_updateActive` (0x10c0f0) changes activity,
+`obj_updateActive` (0x14db08) moves that object to the front of the every-frame list
+(0x14f248), or the next slow list; these independent relinks can change which member
+runs first. The difftest calls mount then rider on each synthetic tick, so its results do
+**not** establish a fixed play-scene pair order. A native port should use its ordinary
+object run-list scheduler and check order in an integrated scene.
 
 ### 3.1 Rider, mounted head (`Horsemen_run` 0x27236c; arena spec 3.3)
 
@@ -279,11 +320,18 @@ the ride. In 0x23 the rider waits for the clip, pushes the stand clip (+0x84) wh
 show "ended, still queued", and goes to state 0, which clears object flags 9: from then on
 it is an ordinary on-foot knight with its variant's cast (`docs/spec/arena-monsters.md` 3.3).
 
-**Rider death.** Impossible while linked (the set-state refuses 0x14; Executed: the event
-"rider refused state 0x14 while mounted" 14 and 18 times over the two seeds; it holds for
-the script built-in `killMonster` too, which goes through slot 27 — `docs/script.md` §31,
-Inferred). On foot it dies as an UndeadKnight does (loot, held parts dropped, slot 28;
-arena spec 3.4).
+**Rider lethal damage.** `Creature_takeDamage` (0x116638) subtracts the rider's own HP;
+the mount takes none of that damage. At HP ≤ 0, `Creature_processDamage` (0x110d30)
+requests rider state 0x14 at 0x111de8, which the mounted `Horsemen_setState` (0x272f4c)
+refuses for states below 0x19. The base death path continues to `player_giveExp`
+(call at 0x1120e4 or 0x1121e8)
+even though the rider remains linked and in riding state. In the directed function-level
+probe (section 9.4), a lethal rider hit leaves HP negative, rider state 0x1b, both links
+intact and mount state 0; four `player_giveExp` calls are recorded. **Executed**, including
+the award call sequence; whether a shipped play scene can target and damage a mounted
+rider is **Unknown**. After the mount dies and sends 0x23, a fresh rider hit enters 0x14
+on foot. A direct `killMonster` request while linked also passes through slot 27 and is
+refused (**Inferred** from `docs/script.md` section 31 and the set-state execution).
 
 **Stranded rider (Executed; reachability Unknown).** The rider's 0x23 passes through the
 rider's own `Creature_filterState` first. With the rider's stun timer (+0x31c), root timer
@@ -366,8 +414,8 @@ arena model and this model run for real on both sides.
 
 | | seed 20973 | seed 7 |
 |---|---|---|
-| calls compared | 15,399 | 16,110 |
-| properties passing (calls, writes, seed, result, faults per run + factory rows) | 31 / 31 | 31 / 31 |
+| calls compared | 15,410 | 16,121 |
+| properties passing (calls, writes, seed, result, faults per run + factory and damage chains) | 32 / 32 | 32 / 32 |
 | `Nightmare_run` / `Nightmare_setState` calls | 5,657 / 528 | 6,246 / 578 |
 | `Horsemen_run` / `Horsemen_setState` calls | 5,977 / 381 | 5,980 / 335 |
 | mount deaths / fade-outs deleted | 161 / 66 | 143 / 53 |
@@ -382,15 +430,19 @@ Block coverage of the original, both seeds: `Nightmare_ctor`, `_draw`, `_onHitTe
 
 ### 9.2 The factory rows
 
-The same command runs `factory_chain` first: the four rider rows and the `Nightmare` row,
+The same command runs `factory_chain` first: four rider rows, four on-foot rows and the
+`Nightmare` row,
 from the row's name compare (the class string copied from the image into a scratch buffer
 in memory only) to the instruction after the constructor call, with the real constructors
 underneath; then calls, writes and seed are compared with `pool_new` + the model's
 constructor, and the link is checked on the original's memory (both handles, rider state
 0x1b and variant, mount state 0, the property list the mount's `GameObject_ctor` received,
-rider flags 9). 5 / 5 pass on both seeds. This older factory test passes the list pointer
-through a stubbed `GameObject_ctor`; section 9.3 separately executes that constructor,
-the property parser and `Creature_ctor` on the actual lists.
+rider flags 9). The on-foot checks assert one `GameObject_ctor`, the passed-through record
+property pointer, variant, state 0 and no mount link. 9 / 9 rows pass on both seeds. The
+factory test passes the list pointer through a stubbed `GameObject_ctor`; section 9.3
+separately executes that constructor, the property parser and `Creature_ctor` on the
+four fixed **mount** lists. The on-foot row's record list varies by placement and was not
+decoded by that mount-list probe.
 
 ### 9.3 Property-list execution and unit tests
 
@@ -409,9 +461,25 @@ picker, trampling, the dead mount's run-off. They compute expected values from t
 own formulas and constants, so they are a regression guard on the model and are **not
 evidence** about the original; the comparison with the original is the difftest (9.1, 9.2).
 
+### 9.4 Directed damage routing
+
+`difftest_horsemen_mount.py -k damage --seed N` for N=20973 and 7 compares seven calls
+per seed: the real mounted constructor, a lethal hit and tick for the rider, a lethal hit
+and tick for the mount, then a fresh hit and tick for the on-foot rider. Both seeds match
+the `ref_creature`, `ref_arena_monsters` and `ref_horsemen_mount` models for external calls,
+writes, shared-seed draws, results and faults. The probe clears a synthetic
+`IgnoreDamage` flag that the scripted `obj_getPropInt` may set; it does not establish
+the presence of that flag in a shipped scene. It observes four `player_giveExp` calls
+after the linked rider's lethal hit, followed by a dismount on mount death and rider
+state 0x14 after a new on-foot hit. This remains function-level execution.
+
 ## 10. Open
 
-- Run-list order of rider and mount (section 3).
+- Integrated run-list order after activity changes (section 3).
+- Whether a play-scene attack can target a mounted rider and award experience while he
+  remains linked (section 6).
+- Property lists of any on-foot records created outside the scanned level GOB placements
+  (section 1.2).
 - Who requests mount states 0x19 / 0x1a (section 6).
 - Whether a mounted rider can carry a stun, root or cooldown in the game (section 6).
 - Slot 1 of the mount table (0x3cae50) was not read (`docs/monsters-2.md`).
@@ -419,41 +487,38 @@ evidence** about the original; the comparison with the original is the difftest 
   by the property-list difftest.
 - Table capacity / maximum player count for the charge-target picker (section 4).
 
-## 11. What the native client should implement, ranked
+## 11. Ordered native port and verification list
 
-For open-champions-godot `native/` (state read on 2026-10-22 from
-`worktrees/native-horsemen`): the four rider records already allocate two blocks and
-account for two shared draws, but `script_commands_objects.cpp::build_mounted` refuses at
-the first mount property read. A placed `Nightmare` is built. This research now supports
-the exact property list for each of the four rider variants; it does not change the
-native branch. Its current callbacks also explicitly refuse `Creature_init MiniBoss` and
-`handle_link`, and its completed-rider path throws, so the four rider records are **not
-yet built** in that checkout. Native can now implement and verify the following exact
-objects: `RiderDisease` (variant 0) plus MiniBoss mount named `horsedisease`;
-`RiderWar` (1) plus `horsewar`; `RiderPestilence` (2) plus `horsepestilence`;
-`RiderDeath` (3) plus `horsedeath`. Every mount
-gets creature flag bit 0 and a registered object name; no `ShowName` property is present.
+The audited native-horsemen r3 branch (`codex/native-horsemen` 8c2ae9f) builds the four
+mounted rider/MiniBoss pairs. It leaves the four on-foot factory rows unbuilt and has no
+verified mounted play-scene tick. The list below starts from that state; construction
+success alone does not verify movement, combat or lifecycle.
 
-1. **Apply the four addressed mount property lists** (section 2.2) in the mount's
-   `GameObject_ctor` and `Creature_ctor`: register the name, return 1 for `MiniBoss`, set
-   flag bit 0 and handle the MiniBoss path of `Creature_init`. Verify each against
-   `tools/difftest_horsemen_props.py`. The paired allocations and draws are already
-   accounted for in the native branch.
-2. **Finish `Nightmare_ctor` and the mounted tail of `Horsemen_ctor`** (sections 1.1,
-   2.3): implement the two `handle_link`s and completed-rider host path; retain the direct
-   `Nightmare_setState(0)` (one own draw) and `Horsemen_setState(0x1b)` in their observed
-   order. Test vectors: `tools/difftest_horsemen_mount.py` factory rows (section 9.2).
-3. **The mount's tick and set-state** (sections 3.2, 4, 5): `Nightmare_run`,
-   `Nightmare_setState` with the rider push table, slots 10 and 11, the charge-target picker
-   and `Creature_angleToTarget`. No shared-seed draws; every random choice is the mount's own
-   generator. Without it a built mount stands still and the rider never leaves 0x1b.
-4. **The lifecycle edges exactly as executed** (section 6): mount death → rider 0x23 through
-   the rider's own filter (including the stranded-rider outcome, which must not be
-   "fixed"), the dead mount's 100-tick run-off without collision and its deletion, the
-   rider's dismount clip and return to state 0. The tick order of the pair is still Unknown
-   (section 3): keep it a host decision that is reported, not assumed.
-5. **Presentation**: the seat transform (attach point 10 of the mount at facing·(−20)) times
-   the inverse of the rider's attach point 9 for the rider's model matrix, and the mount's
-   fade (section 7). Nothing in simulation reads these.
-6. **Leave refused**: a set-state 0x19 / 0x1a request has no known caller (section 6).
-   Implement the executed cases but do not invent a trigger for them.
+1. **Build the four on-foot factory rows** (section 1.2): map `UndeadKnight1`–`4` to
+   variants 0–3 of the same 0x478 `Horsemen` constructor, with mounted = 0, one pool
+   allocation and the record's own property list. Do not attach the fixed Nightmare
+   MiniBoss lists or infer every level's properties from the Drundar arena. Compare the
+   four factory paths in `difftest_horsemen_mount.py -k factory` and the existing on-foot
+   run / cast paths in `difftest_arena_monsters.py`.
+2. **Schedule both objects by ordinary run-list rules** (section 3): the constructor
+   assigns consecutive slow-list slots; activity can independently relink each to the
+   every-frame list. Verify the first active ticks and later relinks in an actual scene,
+   recording which runs first and whether the rider copies current or prior mount pose.
+3. **Port mount movement and charge** (sections 3.2–4): `Nightmare_run`, states 0/1/3/5/7,
+   target selection, root-motion `Creature_moveBy`, terrain ray, charge clip changes,
+   and slots 10/11 for terrain and trampling. Keep the original picker bounds explicit;
+   refuse a player count beyond established host capacity. Check position, facing,
+   contact damage and non-solid cooldown against directed function-level vectors.
+4. **Port attacks and state coupling** (sections 2, 4–5): mount kicks and twice-stat
+   damage, rider swing states 0x1f–0x22 and their own hit arcs, mount-to-rider state
+   pushes, target-copy timing and each object's own random generator. Compare both
+   objects' state, hit calls and draws before claiming a mounted combat path.
+5. **Port damage and lifecycle as observed** (section 6 and 9.4): keep rider and mount HP
+   separate; include the linked rider's refused death state and base experience-award
+   path, mount death to rider 0x23, filter-dependent stranded rider, 100-tick mount
+   fade/deletion, rider dismount and later on-foot death. Do not silently redirect
+   damage between objects or repair the original refusal in an exact port.
+6. **Port presentation and verify in the play scene** (section 7): mount fade and the
+   rider seat transform; inspect riding, charge, kicks, both lethal-hit orders,
+   dismount and deletion at scene level. Keep the fixed mount 0x19/0x1a cases available
+   but their caller **Unknown**; do not invent a hide/show trigger.
