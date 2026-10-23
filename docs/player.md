@@ -44,7 +44,7 @@ Offsets are from the start of the record. "init" = `player_initNewCharacter` 0x1
 | Offset | Type | Meaning | Evidence |
 |---|---|---|---|
 | +0x00 | char[0x20] | character name | Observed: init copies the name argument here (string copy 0x3b868c); import copies 0x20 bytes |
-| +0x20 | s8[4] | appearance choices (-1 = none); select the model part files | Observed: `Player_ctor` builds four part names from them (0x1a1d28) |
+| +0x20 | s8[4] | hair style, hair/beard colour, beard style, body skin variant; −1 suppresses a style part | Observed: `player_initNewCharacter` writes them at 0x1b23b8–0x1b23e4; `Player_ctor` selects the mesh/texture entries at 0x1a1ff0–0x1a21e4. See `docs/spec/player-appearance-layers.md` |
 | +0x24 | char[] | name of the level to return to after a recall; default is a 5-byte constant at 0x5375d0 | Observed: init/import copy the constant; `player_recallTick` 0x1b5fa0 stores and reads it |
 | +0x44 | Vec3 | position to return to after a recall | Observed: 0x1b5fa0 |
 | +0x50 | s32 | class index 0–6, derived from the model index: models 0,1→0; 4,5→1; 8,9→2; 2,3→3; 6,7→4; 10→5; 11→6 | Observed: init. Class 0 loses mana while status counter 2 runs; classes 1 and 4 are the ones the script built-in `isClericOrWizard` accepts (0x1465cc) |
@@ -404,7 +404,7 @@ Writes that the prediction loop restores and so need no guard: every `g_randSeed
 `Projectile_runThrown` in the earlier version; it is slot 4 of table 0x50e470, class
 `playerProjectile`),
 `player_giveStartingItems` 0x1acc78 (20 KB of item grants), `Player_recalcDamage` beyond
-its interface, `Player_drawEquipped` 0x1a3580 (decompile failed), the equipment-cache
+its interface, the deeper equipment-cache payload format
 functions in detail, and the menu list widget. Of ghostreach's 812 reachable functions I
 checked the direct callees of `Player_run` and the player-record writers; the deeper
 engine, sound and library entries were judged by what they write, not read. "The
