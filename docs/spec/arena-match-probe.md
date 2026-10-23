@@ -567,3 +567,136 @@ lifetimes and their rest constructors remain outside this combined fixture.
    scripted player actions and remaining service answers. Compare exact
    frame, seed, placement, object state and wave transition against a running
    match. The combined fixture currently cannot make that comparison.
+
+## Round 10: post-intro natural melee and the remaining wave gate (2026-10-23)
+
+US `SLUS_209.73` v2.00. **Observed** at `Creature_filterState` `0x10a9c0`:
+when PvP mode B `0x4f7120` is set, mode A `0x4f711c` is clear, match lock
+`0x503890` is set and end flag `0x503894` is clear, every requested state
+change is refused before the ordinary root, stun and cooldown filters. The
+original `arena_startWave` `0x305ed4` leaves that lock at 1. The original
+`arena_runTask` `0x306b78` decrements intro halfword `0x5038c8` from 180 to 0
+and on its next visit writes `0xffff` there and clears `0x503890`, menu lock
+`0x41b4fc`, and second lock `0x41b500` (`docs/arena-modes.md` §3.1).
+Round 9 built each wave and ticked creatures without that intro transition;
+target handles could link, but class state requests remained refused.
+
+The second missing input was the terrain sight answer. **Observed**:
+`Creature_canSeeTarget` slot 25 `0x10e658` calls `creature_canSeeObj`
+`0x10c810`, whose clear-line test requires `terrain_raycast` `0x18a5c0` to
+return a negative hit parameter or one greater than 1.0. The old idle
+fixture left that ray as a service with a zero answer, which means obstructed.
+The disc's `pvparena.world`, fixed up by `world_fixup` `0x181d30`, lets the
+original ray body and `terrain_collectElements` `0x183248` supply that answer;
+`ref_world.terrain_raycast` is its independent model (`difftest_world.py`).
+The same disc world supplies `terrain_sweep` `0x185a40` to original
+`world_slideMove` `0x14d238` and `terrain_heightBelow` `0x1834a8` to
+`Creature_moveBy` `0x113c48`. Leaving either movement service at its prior
+default answer produced an invalid slide position or a false 100-unit height.
+These are separate conditions: clear sight alone cannot defeat the intro
+lock, and clearing the lock alone cannot give the class a visible target.
+
+**Executed** (`tools/difftest_arena_engagement.py` against
+`tools/ref_arena_engagement.py`, seeds 20973 and 7): the original task runs
+181 intro visits and clears the three locks; `arena_resetScores` `0x307c80`
+supplies the offline player speed factor 1.75 at record `+0x4c20`.
+The driver supplies the `game_clearLevel` `0x1e4ff0` result, 1.0 at
+`g_runSpeed` `0x4f8418`. On the disc terrain and clips, original Goblin
+`0x26b27c` and its target scan link the stationary player at absolute
+frames 193 and 194. They leave state 0 for chase state 3, move through the
+original slide/sweep, and enter melee state 6 without a forced target, state,
+position, hit event or damage call. `Creature_stepAnim` `0x1162b0` and
+`anim_advance` `0x16d748` read the disc clips; event bit 1 sends the first
+hit through `Creature_hitTargetAtReach` `0x1196e8`, `damage_apply`
+`0x1e8230`, and `Player_takeDamage` `0x1b5330`, all original bodies.
+
+| Seed | First natural Goblin hit frame | Pending `Player +0xc8` | Record HP `+0xac` before → next player tick | Shared seed after damage | Original empty-wave count |
+|---:|---:|---:|---|---|---:|
+| 20973 | 327 | 9.0 | 20.0 → 11.0 at 328 | `0x30c8b37e` | 2 |
+| 7 | 309 | 9.0 | 20.0 → 11.0 at 310 | `0x5a4d1242` | 2 |
+
+The independent intro, gate, target-clock, unarmed hit-frame and pending-HP
+rules are in `ref_arena_engagement`; the lower-level sight, terrain,
+animation, damage and player tick bodies also have their existing reference
+models. This test checks each original call is not stubbed and uses original
+`world_forEachGridObject` `0x14a610` with callback `0x3069e8` to count the
+two living Goblins. It does not infer a later wave from a nonempty count.
+
+**Executed, separate input branch:** the driver uses a controller stick to
+turn the original `Player_move` `0x1b4020` toward a nearby Goblin and presses
+attack once through original `Player_run` `0x1a5030`. Its natural grid target
+selection links the Goblin; the unarmed hit frame is 16 ticks after the press.
+The wave builder's record has zero attack fields because it omits offline
+boot. The input branch now calls original `player_initNewCharacter` `0x1b1d70`
+for model 0 with the original class default stats (`g_classStartStats`
+`0x4ef400`), then original `player_recalcStats` `0x1b6458` and unarmed
+`Player_recalcDamage` `0x1b7158`. The latter computes attack rating
+`+0xcc` 28 and damage `+0xd0/+0xd4` 9/10. Starting gear creation remains
+a service boundary, so this is a valid class-0 *unarmed* record, not a full
+offline character. The initializer runs after the isolated wave builder;
+the driver restores the slot's original player object pointer and repeats
+`arena_resetScores` so its later 1.75 speed override matches the real order.
+`Player_meleeHit` `0x1b6a98`, `damage_apply` and
+`Creature_takeDamage` `0x116638` run without a forced hit. The creature's HP
+`+0x228` drops immediately and pending `+0xc8` clears on its next class tick
+through `Creature_processDamage` `0x110d30`.
+
+| Seed | Turn / press / hit frames | Delivered damage | Goblin HP `+0x228` | Shared seed after hit | Count / wave |
+|---:|---|---:|---|---|---|
+| 20973 | 300 / 301 / 317 | 8.0 | 64.0 → 56.0 | `0x9738faaa` | 2 / 0 |
+| 7 | 287 / 289 / 305 | 7.2 | 64.0 → 56.8 | `0x9b06732e` | 2 / 0 |
+
+The amount is the original `damage_apply` result for each seed; it is
+not a fixed unarmed constant. Original empty-wave count remains 2 and wave
+halfword `0x8e7338` remains 0. A natural kill and wave transition are still
+unverified.
+
+The campaign-combat handoff on `t3/research-campaign-combat` at `f714f66`
+independently uses the same grid target identity, `Creature_pickTarget`
+`0x10ded0`, and `Player_meleeHit` → `damage_apply` →
+`Creature_takeDamage` chain (its `docs/issues/campaign-combat-handoff.md`
+rounds 3 and 8). Its boar, equipment and level route are distinct from this
+arena fixture; the intro lock and disc arena sight result are the extra
+conditions resolved here.
+
+The 181 intro-task visits intentionally do not tick actors. Trying to run the
+original `SpellArena_run` `0x305bbc` during that interval reaches a division
+at `0x305ce8` with zero returned by the missing actor model/joint service
+`0x1799c8`; a complete scheduler needs the actual model there. After intro,
+the driver chooses the player-before-creature tick order and one controller
+input. It does not load all level objects, run drops over their lifetimes,
+or reproduce a Play! match. The separate `difftest_arena_lifecycle.py`
+still compares wave reuse under *authored* corpse flags; it cannot supply
+the missing natural kill.
+
+Run both seeds without writing game bytes:
+
+```text
+PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_arena_engagement.py local/SLUS_209.73 "$ISO" --seed 20973
+PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_arena_engagement.py local/SLUS_209.73 "$ISO" --seed 7
+```
+
+### Native port order after round 10
+
+1. **Arena phase and activity:** preserve `arena_startWave`'s intro locks and
+   the 180-to-`0xffff` task transition at `0x306b78`, then schedule the same
+   player and creature identities from the original grid/run lists. The
+   after-intro test is a bounded function-level execution.
+2. **Sight and movement:** port `Creature_canSeeTarget` `0x10e658`,
+   `creature_canSeeObj` `0x10c810`, disc terrain ray `0x18a5c0`, sweep
+   `0x185a40`, slide `0x14d238`, and height-below `0x1834a8` together.
+   Retain the target handle `+0x234` and the 32-frame scan clock.
+3. **Animation and creature damage:** schedule the disc attack clip and
+   `Creature_stepAnim` event bits; preserve `0x1196e8` → `0x1e8230` →
+   `0x1b5330`, queued `Player +0xc8`, then `0x1b2cc0` on the next player
+   tick. The observed nine-point case is this fixture, not a universal value.
+4. **Valid player and natural kills:** initialize the real player record and
+   equipment before `Player_recalcDamage` and normal input. Original
+   class-0 defaults now prove one unarmed positive hit and next-tick
+   `Creature_processDamage`; starting gear and a sequence of natural kills,
+   death clips, loot and corpse flags remain to be executed together.
+5. **Wave lifecycle:** use the original empty-wave callback and saved-object
+   walker, then `arena_nextWave` `0x305e9c` / `arena_startWave` on a natural
+   death. The current original walker sees two living creatures. The bounded
+   authored `0x612b` reuse branch from round 8 is the only executed wave-2
+   transition, and a live match remains unverified.
