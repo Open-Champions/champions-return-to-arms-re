@@ -198,44 +198,14 @@ remain **Unknown**. The wraith's subsequent dead tick calls `obj_delete`
 
 ## Scripted events and objectives
 
-**Observed by manual inspection** of the private `blood1` script image with
-`tools/scr.py`: the following is a proposed event sequence, not a committed
-body-level or end-to-end execution result. `difftest_blood1.py` asserts 21
-entry names, selected imports and four object-property links only. Each
-objective, branch action, cutscene effect, item change and destination below
-is **Unknown to the committed difftest** until body or runtime checks land.
-
-1. `start` checks mission 1 completion and the current good/evil state,
-   offers the appropriate objective, marks mission 1 available, sets
-   `startedMission1` and `currentMission`, and posts `absorb`. A prior decision
-   sets the corresponding door state. `absorb` plays the `blood1` cutscene
-   once under `bl_sawBlood1`, then posts `removeActors`.
-2. The NPC with `dialogscript=startDia1ce` opens the `natasla` dialog. The
-   proximity `Trigger` calls `ifdcc4`: it opens the dialog only before
-   `metNatasla` is set, then marks that variable. The dialog's branch actions
-   include `setEvil3024` (good) and `setEvil1037` (evil). The evil branch
-   changes the active objective, sets `talkedToNatasla`, and posts the evil
-   door event; the good branch posts the good door event. These are script
-   links, not a tested native dialog traversal.
-3. `gooddoor` plays the `gooddoor` cutscene. `evildoor` plays its cutscene,
-   then posts `giveshard`; that gives `shardofwar` and defers
-   `checkShardCount`. The latter presents a help message and checks each
-   player slot for excess copies. The script also has `removeActors`, which
-   deletes the object named `actor` after the opening cutscene.
-4. Two `PushTrigger` exits guard on `getEvil` and call `newWorld` for `strife`
-   or `drundar` respectively. Three `Player1` arrival markers exist: a
-   default and records for arrivals from those two levels. The `Portal`
-   uses the `jumpgate` resource. The direct hub mission-menu request and
-   same-act carryover are documented in `docs/story-route.md` on
-   `t3/research-story-route`; exact arrival placement in a live native load
-   remains unverified.
-
-Manual inspection suggests the script imports `getMissionComplete`, `addQuest`/`removeQuest`, item
-grant/check/remove, `autoPropSetState`, `cutScene`, `startDialog`, `newWorld`
-and related decision/variable calls. Cutscene names correspond to entries in
-the level archive; the NPC dialog has its own `.dbin` entry. The authored
-object records alone do not prove objectives, cutscenes or exits complete in
-the native client.
+The focused [script-flow trace](blood1-scripts.md) supersedes the earlier
+manual sequence. `tools/difftest_blood1_scripts.py` executes all 21 entries
+and their material branches through the original script loader, binder and
+interpreter on two seeds, with built-in effects stubbed. It asserts the
+nine-node NPC dialog graph, both keyed exits and the three cutscene files.
+The authored script has no enemy spawn, boss, mission grant or direct hub
+return. Mission completion and hub return are conditional paths in the
+destination `strife` / `drundar` scripts, not a blood1 exit effect.
 
 ## Ordered native port work for a fully playable `blood1`
 
