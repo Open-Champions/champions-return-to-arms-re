@@ -103,6 +103,44 @@ def frame_expansion(path, seed):
     return calls, names
 
 
+def frame_tiles(path, seed):
+    e = fixture(path, seed, count=1)
+    e.follow = {0x17FBB8, 0x17C118}
+    lump = e.alloc(16)
+    e.stub(0x173558, ret=lump)
+    objects = {}
+    for width, height in ((32, 32), (320, 224)):
+        header = e.alloc(16)
+        e.mem.w16(header, width)
+        e.mem.w16(header + 2, height)
+        obj = e.alloc(16)
+        e.mem.w32(obj + 4, header)
+        objects[width] = obj
+
+    def format_name(emu):
+        dst, pattern, prefix = (emu.r[i] & 0xFFFFFFFF for i in (4, 5, 6))
+        fmt = emu.mem.cstr(pattern)
+        if fmt.startswith("%s") and fmt.endswith(".tex"):
+            name = fmt % emu.mem.cstr(prefix)
+            emu.mem.write(dst, name.encode("ascii") + b"\0")
+            return len(name)
+        return 0
+
+    names = []
+
+    def lookup(emu):
+        name = emu.mem.cstr(emu.r[5] & 0xFFFFFFFF)
+        names.append(name)
+        return objects[320 if name == "tilecenter.tex" else 32]
+
+    e.stub(0x3B7EF0, function=format_name)
+    e.stub(0x171DE4, function=lookup)
+    e.call(0x21C3A4, max_steps=1000000)
+    anchors = tuple((c.site, *u32s(c, 3)[1:3]) for c in e.calls
+                    if c.target in (0x17B590, 0x17B8B0))
+    return anchors, tuple(names)
+
+
 def prompt(path, seed, state):
     e = fixture(path, seed, state=state)
     e.call(0x21C3A4, max_steps=300000)
@@ -153,6 +191,10 @@ def main(argv):
         expanded, names = frame_expansion(path, seed)
         assert expanded == R.FRAME_IMPL, (seed, expanded)
         assert names == ("interfac.lmp", "tile", "btile", "ctile"), (seed, names)
+        checks += 2
+        anchors, names = frame_tiles(path, seed)
+        assert anchors == R.frame_tile_anchors(), (seed, anchors)
+        assert len(names) == 42 and set(names) == set(R.TILE_PIECES), (seed, names)
         checks += 2
         for mode in (3, 4):
             for count in (0, 1, 2, 5, 6):

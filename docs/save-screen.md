@@ -44,10 +44,16 @@ lookups: `tiletopleft`, `tiletopright`, `tilebotleft`, `tilebotright`,
 `tileleft`, `tileright`, `tilebot`, `tiletop`, `tilecenter`. The read-only
 `INTERFAC.LMP` directory/header check finds all nine: center 320×224, each
 other piece 32×32. These are source texture dimensions, not the on-screen
-piece rectangles. The exact nine-piece clipping, repetition and GPU result
-remain **Unknown** here because the fixture stops before resource lookup and
-packet generation. `ui_drawFrameImpl` 0x17c118 / `ui_drawSprite` 0x17fb68 are
-the next functions to follow for pixel parity.
+piece rectangles. A second **Executed** fixture follows `ui_drawFrameImpl`
+with authored texture descriptors matching those header dimensions. The first
+wrapper call makes 40 tile submissions to 0x17b590/0x17b8b0: four corners at
+`(60,194)`, `(549,194)`, `(60,121)`, `(549,121)`; top and bottom strips at
+`x=92+32i`, `i=0..14`, `y=122/195`; left and right strips at `x=60/549`,
+`y=154/186`; and two center submissions at `(67,128)` and `(387,128)`.
+The second wrapper call, whose final stack flag is 1, makes no tile submission
+in this fixture. All nine texture names reach the resource lookup. Exact
+cropping, alpha blending and GPU pixels remain **Unknown** because resource
+lookup and packet generation were replaced with authored descriptors/stubs.
 
 **Executed:** no dedicated card icon sprite or `ui_drawSprite` submission
 occurs in the followed slot-list body for the populated fixture. The browser
@@ -154,12 +160,13 @@ stride 0x58, using slot byte 0x4f923c, edge +0x0c and repeat +0x10
 ## Reproduction and limits
 
 `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_save_screen.py
-local/SLUS_209.73 '<private-disc>.iso'` passed **149 checks** across seeds
+local/SLUS_209.73 '<private-disc>.iso'` passed **153 checks** across seeds
 20973 and 7, including read-only tile header dimensions. The companion
 `difftest_frontend_screens.py`, `difftest_frontend_art.py`, `difftest_menus.py`
 and `difftest_save.py` on their existing research worktrees also passed.
-The full Python unit suite passed 652 tests. The new difftest follows only
-the original UI control functions and the frame wrapper; resource lookup,
-text shaping, card I/O and GPU presentation are stubbed. It proves call
+The full Python unit suite passed 652 tests. The new difftest follows
+the original UI control functions, frame wrapper and frame implementation
+with authored texture descriptors; resource lookup, text shaping, card I/O
+and GPU presentation are stubbed. It proves call
 submissions and selected state changes under authored inputs, not pixel or
 memory-card parity. No game bytes or raw disassembly are tracked.

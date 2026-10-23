@@ -23,6 +23,23 @@ SYNTHETIC_ROW_FIELDS = {
     "clock": (10, 25),
     "preview_reads": ((0x8E1264, 4), (0x8E126A, 2), (0x8E126C, 1)),
 }
+
+
+def frame_tile_anchors():
+    """First frame's source-tile submission anchors with disc header sizes.
+
+    These are calls to 0x17b590/0x17b8b0, before their GPU work.  The second
+    wrapper has its final stack flag set and makes no such calls in this fixture.
+    """
+    anchors = [(0x17C310, 60, 194), (0x17C348, 549, 194),
+               (0x17C37C, 60, 121), (0x17C3A4, 549, 121)]
+    for column in range(15):
+        x = 92 + 32 * column
+        anchors.extend(((0x17C418, x, 122), (0x17C45C, x, 195)))
+    for y in (154, 186):
+        anchors.extend(((0x17C4E0, 60, y), (0x17C524, 549, y)))
+    anchors.extend(((0x17C61C, 67, 128), (0x17C61C, 387, 128)))
+    return tuple(anchors)
 PROMPT_KEYS = {
     5: ((0x21CEDC, "MemcardConfirmOverwrite"),
         (0x21CF54, "MemcardContinueBack")),
