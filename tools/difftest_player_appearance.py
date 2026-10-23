@@ -9,6 +9,7 @@ import hashlib
 import json
 import mmap
 import os
+import re
 import struct
 import sys
 
@@ -19,6 +20,10 @@ import ref_player_appearance as ref
 
 SHA256 = '292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675'
 RECORD = 0x4d8af0
+
+BODY_TEXTURES = (5, 4, 4, 4, 4, 4, 4, 4, 4, 4, 5, 4)
+HAIR_STYLES = (4, 6, 5, 6, 6, 6, 3, 4, 5, 7, 3, 4)
+BEARD_STYLES = (4, 0, 0, 0, 0, 0, 3, 0, 4, 0, 0, 3)
 
 
 def cstr(mem, addr):
@@ -92,6 +97,128 @@ def cache_groups(image, files, name):
     return groups
 
 
+def selection_variants(entries, select2):
+    """Assert the complete body/style/letter table in one disc selection lump."""
+    checked = 0
+    for index, code in enumerate(ref.BODY_CODES):
+        body = {int(m[1]) for name in entries
+                if (m := re.fullmatch(rf'{code}_bodyv(\d+)\.tex', name))}
+        assert body == set(range(1, BODY_TEXTURES[index] + 1)), (code, 'body', body)
+        body_meshes = {int(m[1]) for name in entries
+                       if (m := re.fullmatch(rf'{code}_bodyv(\d+)\.vif', name))}
+        assert body_meshes == body, (code, 'body meshes', body_meshes, body)
+        for part, limit in (('hair', HAIR_STYLES[index]), ('beard', BEARD_STYLES[index])):
+            meshes = {(int(m[1]), m[2]) for name in entries
+                      if (m := re.fullmatch(rf'{code}_{part}(\d+)([a-z])\.vif', name))}
+            expected = set(range(1, limit + 1))
+            if code == 'vm' and part == 'hair' and select2:
+                expected = {1, 3, 4}
+            letters = 'a' if code == 'vm' else 'abc'
+            assert meshes == {(style, letter) for style in expected for letter in letters}, (
+                code, part, meshes, expected)
+            textures = {(int(m[1]), m[2]) for name in entries
+                        if (m := re.fullmatch(rf'{code}_{part}(\d+)([a-z])\.tex', name))}
+            assert textures == {(style, letter) for style in expected for letter in letters}, (
+                code, part, textures)
+        checked += 1
+    return checked
+
+
+def mask_initialization(elf, seed):
+    cases = 0
+    for counter in (0, 0x110, 0x111, 0x112):
+        ee = EE(elf)
+        ee.mem.auto_map = True
+        obj = ee.alloc(0x590)
+        body = ee.alloc(16)
+        ee.mem.w32(obj + 0x544, body)
+        ee.mem.w32(0x41b514, counter)
+        ee.mem.w32(0x404464, seed)
+        ee.stub(0x179550, ret=0x12345678)
+        ee.r[4] = obj
+        ee.r[5] = 0
+        assert ee.run(0x1a3580, until=(0x1a3604,)) == 'stop'
+        calls = [call for call in ee.calls if call.target == 0x179550]
+        assert len(calls) == int(counter >= 0x111), (counter, calls)
+        if calls:
+            assert calls[0].args[:2] == (body, 1), (counter, calls[0])
+        assert ee.mem.u64(obj + 0x220) == (0x12345678 if calls else 0xffffffffffffffff)
+        assert ee.mem.u32(0x404464) == seed
+        cases += 1
+    return cases
+
+
+def draw_gates(elf, seed):
+    """Run original equipment-state and final hair/beard branches in isolation."""
+    cases = 0
+    for model in range(12):
+        for prior in (False, True):
+            for slot, name, resource in ((11, 'circlet', 'cloth1'),
+                                     (11, 'other', 'cloth1'),
+                                     (11, 'circlet', 'other'),
+                                     (4, 'chain', 'chainbody'),
+                                     (4, 'other', 'chainbody'),
+                                     (4, 'chain', 'other'),
+                                     (0, 'other', 'other')):
+                ee = EE(elf)
+                ee.mem.auto_map = True
+                record, item, definition = ee.alloc(0x4c30), ee.alloc(0x50), ee.alloc(0x40)
+                name_at, resource_at = ee.alloc(32), ee.alloc(32)
+                ee.mem.write(name_at, name.encode() + b'\0')
+                ee.mem.write(resource_at, resource.encode() + b'\0')
+                ee.mem.w32(definition, name_at)
+                ee.mem.w32(definition + 0x30, resource_at)
+                ee.mem.w8(definition + 0x1c, slot)
+                ee.mem.w32(item, definition)
+                ee.mem.w32(record + 0x54, model)
+                ee.mem.w32(0x404464, seed)
+                ee.r[18], ee.r[21], ee.r[22] = item, record, int(prior)
+                assert ee.run(0x1a3ba0, until=(0x1a3cd0,)) == 'stop'
+                want = ref.draw_cover_state(model, slot, name, resource, prior)
+                assert bool(ee.r[22]) == want, (model, slot, name, resource, prior, ee.r[22], want)
+                assert ee.mem.u32(0x404464) == seed
+                cases += 1
+    for model in range(12):
+        for skin, cover, head_name, hair_handles, beard_handles in (
+                (0, False, None, True, True),
+                (0, True, None, True, True),
+                (4, True, None, True, True),
+                (3, True, 'leatherhelmet', True, True),
+                (0, True, 'other', True, True),
+                (0, False, None, False, True),
+                (0, False, None, True, False)):
+            ee = EE(elf)
+            ee.mem.auto_map = True
+            obj, record = ee.alloc(0x590), ee.alloc(0x4c30)
+            ee.mem.w32(record + 0x54, model)
+            ee.mem.w8(record + 0x23, skin)
+            ee.mem.w32(0x404464, seed)
+            body, hair, beard = ee.alloc(16), ee.alloc(16), ee.alloc(16)
+            for off, value in ((0x544, body), (0x548, hair if hair_handles else 0),
+                               (0x558, hair if hair_handles else 0),
+                               (0x54c, beard if beard_handles else 0),
+                               (0x554, beard if beard_handles else 0)):
+                ee.mem.w32(obj + off, value)
+            if head_name is not None:
+                item, definition, name_at = ee.alloc(0x50), ee.alloc(0x40), ee.alloc(32)
+                ee.mem.write(name_at, head_name.encode() + b'\0')
+                ee.mem.w32(definition, name_at)
+                ee.mem.w32(item, definition)
+                ee.mem.w32(record + 0x441c, item)
+            ee.r[19], ee.r[21], ee.r[22] = obj, record, int(cover)
+            ee.stub(0x1797d8)
+            ee.stub(0x178c28)
+            assert ee.run(0x1a3e08, until=(0x1a3f34,)) == 'stop'
+            allowed_hair, allowed_beard = ref.draw_appearance_gates(model, skin, cover, head_name)
+            got = [call.args[0] for call in ee.calls if call.target == 0x178c28]
+            want = ([hair] if allowed_hair and hair_handles else []) + (
+                [beard] if allowed_beard and beard_handles else [])
+            assert got == want, (model, skin, cover, head_name, got, want)
+            assert ee.mem.u32(0x404464) == seed
+            cases += 1
+    return cases
+
+
 def main(elf, disc, manifest_path=None):
     with open(elf, 'rb') as source:
         assert hashlib.sha256(source.read()).hexdigest() == SHA256, 'wrong executable revision'
@@ -103,6 +230,7 @@ def main(elf, disc, manifest_path=None):
         for lump in ('select.lmp', 'select2.lmp'):
             off, size, _ = files['/BG/DATA/' + lump.upper()]
             entries[lump] = {name.lower() for name, _, _ in lmp_entries(image[off:off + size])}
+        variants = sum(selection_variants(entries[lump], lump == 'select2.lmp') for lump in entries)
         cache_catalog = {name: cache_groups(image, files, name)
                          for name in ('EQCACHE.HDR', 'EQCACHE2.HDR', 'WCACHE.HDR')}
         cases = 0
@@ -125,6 +253,8 @@ def main(elf, disc, manifest_path=None):
                     cases += 1
         image.close()
     indices = item_indices(elf)
+    mask_cases = sum(mask_initialization(elf, seed) for seed in (20973, 7))
+    gate_cases = sum(draw_gates(elf, seed) for seed in (20973, 7))
     if manifest_path:
         rows = []
         for index in range(134):
@@ -137,6 +267,7 @@ def main(elf, disc, manifest_path=None):
             out.write('\n')
     counts = ', '.join(f'{name} {len(groups)}' for name, groups in cache_catalog.items())
     print(f'PASS appearance: {cases} constructor cases; {indices} item index cases; '
+          f'{variants} complete variant rows; {mask_cases} mask and {gate_cases} draw-gate cases; '
           f'cache groups {counts}; seeds 20973 and 7')
 
 

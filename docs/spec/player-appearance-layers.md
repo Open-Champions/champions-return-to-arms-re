@@ -52,6 +52,12 @@ colour changes their textures. The 12 body codes, in model-index order, are
 `t3/research-player-model` at `7f13899`.
 
 Both selection lumps were enumerated on the local disc. **Disc observed:**
+`tools/difftest_player_appearance.py` now asserts every row below in both
+lumps: the complete body texture/mesh and hair/beard mesh style sets, each
+style's texture letters, and the `vm` SELECT2 exception. The disc also has
+body meshes `v2`–`v4` (and `v5` for `bm`/`vm`); the observed constructor
+always requests `bodyv1.vif`. Likewise, the disc has `b`/`c` hair and beard
+meshes for non-`vm` styles, while this constructor requests only `a` meshes.
 
 | Code | Body textures | Hair meshes | Beard meshes |
 |---|---|---|---|
@@ -134,15 +140,48 @@ locate 16 attach records of 0x34 bytes (joint, rotation, origin); the part's
 +0x13 chooses one (`docs/formats/model-texture.md`, 0x1754a0,
 0x175fb8). **Observed** there; disc models have the table.
 
-The body show mask starts with `model_buildHideMask` 0x179550. After each
-equipped part draw, its `.vif` header +0x00 hide bits are cleared from the
-body mask (0x1a3de4–0x1a3df4). Hair +0x548 then beard +0x54c draw after
-equipment, when their mesh and texture handles exist; their hide bits are
-cleared likewise (0x1a3e34–0x1a3f30). Thus the native path must preserve
-the mask effects of parts actually drawn. **Observed.** `Player_draw`
-0x1a46c0 calls `Creature_draw` 0x10b048 before `Player_drawEquipped`
-(0x1a4c28, 0x1a4d08); the exact timing of body-mask consumption inside
-that broader draw path is **Unknown** here and needs a native frame trace.
+At entry, the body show mask at player object +0x220 is set to all ones
+(0x1a3584–0x1a35c8). The signed global counter at 0x41b514 gates its
+replacement: below `0x111` it remains all ones; at `0x111` or above,
+`model_buildHideMask` 0x179550 receives body model handle +0x544 and variant
+bit `1`, and its result replaces +0x220 (0x1a35cc–0x1a3600). **Observed;
+Executed** by the mask cases at both threshold edges. After each equipped
+part actually draws, its `.vif` header +0x00 hide bits are cleared from that
+mask (0x1a3de4–0x1a3df4).
+
+The draw-local cover flag starts at zero at 0x1a3604. Only equipped parts
+that pass both handle checks at 0x1a3b90–0x1a3b9c reach its producer. These
+tests call `libc_strstr` 0x3b96a8, so “contains” below means a non-zero
+substring result; the strings are the item definition's name pointer +0x00
+and picture base pointer +0x30. The flag is sticky for the rest of this
+17-slot draw (0x1a3ba0–0x1a3ccc). **Observed; Executed** with the original
+substring function for seeds 20973 and 7.
+
+| Model index and definition slot | Condition that sets cover flag | Addresses |
+|---|---|---|
+| any except 7; slot 11 | name does **not** contain `circlet` | 0x1a3ba4–0x1a3bd8 |
+| 7; slot 11 | picture base does **not** contain `cloth1`, then name does **not** contain `circlet` | 0x1a3be4–0x1a3c28 |
+| 7; slot 4 | picture base contains `cloth3body` | 0x1a3c30–0x1a3c58 |
+| 9; slot 4 | name contains `chain`, or a present picture base contains `chainbody` | 0x1a3c60–0x1a3cc8 |
+
+After the equipment loop, hair reaches its handle checks at
+0x1a3e40–0x1a3e50 when the flag is clear, or when it is set and model index
+is 11, or when it is set and model index is 10 with skin byte +0x23 equal to
+4 (0x1a3e08–0x1a3e30). Beard reaches its handle checks at
+0x1a3eec–0x1a3efc when the flag is clear, or when it is set and model index
+is 11, or when it is set and the head-item pointer at record +0x441c exists
+and either its definition name contains `leatherhelmet` or model index is 6
+(0x1a3e88–0x1a3ee8). Each part still requires both mesh and texture handles;
+only a drawn part clears its hide bits from +0x220 (hair 0x1a3e70–0x1a3e84;
+beard 0x1a3f1c–0x1a3f30). **Observed; Executed** in isolated draw branches
+for both seeds. Null name pointers in a malformed equipped definition are
+**Unknown** beyond this authored-state test boundary.
+
+`Player_draw` 0x1a46c0 calls `Creature_draw` 0x10b048 before
+`Player_drawEquipped` (0x1a4c28, 0x1a4d08). **Unknown:** the exact native
+frame on which `Creature_draw` consumes the body show mask, and when an
+asynchronous item-cache miss resolves. A native frame trace is needed to
+settle those timing questions; the isolated gate tests are not visual proof.
 
 ## Ordered native port
 
@@ -157,10 +196,15 @@ that broader draw path is **Unknown** here and needs a native frame trace.
    unresolved asynchronous cache entry as absent for that frame.
 4. Reproduce the `Player_draw`/`Creature_draw` call order. Draw routed
    equipment on the body's current pose, including the second-weapon attach
-   override and shield variant mask; clear each drawn part's body hide bits.
-   Then draw hair and beard and clear their hide bits.
-5. Use the selected body texture and resolve when its show mask is consumed
-   by tracing one native frame. Check first-person/third-person and inventory
+   override and shield variant mask. Initialize body show mask +0x220 to all
+   ones; replace it with `model_buildHideMask(body, 1)` only when signed
+   0x41b514 is at least `0x111`. Clear hide bits only for parts actually drawn.
+5. Accumulate the cover flag from the four equipped-item substring conditions
+   above, only after both equipment handles pass. Draw hair and beard only
+   when their respective cover/model/skin/head-item gates and both part
+   handles pass; clear their hide bits only after a draw.
+6. Use the selected body texture with the gated show mask and resolve its
+   consumption timing by tracing one native frame. Check first-person/third-person and inventory
    views on the intended native client; these tests alone establish no
    visual parity.
 
@@ -171,9 +215,13 @@ that broader draw path is **Unknown** here and needs a native frame trace.
 "$HOME/Library/Application Support/Play-RTA/Champions - Return to Arms (v2.00).iso"
 --manifest local/appearance/item-models.json` compares 96 constructor
 requests/handles and 1,072 item-index calls with original functions, across
-seeds 20973 and 7. It also validates 643 disc cache-header name groups and
-16,945 texture/model sector pairs.
+seeds 20973 and 7. It asserts 24 complete disc variant rows, executes 8
+body-mask threshold cases and 504 equipped-state/hair/beard gate cases,
+and validates 643 disc cache-header name groups and 16,945 texture/model
+sector pairs.
 The record is authored in test memory; world setup and
-resource lookup are isolated, and equipment drawing itself was read rather
-than executed. Original disc bytes, disassembly, and the generated filename
-manifest stay ignored under `local/`.
+resource lookup are isolated. The gate runs execute original branch code and
+the original substring routine, while `model_drawPart` and mask-building
+callees are stubbed; they do not prove a full equipment render. Original disc
+bytes, disassembly, and the generated filename manifest stay ignored under
+`local/`.
