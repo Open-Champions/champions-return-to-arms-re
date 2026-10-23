@@ -6,15 +6,16 @@ research on `t3/research-quests` (`7efd3ce`), the script-effect research on
 `t3/research-story-route` (`76d4447`). `tools/difftest_quest_log.py` adds a
 function-level comparison of the inventory quest page against the original
 executable with `tools/ee_emu.py`, seeds 20973 and 7. The ELF is pinned by
-SHA-256 in that test. Disc files are read only; no game text or texture is
-stored here.
+SHA-256 in that test. It also asserts addressed mission-flow cells in the
+three shipped `hub`, `strife` and `drundar` scripts directly from the disc.
+Disc files are read only; no game text or texture is stored here.
 
 **Evidence boundary.** Addresses, records, script call sites and the texture
 header are **Observed** in the executable or disc. UI calls and state probes
 are **Executed** in `ee_emu.py` on constructed state. Texture lookup,
 localization, font layout and GPU submission are stubbed for the new page
 test: its coordinates are call arguments, not rendered pixel positions. The
-mission 1 return branch was read from shipped scripts, not played through.
+mission 1 return branch is checked against shipped scripts, not played through.
 
 ## 1. Progression state and command path
 
@@ -68,7 +69,7 @@ the quest list/count in this draw branch.
 | Item | Executed call/record | Limit of this probe |
 |---|---|---|
 | Background | `res_find` 0x17365c at 0x1d263c asks for `inventry.lmp/parchment.tex`; `0x17fb68` at 0x1d2668 submits `(x=0, y=−4, size/index=104, layer=5, tint=0x80808080)` | Read-only disc header is **Observed** as 320×350. The third sprite argument's role and displayed crop are not established here. |
-| Populated list | Each of count 1, 2 and 8 issues `text_begin` 0x1800b8 with `(font=0, second argument=6, colour=0x80323c3c, fourth=−1)` and `text_setClip` 0x1803e0 with `(0,119,320,440)`; `text_lookup` 0x173c84 sees each title then body key in stored order | The second `text_begin` argument is not named in `symbols/engine.tsv`. `text_setClip` clamps its rectangle to 640×447, so the requested bottom 440 is within bounds. |
+| Populated list | Each of count 1, 2 and 8 issues `text_begin` 0x1800b8 with `(font=0, second argument=6, colour=0x80323c3c, fourth=−1)` and `text_setClip` 0x1803e0 with `(0,119,320,440)`; `text_lookup` 0x173c84 sees each title then body key in stored order | The four `text_begin` arguments are asserted on constructed state; font resource 0 is not a loaded-font capture. The second argument is not named in `symbols/engine.tsv`. `text_setClip` clamps its rectangle to 640×447, so the requested bottom 440 is within bounds. |
 | Text placement | `0x181280` at 0x1d272c and 0x1d2784 each receive `(24, 114+22i, 0, 288, 82, 418, 21)` for row `i` when font calls return the test's stub value | Both calls share the same controlled y because font measurement and localization are stubbed. Actual body position, wrapping and glyph dimensions need a real font/layout capture. |
 | Empty list | No entry text calls; lookup at 0x1d27dc requests the short key `NoQuests` | The localized words and their draw result are not captured. |
 | Completion | `removeQuest` changes the list; the page reads only its current count and title/body records | There is no completed style in this tested branch. Mission completion remains in the mission bit and its menu art. |
@@ -106,8 +107,10 @@ The script and HUD paths are separate from the inventory quest page.
 
 ## 4. Mission completion, hub return, and menu unlock
 
-**Observed** in shipped script bytecode, relative offsets reported by
-`tools/scr.py` (not a gameplay run): `strife` entry `exitzone` reaches
+**Observed** in shipped script bytecode, with entry offsets, calls, argument
+pushes and branch operands asserted by `check_mission_scripts` in
+`tools/difftest_quest_log.py` (not a gameplay run): `strife` entry `exitzone` has
+the demo-running path that calls
 `grantMission(1)` at `0x1abc`, then `newWorld('hub')` at `0x1ae8` when its
 counter passes 150 on the demo-running branch. `drundar` has the same pair
 at `0x19ec`/`0x1a18`. Earlier `addHelpMessage` calls in those branches
@@ -123,11 +126,12 @@ record 0's current-difficulty evil and decision bits are both set and
 mission 1 is complete; otherwise it returns `hub`. **Executed previously**
 for difficulty and bit combinations by `difftest_quests.py`. The ordinary
 mission 1 completion therefore does not by itself select `hub2`.
-**Observed** `hub` script actions `setMissic270` at `0x07e4` and
+**Observed and asserted** `hub` script actions `setMissic270` at `0x07e4` and
 `setMissid125` at `0x0830` each call `setMissionAvailable(2,1)`. That is a
-separate dialog/action gate, so do not infer mission 2 is unlocked just from
-the return to hub. After the action, mission-menu row 1 can brighten and
-be selected; `missionMenu_run` 0x2316fc checks availability and writes the
+separate action entry, so do not infer mission 2 is unlocked just from
+the return to hub. If one of those entries runs and changes the mission byte,
+mission-menu row 1 can brighten and be selected; `missionMenu_run` 0x2316fc
+checks availability and writes the
 chosen row's level pointer. The `t3/research-story-route` art difftest
 separately verifies row tint and selection with forced mission bytes; those
 fixtures do not prove that the hub action was reached through live dialog.
@@ -146,9 +150,11 @@ still open.
    model before attaching UI. Preserve the per-difficulty row, read-created
    variables, and observed `quest_add`/`quest_remove` edge cases.
 2. Connect dialog choices, trigger actions and item gates to the shipped
-   quest commands. Keep title/body identifiers as localization keys. Verify
-   the first hub action and at least one mission turn-in through the actual
-   script entry rather than a census-only call.
+   quest commands. Keep title/body identifiers as localization keys. Preserve
+   the asserted `exitzone` demo/counter branch and the two separate hub
+   mission-2 actions. Execute a mission-1 turn-in and a mission-2 hub action
+   on constructed state through their shipped entries; the addressed static
+   checks alone do not establish either state change or live dialog reachability.
 3. Load `inventry.lmp/parchment.tex` from the owned disc, validate its 320×350
    header and the page-4 routing. Draw current entries and `NoQuests` through
    the same font/localization path. Compare text layout with real glyph
@@ -167,18 +173,22 @@ still open.
 
 Verification commands for this worktree (all with
 `PYTHONDONTWRITEBYTECODE=1`) are the new `tools/difftest_quest_log.py` with
-`--elf` and `--iso`; the prior `difftest_quests.py`,
+`--elf` and `--iso` (including the three disc-script assertions); the prior
+`difftest_quests.py`,
 `difftest_script_effects.py`, `difftest_story_route.py` and
 `difftest_mission_menu_art.py` checked out under ignored `local/prior-tests/`
 from the named branches; `tools/difftest_natives.py` with seeds 20973 and
 7; and `python3 -m unittest discover -s tools -p 'test_*.py'`. The two
 route tests use the read-only ISO's `HUB.GOB` and `BLOOD1.GOB` extracted
-only under ignored `local/story-route/`. The local log is
-`local/quest-log-tests.log`. No original disassembly, script bytes, prose
-or texture bytes are tracked.
+only under ignored `local/story-route/`. The audit-fix logs are
+`local/quest-log-fix-verification.log` and `local/quest-log-fix-hub-*.log`.
+No original disassembly, script bytes, prose or texture bytes are tracked.
 
-**Results, 2026-10-23:** quest-page 14/14 controlled probes; quest model
-7/7 properties; script effects 15/15 suites; story route 26/26 menu
+**Results, 2026-10-23 audit fix:** quest-page 14/14 controlled probes, now
+asserting all four `text_begin` arguments for populated counts; three
+disc-backed script checks assert the named entries, calls, arguments and
+mission-1 branch operands. Quest model 7/7 properties; script effects
+15/15 suites; story route 26/26 menu
 snapshots per seed; mission-map art 39/39 draw and 20/20 input cases per
 seed; native command quick probes 203/203 properties per seed. A separate
 hub-only `difftest_natives.py --scripts local/story-route/scripts_raw
