@@ -85,17 +85,20 @@ the cache count retain only their numbered marker when count is nonzero.
 The fixture covers counts 0, 1, 2, 5 and 6 in both modes. The source does not
 establish that a real card ever holds six usable entries.
 
-**Observed:** row index is `0x879e2c + r`; the list count is 0x4f9238.
-Directory metadata at `0x88d300 + 16*index` supplies BCD calendar and clock
-bytes. The date formatter at 0x21da94–0x21db28 consumes bytes +6 (month),
-+5 (day), and +7 (year plus 2000). The clock formatter at
-0x21db30–0x21dbec consumes bytes +3 (hour), +2 (minute), with AM/PM and
-12-hour conversion. `0x8e1200 + 0x70*index` is a cached 0x70-byte save
-header; 0x21da74 passes its level-name field to 0x22233c for a localized
-display label. Its +0x64 is play time, +0x6a player count and +0x6c difficulty,
-matching `docs/audio-save.md`'s save header. The code's date formatting is
-established; a real card's timestamp contents and locale formatting remain
-**Unknown**.
+**Executed** with scroll base 0: the list count is read from 0x4f9238, and
+directory metadata at 0x88d300 supplies the first row's BCD calendar and
+clock bytes. The date formatter at 0x21da94–0x21db28 submits bytes +6
+(month), +5 (day), and +7 (year plus 2000). The clock formatter at
+0x21db30–0x21dbec submits bytes +3 (hour) and +2 (minute) for the fixture's
+single hour value, 0x10. At 0x21da74 the first cached header pointer 0x8e1200
+is passed to 0x22233c for a localized level label. Its +0x64, +0x6a and +0x6c
+fields are read for play time, player count and difficulty, matching
+`docs/audio-save.md`'s save header. **Inferred:** visible row `r` uses index
+`0x879e2c + r`, metadata at `0x88d300 + 16*index`, and a cached 0x70-byte
+header at `0x8e1200 + 0x70*index`; the committed fixture has neither a
+nonzero scroll base nor distinct later headers. **Unknown:** the AM/PM branch
+and 12-hour boundary, real card timestamps, and locale formatting. Midnight,
+noon and afternoon inputs are needed to establish the clock conversion.
 
 **Executed:** selection rectangle 0x21e508 follows displayed selection word
 0x879e28: endpoints `(66,133+17r)` to `(574,152+17r)`, layer 6. The base
@@ -144,9 +147,12 @@ stride 0x58, using slot byte 0x4f923c, edge +0x0c and repeat +0x10
    visually equivalent.
 3. Build the card-browser stage and shared message boxes, preserving save/load
    titles, pending/error prompts and the two-stage routing at 0x218afc/0x219360.
-4. Populate the five-row list from real card directory entries and the cached
-   0x70-byte save headers; implement the save-only new row, date/clock formatting,
-   selected-slot preview and debug-only time line. Treat missing or invalid
+4. Populate the five-row list from real card directory entries and cached
+   save headers; implement the save-only new row, tested date fields,
+   selected-slot preview and debug-only time line. Before treating indexed
+   metadata/header strides as established, probe a nonzero scroll base and
+   distinct successive headers. Before porting AM/PM or 12-hour conversion as
+   exact behavior, probe midnight, noon and afternoon. Treat missing or invalid
    card data as an explicit state rather than an invented slot.
 5. Bind highlight interpolation, scroll and raw-pad input to 0x879e24–0x879e34
    and the configured button masks. Port overwrite/delete confirmation, back,
