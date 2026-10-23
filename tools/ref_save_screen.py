@@ -23,6 +23,13 @@ SYNTHETIC_ROW_FIELDS = {
     "clock": (10, 25),
     "preview_reads": ((0x8E1264, 4), (0x8E126A, 2), (0x8E126C, 1)),
 }
+CLOCK_BOUNDARIES = (
+    (0x00, 0x05, ("%d:%s%d%s", 12, "0", 5, "am")),
+    (0x11, 0x10, ("%d:%s%d%s", 11, "", 10, "am")),
+    (0x12, 0x00, ("%d:%s%d%s", 12, "0", 0, "pm")),
+    (0x13, 0x25, ("%d:%s%d%s", 1, "", 25, "pm")),
+    (0x23, 0x59, ("%d:%s%d%s", 11, "", 59, "pm")),
+)
 
 
 def frame_tile_anchors():

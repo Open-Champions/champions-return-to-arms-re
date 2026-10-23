@@ -174,6 +174,38 @@ def row_fields(path, seed):
             reads)
 
 
+def indexed_rows(path, seed):
+    """Keep both scroll words settled and distinguish every cached row."""
+    e = fixture(path, seed, count=8, selected=2)
+    e.mem.w32(0x879E2C, 2)
+    e.mem.w32(0x879E30, 2)
+    for index in range(8):
+        e.mem.write(0x88D300 + 16 * index,
+                    bytes((0, 0, 0x20 + index, 0x01 + index, 0,
+                           0x10 + index, 0x11, 0x26)) + bytes(8))
+        e.mem.w16(0x8E1200 + 112 * index + 0x6A, index + 1)
+    e.call(0x21C3A4, max_steps=300000)
+    headers = tuple(c.args[0] & 0xFFFFFFFF for c in e.calls if c.site == 0x21DA74)
+    dates = tuple(u32s(c, 5)[2:5] for c in e.calls if c.site == 0x21DB0C)
+    clocks = tuple((c.args[2] & 0xFFFFFFFF, c.args[4] & 0xFFFFFFFF,
+                    c.args[5] & 0xFFFFFFFF)
+                   for c in e.calls if c.site == 0x21DBCC)
+    return e.mem.u32(0x879E2C), headers, dates, clocks
+
+
+def clock_boundary(path, seed, hour, minute):
+    e = fixture(path, seed, count=1)
+    e.mem.w8(0x88D303, hour)
+    e.mem.w8(0x88D302, minute)
+    e.call(0x21C3A4, max_steps=300000)
+    c = next(c for c in e.calls if c.site == 0x21DBCC)
+    return (e.mem.cstr(c.args[1] & 0xFFFFFFFF),
+            c.args[2] & 0xFFFFFFFF,
+            e.mem.cstr(c.args[3] & 0xFFFFFFFF),
+            c.args[4] & 0xFFFFFFFF,
+            e.mem.cstr(c.args[5] & 0xFFFFFFFF))
+
+
 def main(argv):
     if len(argv) not in (2, 3):
         raise SystemExit(__doc__)
@@ -182,6 +214,16 @@ def main(argv):
         assert hashlib.file_digest(source, "sha256").hexdigest() == SHA256
     checks = 0
     for seed in R.SEEDS:
+        scroll, headers, dates, clocks = indexed_rows(path, seed)
+        assert scroll == 2, (seed, scroll)
+        assert headers == tuple(0x8E1200 + 112 * i for i in range(2, 7)), (seed, headers)
+        assert dates == tuple((11, 10 + i, 2026) for i in range(2, 7)), (seed, dates)
+        assert clocks == tuple((1 + i, 20 + i, 0x53F660) for i in range(2, 7)), (seed, clocks)
+        checks += 4
+        for hour, minute, expected in R.CLOCK_BOUNDARIES:
+            got = clock_boundary(path, seed, hour, minute)
+            assert got == expected, (seed, hour, minute, got)
+            checks += 1
         header, date, clock, reads = row_fields(path, seed)
         assert header == R.SYNTHETIC_ROW_FIELDS["level_header"], (seed, header)
         assert date == R.SYNTHETIC_ROW_FIELDS["date"], (seed, date)

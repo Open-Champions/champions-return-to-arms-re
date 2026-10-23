@@ -7,8 +7,9 @@ The original ELF is pinned by SHA-256
 against authored memory at seeds 20973 and 7; `tools/ref_save_screen.py` holds the
 numeric reference. **Executed** below means that bounded synthetic test, not a
 Play! or console capture. **Observed** means the code or named asset structure at
-the stated address was read. No original card, localized text, texture pixels,
-or retail screen was captured.
+the stated address was read. Round 2 also read one completed slot file from the
+existing Play! rig without modifying it. No live card-screen capture, localized
+text, texture pixels, or retail screen was captured.
 
 Prior evidence: `t3/research-menus` `docs/menus.md` and
 `t3/research-menus-layout` `docs/frontend-layout.md` at `29c90a5`, plus
@@ -82,23 +83,53 @@ and clock ASCII at `(487,y)` 0x21dbe8. With `g_memcardState=3` (save), the
 first free row uses `MemcardNewSave` and wide text at `(100,y)` 0x21d9f4;
 with `g_memcardState=4` (load), an empty list submits no rows. Rows beyond
 the cache count retain only their numbered marker when count is nonzero.
-The fixture covers counts 0, 1, 2, 5 and 6 in both modes. The source does not
-establish that a real card ever holds six usable entries.
+The fixture covers counts 0, 1, 2, 5 and 6 in both modes, plus count 8 in the
+indexed-row probe. The source does not establish that a real card holds eight
+usable entries.
 
-**Executed** with scroll base 0: the list count is read from 0x4f9238, and
-directory metadata at 0x88d300 supplies the first row's BCD calendar and
-clock bytes. The date formatter at 0x21da94–0x21db28 submits bytes +6
-(month), +5 (day), and +7 (year plus 2000). The clock formatter at
-0x21db30–0x21dbec submits bytes +3 (hour) and +2 (minute) for the fixture's
-single hour value, 0x10. At 0x21da74 the first cached header pointer 0x8e1200
-is passed to 0x22233c for a localized level label. Its +0x64, +0x6a and +0x6c
-fields are read for play time, player count and difficulty, matching
-`docs/audio-save.md`'s save header. **Inferred:** visible row `r` uses index
-`0x879e2c + r`, metadata at `0x88d300 + 16*index`, and a cached 0x70-byte
-header at `0x8e1200 + 0x70*index`; the committed fixture has neither a
-nonzero scroll base nor distinct later headers. **Unknown:** the AM/PM branch
-and 12-hour boundary, real card timestamps, and locale formatting. Midnight,
-noon and afternoon inputs are needed to establish the clock conversion.
+**Executed**, now with a settled nonzero scroll and distinct rows: the list
+count is read from 0x4f9238. Visible row `r` uses index `0x879e2c + r` at
+0x21d930–0x21d950. The metadata address is `0x88d300 + 16*index` at
+0x21da10–0x21da24; the cached header address is
+`0x8e1200 + 0x70*index` at 0x21da18–0x21da74. For scroll base 2 and count
+8, `indexed_rows` passed headers 2–6 (0x8e12e0 through 0x8e14a0), each
+distinct date/clock and row number 3–7 to the original draw calls on both
+seeds. The target scroll word 0x879e30 must also be 2; otherwise the list
+updates 0x879e2c back to zero at 0x21c9dc–0x21c9f8. Header +0x64, +0x6a,
+and +0x6c feed play time, player count, and difficulty. These index and stride
+calculations are **Observed** at the stated addresses and **Executed** in the
+settled fixture. Actual card capacity and scroll reachability remain **Unknown**.
+
+**Observed and Executed** in `clock_boundary`: the date formatter at
+0x21da94–0x21db28 turns metadata BCD bytes +6 (month), +5 (day), and +7
+(year plus 2000) into `%d/%d/%d`, without zero padding. The clock at
+0x21da24–0x21da70 and 0x21db30–0x21dbec turns BCD +3 (hour) and +2
+(minute) into `%d:%s%d%s`: 00:05 → `12:05am`, 11:10 → `11:10am`,
+12:00 → `12:00pm`, 13:25 → `1:25pm`, and 23:59 → `11:59pm` on both seeds.
+The minute below ten gets a leading zero; the suffix is lowercase and has no
+space. Real card directory timestamps and locale-dependent display remain
+**Unknown** because the completed slot file does not contain those directory
+metadata bytes.
+
+### Completed slot file check
+
+**Read only:** the existing, previously run Play! rig's
+`local/rig-out/run6-6/data-b/vfs/mc0/BASLUS-20973/BASLUS-20973_slot0`
+under the original checkout is 310,392 bytes (0x4bc78), SHA-256
+`c969195418643f79e31ddc493ad30c3cd5c24802be0aa34614fb584299027796`.
+Its 0x70-byte header contains level identifier `strife` with an empty second
+part, 59 play seconds, one player, and difficulty index 1. This is a finished
+slot record, not a fabricated header. The original `memcard_slotList` passes
+that header to the level-label lookup at 0x21da74/0x22233c; the localized
+level text is **Unknown** with lookup stubbed. With the record loaded into the
+cache, the single-player branch at 0x21e194–0x21e208 and difficulty key
+`memcardDifficulty1` at 0x21e258 execute on both seeds. The debug-only time
+line at 0x21dd48–0x21e0f0 selects `MemcardBrowseMinutes` and passes numeric
+1 for 59 seconds (0x21dd94–0x21ddb8 clamps zero minutes to one). With debug
+off, that line is absent. The character/class suffix uses separate cache state
+at 0x88cf80/0x4f8e80; this record check does not establish its displayed
+text. The real directory timestamp, localization, and rendered pixels were
+not captured.
 
 **Executed:** selection rectangle 0x21e508 follows displayed selection word
 0x879e28: endpoints `(66,133+17r)` to `(574,152+17r)`, layer 6. The base
@@ -121,7 +152,8 @@ player count and +0x6c selects one of the difficulty lookup keys at
 `(320,281)` 0x21e0f0 from header +0x64. With that byte zero the save-time
 line is absent. **Unknown:** all localized strings, text widths, and some
 single-character character/class description branches at 0x21e194–0x21e208;
-the fixture's artificial header is not a validated save file.
+the basic fixture's artificial header is not a validated save file. The
+completed-record check above verifies the header-backed routes separately.
 
 | Slot state | **Executed** lookup keys and draw anchors | Input result in the settled fixture |
 |---|---|---|
@@ -148,12 +180,12 @@ stride 0x58, using slot byte 0x4f923c, edge +0x0c and repeat +0x10
 3. Build the card-browser stage and shared message boxes, preserving save/load
    titles, pending/error prompts and the two-stage routing at 0x218afc/0x219360.
 4. Populate the five-row list from real card directory entries and cached
-   save headers; implement the save-only new row, tested date fields,
-   selected-slot preview and debug-only time line. Before treating indexed
-   metadata/header strides as established, probe a nonzero scroll base and
-   distinct successive headers. Before porting AM/PM or 12-hour conversion as
-   exact behavior, probe midnight, noon and afternoon. Treat missing or invalid
-   card data as an explicit state rather than an invented slot.
+   save headers; use the **Observed** `base+r`, 16-byte metadata stride and
+   0x70-byte header stride. Implement the save-only new row, BCD date and
+   12-hour clock formatting, selected-slot preview, and debug-only time line.
+   Treat missing or invalid card data as an explicit state rather than an
+   invented slot. Verify directory timestamps and localized level/class text
+   against a live card capture before claiming complete display parity.
 5. Bind highlight interpolation, scroll and raw-pad input to 0x879e24–0x879e34
    and the configured button masks. Port overwrite/delete confirmation, back,
    wait, retry and error transitions, then the card-operation queue. Keep the
@@ -166,9 +198,11 @@ stride 0x58, using slot byte 0x4f923c, edge +0x0c and repeat +0x10
 ## Reproduction and limits
 
 `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_save_screen.py
-local/SLUS_209.73 '<private-disc>.iso'` passed **153 checks** across seeds
-20973 and 7, including read-only tile header dimensions. The companion
-`difftest_frontend_screens.py`, `difftest_frontend_art.py`, `difftest_menus.py`
+local/SLUS_209.73 '<private-disc>.iso'` passed **171 checks** across seeds
+20973 and 7, including indexed rows, clock boundaries, and read-only tile
+header dimensions. A separate read-only completed-record probe ran
+`memcard_slotList` with the slot0 header at both seeds, with debug on and off.
+The companion `difftest_frontend_screens.py`, `difftest_frontend_art.py`, `difftest_menus.py`
 and `difftest_save.py` on their existing research worktrees also passed.
 The full Python unit suite passed 652 tests. The new difftest follows
 the original UI control functions, frame wrapper and frame implementation
