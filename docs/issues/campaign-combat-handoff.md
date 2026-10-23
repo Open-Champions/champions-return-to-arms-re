@@ -676,3 +676,123 @@ disc bytes remain ignored under `work/valor-capture/`.
    establish HP loss, death state, `Creature_dropLoot` 0x10f2c8, item or
    Gold object creation, pickup and `hud_tickGold` credit. Those values and
    a final fully Observed kill port list remain **Unknown**.
+
+## Research round 8: assisted live kill and separate Gold pickup (2026-10-23)
+
+**Ran on the same headless Play! core and SLUS-20973 v2.00 disc**, using the
+round-7 scripted-pending-level Valor state, one emulator instance at a time.
+Private scripts, state files, watch tables and breakpoint logs are ignored
+under `work/valor-capture/`; the disc remained read-only. The entry still
+did **not** use a normal campaign gate. Starting from
+`states/two-hits.zip`, the controlled fight changed only player HP and
+maximum HP, record `g_players+0xac/+0xb0`, from the recorded starting
+`32.7999954` to `10000` to survive enough attack cycles. It made **no
+enemy-HP, attack-stat, seed or code write**. The damage, death, loot and
+pickup functions below ran in the original emulator, but survival was
+assisted; this is not an unassisted campaign playthrough or PCSX2 result.
+
+### Why the round-7 boar survived, and the actual hit
+
+**Ran:** the round-7 two melee calls at frames 2384 and 2408 were misses:
+`damage_apply` 0x1e8230 returned `0` and reached
+`Creature_takeDamage` 0x116638 with `f12=0` and miss flags `0x42000`
+from return site 0x1eac6c. The boar at `0x0063a0c0` had active/inert
+byte `+0x231=0`, armour `+0xe4=369`, HP/max HP
+`+0x228/+0x22c=228.319549`, and unchanged damage flags `+0x2dc=0`
+in the saved state. Thus neither an inert timer nor an omitted HP write
+explains those two calls. The original damage routine's two hit rolls and
+armour scale are documented in `docs/spec/combat.md` section 3; the
+`0x1eac6c` return site is its zero-damage miss path.
+
+**Ran:** repeating short Cross press/release cycles with player HP support
+gave the first positive boar hit at continuation frame 138:
+`Player_meleeHit` 0x1b6a98 → `damage_apply` 0x1e8230 with attack `38`
+and equipped club range `19–24` → `Creature_takeDamage` 0x116638,
+`f12=3.913278`, flags `0x40001`, return site 0x1ea7e8. The HP watch
+fell `228.319549 → 224.406265` on frame 139. A second equal hit at
+frame 186 fell HP to `220.492980` on frame 187. These are the first
+observed positive damages to a resource-loaded Valor boar in this work;
+the boar HP field is confirmed at `+0x228`. The moving continuation then
+left melee range. Stationary 24-frame attack cycles from the same saved
+state continued it to HP `55.7231254`, with Gold still `500`; the state
+was saved as `round8-stationary.zip`.
+
+### Death and loot order
+
+**Ran:** from that state, the same stationary input took the same boar from
+HP `55.7231254` to `3.20279169`, then at continuation frame 1194 a
+positive `Creature_takeDamage` of `4.325202` reduced `+0x228` to
+`-1.12241125` on the next watch row. `damage_apply` returned `1`.
+At frame 1195, `WarBoar_setState` 0x2bac60 called
+`Creature_dropLoot` 0x10f2c8 for actor `0x0063a0c0`, which called
+`loot_generateDrops` 0x100d54. The generator ran once with `f12=36`,
+`f13=2`, `f14=2.799999`, `f15=0`; no `loot_spawnGold` 0x100974 call
+occurred. A focused replay broke on `PhProp_ctor` 0x155a0c: its 36
+calls began much later, at frame 1723, all from `AutoContainer_run`,
+so this capture shows no boar-generated item object. The boar's zero-Gold
+death parameter documented in round 3 remains consistent with this run.
+
+**Ran, direct actor dispatch:** `runObjects` 0x14b910 was entered each
+continuation frame. `WarBoar_run` 0x2ba3a0 for this actor entered with
+return address `0x14bb80` (`runObjects+0x270`), including frame 0.
+This captures the actor dispatch that round 7 had only established as a
+call-site contract.
+
+### Gold object, touch and HUD credit: separate source
+
+**Ran:** after the boar's death, `AutoContainer_run` created Gold objects
+through `Gold_ctor2` 0x157668 at frames 1723 and 1795, both using the
+reused object address `0x00601ec0`, with amounts `9` and `27`.
+`Gold_onTouch` 0x157a9c ran repeatedly on player `0x006c88c0` while
+the objects' countdowns remained positive. At frames 1764 and 1836,
+`Gold_onTouch` called `hud_addGoldFloater` 0x1dc268 with the same
+amounts. The focused replay captured `hud_tickGold` 0x1dcb80 with Gold
+`500` at frame 1801, `502` by frame 1808, `509` by frame 1815,
+`513` at frame 1880, and `536` by frame 1894; the watched player record
+`g_players+0xe4` ended at `536` (`500+9+27`). **These Gold objects came
+from AutoContainer, not the WarBoar death generator.** The source
+container's world record and the normal-route seed remain unverified.
+
+`tools/difftest_campaign_combat_live.py` now checks the first two positive
+hits, direct `runObjects` → WarBoar dispatch, positive last hit, HP crossing zero,
+next-frame death and loot call, the separate Gold constructor/touch/floater
+orders, and the HUD replay's credited balance. It keeps the round-7
+constructor, entry and nonlethal trace checks. The private evidence used
+for this round is `round8-supported-breaks.log` /
+`round8-supported-watch.tsv`, `round8-stationary-breaks.log` /
+`round8-stationary-watch.tsv`, `round8-kill-breaks.log` /
+`round8-kill-watch.tsv`, and `round8-credit-breaks.log`; the matching
+scripts and states are in the same ignored directory. No existing rig
+memory card or loadable saved state established a normal hub-to-Valor
+campaign gate, so round-7 loader values are still **not confirmed for
+normal-route entry**.
+
+### Ordered native port list after the live kill
+
+1. **Normal entry still Unknown:** obtain the hub gate or a legitimate
+   saved-character transition to Valor. Capture requested level, seed,
+   player and HUD/resource state at `game_loadLevel` 0x1e55c0 before
+   treating this scripted-entry session as normal-route parity.
+2. **Ran, constructor order:** class constructor 0x2ba03c / 0x288fdc
+   enters `Creature_ctor` 0x109d68, then `GameObject_ctor` 0x14cb10;
+   first definition resolution calls `res_find` 0x17365c inside the base
+   constructor. Its calls return before base and class initialization
+   completes. Resolve the 20/26 slots, retaining each object identity.
+3. **Ran, world scheduling:** retain grid and 60-frame registration at
+   0x14f2b8, then dispatch that same identity from `runObjects` 0x14b910
+   to `WarBoar_run` 0x2ba3a0 at 0x14bb80. Keep the real animation,
+   terrain and target services; this trace establishes dispatch, not
+   native implementation readiness.
+4. **Ran, equipped player and damage:** retain the class-6/model-11
+   player, active club, attack 38 and 19–24 damage range. Preserve
+   `Player_meleeHit` 0x1b6a98 → `damage_apply` 0x1e8230 miss/armour
+   rolls → `Creature_takeDamage` 0x116638, including positive HP writes
+   at `+0x228` and zero-damage misses. This live kill required player
+   health support; normal survival remains unverified.
+5. **Ran, death and rewards:** process the next-frame WarBoar death via
+   `WarBoar_setState` 0x2bac60, `Creature_dropLoot` 0x10f2c8 and
+   `loot_generateDrops` 0x100d54. Keep its zero-Gold path distinct from
+   `AutoContainer_run`'s observed Gold spawn at 0x157668, countdown,
+   `Gold_onTouch` 0x157a9c, `hud_addGoldFloater` 0x1dc268 and delayed
+   `hud_tickGold` 0x1dcb80 credit. A Gold-producing enemy death and an
+   unassisted normal-route fight remain **Unknown**.
