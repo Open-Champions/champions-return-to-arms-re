@@ -1375,8 +1375,10 @@ def add_skill(sid, name, bodies, entries, object_tables=(), spell_tables=()):
 add_skill(4, 'diseasebolt', {
     'SkillDiseaseBolt_cast': (0x2CB1C0, 0x2CB264), 'DiseaseBolt_ctor': (0x2C9EB0, 0x2CA09C),
     'DiseaseBolt_run': (0x2CA1A8, 0x2CAEC8), 'DiseaseBolt_onHit': (0x2CAEC8, 0x2CB0E0),
+    'SkillDiseaseBolt_manaCost': (0x2CB33C, 0x2CB368),
 }, {
     'SkillDiseaseBolt_canUse': (0x2CB368, 'ii', 'i', 'diseasebolt_can_use'),
+    'SkillDiseaseBolt_manaCost': (0x2CB33C, 'ii', 'f', 'diseasebolt_mana_cost'),
     'SkillDiseaseBolt_cast': (0x2CB1C0, 'iiivi', 'i', 'diseasebolt_cast'),
     'DiseaseBolt_run': (0x2CA1A8, 'i', 'n', 'diseasebolt_run'),
     'DiseaseBolt_onHit': (0x2CAEC8, 'ii', 'n', 'diseasebolt_hit'),
@@ -1416,6 +1418,8 @@ def s04(env, rounds):
     world, mem, rng = env.world, env.mem, env.rng
     skill = env.skill(4)
     bolt = world.add_pool(0x7C, 1, 'bolt')[0]
+    for level in (1, 2, 3, 4, 5, 10, 20, 21, 30, 40):
+        env.do('SkillDiseaseBolt_manaCost', skill, level)
     for env.round in range(rounds):
         world.place(rng)
         caster = env.caster()
@@ -1456,6 +1460,57 @@ def s04(env, rounds):
         else:
             fly(env, 'DiseaseBolt_run', bolt, 60, tick)
     world.ground_bias, world.enemy_bias = 0.08, 0.7
+
+
+@scenario('s04 diseasebolt expiry boundaries', 4)
+def s04_expiry(env, _rounds):
+    """Keep movement collision-free, then compare the last live and first expired frame."""
+    world, mem = env.world, env.mem
+    skill = env.skill(4)
+    bolts = world.add_pool(0x7C, 1, 'expiry bolt')
+    world.place(env.rng)
+    world.fail_alloc = world.ground_bias = world.extra_bias = 0.0
+    caster = world.player
+    mem.w32(SA.G_SIM_FRAME, 1000)
+    env.do('SkillDiseaseBolt_cast', skill, 20, caster, env.pos_of(caster, 0.0, 40.0), 0)
+    bolt = bolts[0]
+    assert mem.u32(bolt + 0x70) == 1300
+    assert mem.s16(bolt + 0x60) == 20
+    env.alive(bolt)
+    mem.w32(bolt + 0x58, 0)
+    for obj in world.everything:
+        mem.wf32(obj + 0x10, 100000.0)
+        mem.wf32(obj + 0x14, 100000.0)
+    mem.w32(SA.G_SIM_FRAME, 1299)
+    assert not env.deleted(env.do('DiseaseBolt_run', bolt), bolt)
+    mem.w32(SA.G_SIM_FRAME, 1300)
+    assert env.deleted(env.do('DiseaseBolt_run', bolt), bolt)
+
+    # A ground contact ends a bolt with a future timer.
+    mem.w32(SA.G_SIM_FRAME, 2000)
+    env.do('SkillDiseaseBolt_cast', skill, 2, caster, env.pos_of(caster, 0.0, 40.0), 0)
+    bolt = bolts[0]
+    assert mem.u32(bolt + 0x70) == 2300
+    env.alive(bolt)
+    mem.w32(bolt + 0x58, 0)
+    world.ground_bias = 1.0
+    assert env.deleted(env.do('DiseaseBolt_run', bolt), bolt)
+
+    # Contact with bit 1 from moveAndCollide ends only after the hit latch is set.
+    world.ground_bias = 0.0
+    mem.w32(SA.G_SIM_FRAME, 3000)
+    env.do('SkillDiseaseBolt_cast', skill, 5, caster, env.pos_of(caster, 0.0, 40.0), 0)
+    bolt = bolts[0]
+    env.alive(bolt)
+    mem.w32(bolt + 0x58, 0)
+    world.enemy_bias = 0.0
+    prop = world.props[0]
+    mem.w32(prop + 0xC, 0)
+    for off in (0x10, 0x14, 0x18):
+        mem.w32(prop + off, mem.u32(bolt + off))
+    assert not env.deleted(env.do('DiseaseBolt_run', bolt), bolt)
+    mem.w32(bolt + 0x78, 1)
+    assert env.deleted(env.do('DiseaseBolt_run', bolt), bolt)
 
 
 

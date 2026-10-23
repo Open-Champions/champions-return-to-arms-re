@@ -659,6 +659,10 @@ class Model(AM.Model):
         """SkillDiseaseBolt_canUse 0x2cb368 -> 1."""
         return 1
 
+    def diseasebolt_mana_cost(self, skill, level):
+        """SkillDiseaseBolt_manaCost 0x2cb33c: evaluate slot 5 in single precision."""
+        return self.mana_cost(skill, level)
+
     def diseasebolt_cast(self, skill, level, caster, pos, facing):
         """SkillDiseaseBolt_cast 0x2cb1c0 (skill, level, caster, position, facing) -> 0.
 
