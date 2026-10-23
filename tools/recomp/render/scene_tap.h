@@ -49,6 +49,7 @@
 namespace render {
 
 class Renderer;
+extern double g_tap_kick_ms, g_tap_ms;      // decoder thread, all frames: ms in the GS model's xgkick and in the tap itself
 
 enum : uint8_t { TAP_LEVEL = 1, TAP_MODEL = 2 };
 enum : uint8_t {

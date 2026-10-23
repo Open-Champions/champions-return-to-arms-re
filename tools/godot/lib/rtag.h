@@ -262,6 +262,9 @@ enum { RTAG_FRAME_LEVEL = 1 /* a level is running (not the front end) */ };
  * the machine has ended (the script said quit, the game stopped) and nothing is left to take. */
 int rtag_step(const rtag_pad* pads, int wait_ms, const rtag_frame** frame);
 int rtag_poll(int wait_ms, const rtag_frame** frame);
+/* rtag_release (optional): let the machine go for one blank and return at once - the frame is taken later with
+ * rtag_poll (a host that lets blanks go ahead of the pictures that show them: Godot's display rate) */
+int rtag_release(void);
 /* The machine lets itself go: hz > 0 on the library's clock at that rate (59.94 is the console's), hz < 0
  * as fast as it can while frames are taken, 0 back to rtag_step.  Frames must still be taken, in order
  * (a list names the textures made by the lists before it); the machine waits when three are not. */
@@ -473,6 +476,9 @@ const char* rtag_report_begin(const char* host_lines);  /* take a report now; re
 const char* rtag_report_finish(const char* folder, const char* text, int keep);   /* the player's text (may be ""); keep 0
                                                            drops it.  Returns the zip's path ("" when dropped or failed) */
 const char* rtag_build_line(void);      /* "RTA <commit> <date>  fixes <set>  <platform>" */
+double rtag_frame_since_release_ms(void);   /* ... and how long ago the game was let go into that frame (its controller read) */
+double rtag_frame_age_ms(void);        /* how long ago the frame taken last (rtag_poll) was finished by the decoder; -1 none.  For a host
+                                         * that times its releases (Godot's display rate: how long a blank takes from its release to its frame) */
 const char* rtag_report_told(void);     /* after rtag_start: what to tell the player about a crash report of the run before ("" none) */
 
 /* End the run: the game's thread prints the runtime's report at its next blank and stands still for good.

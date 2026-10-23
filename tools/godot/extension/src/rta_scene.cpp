@@ -95,7 +95,12 @@ struct RtaDrawer::Scene {
     // before it in the frame): a draw whose content changed (a character that moved, a light that flickered) has its
     // mesh's buffers written again in place (mesh_surface_update_*_region) instead of a mesh made and another one freed -
     // what cost the most of a fight's frame in Forward+ (mesh_add_surface: buffers made and freed on the card).
-    struct Kept { RID mesh; AABB box; uint64_t used = 0; uint64_t content = 0; int corners = 0; bool normals = false; };
+    struct Kept {
+        RID mesh; AABB box; uint64_t used = 0; uint64_t content = 0; int corners = 0; bool normals = false;
+        bool carry = false;             // the mesh carries its corners of the game frame before (CUSTOM2): tween
+        bool moving = false;            // ... and they differ from this frame's (it moved): the pictures between move it on
+        PackedByteArray positions, attributes;      // what was written last (tween: the next write's "before")
+    };
     std::unordered_map<uint64_t, Kept> kept;
     std::unordered_map<uint64_t, uint32_t> kept_seen;  // this frame: draws of each identity so far
     bool keep = true;
@@ -125,6 +130,17 @@ struct RtaDrawer::Scene {
     int level_draws = 0, level_draws_last = 0;      // this frame / the last whole frame: draws of the level's own chunks
     int ground_near = 0, ground_near_last = 0;      // ... of them, those whose box reaches under the player's feet
     Vector3 feet;                                   // where the player stands (scene_view.gd: options feet_x, feet_y, feet_z)
+    // The pictures between game frames (the display rate above 60, main.gd; RtaDrawer::redraw): with `tween` on, a kept
+    // mesh carries beside each corner where it was in the game frame before (when the same draw moved: a character, a
+    // creature, a swinging prop), and the shader puts it T frames on along that motion (GS_WORLD, rta_tween); the camera
+    // is carried on the same way.  What is built anew every frame (the CPU's own projections, sprites) stays as it is.
+    bool tween_on = false;
+    Transform3D camera_before;          // the camera of the game frame before this one
+    double fov_before = 50.0, near_now = 1.0, far_now = 1000.0, fov_y_shown = 50.0;
+    uint64_t frames_with_camera = 0;
+    bool camera_before_ok = false;
+    double tween_jump = 40.0;           // units a game frame: a draw that moved farther (a teleport, two alike that changed places) is not carried
+    uint64_t tween_moving = 0, tween_jumped = 0, tween_stopped = 0;
     // this frame
     bool valid = false;
     const rtag_scene* tap = nullptr;
@@ -169,6 +185,8 @@ void RtaDrawer::set_scene_option(const String& name, double value) {
     else if (name == "model_crease") scene->model_crease = value;
     else if (name == "model_near") scene->model_near = value;
     else if (name == "contacts") scene->contacts_on = value != 0;
+    else if (name == "tween") scene->tween_on = value != 0;
+    else if (name == "tween_jump") scene->tween_jump = value;
     else if (name == "feet_x") scene->feet.x = (real_t)value;
     else if (name == "feet_y") scene->feet.y = (real_t)value;
     else if (name == "feet_z") scene->feet.z = (real_t)value;
@@ -234,7 +252,7 @@ static void scene_models_scan(const rtag_scene* tap, std::unordered_map<uint64_t
 
 // One triangle of a skinned model as n x n PN triangles: corners c[0..2], welded normals wn[0..2] (unit or zero).
 // Writes n*n*3 corners: positions (12 bytes each) and attributes (stride 32: colour, s, t, 1, 1, normal).
-static void pn_triangle(const rtag_scene_full* c[3], const Vector3 wn[3], int n, double crease, uint8_t*& p, uint8_t*& a) {
+static void pn_triangle(const rtag_scene_full* c[3], const Vector3 wn[3], int n, double crease, uint8_t*& p, uint8_t*& a, int stride) {
     Vector3 P[3], N[3];
     for (int i = 0; i < 3; i++) { P[i] = Vector3(c[i]->x, c[i]->y, c[i]->z); N[i] = wn[i]; }
     // the edge's two inner control points; straight where the normals part (a hard edge) or one is missing
@@ -273,7 +291,7 @@ static void pn_triangle(const rtag_scene_full* c[3], const Vector3 wn[3], int n,
         memcpy(a + 4, g.st, 16);
         memcpy(a + 20, g.nf, 12);
         p += 12;
-        a += 32;
+        a += stride;
     };
     for (int i = 0; i < n; i++)
         for (int j = 0; j < n - i; j++) {
@@ -608,6 +626,9 @@ Dictionary RtaDrawer::get_scene_info() const {
                               (int64_t)scene->frames_without_camera, scene->world_draws / n, scene->world_vertices / n, scene->exact_draws / n, scene->packet_draws / n,
                               (double)scene->packet_extra / n, scene->flat_draws / n, scene->blob_shadows_dropped / n, scene->fills_dropped / n, scene->dome_draws / n,
                               scene->near_faded / n, scene->kept_hits / n, scene->kept_corners / n, scene->kept_misses / n, scene->kept_updates / n, (int64_t)scene->kept.size());
+    if (scene->tween_on)
+        info["figures"] = String(info["figures"]) + vformat("; between game frames: %.1f kept draws a list carried on (moving), %.2f not (jumped), %.2f stopped",
+                                  scene->tween_moving / n, scene->tween_jumped / n, scene->tween_stopped / n);
     info["figures"] = String(info["figures"]) + vformat("; models: %.1f solid model draws a list in the cleaner look, %.1f of them curved (%d x %d), %.0f curved corners a list",
                               scene->model_draws / n, scene->smoothed_draws / n, (int64_t)scene->model_smooth, (int64_t)scene->model_smooth, scene->smoothed_corners / n);
     return info;
@@ -657,9 +678,20 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
         Vector3 eye = focus + offset;
         camera = Transform3D(Basis(), eye).looking_at(focus, up);
     }
+    if (sc.tween_on) {
+        // a camera that jumped (a cut, a level) is not carried on
+        sc.camera_before_ok = sc.frames_with_camera > 0 && sc.camera.origin.distance_to(camera.origin) < (real_t)(sc.tween_jump * 4) &&
+                              sc.camera.basis.get_column(2).dot(camera.basis.get_column(2)) > 0.7f;
+        sc.camera_before = sc.camera;
+        sc.fov_before = sc.fov_y_shown;
+    }
+    sc.frames_with_camera++;
+    sc.fov_y_shown = sc.fov_y;
     sc.camera = camera;
     s->camera_set_transform(pass->camera, camera);
     double far_plane = f.scene->far_plane * std::max(1.0, sc.pull_back) * 1.5;
+    sc.near_now = f.scene->near_plane;
+    sc.far_now = far_plane;
     s->camera_set_perspective(pass->camera, (float)sc.fov_y, f.scene->near_plane, (float)far_plane);
     fill_frame(f, camera.origin, pass->scenario);           // the level's generated ceilings and skirts (rta_fill.cpp)
     if (sc.lit) s->environment_set_ambient_light(pass->environment, Color(1, 1, 1), RenderingServer::ENV_AMBIENT_SOURCE_COLOR, (float)sc.ambient);
@@ -696,7 +728,9 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     // quad the CPU projects) go when Godot throws real ones
     if (sc.shadows && d.tex_is_target && d.scene_kind == RTAG_SCENE_DEPTH && d.blend) { sc.blob_shadows_dropped++; return true; }
     const bool normals = d.scene_kind == RTAG_SCENE_EXACT && sc.tap->normals != nullptr;
-    const int stride = normals ? 32 : 20;
+    // kept meshes are made only of whole packets with normals: with tween on they carry 16 bytes more a corner (CUSTOM2)
+    const bool carry = sc.tween_on && sc.keep && normals && sc.packets && d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count;
+    const int stride = (normals ? 32 : 20) + (carry ? 16 : 0);
     bool model = false;
     sc.kept_key = 0;
     sc.kept_mesh = RID();
@@ -773,7 +807,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
                         auto w = sc.weld.find(weld_key(c[i]->x, c[i]->y, c[i]->z));
                         wn[i] = w != sc.weld.end() && w->second.length_squared() > 1e-8f ? w->second.normalized() : Vector3(c[i]->nx, c[i]->ny, c[i]->nz);
                     }
-                    pn_triangle(c, wn, smooth, sc.model_crease, p, a);
+                    pn_triangle(c, wn, smooth, sc.model_crease, p, a, stride);
                 }
                 sc.smoothed_corners += pieces[k].full_count * smooth * smooth;
                 continue;
@@ -843,6 +877,20 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     if (sc.kept_mesh.is_valid()) {
         box = sc.kept_box;
         mesh = sc.kept_mesh;
+        if (carry) {
+            // the same as last frame: it stopped - its "before" is now where it is (w 0: not carried on)
+            auto it = sc.kept.find(sc.kept_ident);
+            if (it != sc.kept.end() && it->second.moving && it->second.carry && it->second.attributes.size() == (int64_t)corners * stride) {
+                PackedByteArray a = it->second.attributes;
+                uint8_t* w = a.ptrw();
+                const float zero = 0.0f;
+                for (int k = 0; k < corners; k++) memcpy(w + (size_t)k * stride + stride - 4, &zero, 4);
+                s->mesh_surface_update_attribute_region(mesh, 0, 0, a);
+                it->second.attributes = a;
+                it->second.moving = false;
+                sc.tween_stopped++;
+            }
+        }
     } else {
         const float* q = (const float*)positions.ptr();
         float lo[3] = {q[0], q[1], q[2]}, hi[3] = {q[0], q[1], q[2]};
@@ -851,19 +899,48 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         box = AABB(Vector3(lo[0], lo[1], lo[2]), Vector3(hi[0] - lo[0] + 0.01f, hi[1] - lo[1] + 0.01f, hi[2] - lo[2] + 0.01f));
         if (sc.kept_key) {
             auto slot = sc.kept.find(sc.kept_ident);
-            if (slot != sc.kept.end() && slot->second.corners == corners && slot->second.normals == normals && slot->second.used != frames) {
+            bool moving = false;
+            if (carry) {
+                // beside each corner where it was in the game frame before: the same draw's last write, when it has as
+                // many corners and has not jumped (its box's middle moved less than tween_jump)
+                const uint8_t* before = nullptr;
+                if (slot != sc.kept.end() && slot->second.carry && slot->second.corners == corners && slot->second.positions.size() == positions.size()) {
+                    if (slot->second.box.get_center().distance_to(box.get_center()) < (real_t)sc.tween_jump) before = slot->second.positions.ptr();
+                    else sc.tween_jumped++;
+                }
+                uint8_t* a = attributes.ptrw();
+                const uint8_t* q = positions.ptr();
+                float most = 0.0f;
+                for (int k = 0; k < corners; k++) {
+                    float w[4];
+                    memcpy(w, (before ? before : q) + (size_t)k * 12, 12);
+                    w[3] = before ? 2.0f : 0.0f;
+                    if (before) {
+                        float c[3];
+                        memcpy(c, q + (size_t)k * 12, 12);
+                        most = std::max(most, (c[0] - w[0]) * (c[0] - w[0]) + (c[1] - w[1]) * (c[1] - w[1]) + (c[2] - w[2]) * (c[2] - w[2]));
+                    }
+                    memcpy(a + (size_t)k * stride + stride - 16, w, 16);
+                }
+                moving = before && most > 1e-8f;
+                if (moving) { box = box.grow(std::sqrt(most)); sc.tween_moving++; }
+            }
+            if (slot != sc.kept.end() && slot->second.corners == corners && slot->second.normals == normals && slot->second.carry == carry && slot->second.used != frames) {
                 // the same draw, changed: its buffers are written again where they are
                 mesh = slot->second.mesh;
                 s->mesh_surface_update_vertex_region(mesh, 0, 0, positions);
                 s->mesh_surface_update_attribute_region(mesh, 0, 0, attributes);
                 s->mesh_set_custom_aabb(mesh, box);
                 slot->second.box = box; slot->second.used = frames; slot->second.content = sc.kept_key;
+                if (carry) { slot->second.positions = positions; slot->second.attributes = attributes; slot->second.moving = moving; }
                 sc.kept_updates++;
             } else {
                 if (slot != sc.kept.end()) s->free_rid(slot->second.mesh);
                 mesh = s->mesh_create();
-                add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, corners, normals, &box);
-                sc.kept[sc.kept_ident] = {mesh, box, frames, sc.kept_key, corners, normals};
+                add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, corners, normals, &box, carry);
+                Scene::Kept& made = sc.kept[sc.kept_ident];
+                made = Scene::Kept{mesh, box, frames, sc.kept_key, corners, normals};
+                if (carry) { made.carry = true; made.positions = positions; made.attributes = attributes; made.moving = moving; }
                 sc.kept_misses++;
             }
         } else {
@@ -930,6 +1007,30 @@ void RtaDrawer::scene_end(const rtag_frame&) {
             if (frames - k->second.used > 30) { s->free_rid(k->second.mesh); k = sc.kept.erase(k); }
             else ++k;
         }
+}
+
+bool RtaDrawer::scene_drops_blob(const rtag_frame& f, const rtag_draw& d) const {
+    // the same test as scene_take's, before it: a world draw that reads a small surface the game drew a silhouette into
+    if (!scene || !scene->shadows || !f.scene || !f.scene->valid) return false;
+    if (d.scene_first < 0 || !d.count || (uint32_t)d.scene_first + d.count > f.scene->vertex_count || d.first + d.count > f.vertex_count) return false;
+    return d.tex_is_target && d.scene_kind == RTAG_SCENE_DEPTH && d.blend;
+}
+
+void RtaDrawer::scene_tween(double t) {
+    if (!scene || !scene->valid) return;
+    Scene& sc = *scene;
+    Target* world = world_target();
+    if (!world) return;
+    Pass* pass = world->passes[0];
+    RenderingServer* s = RenderingServer::get_singleton();
+    Transform3D camera = sc.camera;
+    double fov = sc.fov_y_shown;
+    if (sc.tween_on && sc.camera_before_ok) {
+        camera = sc.camera_before.interpolate_with(sc.camera, (real_t)(1.0 + t));
+        fov = sc.fov_before + (sc.fov_y_shown - sc.fov_before) * (1.0 + t);
+    }
+    s->camera_set_transform(pass->camera, camera);
+    s->camera_set_perspective(pass->camera, (float)fov, (float)sc.near_now, (float)sc.far_now);
 }
 
 void RtaDrawer::scene_release() {

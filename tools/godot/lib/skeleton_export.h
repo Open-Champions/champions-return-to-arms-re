@@ -47,6 +47,7 @@ uint32_t drawn(const uint8_t* ram);
 // The decoder's thread: from the tap's frame, for the pieces scene::take handed on (`kept`: per tap piece, 1 when it
 // is in scene::Frame::pieces, in order).
 void build(const render::TapFrame& tap, const std::vector<uint8_t>& kept, Frame& out);
+extern double g_build_ms;                   // decoder thread, all frames: ms in build (figures)
 void fill(const Frame& frame, rtag_skeletons& out);
 void report();
 

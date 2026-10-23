@@ -175,6 +175,23 @@ String RtaMachine::build_line() const {
     const RtaLibrary& lib = rta_library();
     return lib.loaded && lib.rtag_build_line ? String::utf8(lib.rtag_build_line()) : String();
 }
+int RtaMachine::release() {
+    const RtaLibrary& lib = rta_library();
+    if (!lib.loaded) return -1;
+    if (lib.rtag_release) return lib.rtag_release();
+    return -2;                          // an older library: step() lets go and may take a frame
+}
+
+double RtaMachine::frame_since_release_ms() const {
+    const RtaLibrary& lib = rta_library();
+    return lib.loaded && lib.rtag_frame_since_release_ms ? lib.rtag_frame_since_release_ms() : -1.0;
+}
+
+double RtaMachine::frame_age_ms() const {
+    const RtaLibrary& lib = rta_library();
+    return lib.loaded && lib.rtag_frame_age_ms ? lib.rtag_frame_age_ms() : -1.0;
+}
+
 String RtaMachine::report_told() const {
     const RtaLibrary& lib = rta_library();
     return lib.loaded && lib.rtag_report_told ? String::utf8(lib.rtag_report_told()) : String();
@@ -504,6 +521,9 @@ void RtaMachine::_bind_methods() {
     ClassDB::bind_method(D_METHOD("report_finish", "folder", "text", "keep"), &RtaMachine::report_finish);
     ClassDB::bind_method(D_METHOD("build_line"), &RtaMachine::build_line);
     ClassDB::bind_method(D_METHOD("report_told"), &RtaMachine::report_told);
+    ClassDB::bind_method(D_METHOD("frame_age_ms"), &RtaMachine::frame_age_ms);
+    ClassDB::bind_method(D_METHOD("release"), &RtaMachine::release);
+    ClassDB::bind_method(D_METHOD("frame_since_release_ms"), &RtaMachine::frame_since_release_ms);
     ClassDB::bind_method(D_METHOD("mouse", "dx", "dy", "wheel"), &RtaMachine::mouse);
     ClassDB::bind_method(D_METHOD("mouse_button", "button", "down"), &RtaMachine::mouse_button);
     ClassDB::bind_method(D_METHOD("wants_pointer"), &RtaMachine::wants_pointer);

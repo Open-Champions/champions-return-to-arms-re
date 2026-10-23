@@ -104,6 +104,7 @@ uniform float fix = 1.0;
 uniform float mask_rgb = 0.0;                       // 1: the colour is not written
 #ifdef GS_WORLD
 uniform float depth_bias = 0.0;                     // toward the camera, in clip space: what lies on a surface is drawn on it
+global uniform vec4 rta_tween;                      // x: game frames past the last one, for a picture drawn between two (RtaDrawer::redraw)
 #ifndef GS_CASTER
 #include "res://shaders/atmosphere.gdshaderinc"
 varying vec3 v_world;
@@ -157,6 +158,9 @@ void vertex() {
 #ifdef GS_NORMALS
 	NORMAL = CUSTOM1.xyz;                               // the game's own normal (the mesh is in world space)
 #endif
+	// A kept model that moved carries where each corner was in the game frame before (CUSTOM2, w 2: rta_scene.cpp); a
+	// picture between game frames puts the corner rta_tween.x frames on along that motion (0 in a game frame's own)
+	if (CUSTOM2.w > 1.5) VERTEX = mix(CUSTOM2.xyz, VERTEX, 1.0 + rta_tween.x);
 	v_pos = vec2(0.0);
 #ifndef GS_CASTER
 	v_world = VERTEX;

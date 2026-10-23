@@ -1196,25 +1196,16 @@ func _draw_figure(t: Dictionary) -> void:
 		else:
 			g[b] = from_parent
 	# the skin
-	var instances: Array = f.instances
 	var root_at: Vector3 = (joints[0] as Transform3D).origin
-	for i in (m.meshes as Array).size():
-		var mesh: Dictionary = m.meshes[i]
-		if instances.size() <= i:
-			var sk_rid := RenderingServer.skeleton_create()
-			RenderingServer.skeleton_allocate_data(sk_rid, (mesh.binds as PackedInt32Array).size())
-			var inst := RenderingServer.instance_create2((mesh.mesh as Mesh).get_rid(), scenario)
-			RenderingServer.instance_attach_skeleton(inst, sk_rid)
-			instances.append({"instance": inst, "skeleton": sk_rid})
-		var binds: PackedInt32Array = mesh.binds
-		var poses: Array = mesh.poses
-		var rid: RID = instances[i].skeleton
-		for q in binds.size():
-			var bone := binds[q]
-			RenderingServer.skeleton_bone_set_transform(rid, q, (g[bone] as Transform3D) * (poses[q] as Transform3D) if bone >= 0 else Transform3D())
-		_place(instances[i].instance, mesh.materials, t)
-		RenderingServer.instance_set_visible(instances[i].instance, true)
-		RenderingServer.instance_set_custom_aabb(instances[i].instance, AABB(root_at - Vector3(120, 120, 120), Vector3(240, 240, 240)))
+	# the bones of the game frame before, for the pictures drawn between game frames (tween): only when this figure was
+	# drawn in that frame too and did not jump
+	var now_frame := int(view.frames_taken) if view != null else 0
+	var before_ok := int(f.get("g_frame", -10)) == now_frame - 1 and (f.get("g_root", root_at) as Vector3).distance_to(root_at) < 40.0
+	f["g_before"] = f.get("g_now", []) if before_ok else []
+	f["g_now"] = g.duplicate()
+	f["g_frame"] = now_frame
+	f["g_root"] = root_at
+	_skin(f, m, g, root_at, t)
 	# the weapons
 	var weapons: Dictionary = f.weapons
 	var shown := {}
@@ -1243,13 +1234,74 @@ func _draw_figure(t: Dictionary) -> void:
 			w = {"what": h.what, "instance": RenderingServer.instance_create2((wm.mesh as Mesh).get_rid(), scenario)}
 			weapons[key] = w
 		var size := k * float(wm.size)
-		RenderingServer.instance_set_transform(w.instance, Transform3D(turn.scaled(Vector3(size, size, size)), grip))
+		var place := Transform3D(turn.scaled(Vector3(size, size, size)), grip)
+		w["before"] = w.get("now", place) if before_ok and w.has("now") else place
+		w["now"] = place
+		RenderingServer.instance_set_transform(w.instance, place)
 		_place(w.instance, wm.materials, t)
 		RenderingServer.instance_set_visible(w.instance, true)
 		shown[key] = true
 	for key in weapons:
 		if not shown.has(key):
 			RenderingServer.instance_set_visible(weapons[key].instance, false)
+			(weapons[key] as Dictionary).erase("now")
+	f["drawn_frame"] = now_frame
+
+
+# The skin of a figure from its model's bone globals G (this game frame's, or one between two: tween).
+func _skin(f: Dictionary, m: Dictionary, g: Array, root_at: Vector3, t: Dictionary) -> void:
+	var instances: Array = f.instances
+	for i in (m.meshes as Array).size():
+		var mesh: Dictionary = m.meshes[i]
+		if instances.size() <= i:
+			var sk_rid := RenderingServer.skeleton_create()
+			RenderingServer.skeleton_allocate_data(sk_rid, (mesh.binds as PackedInt32Array).size())
+			var inst := RenderingServer.instance_create2((mesh.mesh as Mesh).get_rid(), scenario)
+			RenderingServer.instance_attach_skeleton(inst, sk_rid)
+			instances.append({"instance": inst, "skeleton": sk_rid})
+		var binds: PackedInt32Array = mesh.binds
+		var poses: Array = mesh.poses
+		var rid: RID = instances[i].skeleton
+		for q in binds.size():
+			var bone := binds[q]
+			RenderingServer.skeleton_bone_set_transform(rid, q, (g[bone] as Transform3D) * (poses[q] as Transform3D) if bone >= 0 and g[bone] != null else Transform3D())
+		if t.has("tween"):
+			continue                    # between game frames: only the bones move (the order and the box are the frame's)
+		_place(instances[i].instance, mesh.materials, t)
+		RenderingServer.instance_set_visible(instances[i].instance, true)
+		RenderingServer.instance_set_custom_aabb(instances[i].instance, AABB(root_at - Vector3(120, 120, 120), Vector3(240, 240, 240)))
+
+
+# A picture between game frames (main.gd, the display rate above 60): every figure drawn in the last game frame posed T
+# game frames on from its bones there, along their motion since the frame before (T < 0: between the two); the weapons
+# the same way.  Nothing is found or read from the game: only the last two frames' bones are blended.
+func tween(t: float) -> void:
+	if view == null:
+		return
+	var now_frame := int(view.frames_taken)
+	for key in figures:
+		var f: Dictionary = figures[key]
+		if int(f.get("drawn_frame", -10)) != now_frame:
+			continue
+		var before: Array = f.get("g_before", [])
+		var now: Array = f.get("g_now", [])
+		if before.size() != now.size() or now.is_empty() or not models.has(f.set):
+			continue
+		var g: Array = []
+		g.resize(now.size())
+		var w := 1.0 + t
+		for b in now.size():
+			var a = before[b]
+			var c = now[b]
+			if a == null or c == null:
+				g[b] = c
+			else:
+				g[b] = (a as Transform3D).interpolate_with(c as Transform3D, w)
+		_skin(f, models[f.set], g, (f.g_root as Vector3), {"key": key, "tween": true})
+		for wk in f.weapons:
+			var wd: Dictionary = f.weapons[wk]
+			if wd.has("now") and wd.has("before"):
+				RenderingServer.instance_set_transform(wd.instance, (wd.before as Transform3D).interpolate_with(wd.now as Transform3D, w))
 
 
 const SPRING_PULL := 140.0          # 1/s^2: how hard the pose pulls the weight back

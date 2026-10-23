@@ -36,6 +36,13 @@ extends Node
 #   --test TEXT         a test run: small window titled "AGENT TEST - TEXT" that takes no keyboard, silent
 #   --stop-after N      quit after N vertical blanks
 #   --figures FILE      write the timing figures there at the end
+#   --frame-log FILE    every rendered frame one line (CSV): when its _process began, the gap to the one before, whether
+#                       a game frame was taken in it, the time in _process, waiting for the machine, handing over the
+#                       list; and the level now and then ("L,blank,level") - for the frame pacing figures
+#   --display-rate R    60 | 120 | auto (the display's own refresh; the default): how often a picture is drawn.  The game
+#                       stays at its 60 a second; the pictures between two game frames are drawn from the last two
+#                       (camera, every object, the poses: see "display rate" below).  Also user://settings.cfg
+#                       [display] rate
 #   --speed-log N       every N vertical blanks one line: pictures a second, processor time a picture over all threads
 #                       of the process (cycles do not lie, times do: read it beside the load average), late pictures
 #   --view NAME         the camera view: overhead (the game's own), action, chase, shoulder, first; V cycles them
@@ -119,7 +126,7 @@ var opt := {
 	"no_sound": false, "test": "", "stop_after": 0, "figures": "", "args": PackedStringArray(),
 	"view": "", "game_hud": true, "light": false, "shadow": false, "pull_back": 1.0, "orbit": 0.0,
 	"look": "", "hud": true, "speed_log": 0, "net2_flow": "", "art_pack": "", "mipmaps": true,
-	"combat": "", "aim": "", "look_presets": "",
+	"combat": "", "aim": "", "look_presets": "", "frame_log": "", "display_rate": "", "no_vsync": false,
 }
 var speed := {"usec": 0, "cpu": 0.0, "blanks": 0, "last": 0, "late": 0, "worst": 0}
 signal session_over(why: String)
@@ -158,6 +165,33 @@ var process_usec := 0                   # time inside _process in all
 var step_usec := 0                      # ... of it waiting in step()
 var draw_usec := 0                      # ... of it handing the list to the RenderingServer
 var quitting := false
+var frame_rows := PackedStringArray()   # --frame-log: one line a rendered frame
+var frame_last_usec := 0
+var frame_step_usec := 0                # this frame's own: waiting for the machine, handing over the list
+var frame_draw_usec := 0
+var frame_world := RID()
+var pre_draw_usec := 0                  # --frame-log: when Godot began and ended drawing the frame before (RenderingServer signals)
+var post_draw_usec := 0
+var grants := 0                         # blanks let go (step); against the frame's own number: how far ahead the machine runs
+# ---- the display rate (above 60: pictures between game frames) ----
+var rate := "auto"                      # --display-rate / settings.cfg [display] rate: 60 | 120 | auto
+var tween_n := 1                        # refreshes a game frame; > 1: the pictures between are drawn from the last two
+var refresh_s := 1.0 / 60.0             # the display's interval
+var game_clock := 0.0                   # seconds since the last game frame was shown
+var released: Array = []                # usec at which each blank let go and not yet shown was let go (oldest first)
+var early := false                      # a frame taken while letting a blank go, shown at its own tick
+var lead := 1                           # refreshes from a release to the picture its frame is shown in
+var lead_lat := PackedFloat32Array()    # recent: ms from a blank's release to its finished frame
+var lead_down_at := 0                   # usec: when the lead was last raised or lowered
+var take_latency_usec := 0             # the game frame taken now: from its blank's release (the controller read) to now
+var tween_t := 0.0                      # game frames past the last one, of the picture drawn now
+var every_turn := false                 # the rate 60 on a faster display: every turn of Godot's loop (held to 60) is a game frame
+var last_tick_usec := 0                 # the display rate above 60: when the last game frame was taken
+var tick_ema := 16.7                    # ... the time between game frames, smoothed (ms)
+var between_off := false                # ... no pictures between while the game frames themselves come late
+var between_ok_since := 0
+var stale_ticks := 0                   # ticks in a row whose frame was older than the lead says
+var tween_figs := {"dropped": 0, "pictures": 0, "between": 0, "late": 0, "lead_sum": 0, "lat_sum": 0.0, "lat_n": 0, "waited_us": 0}
 var window_shots: PackedStringArray = PackedStringArray()
 
 
@@ -184,6 +218,12 @@ func _ready() -> void:
 	if opt.unpaced:
 		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
 		Engine.max_fps = 0
+	if opt.no_vsync:
+		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+		Engine.max_fps = 0
+	if opt.frame_log != "":
+		RenderingServer.frame_pre_draw.connect(func() -> void: pre_draw_usec = Time.get_ticks_usec())
+		RenderingServer.frame_post_draw.connect(func() -> void: post_draw_usec = Time.get_ticks_usec())
 	view = Control.new()
 	view.set_script(load("res://view.gd"))
 	view.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -247,6 +287,9 @@ func _parse_arguments() -> void:
 			"--test": opt.test = value; k += 1
 			"--stop-after": opt.stop_after = value.to_int(); k += 1
 			"--figures": opt.figures = value; k += 1
+			"--frame-log": opt.frame_log = value; k += 1
+			"--no-vsync": opt.no_vsync = true             # test aid: pictures as fast as they come, the game still at 60
+			"--display-rate": opt.display_rate = value; k += 1
 			"--view": opt.view = value; k += 1
 			"--no-game-hud": opt.game_hud = false
 			"--combat": opt.combat = value; k += 1
@@ -373,6 +416,44 @@ func _picture_size() -> Vector2i:
 	return Vector2i(w, max(h, 224))
 
 
+# The display rate.  The game is a 60-a-second lockstep and stays one: every game frame is a blank let go and a list
+# taken, as before.  At 60 every picture is a game frame.  On a display that refreshes a whole number of times a game
+# frame (120 Hz: twice) and with the rate above 60, the pictures between two game frames are drawn from the last two
+# (RtaDrawer.redraw: the camera and the kept models' corners carried on along their motion between them; scene_view.gd
+# and er_layer.gd: the lamp, the Elden Ring figures' bones): a picture every refresh, the game frame's own at its tick.
+# Carried on, not between: a game frame is shown at its tick as soon as it can be, as at 60 - nothing waits for the
+# frame after it.  Each blank is let go `lead` refreshes before the tick its frame is shown at (the controller is read
+# then): as few as the time a blank takes from its release to its finished frame allows, measured as it goes
+# (rtag_frame_age_ms) - at 120 Hz one refresh (8.3 ms) where the frame is done in time, which lets the controller be
+# read later before its picture than at 60, two (16.7 ms: what 60 had) or three where it takes longer.
+func _display_rate(refresh: float) -> void:
+	var asked := String(opt.display_rate)
+	if asked == "":
+		var cfg := ConfigFile.new()
+		if cfg.load("user://settings.cfg") == OK:
+			asked = str(cfg.get_value("display", "rate", ""))
+	if asked == "" and OS.has_environment("RTA_DISPLAY_RATE"):
+		asked = OS.get_environment("RTA_DISPLAY_RATE")
+	rate = asked if asked in ["60", "120", "auto"] else "auto"
+	refresh_s = 1.0 / refresh
+	var n := int(round(refresh / 60.0))
+	tween_n = 1
+	if rate != "60" and n >= 2 and abs(refresh / n - 60.0) < 0.9 and drawer != null and opt.mode == "scene" and not opt.unpaced:
+		tween_n = n if rate == "auto" else mini(n, 2)
+	if tween_n > 1:
+		drawer.call("set_scene_option", "tween", 1.0)
+	elif refresh > 61.0 and not opt.unpaced and not opt.no_vsync and OS.get_environment("RTA_RATE60_HELD") == "1":
+		# (tried, and worse - kept as a test aid, RTA_RATE60_HELD=1: Godot's loop held to 60 by its own clock, without
+		# the display's pacing, every turn a game frame: 43 to 51 game frames a second in valor, the turns 16 to 25 ms
+		# apart.  At the rate 60 the loop runs with the display (ProMotion: as fast as the drawing allows) and a game
+		# frame is taken on the turn its time has come, as before)
+		DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+		Engine.max_fps = 60
+		every_turn = true
+	print("rta_godot: display rate %s: %s" % [rate, ("%d pictures a game frame (%.0f a second), the ones between drawn from the last two game frames" % [tween_n, 60.0 * tween_n])
+		if tween_n > 1 else "a picture a game frame (60 a second)"])
+
+
 func _start() -> void:
 	if not ClassDB.class_exists("RtaMachine"):
 		_cannot_start("The extension is not there (bin/rta_godot...): python3 tools/godot/build.py all")
@@ -459,6 +540,7 @@ func _start() -> void:
 	if abs(refresh / per_picture - 60.0) < 0.9:
 		period = per_picture / refresh          # locked to the display: one picture every per_picture refreshes
 	print("rta_godot: display %.2f Hz; one picture every %.3f ms" % [refresh, period * 1000.0])
+	_display_rate(refresh)
 	started = true
 	started_usec = Time.get_ticks_usec()
 	if opt.net2_flow != "":
@@ -696,6 +778,8 @@ func _host_command(text: String) -> void:
 			last_buttons, last_sticks[0], last_sticks[1], last_sticks[2], last_sticks[3], key_events])
 	elif w.size() >= 1 and (w[0] == "light" or w[0] == "camera" or w[0] == "scene" or w[0] == "look" or w[0] == "card" or w[0] == "er") and scene_view != null:
 		scene_view.call("command", w)
+	elif w.size() >= 2 and w[0] == "mark":
+		frame_rows.append("M,%d,%s" % [blanks, " ".join(w.slice(1))])   # test aid: a named part of the route in the frame log
 	elif w.size() >= 2 and w[0] == "hold":
 		hold_input(w[1] == "on")            # test aid: as the portal does while it is in front
 	elif w.size() >= 3 and w[0] == "setting":
@@ -788,6 +872,7 @@ func _take_frame() -> void:
 		if scene_view != null:
 			scene_view.call("frame")
 		draw_usec += Time.get_ticks_usec() - t0
+		frame_draw_usec += Time.get_ticks_usec() - t0
 		for path in machine.get_shots():
 			pending_shots.append(path)
 
@@ -806,24 +891,46 @@ func _process(delta: float) -> void:
 			var s0 := Time.get_ticks_usec()
 			var got := machine.step(-1)
 			step_usec += Time.get_ticks_usec() - s0
+			frame_step_usec += Time.get_ticks_usec() - s0
 			if got != 1:
 				break
 			_take_frame()
 			got_any = true
 			if drawer != null or Time.get_ticks_usec() - t0 > 12000 or (opt.stop_after > 0 and blanks >= opt.stop_after):
 				break
+	elif tween_n > 1:
+		got_any = _paced_between(delta)
 	else:
 		clock += delta
-		if clock >= period - 0.0005:
+		if every_turn or clock >= period - 0.0005:
 			clock -= period
-			if clock > period:
+			if clock > period or every_turn:
 				clock = 0.0                 # stood still: no burst afterwards
 			_read_pad()
 			var s0 := Time.get_ticks_usec()
+			grants += 1
+			released.append(s0)
 			var got := machine.step(8)      # the frame let go now is usually there within a few milliseconds
 			step_usec += Time.get_ticks_usec() - s0
+			frame_step_usec += Time.get_ticks_usec() - s0
 			while got == 1:
+				if not released.is_empty():
+					released.pop_front()
+				take_latency_usec = int(machine.frame_since_release_ms() * 1000.0)
 				_take_frame()
+				if drawer != null:
+					# more than one finished frame waiting in the library's queue (it holds the first frame of the run,
+					# made before any release, and keeps up to three): for half a second of frames in a row, the newer
+					# one is taken too and drawn over the older in this same turn - the controller is not read later than
+					# it must be (a list is never skipped: it names the textures the ones before it made)
+					stale_ticks = stale_ticks + 1 if take_latency_usec > int(period * 1.8 * 1000000.0) else 0
+					if stale_ticks >= 30 and machine.poll(0) == 1:
+						stale_ticks = 0
+						tween_figs.dropped += 1
+						if not released.is_empty():
+							released.pop_front()
+						take_latency_usec = int(machine.frame_since_release_ms() * 1000.0)
+						_take_frame()
 				got_any = true
 				if drawer != null:
 					break                   # one list per rendered frame: the next is taken at the next picture
@@ -842,6 +949,8 @@ func _process(delta: float) -> void:
 		view.set("aspect", machine.get_frame_aspect())
 		view.queue_redraw()
 	process_usec += Time.get_ticks_usec() - t0
+	if opt.frame_log != "":
+		_frame_row(t0, got_any, tween_n > 1)
 	if not window_shots.is_empty():
 		var paths := window_shots
 		window_shots = PackedStringArray()
@@ -859,6 +968,182 @@ func _process(delta: float) -> void:
 			_finish(machine.exit_code())
 	elif opt.stop_after > 0 and blanks >= opt.stop_after:
 		_finish(0)
+
+
+# One refresh with the display rate above 60 (see _display_rate).  Returns whether a game frame was taken.
+func _paced_between(delta: float) -> bool:
+	var period_s := refresh_s * tween_n
+	game_clock += delta
+	if game_clock > 4.0 * period_s:
+		game_clock = period_s               # stood still (a load, the window hidden): no burst afterwards
+	var due := game_clock >= period_s - refresh_s * 0.5
+	# let go the blanks whose frames are to be shown within `lead` refreshes from now (their ticks: the next is at
+	# period - clock from now, then one every period)
+	var to_next := period_s - game_clock
+	var want := 0
+	var ahead := to_next
+	while ahead <= lead * refresh_s + refresh_s * 0.5 and want < 3:
+		want += 1
+		ahead += period_s
+	if due and want < 1:
+		want = 1
+	var pad_read := false
+	while released.size() < want:
+		if not pad_read:
+			_read_pad()
+			pad_read = true
+		released.append(Time.get_ticks_usec())
+		grants += 1
+		if machine.release() == -2 and not early:
+			# a library without rtag_release: step() lets go and takes a frame already finished (shown at its tick)
+			if machine.step(0) == 1:
+				early = true
+				_note_latency()
+	var took := false
+	if due:
+		var got := 1 if early else 0
+		if not early:
+			var s0 := Time.get_ticks_usec()
+			# a frame not there yet: a little time to come (a refresh's third), then a picture drawn on from the last
+			got = machine.poll(int(refresh_s * 1000.0 / 3.0))
+			var waited := Time.get_ticks_usec() - s0
+			step_usec += waited
+			frame_step_usec += waited
+			tween_figs.waited_us += waited
+			if got == 1:
+				_note_latency()
+		if got == 1:
+			early = false
+			if not released.is_empty():
+				released.pop_front()
+			take_latency_usec = int(machine.frame_since_release_ms() * 1000.0)
+			# a frame older than the lead says (one more waits in the library's queue - it holds the first frame of the
+			# run, made before any release): for half a second of ticks in a row - the newer one is shown instead, once
+			if take_latency_usec > int((lead * refresh_s + period_s * 0.75) * 1000000.0):
+				stale_ticks += 1
+			else:
+				stale_ticks = 0
+			game_clock = maxf(0.0, game_clock - period_s)
+			if game_clock > period_s:
+				game_clock = 0.0
+			tween_t = 0.0
+			_take_frame()
+			if stale_ticks >= 30 and machine.poll(0) == 1:
+				# (every list is handed to the drawer - a list names the textures the ones before it made - the stale
+				# one's picture is simply drawn over by the newer one's in this same refresh)
+				stale_ticks = 0
+				tween_figs.dropped += 1
+				if not released.is_empty():
+					released.pop_front()
+				take_latency_usec = int(machine.frame_since_release_ms() * 1000.0)
+				_take_frame()
+			took = true
+		else:
+			tween_figs.late += 1
+			_raise_lead()
+	if took:
+		var now_t := Time.get_ticks_usec()
+		if last_tick_usec != 0:
+			tick_ema = lerpf(tick_ema, (now_t - last_tick_usec) / 1000.0, 0.05)
+		last_tick_usec = now_t
+		# the game frames themselves late (fire1's crowd: the drawing of a game frame alone takes longer than one):
+		# no pictures between, they would only take the game frames' time; back when they keep time for two seconds
+		if tick_ema > period_s * 1000.0 * 1.12:
+			between_off = true
+			between_ok_since = now_t
+		elif tick_ema > period_s * 1000.0 * 1.04:
+			between_ok_since = now_t
+		elif between_off and now_t - between_ok_since > 2000000:
+			between_off = false
+	if not took and blanks > 0 and not between_off:
+		tween_t = clampf(game_clock / period_s, 0.0, 1.0)
+		drawer.call("redraw", tween_t)
+		if scene_view != null:
+			scene_view.call("tween", tween_t)
+		tween_figs.between += 1
+	tween_figs.pictures += 1
+	tween_figs.lead_sum += lead
+	_lower_lead()
+	return took
+
+
+func _note_latency() -> void:
+	# the frame just taken: from the release of the blank it shows (its controller read) to when the decoder had it done
+	var age: float = machine.frame_age_ms()
+	var since: float = machine.frame_since_release_ms()
+	if age < 0.0 or since < 0.0:
+		return
+	var lat: float = since - age
+	if lat < 0.0 or lat > 200.0:
+		return
+	lead_lat.append(lat)
+	if lead_lat.size() > 90:
+		lead_lat.remove_at(0)
+	tween_figs.lat_sum += lat
+	tween_figs.lat_n += 1
+
+
+func _needed_lead() -> int:
+	if lead_lat.size() < 10:
+		return lead
+	var s := lead_lat.duplicate()
+	s.sort()
+	var p95: float = s[int(s.size() * 0.95)]
+	return clampi(int(ceil((p95 + 1.5) / (refresh_s * 1000.0))), 1, 3 * tween_n)
+
+
+func _raise_lead() -> void:
+	# a frame was not there at its tick: one refresh more at once
+	if lead < 3 * tween_n:
+		lead += 1
+		lead_down_at = Time.get_ticks_usec()
+
+
+func _lower_lead() -> void:
+	# up at once when the measured times ask for it, down only after two seconds of them fitting
+	var need := _needed_lead()
+	var now := Time.get_ticks_usec()
+	if need > lead:
+		lead = need
+		lead_down_at = now
+	elif need < lead and now - lead_down_at > 2000000:
+		lead -= 1
+		lead_down_at = now
+
+
+func _frame_row(t0: int, took: bool, shown_new := false) -> void:
+	var now := Time.get_ticks_usec()
+	var gpu := 0.0
+	var cpu := 0.0
+	if drawer != null and opt.mode == "scene" and OS.get_environment("RTA_MEASURE_VIEWPORTS") == "1":
+		var world: RID = drawer.call("get_world_viewport")
+		if world.is_valid():
+			if world != frame_world:
+				frame_world = world
+				RenderingServer.viewport_set_measure_render_time(world, true)
+				RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), true)
+			gpu = RenderingServer.viewport_get_measured_render_time_gpu(world)
+			cpu = RenderingServer.viewport_get_measured_render_time_cpu(world)
+	if (blanks & 63) == 0 and took:
+		# with the library's own figures so far (blanks, game side and decoder ms a blank): per part of the route by differences
+		var lib := {}
+		for word in machine.info().split(" "):
+			var kv := word.split("=")
+			if kv.size() == 2 and kv[0] in ["blanks", "game_ms", "decode_wall_ms", "decode_cpu_ms", "tap_ms", "kick_ms", "take_ms", "skel_ms"]:
+				lib[kv[0]] = kv[1]
+		var pairs := PackedStringArray()
+		for key in lib:
+			pairs.append("%s=%s" % [key, lib[key]])
+		frame_rows.append("L,%d,%s,%d,%s,%s,%s,%s" % [blanks, machine.peek_string(0x41B721, 16), machine.peek_u32(0x44FDCC),
+			lib.get("blanks", "0"), lib.get("game_ms", "0"), lib.get("decode_wall_ms", "0"), ";".join(pairs)])
+	frame_rows.append("%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d" % [t0, t0 - frame_last_usec if frame_last_usec != 0 else 0, 1 if took else 0,
+		now - t0, frame_step_usec, frame_draw_usec, blanks, 1 if (took or shown_new) else 0, int(gpu * 1000.0), int(cpu * 1000.0),
+		int(RenderingServer.get_frame_setup_time_cpu() * 1000.0), grants - machine.get_frame_number() if took else -999, lead, int(tween_t * 1000.0),
+		post_draw_usec - pre_draw_usec, t0 - post_draw_usec, int(Performance.get_monitor(Performance.TIME_PROCESS) * 1000000.0),
+		take_latency_usec if took else 0])
+	frame_last_usec = t0
+	frame_step_usec = 0
+	frame_draw_usec = 0
 
 
 func _watch_session() -> void:
@@ -905,6 +1190,11 @@ func _figures() -> String:
 		blanks, wall, 1000.0 * n / max(wall, 1.0), process_usec / 1000.0 / n, step_usec / 1000.0 / n, draw_usec / 1000.0 / n, shots_written,
 		RtaAudioStream.get_frames_mixed() / 48000.0, RtaAudioStream.get_requests()]
 	text += "rta_godot: " + machine.info() + "\n"
+	if tween_n > 1:
+		var pics: float = max(1, int(tween_figs.pictures))
+		text += "rta_godot: display rate %s: %d pictures, %d of them between game frames, %d ticks whose frame was late; lead %.2f refreshes on average; a blank %.2f ms from its release to its frame (mean); %.2f ms a picture waiting for a frame; %d game frames drawn over in the refresh they were taken (the queue's spare one, to catch up)\n" % [
+			rate, int(tween_figs.pictures), int(tween_figs.between), int(tween_figs.late), float(tween_figs.lead_sum) / pics,
+			float(tween_figs.lat_sum) / max(1, int(tween_figs.lat_n)), float(tween_figs.waited_us) / 1000.0 / pics, int(tween_figs.dropped)]
 	if drawer != null:
 		text += "rta_godot: " + str(drawer.call("figures")) + "\n"
 		if opt.mode == "scene":
@@ -927,6 +1217,11 @@ func _finish(code: int) -> void:
 			if file != null:
 				file.store_string(text)
 				file.close()
+		if opt.frame_log != "":
+			var log := FileAccess.open(opt.frame_log, FileAccess.WRITE)
+			if log != null:
+				log.store_string("usec,gap_usec,game_frame,process_usec,wait_usec,submit_usec,blank,new_picture,world_gpu_usec,world_cpu_usec,setup_cpu_usec,ahead,lead,tween_milli,draw_usec,after_draw_usec,all_process_usec,release_to_take_usec\n" + "\n".join(frame_rows) + "\n")
+				log.close()
 	if player != null:
 		player.stop()
 	if scene_view != null:

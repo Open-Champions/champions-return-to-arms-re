@@ -82,10 +82,11 @@ const GLOBALS := {
 	"rta_sky_sun_colour": Vector4(1, 1, 1, 0), "rta_fog_range": Vector4(400, 1350, 0, 200), "rta_fog_amount": Vector4(0, 0.5, 1, 0),
 	"rta_fog_colour": Vector4(0, 0, 0, 0), "rta_light_ambient": Vector4(1, 1, 1, 0),
 	"rta_model": Vector4(0, 0, 1, 0), "rta_model_rim": Vector4(0, 0, 0, 0),
+	"rta_tween": Vector4(0, 0, 0, 0),       # x: game frames past the last one (a picture between game frames: RtaDrawer.redraw)
 }
 
 var look := {
-	"sky": "auto", "fog": "auto", "sun": "auto", "lamp": "auto", "bloom": "auto", "grade": "auto", "foliage": "auto", "fill": "auto", "lights": "auto", "aa": "4",
+	"sky": "auto", "fog": "auto", "sun": "auto", "lamp": "auto", "bloom": "auto", "grade": "auto", "foliage": "auto", "fill": "auto", "lights": "auto", "aa": "4", "scale3d": 1.0,
 	"shade": -1.0, "fog_start": 380.0, "fog_end": 1350.0, "fog_amount": 1.0, "sun_az": -1000.0, "sun_el": -1000.0,
 	"bloom_strength": 1.0, "sky_sun": 1.0, "shadow_splits": 4.0, "shadow_far": 1100.0,
 	"fill_light": 0.36, "fill_scale": 1.0, "light_energy": 1.0, "light_shadows": 2.0, "light_max": 8.0,
@@ -109,6 +110,11 @@ var look_defaults := {}
 var preset_applied := ""
 var fill_sent := {}
 var card: Node                          # card.gd: the character card (the portal's Portrait.texture)
+var lamp_before := Vector3.ZERO
+var lamp_now := Vector3.ZERO
+var lamp_before_ok := false
+var scale_set := -1.0
+var frames_taken := 0                   # lists taken (er_layer.gd: which figures were drawn in the last one)
 var er: Node                            # er_layer.gd: figures posed by the game's skeletons (look.er_models)
 var torches: Array = []                 # [{light, instance, address, shadow}] Godot's lights at the game's
 var torch_clock := 0.0
@@ -368,6 +374,7 @@ func before_frame() -> void:
 
 # Once per list, after the drawer has taken it.
 func frame() -> void:
+	frames_taken += 1
 	var world: RID = drawer.call("get_world_scenario")
 	if not world.is_valid():
 		return
@@ -391,6 +398,15 @@ func frame() -> void:
 		er.call("frame", scenario)
 
 
+# A picture between two game frames (main.gd, the display rate above 60): the drawer draws the last frame again with
+# its camera and kept models carried T game frames on; here the Elden Ring figures and the carried lamp.
+func tween(t: float) -> void:
+	if er != null:
+		er.call("tween", t)
+	if lamp_instance.is_valid() and lamp_before_ok:
+		RenderingServer.instance_set_transform(lamp_instance, Transform3D(Basis(), lamp_before.lerp(lamp_now, 1.0 + t)))
+
+
 func _make(to: RID) -> void:
 	_free_torches()
 	for rid in [sun_instance, lamp_instance, sky_instance, sun, lamp, backdrop_instance]:
@@ -402,6 +418,7 @@ func _make(to: RID) -> void:
 	environment = drawer.call("get_world_environment")
 	viewport = drawer.call("get_world_viewport")
 	aa_set = -1
+	scale_set = -1.0
 	shadow_set = Vector2(-1, -1)
 	sun = RenderingServer.directional_light_create()
 	RenderingServer.light_set_shadow(sun, true)
@@ -639,7 +656,10 @@ func _lights() -> void:
 		var object := machine.peek_u32(G_PLAYERS + 0x43D8)
 		if object != 0:
 			var at := Vector3(machine.peek_f32(object + 0x10), machine.peek_f32(object + 0x14), machine.peek_f32(object + 0x18))
-			RenderingServer.instance_set_transform(lamp_instance, Transform3D(Basis(), at + Vector3(0, 0, 74)))
+			lamp_before = lamp_now
+			lamp_now = at + Vector3(0, 0, 74)
+			lamp_before_ok = lamp_before.distance_to(lamp_now) < 40.0
+			RenderingServer.instance_set_transform(lamp_instance, Transform3D(Basis(), lamp_now))
 
 
 # ---- the game's own lights ---------------------------------------------------------------------
@@ -771,6 +791,13 @@ func _post() -> void:
 		RenderingServer.ENV_GLOW_BLEND_MODE_SCREEN, 0.74, 2.0, 12.0, 0.0, RID())
 	var grade: bool = in_force.get("grade", false)
 	RenderingServer.environment_set_adjustment(environment, grade, float(look.brightness), float(look.contrast), float(look.saturation), false, RID())
+	# the 3-D surface drawn at a share of its pixels and enlarged (FSR 1, sharpened): scale3d 1.0 = every pixel
+	var scale3d := clampf(float(look.scale3d), 0.5, 1.0)
+	if scale3d != scale_set and viewport.is_valid():
+		scale_set = scale3d
+		RenderingServer.viewport_set_scaling_3d_mode(viewport, RenderingServer.VIEWPORT_SCALING_3D_MODE_BILINEAR if scale3d >= 0.999 else RenderingServer.VIEWPORT_SCALING_3D_MODE_FSR)
+		RenderingServer.viewport_set_scaling_3d_scale(viewport, scale3d)
+		RenderingServer.viewport_set_fsr_sharpness(viewport, 0.2)
 	var samples := int(String(look.aa).to_int())
 	if samples != aa_set and viewport.is_valid():
 		aa_set = samples

@@ -1,4 +1,5 @@
 // skeleton_export.cpp - see skeleton_export.h.
+#include <chrono>
 #include "skeleton_export.h"
 
 #include "rt.h"
@@ -212,7 +213,16 @@ uint32_t drawn(const uint8_t* ram) {
     return batch->number;
 }
 
+double g_build_ms = 0;
+
+static void build_timed(const render::TapFrame& tap, const std::vector<uint8_t>& kept, Frame& out);
 void build(const render::TapFrame& tap, const std::vector<uint8_t>& kept, Frame& out) {
+    const auto t0 = std::chrono::steady_clock::now();
+    build_timed(tap, kept, out);
+    g_build_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+}
+
+static void build_timed(const render::TapFrame& tap, const std::vector<uint8_t>& kept, Frame& out) {
     out.clear();
     g_built_frames++;
     if (!tap.have_camera) return;

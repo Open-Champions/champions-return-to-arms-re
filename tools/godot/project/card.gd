@@ -24,6 +24,7 @@ var last_feet := Vector3(1e9, 0, 0)
 var since_capture := 1000000
 var turn := 0.0
 var framed_height := -1.0
+var asked_msec := -100000               # when texture() was last asked for
 
 
 func _ready() -> void:
@@ -64,6 +65,8 @@ func _ready() -> void:
 
 
 func texture() -> Texture2D:
+	asked_msec = Time.get_ticks_msec()
+	viewport.render_target_update_mode = SubViewport.UPDATE_ALWAYS
 	return viewport.get_texture()
 
 
@@ -102,6 +105,13 @@ func before_frame() -> void:
 
 # After the drawer has taken the frame
 func frame(delta: float) -> void:
+	# drawn only while somebody can see it: the portal in front (its cards show it), or the texture asked for in the last
+	# two seconds (a test's shot) - a 3-D picture of its own every refresh costs the game's frame time otherwise
+	var portal: Node = main.get("portal")
+	var wanted: bool = (portal != null and bool(portal.get("shown"))) or Time.get_ticks_msec() - asked_msec < 2000 or OS.has_environment("RTA_CARD_TEST")
+	var mode := SubViewport.UPDATE_ALWAYS if wanted else SubViewport.UPDATE_DISABLED
+	if viewport.render_target_update_mode != mode:
+		viewport.render_target_update_mode = mode
 	turn = fmod(turn + TURN_SPEED * delta, TAU)
 	drawer.call("set_card_turn", turn)
 	var height := float(drawer.call("get_card_info").get("height", 0.0))

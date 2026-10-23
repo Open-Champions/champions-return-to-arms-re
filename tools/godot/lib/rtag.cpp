@@ -21,6 +21,8 @@
 #include "pipeline.h"
 #include "png_write.h"
 #include "scene_export.h"
+#include "skeleton_export.h"
+#include "scene_tap.h"
 #if __has_include("fpcontrols.h") && !defined(RTAG_NO_CONTROLS)
 #include "fpcontrols.h"
 #define RTAG_HAVE_CONTROLS 1
@@ -141,9 +143,11 @@ struct OutFrame {
     uint32_t sim_tick = 0, flags = 0;
     rtag_view view;
     scene::Frame scene;
+    double ready_ms = 0;                // when the decoder finished it (rtag_frame_age_ms)
+    double released_ms = 0;             // when the game was let go into the frame it shows (the controller read then)
 };
 
-struct Note { uint64_t number; uint32_t sim_tick, flags; std::vector<std::string> shots, commands; rtag_view view; };
+struct Note { uint64_t number; uint32_t sim_tick, flags; std::vector<std::string> shots, commands; rtag_view view; double released_ms = 0; };
 
 struct Machine;
 Machine* g_m;
@@ -165,6 +169,7 @@ struct GateSink : app::Sink {
     // draw pass, so the view taken at the first transfer after a blank is that of the list the next blank closes.
     rtag_view drawn_view, sent_view;
     bool first_transfer = true;
+    double last_release_ms = 0;                         // when the gate last let the game go: the frame being made began then
     bool take(uint64_t number, Note& out) {
         std::lock_guard<std::mutex> hold(notes_lock);
         bool found = false;
@@ -173,6 +178,7 @@ struct GateSink : app::Sink {
             for (auto& s : notes.front().commands) out.commands.push_back(s);
             out.number = notes.front().number; out.sim_tick = notes.front().sim_tick; out.flags = notes.front().flags;
             out.view = notes.front().view;
+            out.released_ms = notes.front().released_ms;
             notes.pop_front();
             found = true;
         }
@@ -299,12 +305,14 @@ struct Machine {
     double start_ms = 0, start_cpu = 0;
     std::atomic<uint64_t> frames_out{0}, frames_taken{0}, vertices{0}, commands{0}, shots_written{0};
     double backend_ms = 0;                              // decoder's thread: the library's own OpenGL calls and read-backs
+    double take_ms = 0;                                 // ... the scene and the skeletons handed over (scene::take)
     std::string info;
 };
 
 void GateSink::vblank(unsigned field, uint64_t number) {
     Note note;
     note.number = number;
+    note.released_ms = last_release_ms;
     const uint8_t* ram = rta::memory();
     if (ram) {
         memcpy(&note.sim_tick, ram + G_SIM_FRAME, 4);
@@ -320,6 +328,7 @@ void GateSink::vblank(unsigned field, uint64_t number) {
     if (g_m->scene3d) scene::at_blank(rta::memory(), number);
     app::Sink::vblank(field, number);                   // hands the batch to the decoder
     gate.wait();                                        // the host lets the next frame go; the controller is read after this
+    last_release_ms = now_ms();
 }
 
 void GateSink::vif1(const uint32_t* words, size_t count) {
@@ -474,7 +483,10 @@ void on_frame(FrameList& frame) {
     out->sim_tick = note.sim_tick;
     out->flags = note.flags;
     out->view = note.view;
+    out->released_ms = note.released_ms;
+    const double take0 = now_ms();
     if (m.scene3d) scene::take(frame, out->scene); else out->scene.clear();
+    m.take_ms += now_ms() - take0;
     m.vertices += frame.vertices.size();
     m.commands += frame.commands.size();
     if (m.picture_w > 0 && !m.backend_failed) {
@@ -524,6 +536,7 @@ void on_frame(FrameList& frame) {
     slot.aspect = frame.aspect;
     memcpy(slot.show_rect, frame.show_rect, sizeof(slot.show_rect));
     slot.number = frame.number;
+    out->ready_ms = now_ms();
     {
         std::lock_guard<std::mutex> hold(m.lock);
         m.ready.push_back(out);
@@ -686,6 +699,18 @@ const char* rtag_build_line(void) {
     return line.c_str();
 }
 const char* rtag_report_told(void) { return g_report_told.c_str(); }
+
+double rtag_frame_since_release_ms(void) {
+    if (!g_m) return -1;
+    std::lock_guard<std::mutex> hold(g_m->lock);
+    return g_m->held && g_m->held->released_ms > 0 ? now_ms() - g_m->held->released_ms : -1;
+}
+
+double rtag_frame_age_ms(void) {
+    if (!g_m) return -1;
+    std::lock_guard<std::mutex> hold(g_m->lock);
+    return g_m->held ? now_ms() - g_m->held->ready_ms : -1;
+}
 
 int rtag_skeletons_get(rtag_skeletons* out) {
     // a host built before the players were added passes the shorter structure (up to player_count): it is served too
@@ -950,6 +975,12 @@ int rtag_step(const rtag_pad* pads, int wait_ms, const rtag_frame** frame) {
     return rtag_poll(wait_ms, frame);
 }
 
+int rtag_release(void) {
+    if (!g_m) return -1;
+    g_m->sink.gate.grant(1);
+    return 0;
+}
+
 void rtag_run(double hz) {
     if (!g_m) return;
     g_m->run_hz = hz > 0 ? hz : 0;
@@ -1115,7 +1146,9 @@ const char* rtag_info(void) {
              (unsigned long long)m.renderer.gs.stats.textures_made, (unsigned long long)m.renderer.gs.stats.textures_held,
              (unsigned long long)m.renderer.gs.stats.texture_missing, (int)m.ended.load(), apprt::sound_figures().c_str());
     m.info = text;
-    char said[96];
+    char said[160];
+    snprintf(said, sizeof said, " tap_ms=%.3f kick_ms=%.3f take_ms=%.3f skel_ms=%.3f", render::g_tap_ms / n, render::g_tap_kick_ms / n, m.take_ms / n, skel::g_build_ms / n);
+    m.info += said;
 #ifdef RTAG_HAVE_SOULS
     // the souls mode: wanted (this copy's setting) / active (the running game's)
     snprintf(said, sizeof said, " souls_want=%d souls_on=%d", soulscombat::wanted() ? 1 : 0, soulscombat::active() ? 1 : 0);

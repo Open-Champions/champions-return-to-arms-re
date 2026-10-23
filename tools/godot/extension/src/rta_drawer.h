@@ -58,6 +58,11 @@ class RtaDrawer : public RefCounted {
     void setup(const Ref<RtaMachine>& machine, const RID& parent_viewport, const Vector2i& output_size, int samples);
     void set_shader_code(const String& code);       // project/shaders/gs_draw.gdshaderinc
     void submit();                                  // the machine's current frame
+    // A picture between two game frames (main.gd, the display rate above 60): the frame taken last drawn again with
+    // the camera, and the kept models' corners (scene mode, option `tween`), carried T game frames on from where they
+    // were - T in 0..1 is past the last frame (from the last two: the motion between them, on), T < 0 between them.
+    // The game is not asked anything; the passes of the last submit are rendered again in their order.
+    void redraw(double t);
     RID get_shown_texture() const;
     Rect2 get_shown_region() const;                 // in that texture's pixels
     bool get_shown_flipped() const { return rd; }   // the region is stored bottom up (Forward+ / Mobile): show it turned over
@@ -164,6 +169,9 @@ class RtaDrawer : public RefCounted {
     uint64_t frames = 0;
     float last_aspect = 0;
     // figures
+    uint64_t redraws = 0, passes_skipped = 0;
+    bool scene_drops_blob(const rtag_frame& f, const rtag_draw& d) const;      // rta_scene.cpp: scene_take leaves this draw out
+    bool tween_global = false;                      // redraw has set the global rta_tween: submit puts it back to 0
     uint64_t draws_submitted = 0, vertices_submitted = 0, materials_made = 0, meshes_made = 0, passes_rendered = 0, stale_reads = 0, approximated = 0,
              depth_always_writes = 0, textures_made = 0, skipped = 0;
     double submit_usec = 0;
@@ -201,7 +209,9 @@ class RtaDrawer : public RefCounted {
     bool scene_take(Pass& pass, const rtag_frame& frame, const rtag_draw& draw, const Target& target, RID texture, float order);
     void scene_end(const rtag_frame& frame);
     void scene_release();
-    static void add_surface_bytes(RID mesh, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count, bool normals = false, const AABB* box = nullptr);
+    static void add_surface_bytes(RID mesh, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count, bool normals = false, const AABB* box = nullptr, bool carry = false);
+    std::vector<Pass*> last_order;                  // the passes the last submit rendered, in order (redraw)
+    void scene_tween(double t);                     // rta_scene.cpp: the camera of a picture between game frames
     friend struct Scene;
 
     // ---- the fill (rta_fill.cpp) ----

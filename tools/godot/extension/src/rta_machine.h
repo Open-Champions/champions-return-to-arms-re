@@ -93,6 +93,9 @@ class RtaMachine : public RefCounted {
     String report_finish(const String& folder, const String& text, bool keep);
     String build_line() const;
     String report_told() const;
+    int release();                          // let one blank go without taking a frame (-2: the library cannot; use step)
+    double frame_age_ms() const;
+    double frame_since_release_ms() const;  // ... and since the game was let go into it (its controller read); -1 unknown            // how long ago the frame taken last was finished (-1: none, or a library without it)
 
   protected:
     static void _bind_methods();

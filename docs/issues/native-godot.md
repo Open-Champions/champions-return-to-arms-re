@@ -9,6 +9,175 @@ Nothing derived from the game is in the repository. `tools/godot/` holds glue, b
 scripts, the Godot project's scripts and shaders. The translated code, the libraries, the
 staged project, exported applications, pictures and logs are under `local/godot-spike/`.
 
+## ELEVENTH ROUND (2026-10-22, evening): 60 in the heavy fight, and more than 60 on a faster display
+
+Built into `local/godot-r13/` (`RTA_GODOT_OUT=local/godot-r13`; the snapshot of `tools/recomp` is round 10's, taken
+2026-10-22 12:22, with this round's `recomp.patch`; `build.py lib`, `extension`, `project`). Tests, logs and traces:
+`local/godot-r13/test/` - `fight.sh` / `mkfight13.py` (the fight route: hub, valor, the boars, then 15 s more of
+fighting; the Elden Ring layer with players and creatures on, shoulder view, the art pack, the cleaner models, paced, the
+picture 3024 x 1964 = the display's pixels), `fire.sh` / `mkfire13.py` (fire1, the player put beside the goblin band),
+`fstats.py` (the figures below from the new `--frame-log`), `fsplit.py`, `ftoggle.py` (look settings switched during
+one fight), `xprof.sh` + `tpsum.py` / `gpusum.py` / `encsum.py` (Instruments' Time Profiler and Metal System Trace,
+recorded with `xctrace`, summed), `room13.py`. The machine: this Mac (M5 Pro, ProMotion display up to 120 Hz); another
+agent's headless Godot tests ran on it now and then (load average 1.5 to 4).
+
+| Asked | State |
+|---|---|
+| 60 held in the heaviest fight (art pack, cleaner models, Elden Ring layer with players and creatures) | **done, Ran** in the boar fight of valor: at the rate 60, 59.9 game frames and pictures a second (the slowest second 58.8; it was 47.0, the slowest second 42.8); at the rate auto 90.7 pictures a second (the slowest second 87.7) over the same 60 game frames a second. Cause and fix below |
+| more than 60 on a faster display, the game still a 60 lockstep | **done, Ran**: `display.rate` 60 / 120 / auto (default auto); the pictures between game frames drawn from the last two |
+| proof: paced frame times at 120 | **in part**: 120 on the title and front-end screens, 110.7 pictures a second walking in valor, 90.7 in the boar fight - the drawing, not the game, is the limit there (below) |
+| proof: no judder | **Ran**: every picture's own game time against when it was drawn (`fstats.py`, "judder") |
+| proof: the simulation untouched | **Ran**: two Godot copies in one room, one at 120, one at 60: 1,827 ticks through a level change (hub, drunare), no shared column differs |
+| fire1 crowd | **not 60**: 41.2 pictures a second at the rate 60 (it was 31.5), 40.6 at auto (the pictures between are left out there by themselves) - draw count (below) |
+
+### What made the dips (measured)
+
+**The decoder.** The library's decoder thread (VIF1, the VU1 programs, the GS model, the scene tap, the hand-over of
+the scene) took **21.3 ms a blank** in the boar fight with the art pack and the layer on (`base60`; `rtag_info` has
+new figures for it: `tap_ms`, `kick_ms`, `take_ms`, `skel_ms`). A frame is decoded after the game has finished it, and
+the game stands at each blank until Godot lets it go: past 16.7 ms that is fewer than 60 game frames a second -
+43 to 47 in the fight, `wait 10.4 ms` of every game frame on Godot's side. Instruments (Time Profiler, the fight): two
+thirds of the decoder's time in `SceneTap::kicked` and below it. Two things in the tap (`recomp.patch`, for
+`tools/recomp/render/scene_tap.cpp`):
+- each source vertex was taken back to the world (a 4 x 4 inverse in double, the normal too) for **every corner** it
+  stands at, in the list and again in the complete geometry - up to six times; now once per packet, the same bytes;
+- the packet's identity was an FNV over its words **one byte at a time** - several kilobytes a kick, a few thousand
+  kicks a frame; now XXH3 over the same words (`render/xxh3_64.h`, already in the tree). The identity is only ever
+  compared within a run (kept meshes, the two passes of a packet, the occurrence count); its values changed.
+
+Result: the tap 9.1 -> 4.2 ms, **the decoder 21.3 -> 9.4 ms a blank** in the fight (the walk 9.7 -> 4.4).
+
+**Looked at and not the cause here:** texture uploads (1,062 textures made over the whole route of 5,758 lists, none
+in the fight's profiles), shader compiles (none in the fight's profiles; the hub's arrival has one stop of 220 to 300
+ms - a level load and its first shaders, "worst" below, not looked into), the curved models (PN triangles: 2.6 ms of a game
+frame with the layer off, measured by switching `model_smooth` during a fight - within 60's
+budget; a distance limit of 300 or 200 instead of 520 saved nothing measurable, the figures in a fight are near), the
+game's own ground shadows (their small surfaces: 10 extra viewports a list in the fight, see below).
+
+**Also fixed on the way:**
+- The library's queue: the 60 path took the oldest of up to three finished frames waiting there (controller to
+  picture 67 to 70 ms); now the newer one is taken too and drawn over it when that goes on for half a second (below).
+- 60 on a 120 Hz display: Godot's loop runs with the display, and ProMotion follows it at whatever the drawing allows (90
+  to 120 a second); a game frame is taken on the turn its time has come, so its pictures fall 8 or 25 ms apart now and
+  then (3 % over 25 ms in the fight). Holding the loop to 60 by Godot's own clock (`Engine.max_fps`, with or without the
+  display's pacing) was tried and was worse - 43 to 51 game frames a second, the turns 16 to 25 ms apart (kept as a test
+  aid, `RTA_RATE60_HELD=1`). The rate auto has no such beat: every turn is drawn, at its own time.
+- The character card's 3-D picture (`card.gd`, 256 x 320, MSAA) was drawn every refresh; now only while the portal is
+  in front or its texture was asked for in the last two seconds.
+- The game's ground-shadow surfaces: where Godot throws real shadows the drawer leaves the game's subtraction out, but
+  still rendered the small surface the game drew each silhouette into - up to ten viewports a list in the fight. A run
+  into a surface that only left-out shadows read is no longer drawn (`passes_skipped`), and reads by left-out draws no
+  longer split a surface into runs (`RtaDrawer::scene_drops_blob`).
+
+### More than 60: pictures between game frames (`main.gd` `_display_rate`, `_paced_between`; `RtaDrawer::redraw`)
+
+`--display-rate 60|120|auto`, `user://settings.cfg [display] rate`, `RTA_DISPLAY_RATE`; default auto (the display's
+refresh when it is a whole number of game frames: 120 Hz -> two pictures a game frame; 60 Hz -> as before). The game is
+untouched: one blank let go, one list taken, per game frame, at 60 a second. Between two game frames:
+- **the camera** of the last two game frames, carried on (`Transform3D::interpolate_with`, the field of view the same);
+  a cut (moved more than 160 units, or turned more than 45 degrees) is not carried;
+- **every moved object and its skin**: a kept mesh (rta_scene.cpp: the same draw from frame to frame - characters,
+  creatures, weapons, the level) carries beside each corner where it was in the game frame before (`CUSTOM2`, 16
+  bytes a corner, `w` = 2 when it moved); the world shader puts the corner `rta_tween` frames on along that motion
+  (`gs_draw.gdshaderinc`, also the shadow twins); a draw whose box jumped (more than 40 units: a teleport, two alike
+  that changed places) is not carried; one that stopped has its history cleared. Skinned figures are posed by the game
+  on the CPU, so this is their pose carried on corner by corner;
+- **the Elden Ring figures** (`er_layer.gd` `tween`): their bones of the last two game frames, carried on, the skin
+  re-posed; the held weapons the same way; the carried lamp (`scene_view.gd`);
+- what the CPU projects every frame (sprites, the game's 2-D layer) stays where it was.
+The drawer draws the last list again with these (`redraw(t)`: the world's run and the shown surface's - the one that
+copies the world - in their order; the rest of the frame's surfaces hold what they had).
+
+**Carried on, not between.** A game frame is shown as soon as it is there, as at 60; the picture after it shows the
+state half a game frame on, from the motion between the last two (a picture *between* the last two would show every
+game frame half a frame later). **Releases ahead.** Each blank is let go `lead` refreshes before the picture that shows
+it (the controller is read then): as few as the measured time from a blank's release to its finished frame allows
+(`rtag_frame_age_ms`, `rtag_frame_since_release_ms`; 95th percentile + 1.5 ms; up at once when a frame was late, down
+after two seconds). New optional library exports: `rtag_release` (let go without taking), `rtag_frame_age_ms`,
+`rtag_frame_since_release_ms`. **When the game frames themselves come late** (their own drawing longer than a game
+frame: fire1's crowd), the pictures between are left out - they would only take the game frames' time - and come back
+after two seconds of game frames on time.
+
+### Figures (`fstats.py`; paced; 3024 x 1964; shoulder; art pack, cleaner models, Elden Ring players and creatures)
+
+Pictures a second: min = the slowest one-second window, 1 %-low = the rate of the slowest 1 % of picture intervals;
+over budget = intervals over 1.5 x the usual one (a missed refresh at 120, over 25 ms at 60); judder = the spread of
+(when a picture was drawn - its own game time), the slow drift of the two clocks taken out. "Before" is this round's
+first run with round 10's code (the frame log added); at the rate 60 the 120 Hz display showed each game frame once
+(the old code at 120 Hz was the same: a game frame every other refresh).
+
+| Part | Run | pictures a second: min / mean / 1 %-low | over budget | worst interval | judder | controller to picture |
+|---|---|---|---|---|---|---|
+| hub | before, 60 (`base60`) | 33.0 / 50.2 / 3.3 | 6 (3.1 %) | 300 ms | 62.9 ms | - |
+| hub | after, rate 60 (`final60e`) | 42.9 / 55.2 / 4.3 | 3 (1.6 %) | 235 ms | 40.1 ms | 35 ms |
+| hub | after, rate auto (120) (`final120e`) | 71.2 / 98.7 / 9.5 | 8 (2.4 %) | 220 ms | 30.4 ms | 32 ms |
+| valor, walking | before, 60 (`base60`) | 49.2 / 58.8 / 31.0 | 56 (2.3 %) | 52 ms | 6.8 ms | - |
+| valor, walking | after, rate 60 (`final60e`) | 59.0 / 60.0 / 38.4 | 2 (0.1 %) | 36 ms | 4.0 ms | 34 ms |
+| valor, walking | after, rate auto (120) (`final120e`) | 87.9 / 110.7 / 62.8 | 49 (1.1 %) | 27 ms | 4.2 ms | 24 ms |
+| valor, the boar fight (the heaviest fight) | before, 60 (`base60`) | 42.8 / 47.0 / 25.0 | 46 (6.0 %) | 45 ms | 15.3 ms | - |
+| valor, the boar fight (the heaviest fight) | after, rate 60 (`final60e`) | 58.8 / 59.9 / 36.5 | 25 (3.3 %) | 29 ms | 5.5 ms | 35 ms |
+| valor, the boar fight (the heaviest fight) | after, rate auto (120) (`final120e`) | 87.7 / 90.7 / 66.8 | 1 (0.1 %) | 17 ms | 6.1 ms | 37 ms |
+| fire1, the goblin band | before, 60 (`firebefore`) | 23.0 / 31.5 / 11.9 | 38 (4.2 %) | 196 ms | 38.2 ms | 388 ms |
+| fire1, the goblin band | after, rate 60 (`fire60e`) | 34.4 / 41.2 / 18.8 | 3 (0.3 %) | 195 ms | 20.7 ms | 43 ms |
+| fire1, the goblin band | after, rate auto (120) (`fire120e`) | 31.7 / 40.6 / 17.3 | 6 (0.7 %) | 193 ms | 22.2 ms | 74 ms |
+
+**Controller to picture** (the blank's release, when the controller is read, to the picture that shows that game
+frame; the shown surface copies the world drawn the list before, so a game frame is on screen one picture after it is
+taken): at the rate 60 35 / 34 / 35 ms (hub / walk / fight), at the rate auto 32 / 24 / 37 ms - the same within 2 ms in the fight, lower elsewhere. The first runs of this round with the release time logged gave 67 to 70 ms at the rate 60: the old 60 path took the oldest of up to three finished frames waiting in the library's queue (the first frame of the run is made before any release, and a slow stretch leaves more behind). Now, at either rate, when the frame taken is older than the release pattern says for half a second of frames in a row, the newer one waiting is taken in the same turn and drawn over it (both lists go to the drawer: a list names the textures the ones before it made). fire1's crowd: 43 ms at 60 (388 before), 74 ms at auto.
+
+### Where 120 stops in the heavy fight (measured)
+
+Metal System Trace in the boar fight at 120: the GPU 95 % busy with Godot's work, 88 % of it fragment work; the main
+3-D pass about 4.6 ms a picture, a second large pass 2.6. Taking away MSAA (`aa=0`), the sun's shadows, a quarter of the
+pixels (`scale3d=0.75`, a new look key: the 3-D surface drawn smaller and enlarged with FSR 1) - each and together -
+lifted the fight from about 90 to 100-110 pictures a second, never to 120: with the GPU then half idle, the CPU's
+encoding of the frame (about 6.5 ms from the first to the last command encoder) and the GPU's execution follow one
+another per picture. A bare Godot window on this display runs at 120 (7.9 ms median); the title and front-end screens
+of the game run at 120. Godot's separate render thread (`--render-thread separate`, it runs under Forward+) changed
+nothing. Left as it is: the full look at about 91 in the fight and 111 walking, smooth (judder figures), rather than a
+lesser look at 105.
+
+**fire1's crowd** is another matter: 2,500 to 4,500 draws and 500,000 to 840,000 vertices a list (valor's fight: 270
+and 133,000). The decoder there: 20 ms a blank (it was over 30); the main thread: `submit()` 9 to 12 ms and Godot's own
+drawing 9 to 16 ms, both by the draw count (each draw of the level has its own pre-lit texture, so batching draws of one
+state would merge few). 41.6 pictures a second (it was 31.5); not 60.
+
+### The room (`room13.py`)
+
+Two Godot copies, each the portal with the game under it, on a room service of their own (127.0.0.1): copy A at the
+rate auto (120 on this display: 8,431 pictures, 2,448 of them between game frames, the Elden Ring layer with players and
+creatures on), copy B at the rate 60; friends, a room, the game's character screens, Start, the hub, a level change in
+one lockstep tick to drunare, play in both. `compare.py ticks a b`: **1,827 ticks compared, no shared column differs**
+(`local/godot-r13/test/room1.log`). The game's simulation is not touched by the rate: the pictures between are drawn
+from what the last two lists already hold.
+
+**The scene tap's change** checked in the C++ host (`rtag_host --scene3d --skeleton-check`, the fight route): 5,028,747
+packets kicked, all handed on, 277,895,052 vertices checked against the programs' own positions, 0 off; 237,176,616
+drawn corners re-skinned from their bind-pose sources: largest difference 0.00035 units (as in round 10)
+(`local/godot-r13/test/skelcheck.txt`).
+
+### Files changed (tracked)
+
+`tools/godot/project/main.gd` (display rate, frame log, release timing), `scene_view.gd` (tween, `rta_tween`,
+`scale3d`), `er_layer.gd` (tween of the figures), `card.gd`, `shaders/gs_draw.gdshaderinc`,
+`tools/godot/extension/src/rta_drawer.{h,cpp}` (redraw, the CUSTOM2 format, skipped runs), `rta_scene.cpp`,
+`rta_machine.{h,cpp}`, `rta_library.h`, `tools/godot/lib/rtag.{h,cpp}`, `skeleton_export.{h,cpp}`,
+`tools/godot/build.py` (exports), `tools/godot/recomp.patch` (scene tap), this file, `docs/PROGRESS.md`.
+
+### For the coordinator (tools/recomp)
+
+- Merge `tools/godot/recomp.patch` (render/scene_tap.cpp, scene_tap.h): the tap's world positions once per vertex,
+  XXH3 for the identity, its time counted.
+
+### Still wrong / not done
+
+- 120 in the heavy fight (about 91) and in fire1 (about 41 at either rate); the hub's arrival stop (220 to 300 ms, a
+  level load).
+- The Windows and Linux libraries are not rebuilt with the new exports (they keep working: every new export is
+  optional; at a high rate without them the lead is not measured and stays high).
+- The pictures between game frames were checked by figures (50.7 kept draws a list carried, 0.05 jumped), not by eye
+  side by side.
+
 ## TENTH ROUND (2026-10-22): the skeletons of the frame, another game's figures on them
 
 Built into `local/godot-r10/`. The library hands over each drawn animated model's skeleton (the game's own pose buffers,

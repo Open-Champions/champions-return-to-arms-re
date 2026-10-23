@@ -104,6 +104,7 @@ RtaDrawer::Pass* RtaDrawer::make_pass(Target& target) {
 
 void RtaDrawer::free_pass(Pass* pass) {
     RenderingServer* s = rs();
+    last_order.erase(std::remove(last_order.begin(), last_order.end(), pass), last_order.end());
     for (RID instance : pass->instances) s->free_rid(instance);
     for (RID mesh : pass->meshes) s->free_rid(mesh);
     s->viewport_set_active(pass->viewport, false);
@@ -292,7 +293,7 @@ RID RtaDrawer::instance_for(Pass& pass) {
     return instance;
 }
 
-void RtaDrawer::add_surface_bytes(RID mesh, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count, bool normals, const AABB* box) {
+void RtaDrawer::add_surface_bytes(RID mesh, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count, bool normals, const AABB* box, bool carry) {
     Dictionary surface;
     surface["primitive"] = primitive;
     surface["format"] = (int64_t)(RenderingServer::ARRAY_FORMAT_VERTEX | RenderingServer::ARRAY_FORMAT_COLOR | RenderingServer::ARRAY_FORMAT_CUSTOM0 |
@@ -301,6 +302,10 @@ void RtaDrawer::add_surface_bytes(RID mesh, int primitive, const PackedByteArray
     // scene mode: the game's normal, world space, as three more floats per vertex (after the colour and the texture coordinates)
     if (normals) surface["format"] = (int64_t)surface["format"] | RenderingServer::ARRAY_FORMAT_CUSTOM1 |
                                      ((int64_t)RenderingServer::ARRAY_CUSTOM_RGB_FLOAT << RenderingServer::ARRAY_FORMAT_CUSTOM1_SHIFT);
+    // a kept model's corners as they were in the game frame before (x, y, z; w 2 when they are, 0 when not): for the
+    // pictures between game frames (redraw, gs_draw.gdshaderinc GS_WORLD)
+    if (carry) surface["format"] = (int64_t)surface["format"] | RenderingServer::ARRAY_FORMAT_CUSTOM2 |
+                                   ((int64_t)RenderingServer::ARRAY_CUSTOM_RGBA_FLOAT << RenderingServer::ARRAY_FORMAT_CUSTOM2_SHIFT);
     surface["vertex_data"] = positions;
     surface["attribute_data"] = attributes;
     surface["vertex_count"] = count;
@@ -335,6 +340,22 @@ void RtaDrawer::add_draw(Pass& pass, const rtag_frame& frame, const rtag_draw& d
     }
     draws_submitted++;
     vertices_submitted += d.count;
+}
+
+void RtaDrawer::redraw(double t) {
+    if (last_order.empty()) return;
+    RenderingServer* s = rs();
+    if (scene_mode) {
+        scene_tween(t);
+        tween_global = true;            // (scene_view.gd adds the global: only a host that asks for pictures between sets it)
+        s->global_shader_parameter_set("rta_tween", Vector4((real_t)t, 0, 0, 0));
+    }
+    for (Pass* pass : all_passes) s->viewport_set_active(pass->viewport, false);
+    for (Pass* pass : last_order) {
+        s->viewport_set_active(pass->viewport, true);
+        s->viewport_set_update_mode(pass->viewport, RenderingServer::VIEWPORT_UPDATE_ONCE);
+    }
+    redraws++;
 }
 
 // A rectangle of one surface copied into another: a textured quad.
@@ -439,6 +460,8 @@ void RtaDrawer::submit() {
     static const bool stored_on = !getenv("RTA_GODOT_LINEAR_BLEND");     // (a test aid: blending in linear light, as before)
     auto stored_for = [&](const Target* t) { return stored_on && rd && !(t == world_now && world_has_scene); };
     std::vector<Pass*> used_this_frame;
+    std::unordered_set<uint32_t> blob_read, other_read;     // surfaces read this frame by left-out ground shadows / by anything else
+    std::unordered_set<int> read_in_frame;                  // runs read by a draw of this frame that is drawn
     for (uint32_t i = 0; i < f.draw_count; i++) {
         const rtag_draw& d = f.draws[i];
         auto found = targets.find(d.target);
@@ -471,7 +494,14 @@ void RtaDrawer::submit() {
         node_of[i] = n;
         // what the draw reads
         bool reads_surface = d.kind == RTAG_COPY || (d.texture && d.tex_is_target);
+        if (reads_surface && world_now && &target == world_now && scene_drops_blob(f, d)) {
+            // the game's own ground shadow, left out in the scene where Godot throws real ones (rta_scene.cpp): its
+            // surface need not be drawn for it
+            blob_read.insert(d.texture);
+            continue;
+        }
         if (reads_surface) {
+            other_read.insert(d.texture);
             auto source = targets.find(d.texture);
             if (source == targets.end() || source->second.id == target.id) { if (source != targets.end()) approximated++; continue; }
             Target& from = source->second;
@@ -482,6 +512,7 @@ void RtaDrawer::submit() {
                 reads.push_back({n, from.id, -1, i});
             } else {
                 Node& writer = nodes[from_open->second];
+                read_in_frame.insert(from_open->second);
                 texture_of[i] = writer.pass->texture;
                 decode_of[i] = writer.pass->stored_next;
                 if (from.screen) reads.push_back({n, from.id, from_open->second, i});       // before or after it: known when the list is through
@@ -539,12 +570,23 @@ void RtaDrawer::submit() {
                 (v ? vformat(" | first %.0f %.0f rgba %d %d %d %d", v->x, v->y, v->r, v->g, v->b, v->a) : String()));
         }
     }
+    // runs into a small surface that no drawn draw reads: its readers this frame are only the game's ground shadows the
+    // scene leaves out (Godot throws real shadows), and the last run of a surface is kept when a later list may read it
+    std::vector<char> skip(nodes.size(), 0);
+    for (size_t n = 0; n < nodes.size(); n++) {
+        const Target* t = nodes[n].target;
+        if (t->screen || t->id == f.show_target || !blob_read.count(t->id) || read_in_frame.count((int)n)) continue;
+        auto last = current.find(t->id);
+        if (last != current.end() && last->second == (int)n && other_read.count(t->id)) continue;
+        skip[n] = 1;
+        passes_skipped++;
+    }
     // ---- the draws ----
     for (Pass* pass : all_passes) pass->used = 0;
     Target* world = scene_mode ? world_target() : nullptr;
     if (scene_mode) scene_begin(f);
     for (uint32_t i = 0; i < f.draw_count; i++) {
-        if (node_of[i] < 0) continue;
+        if (node_of[i] < 0 || skip[node_of[i]]) continue;
         const rtag_draw& d = f.draws[i];
         Node& node = nodes[node_of[i]];
         float order_in_pass = (float)(i - node.first_draw);
@@ -572,8 +614,21 @@ void RtaDrawer::submit() {
         for (size_t k = pass->used; k < pass->instances.size(); k++) s->instance_set_base(pass->instances[k], RID());
     // the viewports in order: activated one after the other, each rendered once
     for (Pass* pass : all_passes) s->viewport_set_active(pass->viewport, false);
+    last_order.clear();
+    if (scene_mode && tween_global) s->global_shader_parameter_set("rta_tween", Vector4(0, 0, 0, 0));
+    static int pass_log = getenv("RTA_PASS_LOG") ? atoi(getenv("RTA_PASS_LOG")) : 0;    // test aid: the passes of every 600th list
+    if (pass_log > 0 && frames % 600 == 0) {
+        pass_log--;
+        String line = vformat("rta_drawer: list %d renders %d passes:", (int64_t)frames, (int64_t)order.size());
+        for (int n : order) line += vformat(" [target %d %dx%d (logical %dx%d)%s draws %d]", (int64_t)nodes[n].target->id, (int64_t)nodes[n].target->pw, (int64_t)nodes[n].target->ph,
+                                            (int64_t)nodes[n].target->lw, (int64_t)nodes[n].target->lh, nodes[n].target == world ? " WORLD" : (nodes[n].target == shown ? " SHOWN" : ""), (int64_t)nodes[n].count);
+        UtilityFunctions::print(line);
+    }
     for (int n : order) {
+        if (skip[n]) continue;
         Pass* pass = nodes[n].pass;
+        // what a picture between game frames renders again: the world and the surface shown (which copies it)
+        if (nodes[n].target == world || nodes[n].target->id == f.show_target) last_order.push_back(pass);
         s->viewport_set_active(pass->viewport, true);
         s->viewport_set_update_mode(pass->viewport, RenderingServer::VIEWPORT_UPDATE_ONCE);
         pass->drawn_once = true;
@@ -666,9 +721,9 @@ String RtaDrawer::figures() const {
     double n = frames ? (double)frames : 1;
     return vformat("drawer: %d lists; per list %.1f draws and %.0f vertices submitted, %.2f viewports rendered, %.3f ms in submit(); %d materials made (%d held), %d meshes held, "
                    "%d textures made; draws drawn twice for \"depth always, and write\": %d; reads of a surface in the middle of its own draws (given last frame's picture): %d; "
-                   "approximated (a blend this route cannot do, a surface reading itself, a circle of surfaces): %d; draws skipped (depth test never): %d",
+                   "approximated (a blend this route cannot do, a surface reading itself, a circle of surfaces): %d; draws skipped (depth test never): %d; pictures drawn again between game frames: %d; runs not rendered (surfaces only the left-out ground shadows read): %.2f a list",
                    (int64_t)frames, draws_submitted / n, vertices_submitted / n, passes_rendered / n, submit_usec / 1000.0 / n, (int64_t)materials_made, (int64_t)materials.size(),
-                   (int64_t)meshes_made, (int64_t)textures_made, (int64_t)depth_always_writes, (int64_t)stale_reads, (int64_t)approximated, (int64_t)skipped) +
+                   (int64_t)meshes_made, (int64_t)textures_made, (int64_t)depth_always_writes, (int64_t)stale_reads, (int64_t)approximated, (int64_t)skipped, (int64_t)redraws, passes_skipped / n) +
            (pack ? vformat("; art pack: %d pictures in the folder, textures named %d, found %d, replaced %d (%d from files, %d with mip maps of their own), %d files unreadable, %d of them two-field interface pictures (sampled by the woven line), %d waiting",
                            (int64_t)pack->size(), (int64_t)pack_named, (int64_t)pack_found, (int64_t)pack_replaced, (int64_t)pack_replaced_files,
                            (int64_t)(pack_replaced - pack_replaced_files), (int64_t)pack->failed_files.load(), (int64_t)pack->two_field.load(), (int64_t)pack->waiting()) : String());
@@ -789,6 +844,7 @@ void RtaDrawer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_hidden_objects", "objects"), &RtaDrawer::set_hidden_objects);
     ClassDB::bind_method(D_METHOD("get_world_camera"), &RtaDrawer::get_world_camera);
     ClassDB::bind_method(D_METHOD("get_world_viewport"), &RtaDrawer::get_world_viewport);
+    ClassDB::bind_method(D_METHOD("redraw", "t"), &RtaDrawer::redraw);
     ClassDB::bind_method(D_METHOD("get_world_environment"), &RtaDrawer::get_world_environment);
     ClassDB::bind_method(D_METHOD("describe_frame", "max_lines"), &RtaDrawer::describe_frame);
     ClassDB::bind_method(D_METHOD("get_sky_info"), &RtaDrawer::get_sky_info);

@@ -10,6 +10,8 @@
 //   the strip   the GIF tag at the kicked quadword, nloop vertices of nreg quadwords after it;
 //               the last quadword of a vertex is its position, bit 15 of its fourth word "do not draw"
 #include "scene_tap.h"
+#include "xxh3_64.h"
+#include <chrono>
 
 #include "renderer.h"
 
@@ -134,12 +136,20 @@ void SceneTap::program(int entry) {
     }
 }
 
+double g_tap_kick_ms = 0, g_tap_ms = 0;        // decoder thread: in the GS model's xgkick, and in the tap (figures)
+
+static inline double tap_now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+
 void SceneTap::kick(void* user, uint32_t qword) {
     SceneTap* tap = (SceneTap*)user;
     Renderer* r = tap->r;
     size_t before = r->gs.frame.vertices.size();
+    const double t0 = tap_now_ms();
     r->gs.xgkick(r->vif.vu.data, qword);
+    const double t1 = tap_now_ms();
     tap->kicked(qword, before, r->gs.frame.vertices.size());
+    g_tap_kick_ms += t1 - t0;
+    g_tap_ms += tap_now_ms() - t1;
 }
 
 void SceneTap::kicked(uint32_t qword, size_t before, size_t after) {
@@ -304,9 +314,17 @@ void SceneTap::kicked(uint32_t qword, size_t before, size_t after) {
     piece.entry = (uint8_t)entry;
     piece.flags = (uint8_t)((nreg == 4 ? TAP_TWO_PASS : 0) | (skinned ? TAP_SKINNED : 0) | (mirrored ? TAP_MIRRORED : 0) | (clip_flag ? TAP_CLIP_FLAG : 0));
     piece.object = object;
+    // (XXH3 over the packet's words: a byte-at-a-time figure over a few kilobytes a kick was most of the tap's time in a
+    // fight; the identity is only compared within a run, never kept)
     uint64_t h = 0xCBF29CE484222325ull ^ (uint64_t)entry;
-    h = fnv((const uint8_t*)U(in), (size_t)(3 * N + 2) * 16, h);                // positions, normals, slot rows
-    if (model) h = fnv((const uint8_t*)U(in + 3 * N + 2), (size_t)((at - (in + 3 * N + 2)) & 0xFF) * 16, h);
+    const uint32_t body = 3 * N + 2;                                          // positions, normals, slot rows
+    if ((in & 0x3FF) + body <= 0x400) h = (h * 0x100000001B3ull) ^ xxh3::hash64(U(in), (size_t)body * 16);
+    else h = fnv((const uint8_t*)U(in), (size_t)body * 16, h);              // (round the end of VU1 memory: as before)
+    if (model) {
+        const uint32_t extra = (uint32_t)((at - (in + 3 * N + 2)) & 0xFF);
+        if (((in + body) & 0x3FF) + extra <= 0x400) h = (h * 0x100000001B3ull) ^ xxh3::hash64(U(in + body), (size_t)extra * 16);
+        else h = fnv((const uint8_t*)U(in + body), (size_t)extra * 16, h);
+    }
     piece.mesh = h;
     bool second = false;
     if (nreg == 4) {
@@ -335,8 +353,15 @@ void SceneTap::kicked(uint32_t qword, size_t before, size_t after) {
     // the level's matrices are g_viewProjWorld's (in world / 4); the models' are g_viewProjModel's
     const double scale = piece.kind == TAP_LEVEL ? 4.0 : 1.0;
     const double* const inverse = piece.kind == TAP_LEVEL ? inverse_world : this->inverse;
+    // Each source vertex is taken back to the world once (it stands at up to six corners of the list and the complete
+    // geometry: the same computation, done once, gives the same bytes)
+    TapVertex world_of[64];
+    bool world_done[64];
+    for (uint32_t v = 0; v < N; v++) world_done[v] = false;
     auto emit = [&](uint32_t p) {
-        const Made& m = made[slot[p]];
+        const int sv = slot[p];
+        if (world_done[sv]) { frame.vertices.push_back(world_of[sv]); return; }
+        const Made& m = made[sv];
         TapVertex out;
         memset(&out, 0, sizeof out);
         out.source = (uint16_t)slot[p];
@@ -352,6 +377,8 @@ void SceneTap::kicked(uint32_t qword, size_t before, size_t after) {
             double length = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
             if (length > 0) for (int a = 0; a < 3; a++) out.normal[a] = (float)(n[a] / length);
         }
+        world_of[sv] = out;
+        world_done[sv] = true;
         frame.vertices.push_back(out);
     };
     for (uint32_t p = 2; p < nloop; p++)
@@ -364,9 +391,8 @@ void SceneTap::kicked(uint32_t qword, size_t before, size_t after) {
         for (uint32_t k = 0; k < nreg; k++) { uint32_t d = (uint32_t)(regs >> (4 * k)) & 15; if (d == 3) uv_at = k; else if (d == 1) rgba_at = k; }
         const size_t taken = frame.vertices.size();
         auto corner = [&](uint32_t p) {
-            emit(p);                                // (made as a list vertex, then moved: one way of computing it)
-            const TapVertex made_vertex = frame.vertices.back();
-            frame.vertices.pop_back();
+            if (!world_done[slot[p]]) { emit(p); frame.vertices.pop_back(); }     // (made as a list vertex: one way of computing it)
+            const TapVertex& made_vertex = world_of[slot[p]];
             TapFull out;
             memcpy(out.world, made_vertex.world, 12);
             memcpy(out.normal, made_vertex.normal, 12);
