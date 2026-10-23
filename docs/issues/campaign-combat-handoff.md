@@ -465,3 +465,62 @@ record, debug switches, actual item bytes and active weapon.
 **Status: MORE.** The original record path and class call contracts are
 measured, but play-enemies-r3's real service returns, native binding and
 equipped player remain blocked by the explicit inputs and runtime paths above.
+
+## Research round 6: attempted no-stub full load (2026-10-23)
+
+`tools/difftest_campaign_combat_r6.py` checks the read-only ISO index and
+compares the available private local inputs against their disc files. It then
+runs two **no-stub** `ee_emu.py` probes on each of seeds 20973 and 7. The
+seeds are test controls; neither is a captured campaign seed. No game bytes
+or disassembly enter tracked files.
+
+| Probe | Executed result on each seed | Exact boundary |
+|---|---|---|
+| ELF entry 0x14fa88, the real boot route before a hub session | 1,913,112 instructions, no calls, resource lookups or enemy constructors | `SYSCALL` at 0x14fc48 with v1 = 60 (0x3c). `EE._syscall` in `tools/ee_emu.py` raises because there is no EE kernel. |
+| Direct `game_loadLevel` 0x1e55c0 with a `valor` name allocated in EE memory | 2,277 instructions, 64 calls, no `res_find` 0x17365c or hostile constructor call | `SYSCALL` at 0x352e14 with v1 = 124 (0x7c), reached through the SDK debugger-link wrapper 0x352e10. `EE` has no `Deci2Call` service. This call starts from fresh ELF memory, not the hub's real player, level, resource or saved state. |
+
+These are **Executed** boundaries, not a completed `valor` load. The direct
+call is only an early entry diagnostic and cannot substitute for the original
+campaign transition. `ee_emu.py` intentionally implements a function-level
+EE interpreter with no kernel, IOP, hardware, timing or BIOS; it also has no
+disc-backed resource-manager environment. Adding a zero-return syscall hook
+would repeat round 5's stub problem. The original `main` startup, hub
+session, full resource manager, `Creature_ctor` 0x109d68,
+`GameObject_ctor` 0x14cb10, terrain, shared combat state, equipped player,
+`runObjects` 0x14b910, damage, death, drop and Gold sequence therefore did
+not execute together. There is no honest service-return table or real-run
+combat reference model for these seeds. Round 6 adds a fail-closed boundary
+difftest; rounds 1–5 remain bounded reference models.
+
+### Ordered native port list from observed call sites
+
+1. **Observed** at startup 0x14fc48 and level entry 0x352e14: provide the
+   kernel/IOP/disc behavior needed to boot and load without stubbed returns;
+   capture the actual hub-to-valor state. The return values are **Unknown**.
+2. **Observed** at `game_loadLevel` 0x1e5690–0x1e56bc: resolve actual
+   `hud.lmp` residency and conditional `item_loadResources` 0x108434 before
+   comparing shared draws. The entry state and seed are **Unknown**.
+3. **Observed** at `GameObject_ctor` 0x14cbc4–0x14cc20: resolve the 20
+   WarBoar and 26 Minotaur definition entries with `res_find` 0x17365c,
+   then execute the base and class constructors at 0x109d68, 0x2ba03c
+   and 0x288fdc. Their actual resource and service returns are **Unknown**.
+4. **Observed** at `GameObject_ctor` 0x14cc24–0x14cce0 and the class sites
+   0x2ba1cc / 0x28925c: preserve one grid object and its 60-frame list
+   link. `runObjects` 0x14b910 uses virtual slot 4, grid query 0x14a928
+   finds targets, and handle service 0x1a1738 links them. Actual populated
+   `valor` registration and AI state are **Unknown**.
+5. **Observed** at `player_initNewCharacter` 0x1b1d70 or import 0x1bdb0c,
+   descriptor parse 0x1069b8, inventory grant 0x1c1868, equip 0x1c27c0,
+   active weapon +0x4434/+0x4a7c and `Player_recalcDamage` 0x1b7158:
+   obtain the real player record before attempting melee. The equipped
+   item and melee state at this entry are **Unknown**.
+6. **Observed** at `Player_meleeHit` 0x1b6a98, `damage_apply` 0x1e8230,
+   `Creature_takeDamage` 0x116638, `Creature_dropLoot` 0x10f2c8 and
+   `hud_tickGold` 0x1dcb80: run and record the real kill and credit path
+   only after steps 1–5. The actual `valor` damage, death, drops and Gold
+   credit are **Unknown**.
+
+**Status: BLOCKED for the requested full no-stub `ee_emu.py` playthrough.**
+The alternative was the strict boot and direct level-entry diagnostic above,
+plus the existing bounded round 1–5 probes. No stub result is promoted to a
+`valor` value.
