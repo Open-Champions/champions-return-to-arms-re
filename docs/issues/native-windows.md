@@ -1,5 +1,7 @@
 # The native application for Windows
 
+**2026-10-21 PC follow-up:** [Windows PC qualification and input fixes](windows-pc-qualification.md) records execution on physical x86-64 hardware, bounded gameplay evidence and the input fixes. The dated VM and pre-PC sections below are historical.
+
 Started 2026-10-12. The native application (`docs/issues/native-app.md`: the game's own
 code translated to C++, with our runtime, renderer, sound library and input) ran on macOS
 only. This is its build for Windows x86-64, made on the Mac with a cross-compiler.

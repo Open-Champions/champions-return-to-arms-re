@@ -6,8 +6,8 @@
 // pacing and the keyboard.  Controllers: pad_win.cpp (XInput).  Sound device:
 // sound/audio_out_win.cpp (WASAPI).
 //
-// Written and compiled on a Mac with a cross-compiler; NOT RUN: nobody has seen this
-// window (docs/issues/native-windows.md has what was proven without it and the test plan).
+// Initially cross-compiled on macOS; Windows PC execution and injected-input coverage
+// are recorded in docs/issues/windows-pc-qualification.md, with physical-device limits.
 //
 //   rta_app.exe IMAGE.iso                (or drag the disc image onto rta_app.exe or play.bat)
 //   rta_app.exe --disc IMAGE [options] [-- <more arguments for the runtime>]
@@ -99,6 +99,7 @@
 #include "testerkit.h"                  // the bug report (F8), the crash report, the build line (F9)
 #include "testerkit_app.h"
 #include "win/wgl.h"
+#include "win/input_state.h"
 #ifdef RTA_NET
 #include "online_win.h"                                 // tools/recomp/net: the name question and the notes on this window
 #endif
@@ -124,8 +125,6 @@
 
 using namespace render;
 using app::now_ms;
-
-namespace hostpad { void set_window(void* hwnd); }      // pad_win.cpp
 
 static const char* TITLE = "Champions: Return to Arms - native build (experimental)";
 static render::Renderer* g_renderer;
@@ -231,6 +230,7 @@ struct DisplayClock {
 };
 static DisplayClock g_display;
 [[noreturn]] static void end_now(int code) {
+    hostpad::rumble(0, 0);                              // TerminateProcess bypasses normal cleanup
     fflush(stdout);
     fflush(stderr);
     TerminateProcess(GetCurrentProcess(), (UINT)code);
@@ -287,45 +287,19 @@ static bool write_png(const std::string& path, const uint8_t* rgba, int w, int h
 }
 
 // ---- input --------------------------------------------------------------------------------
-// The keyboard as a pad: bits of rta::PadButton plus four bits for the stick keys.
-enum { KEY_STICK_UP = 1 << 16, KEY_STICK_DOWN = 1 << 17, KEY_STICK_LEFT = 1 << 18, KEY_STICK_RIGHT = 1 << 19 };
+// The window thread keeps physical keys separately: releasing one alias leaves
+// the others held. The game thread only reads the published aggregate.
+static wininput::Keyboard g_keyboard;
 static std::atomic<uint32_t> g_keys{0};
 static std::atomic<uint64_t> g_key_events{0};
 
-static uint32_t key_bit(WPARAM key) {
-    switch (key) {
-    case 'W': return KEY_STICK_UP;
-    case 'S': return KEY_STICK_DOWN;
-    case 'A': return KEY_STICK_LEFT;
-    case 'D': return KEY_STICK_RIGHT;
-    case VK_UP: return rta::PAD_UP;
-    case VK_DOWN: return rta::PAD_DOWN;
-    case VK_LEFT: return rta::PAD_LEFT;
-    case VK_RIGHT: return rta::PAD_RIGHT;
-    case 'I': return rta::PAD_TRIANGLE;
-    case 'J': return rta::PAD_SQUARE;
-    case 'K': return rta::PAD_CROSS;
-    case 'L': return rta::PAD_CIRCLE;
-    case 'Q': return rta::PAD_L1;
-    case 'E': return rta::PAD_R1;
-    case '1': case VK_NUMPAD1: return rta::PAD_L2;
-    case '3': case VK_NUMPAD3: return rta::PAD_R2;
-    case 'X': return rta::PAD_L3;
-    case 'C': return rta::PAD_R3;
-    case VK_RETURN: return rta::PAD_START;
-    case VK_BACK: return rta::PAD_SELECT;
-    // second names for three buttons, where a hand on W A S D and a mouse finds them (fpcontrols.h)
-    case VK_SPACE: return rta::PAD_SQUARE;
-    case VK_SHIFT: return rta::PAD_R1;
-    case VK_TAB: return rta::PAD_R3;
-    default: return 0;
-    }
-}
 static WPARAM key_by_name(const std::string& name) {
     static const struct { const char* name; WPARAM key; } names[] = {
         {"w", 'W'}, {"a", 'A'}, {"s", 'S'}, {"d", 'D'}, {"up", VK_UP}, {"down", VK_DOWN}, {"left", VK_LEFT}, {"right", VK_RIGHT},
         {"i", 'I'}, {"j", 'J'}, {"k", 'K'}, {"l", 'L'}, {"q", 'Q'}, {"e", 'E'}, {"1", '1'}, {"3", '3'}, {"x", 'X'}, {"c", 'C'},
-        {"return", VK_RETURN}, {"backspace", VK_BACK}, {"escape", VK_ESCAPE}, {"f", 'F'}, {"v", 'V'}};
+        {"return", VK_RETURN}, {"backspace", VK_BACK}, {"escape", VK_ESCAPE}, {"f", 'F'}, {"v", 'V'},
+        {"space", VK_SPACE}, {"shift", VK_SHIFT}, {"lshift", VK_LSHIFT}, {"rshift", VK_RSHIFT}, {"tab", VK_TAB},
+        {"numpad1", VK_NUMPAD1}, {"numpad3", VK_NUMPAD3}, {"f11", VK_F11}, {"f12", VK_F12}};
     for (auto& n : names) if (name == n.name) return n.key;
     return 0;
 }
@@ -346,8 +320,8 @@ struct Pads : rta::PadSource {
         uint32_t keys = g_keys;
         rta::PadState kb;
         kb.buttons = (uint16_t)keys;
-        kb.lx = (keys & KEY_STICK_LEFT) ? ((keys & KEY_STICK_RIGHT) ? 128 : 0) : (keys & KEY_STICK_RIGHT) ? 255 : 128;
-        kb.ly = (keys & KEY_STICK_UP) ? ((keys & KEY_STICK_DOWN) ? 128 : 0) : (keys & KEY_STICK_DOWN) ? 255 : 128;
+        kb.lx = (keys & wininput::KEY_STICK_LEFT) ? ((keys & wininput::KEY_STICK_RIGHT) ? 128 : 0) : (keys & wininput::KEY_STICK_RIGHT) ? 255 : 128;
+        kb.ly = (keys & wininput::KEY_STICK_UP) ? ((keys & wininput::KEY_STICK_DOWN) ? 128 : 0) : (keys & wininput::KEY_STICK_DOWN) ? 255 : 128;
         state.buttons |= kb.buttons;
         if (have_pad) state.buttons |= pad.buttons;
         auto rest = [](uint8_t x, uint8_t y) { return x == 128 && y == 128; };
@@ -373,7 +347,10 @@ struct Pads : rta::PadSource {
         last_buttons = state.buttons;
         last_sticks = state.lx | state.ly << 8 | state.rx << 16 | (uint32_t)state.ry << 24;
     }
-    void rumble(unsigned, uint8_t, uint8_t) override { rumbles++; }
+    void rumble(unsigned port, uint8_t small, uint8_t large) override {
+        rumbles++;
+        if (port == 0) hostpad::rumble(small, large);
+    }
 };
 static Pads g_pads;
 
@@ -874,7 +851,7 @@ LRESULT CALLBACK Screen::proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             else if (wp == VK_F4) break;                // Alt+F4 closes, as everywhere
             return 0;
         }
-        if (uint32_t bit = key_bit(wp)) { g_keys |= bit; return 0; }
+        if (wininput::key_bits((uint32_t)wp)) { g_keys = g_keyboard.key((uint32_t)wp, (uintptr_t)lp, true); return 0; }
         if (!s || test) return 0;
         if (wp == VK_ESCAPE && g_pointer_held) { g_pointer_let_go = true; hold_pointer(hwnd, false); return 0; }
         if (wp == 'V') {                                // the next camera view (Shift: the one before)
@@ -892,20 +869,27 @@ LRESULT CALLBACK Screen::proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
     case WM_KEYUP:
     case WM_SYSKEYUP:
         g_key_events++;
-        if (uint32_t bit = key_bit(wp)) g_keys &= ~bit;
+        g_keys = g_keyboard.key((uint32_t)wp, (uintptr_t)lp, false);
         return 0;
     case WM_KILLFOCUS:
-        g_keys = 0;                                     // nothing stays held when the window is left
+        g_keyboard.clear();                            // release every physical key, including overlapping aliases
+        g_keys = 0;
         fpcontrols::release_all();
+        hostpad::rumble(0, 0);
         hold_pointer(hwnd, false);
         return 0;
     // the mouse (fpcontrols.h): its buttons are pad buttons in the look views, its motion the look
-    case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:
-        if (!test) { g_pointer_let_go = false; fpcontrols::mouse_button(message == WM_LBUTTONDOWN ? 0 : message == WM_RBUTTONDOWN ? 1 : 2, true); }
-        return 0;
-    case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP:
-        if (!test) fpcontrols::mouse_button(message == WM_LBUTTONUP ? 0 : message == WM_RBUTTONUP ? 1 : 2, false);
-        return 0;
+    case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN: case WM_XBUTTONDOWN:
+    case WM_LBUTTONUP: case WM_RBUTTONUP: case WM_MBUTTONUP: case WM_XBUTTONUP:
+        if (!test) {
+            int button = wininput::mouse_button(message, wp);
+            if (button >= 0) {
+                bool down = wininput::mouse_down(message);
+                if (down) g_pointer_let_go = false;
+                fpcontrols::mouse_button(button, down);
+            }
+        }
+        return message == WM_XBUTTONDOWN || message == WM_XBUTTONUP ? TRUE : 0;
     case WM_MOUSEWHEEL:
         if (!test) fpcontrols::mouse_wheel((float)GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA);
         return 0;
