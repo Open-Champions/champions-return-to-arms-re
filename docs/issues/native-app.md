@@ -520,8 +520,11 @@ collected per buffer and drawn into the surface as one picture when the frame en
 (`Gs::upload_to_surface`, `flush_uploads`): the film's 1,120 rectangles a picture become
 one texture and one draw. `rta_app --no-films` gives the old behaviour.
 
-**The films on the disc** (Ran: the stream headers): `PORKO.LMP` holds `porko0.m2v` (60
-pictures) and the index `porko.bin` of six pieces of `PORKO.SMG` (350 pictures); all are
+**The films on the disc** (earlier run for `porko0.m2v` and `PORKO.SMG`;
+private-disc header observation for `porko000.m2v`): `PORKO.LMP` holds `porko0.m2v` (60
+pictures), `porko000.m2v` (640 x 480 sequence header; use and picture count not
+established here), and the index `porko.bin` of six pieces of `PORKO.SMG` (350
+pictures). The measured `porko0.m2v` and `PORKO.SMG` streams are
 MPEG-2 Main Profile, 640 x 448, 29.97 pictures a second, frame pictures with
 `frame_pred_frame_dct` = 1, I / P / B in groups of 15, alternate scan, non-linear
 quantiser scale, the second coefficient table in I pictures. The sound is the stream
