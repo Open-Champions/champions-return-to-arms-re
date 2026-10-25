@@ -149,13 +149,18 @@ and this harness does not load the archive into an original world. A loader and
 4. Run `missionMenu_open`/`missionMenu_run` with the player's lockstep pad,
    availability gate, row/column, fade and state-8 direct pending-world write.
    For the fresh route, confirm row 0's story column to request `blood1`.
-5. Carry pending level, previous level, entrance, player records, quests and
+5. Render the original mission map from the owned disc's mission-map lump:
+   table-positioned nodes, frames/background, locked-state tint, icons, glow
+   and small-font detail text. Keep the row-zero and medal/bonus gates in
+   `docs/spec/mission-menu-art.md`; compare a real rendered frame before
+   claiming retail layout parity.
+6. Carry pending level, previous level, entrance, player records, quests and
    variables through `mainloop_loadRequestedWorld`. Load the `blood1` archive,
    construct destination records in order, apply the default `Player1` marker,
    terrain/free-spot placement and player construction. Verify state survival
    and selected marker in a loader run; the current same-act and marker claims
    are inferred from separate functions and checked archive records.
-6. Bind real enemy constructors, resources, equipment and combat services,
+7. Bind real enemy constructors, resources, equipment and combat services,
    then perform a native hub-dialog → PushTrigger → menu → `blood1` → first
    attack acceptance run. Compare level name, request, marker, record and
    combat traces to the original running game. The present function-level
