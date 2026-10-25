@@ -9,6 +9,12 @@ Of this document it confirmed object flags 0x20000 and 0x200000 (marked **Ran** 
 flag table) and that `runObjects` is entered once per simulated frame. The rest
 was not re-checked on the live game, and no test patch has been run on one. Each claim is marked
 **Observed** (read at the address given), **Inferred** or **Unknown** where it is not obvious.
+For the later focused Chest, Gold, flying/resting item and pickup contract,
+including executed original-code branches and native port order, see
+[`docs/pickups.md`](pickups.md). The subsequent
+[loot-drop continuation](loot-drop.md) adds exact construction/physics inputs,
+disc-backed Chest and item resource probes, Gold contact, starting gear and
+the ordinary Chest factory-precedence correction.
 
 ## What is in the range
 
