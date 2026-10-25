@@ -51,8 +51,12 @@ func tick() -> void:
 		var flags := int(c[o + Hud.C_FLAGS])
 		var uid := int(c[o + Hud.C_UID])
 		if (flags & Hud.CF_BOSS) != 0 and (flags & (Hud.CF_DEAD | Hud.CF_INERT)) == 0 and (flags & Hud.CF_HOSTILE) != 0:
-			var d: float = c[o + Hud.C_SZ] if uid != int(hud.frame.get("boss_uid", 0)) else -1.0
-			if d < boss_best:
+			var metered := uid == int(hud.frame.get("boss_uid", 0))
+			var d: float = c[o + Hud.C_SZ] if not metered else -1.0
+			# a boss the game's own meter is not (yet) about gets the bar only once it is in the fight: before that
+			# (a level's fade-in) its name is the kind's and would change to the meter's own when the meter comes on
+			var engaged: bool = metered or uid == boss.uid or (flags & (Hud.CF_AGGRO | Hud.CF_TARGETED | Hud.CF_ATTACKING)) != 0
+			if engaged and d < boss_best:
 				boss_best = d
 				boss_index = k
 		if uid == target_uid and target_uid != 0 and (flags & Hud.CF_HOSTILE) != 0:
@@ -67,7 +71,11 @@ func tick() -> void:
 			boss.uid = uid
 			boss.shown = clampf(c[o + Hud.C_HP] / maxf(c[o + Hud.C_MAX], 0.001), 0.0, 1.0)
 			boss.ghost = boss.shown
-		boss.name = Style.pretty(hud.creature_name(boss_index))
+		# the name is taken when the bar first shows a creature and again while the game's meter is about it, never
+		# back from the meter's name to the kind's
+		if uid == int(hud.frame.get("boss_uid", 0)) or boss.get("named_uid", 0) != uid:
+			boss.name = Style.pretty(hud.creature_name(boss_index))
+			boss["named_uid"] = uid
 		boss.hp = c[o + Hud.C_HP]
 		boss.max = c[o + Hud.C_MAX]
 		_ease(boss, 1.0)

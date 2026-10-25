@@ -53,6 +53,8 @@ extends Node
 #   er_metal  0..1 (default 0.5): how much of the outfits' metal maps is taken (no reflections here for a metal to show)
 #   er_creatures off | on: the game's monsters drawn as local models of a similar build, posed by their own skeletons
 #             (er_layer.gd, er_creatures.cfg: which class is which model); a class with no model keeps its own figure
+#   er_style  fit (the default: the player's own figure dressed in the outfit's pieces, er_fit.gd) | replace (rounds 1-3)
+#   er_outfits per class "class:auto|original|<outfit>;..." (the portal's Settings; er_fit.cfg [auto] for auto)
 #
 # Each of sky, fog, sun, lamp, bloom, grade, foliage, fill is  off | on | auto.  auto - the default - means: in the views that look
 # along the ground (chase, shoulder, first person: tools/recomp/app/fpview.h), not in the game's own overhead view
@@ -94,7 +96,7 @@ var look := {
 	"fill_light": 0.36, "fill_scale": 1.0, "light_energy": 1.0, "light_shadows": 2.0, "light_max": 8.0,
 	"sun_gain": 1.0, "saturation": 1.10, "contrast": 1.06, "brightness": 1.0, "preset": "on", "balance": "0.6",
 	"backdrop": "auto", "models": "on", "model_smooth": 2.0, "model_crease": 0.35, "model_near": 520.0, "model_rim": 0.35, "model_form": 0.7, "model_sharp": 0.6, "contact": 0.55,
-	"er_models": "off", "er_set": "auto", "er_who": "all", "er_springs": "on", "er_metal": 0.5, "er_creatures": "off",
+	"er_models": "off", "er_set": "auto", "er_who": "all", "er_springs": "on", "er_metal": 0.5, "er_creatures": "off", "er_style": "fit", "er_outfits": "",
 }
 # Per level presets (tools/godot/presets.py): the look keys above, by level, picked from what the level's own colours
 # are (its clear colour, its dome, its light level, the game's light nodes, the picture the game's own camera gives) by
@@ -605,6 +607,7 @@ func _haze() -> void:
 	RenderingServer.global_shader_parameter_set("rta_fog_range", Vector4(start, max(end, start + 100.0), feet.z + 70.0, 260.0))
 	RenderingServer.global_shader_parameter_set("rta_fog_amount", Vector4(amount, 0.0 if level_dark else 0.55, 1.0, 0.0))
 	RenderingServer.global_shader_parameter_set("rta_fog_colour", Vector4(horizon.r, horizon.g, horizon.b, 1.0))
+	Engine.set_meta("rta_haze", [start, max(end, start + 100.0), amount, eye, far])     # for the HUD's bars (hud/world.gd)
 
 
 func _lights() -> void:
@@ -913,3 +916,8 @@ func command(w: PackedStringArray) -> void:
 			pull_back = w[3].to_float() if w.size() >= 4 else 1.0
 			raise = w[4].to_float() if w.size() >= 5 else 0.0
 		_camera_options()
+
+
+func _exit_tree() -> void:
+	if Engine.has_meta("rta_haze"):
+		Engine.remove_meta("rta_haze")

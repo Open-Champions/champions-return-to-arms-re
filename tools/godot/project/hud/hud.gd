@@ -321,6 +321,9 @@ func _notices(delta: float) -> void:
 		area = picture.grow(-maxf(12.0, 0.025 * window.y))
 	notice_piece.call("tick")
 	var wall := Time.get_ticks_msec() / 1000.0
+	if ok and (phase & (PH_MENU | PH_PAUSE_MENU | PH_GATE_MENU)) != 0:
+		for n in notices:
+			n.born = float(n.born) + delta     # hidden under a game screen (notice.gd): its time does not run
 	for k in range(notices.size() - 1, -1, -1):
 		if wall - float(notices[k].born) > float(notices[k].seconds) + 0.5:
 			notices.remove_at(k)        # the portal drops its own copy by its own clock

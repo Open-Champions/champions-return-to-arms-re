@@ -386,6 +386,69 @@ float ground_under(Ctx* c, Vec3 p) {
     return call.fret();
 }
 
+// What stands solid near the character and is not the level's height field: creatures and the other objects of the
+// level's grid that have a size (crates, statues, other players).  The camera is not put inside them (step 2 of the
+// shoulder views, and the near plane of first person).  Memory is only read.
+struct Solid { float x, y, z, r, h; };
+const u32 G_GRID = 0x5DB4F0, OBJ_FLAGS = 0x0C, OBJ_RADIUS = 0x1C, OBJ_HEIGHT = 0x20;
+int g_solid_count = 0;
+Solid g_solids[64];
+void gather_solids(Vec3 feet, float reach) {
+    g_solid_count = 0;
+    if (!g_collide || !in_ram(G_GRID, 120 * 120 * 4)) return;
+    int x0 = (((int)(feet.x - reach) + 0x3c00) >> 8), x1 = (((int)(feet.x + reach) + 0x3c00) >> 8);
+    int y0 = (((int)(feet.y - reach) + 0x3c00) >> 8), y1 = (((int)(feet.y + reach) + 0x3c00) >> 8);
+    for (int gy = std::max(0, y0); gy <= std::min(119, y1); gy++)
+        for (int gx = std::max(0, x0); gx <= std::min(119, x1); gx++) {
+            u32 node = W(G_GRID + (u32)(gy * 120 + gx) * 4);
+            for (int guard = 0; node && in_ram(node, 16) && guard < 256 && g_solid_count < 64; guard++) {
+                u32 object = W(node + 12);
+                node = W(node);
+                if (!object || !in_ram(object, 0x60)) continue;
+                const u32 flags = W(object + OBJ_FLAGS);
+                if (flags & 8) continue;                                                         // the dead
+                Solid o{F(object + OBJ_POS), F(object + OBJ_POS + 4), F(object + OBJ_POS + 8), F(object + OBJ_RADIUS), F(object + OBJ_HEIGHT)};
+                if (!(o.r >= 4.0f && o.r <= 160.0f) || !(o.h >= 8.0f && o.h <= 600.0f)) continue;
+                float dx = o.x - feet.x, dy = o.y - feet.y;
+                if (dx * dx + dy * dy < ((flags & 0x40) ? 24.0f * 24.0f : 4.0f) || dx * dx + dy * dy > (reach + o.r) * (reach + o.r)) continue;    // the own figure (a player's object near the feet); too far
+                g_solids[g_solid_count++] = o;
+            }
+        }
+}
+// The first point (0..1) of the way from `from` to `to` that is inside a solid grown by `margin`; -1: none (a way
+// that starts inside one is not stopped by it: nothing can be done from there)
+float solid_between(Vec3 from, Vec3 to, float margin) {
+    float best = -1;
+    Vec3 d = to - from;
+    for (int k = 0; k < g_solid_count; k++) {
+        const Solid& o = g_solids[k];
+        float R = o.r * 0.85f + margin, zlo = o.z - margin, zhi = o.z + o.h + margin;
+        float fx = from.x - o.x, fy = from.y - o.y;
+        bool inside = fx * fx + fy * fy < R * R && from.z > zlo && from.z < zhi;
+        if (inside) continue;
+        float a = d.x * d.x + d.y * d.y, b = 2 * (fx * d.x + fy * d.y), cc = fx * fx + fy * fy - R * R;
+        float t = -1;
+        if (a > 1e-6f) {
+            float disc = b * b - 4 * a * cc;
+            if (disc >= 0) {
+                float t0 = (-b - std::sqrt(disc)) / (2 * a);
+                float z = from.z + d.z * t0;
+                if (t0 >= 0 && t0 <= 1 && z > zlo && z < zhi) t = t0;
+            }
+        }
+        if (t < 0 && std::fabs(d.z) > 1e-4f) {                  // through the top or the bottom
+            for (float zc : {zhi, zlo}) {
+                float tc = (zc - from.z) / d.z;
+                if (tc < 0 || tc > 1) continue;
+                float px = fx + d.x * tc, py = fy + d.y * tc;
+                if (px * px + py * py < R * R && (t < 0 || tc < t)) t = tc;
+            }
+        }
+        if (t >= 0 && (best < 0 || t < best)) best = t;
+    }
+    return best;
+}
+
 // Is the character seen from `eye`?  Two rays of the game's own terrain query, from the head and from knee
 // height: the level's walls are blocks of its height field, so a ray that is clear means nothing of the
 // level stands between (objects - crates, pillars that are models - are not asked: they are small).
@@ -474,6 +537,15 @@ Pose pose_of(Ctx* c, int mode, const Inputs& in) {
             if (chosen < -back) chosen = mid_clear >= -back ? mid_clear : -back;
             p.eye = head + in.heading * chosen;
             p.near_plane = used;
+            // a creature standing against the eye: the near plane comes in (as far as 3) so that it is not cut open
+            gather_solids(in.feet, 120.0f);
+            for (int k = 0; k < g_solid_count; k++) {
+                const Solid& o = g_solids[k];
+                if (p.eye.z < o.z - 4.0f || p.eye.z > o.z + o.h + 4.0f) continue;
+                Vec3 to = v3(o.x - p.eye.x, o.y - p.eye.y, 0);
+                float ahead_of = dot(to, p.forward), rim = length(to) - o.r * 0.85f;
+                if (ahead_of > 0 && rim < p.near_plane * 1.6f) p.near_plane = std::max(3.0f, std::min(p.near_plane, rim / 1.6f - 1.0f));
+            }
             if (g_eye_dump > 0) {
                 g_eye_dump--;
                 const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - time_before).count();
@@ -514,6 +586,23 @@ Pose pose_of(Ctx* c, int mode, const Inputs& in) {
     float use = want;
     float t = ray_between(c, pivot, pivot - p.forward * want);
     if (t >= 0) use = std::max(10.0f * size, t * want - 7.0f);
+    {
+        // the near plane is a rectangle, not a point: rays to its two sides and its lower edge as well (a rock or a
+        // tree trunk of the height field beside the way cut a slice out of the picture), and what stands solid
+        // (a creature close behind: the camera was inside its body)
+        const float tan_v = std::tan(clampf(p.fov, 10, 120) * 0.5f * DEG);
+        const float nh = (p.near_plane + 3.0f) * std::min(tan_v * gfxrt::view_aspect(), 2.0f) + 2.0f, nv = (p.near_plane + 3.0f) * tan_v + 2.0f;
+        const Vec3 side = p.right * nh, below = p.down * nv;
+        // (not into the character's own back for these: a slice of a trunk at the picture's edge is the smaller harm)
+        const float least = std::min(want, 38.0f * size);
+        for (Vec3 off : {side, side * -1.0f, below}) {
+            float te = ray_between(c, pivot, pivot - p.forward * want + off);
+            if (te >= 0) use = std::min(use, std::max(least, te * want - 7.0f));
+        }
+        gather_solids(in.feet, want + 40.0f);
+        float ts = solid_between(pivot, pivot - p.forward * want, 6.0f);
+        if (ts >= 0) use = std::min(use, std::max(least, ts * want - 2.0f));
+    }
     float& pull = g_pull[mode];
     if (pull < 0 || use < pull) pull = use;
     else pull = std::min(use, pull + 240.0f * in.dt);

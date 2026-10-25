@@ -150,7 +150,9 @@ func _draw() -> void:
 		var w: float = (96.0 if mini else 68.0) * s * near
 		var h: float = (9.0 if mini else 7.0) * s * near
 		var rect := Rect2((p + Vector2(-w * 0.5, -h - 6.0 * s)).round(), Vector2(w, h).round())
-		var a: float = b.alpha
+		var a: float = b.alpha * _haze_left(c, o)
+		if a <= 0.02:
+			continue                    # lost in the haze or beyond the drawn distance: no body is seen, so no bar
 		if targeted:
 			draw_rect(rect.grow(3.0 * s), Color(1, 1, 1, 0.55 * a), false, maxf(1.0, 1.5 * s))
 		Style.bar(self, rect, b.shown, b.ghost, Style.BOSS_A if mini else Style.ENEMY_A, Style.BOSS_B if mini else Style.ENEMY_B, s, a)
@@ -246,3 +248,17 @@ func _aim(s: float, first_person: bool) -> void:
 		var centre: Vector2 = hud.picture.get_center()
 		draw_circle(centre, 3.2 * s, Color(0, 0, 0, 0.55))
 		draw_circle(centre, 1.9 * s, Color(1, 1, 1, 0.9))
+
+
+# how much of a creature the haze leaves visible (scene_view.gd _haze hands its range over as Engine meta "rta_haze":
+# [start, end, amount, eye, far]); 1 when there is no such scene (the plain picture of the game)
+func _haze_left(c: PackedFloat32Array, o: int) -> float:
+	if not Engine.has_meta("rta_haze"):
+		return 1.0
+	var hz: Array = Engine.get_meta("rta_haze")
+	var eye: Vector3 = hz[3]
+	var d := eye.distance_to(Vector3(c[o + Hud.C_WX], c[o + Hud.C_WY], c[o + Hud.C_WZ]))
+	if d > float(hz[4]) * 0.92:
+		return 0.0
+	var fog: float = float(hz[2]) * smoothstep(float(hz[0]), float(hz[1]), d)
+	return clampf((1.0 - fog - 0.25) / 0.55, 0.0, 1.0)     # gone a little before the body is (the haze is full at 1)

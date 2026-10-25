@@ -228,6 +228,7 @@ struct Track {                  // a creature seen before
     int8_t serial = 0;          // object +0x230
     bool dead = false;
     bool named = false;
+    bool metered = false;       // the name came from the boss meter's own key: kept, so the bar does not flip to the kind's name
     float health = 0, health_max = 0;
     float screen[3] = {0, 0, 0};    // of the frame before
     float head[3] = {0, 0, 0};      // the point above the head, in the world, of the frame before
@@ -557,8 +558,9 @@ void read_creatures(R& r) {
             if ((action == 0 || action == 1) && m.handle(pobj[p] + 0x234) == o) flags |= RTA_GS_CF_TARGETED;
         }
         if (meter && !dead) s.boss_uid = c.uid;
-        if (fresh || (s.updates & 63) == (c.uid & 63) || (meter && !t->name[0])) {
+        if (fresh || (meter && !t->metered) || (!t->metered && (s.updates & 63) == (c.uid & 63))) {
             creature_name(m, o, meter, t->name, sizeof t->name, t->named);
+            t->metered = meter && t->name[0];
         }
         if (t->named) flags |= RTA_GS_CF_NAMED;
         memcpy(c.name, t->name, sizeof c.name);

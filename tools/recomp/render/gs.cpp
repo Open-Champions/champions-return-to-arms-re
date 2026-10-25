@@ -629,8 +629,11 @@ Gs::Target& Gs::target_at(uint32_t block, int width, int height) {
     // A buffer the display reads is as large as the display says, whatever was drawn into
     // it before: the film player shows one buffer of 448 lines, everything else two of 224,
     // at the same place.  (Other surfaces only grow.)
+    // Not a buffer drawn far wider than the display reads (the 3-D surface, 1280 wide: the start-up code names its
+    // block for the display while the boot's memory card screen is drawn into it - made 640 x 224, that screen showed
+    // twice, cut, beside a grey block for the two seconds the naming counts)
     int dw = 0, dh = 0;
-    if (!(block & 31) && display_size(fbp, dw, dh)) {
+    if (!(block & 31) && display_size(fbp, dw, dh) && width <= dw * 3 / 2) {
         if (t.width != dw || t.height != dh || !t.announced) {
             t.width = dw; t.height = dh;
             t.announced = true;
