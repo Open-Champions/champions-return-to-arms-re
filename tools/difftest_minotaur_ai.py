@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Additional bounded Minotaur execution, SLUS_209.73 US v2.00.
 
-Run with an owned ELF and --seed 20973 / 7. Original class instructions,
+Execute with an owned ELF and --seed 20973 / 7. Original class instructions,
 own RNG and designated base-constructor/state-filter/hit-forwarding bodies execute.
 Animation, terrain, movement, base tick, holder effects and damage outcomes
 are recording services. Authored pointers and branch answers are fixtures,
@@ -13,7 +13,7 @@ import itertools
 import random
 from pathlib import Path
 
-from difftest_minotaur import fixture, read_archives
+from difftest_minotaur import definition_member, fixture, read_archives
 from dump_tables import KNOWN_SHA256, find_in_lump
 import ref_combat as combat
 import ref_minotaur as contract
@@ -51,16 +51,16 @@ class Rig:
         self.mem.w16(self.actor + 0x232, state)
         self.mem.w16(self.actor + 0x3AE, 500)
         self.mem.w32(0x404464, 0x12345678)
-        self.emu.follow = {contract.RUN, RAND}
+        self.emu.follow = {contract.TICK, RAND}
         self.emu.hooks.clear()
         self.emu.stub(0x10C0F0, ret=1)
 
     def sight(self, sites):
         self.emu.stub(SEE, function=lambda emu: int(emu.calls[-1].site in sites))
 
-    def run(self):
+    def execute_tick(self):
         self.emu.reset_log()
-        self.emu.call(contract.RUN, self.actor, max_steps=20000)
+        self.emu.call(contract.TICK, self.actor, max_steps=20000)
         assert self.mem.u32(0x404464) == 0x12345678
         return self.emu.calls
 
@@ -77,7 +77,7 @@ def check_tick_order(elf, seed):
         rig.emu.stub(0x3C2738, ret=0x730000)
         rig.emu.stub(0x112948, ret=int(stopped))
         rig.emu.stub(0x10C0F0, ret=int(active))
-        calls = rig.run()
+        calls = rig.execute_tick()
         expected = prefix[:]
         if not stopped:
             expected.append(0x10C0F0)
@@ -109,7 +109,7 @@ def check_decision_edges(elf, seed):
         rig.mem.w32(rig.actor + 0x300, 100000)
         rig.emu.stub(0x10E658, ret=visible)
         rig.emu.stub(0x10EED8, ret=away)
-        calls = rig.run()
+        calls = rig.execute_tick()
         assert rig.transitions() == ([1] if visible or away else [])
         assert (0x10EED8 in [c.target for c in calls]) == (not visible)
         count += 1
@@ -117,7 +117,7 @@ def check_decision_edges(elf, seed):
         rig.reset(1)
         rig.emu.stub(0x10E658, ret=visible)
         rig.sight({0x289660} if close else {})
-        calls = rig.run()
+        calls = rig.execute_tick()
         assert rig.transitions() == ([3] if visible and close else [])
         assert (0x119F38 in [c.target for c in calls]) == (not visible)
         cones = [c for c in calls if c.target == SEE]
@@ -133,7 +133,7 @@ def check_decision_edges(elf, seed):
             rig.mem.w32(rig.actor + 0x468, deadline)
             rig.emu.stub(rig.slot(HOLDER_TABLE, 14), ret=hand)
             rig.sight({site})
-            calls = rig.run()
+            calls = rig.execute_tick()
             eligible = not (holder and hand) and deadline < 1000
             assert rig.transitions() == ([12] if eligible else [])
             queried = [c for c in calls if c.target == SEE and c.site == site]
@@ -146,7 +146,7 @@ def check_decision_edges(elf, seed):
         rig.emu.stub(rig.slot(HOLDER_TABLE, 14), ret=1)
         rig.emu.stub(RAND, ret=draw)
         rig.sight({0x28996C})
-        rig.run()
+        rig.execute_tick()
         assert rig.transitions() == [7 + draw]
         count += 1
     # HP thresholds use PS2 multiplication; equality is outside the middle band.
@@ -161,7 +161,7 @@ def check_decision_edges(elf, seed):
             rig.emu.stub(0x118E90, ret=attacking)
             rig.emu.stub(RAND, ret=draw)
             rig.sight({0x289830, 0x28996C})
-            rig.run()
+            rig.execute_tick()
             expected = 23 if middle and attacking and shield and draw % 3 else 6 if middle else 7 + (draw & 1)
             assert rig.transitions() == [expected], (hp, attacking, shield, draw)
             count += 1
@@ -172,7 +172,7 @@ def check_decision_edges(elf, seed):
         rig.mem.w16(rig.actor + 0x11A, flags)
         rig.emu.stub(0x119608, ret=answer)
         rig.emu.stub(0x1195F0, ret=answer)
-        calls = rig.run()
+        calls = rig.execute_tick()
         assert rig.transitions() == expected
         assert (0x119F08 in [c.target for c in calls]) == (state == 16 and not answer)
         count += 1
@@ -181,7 +181,7 @@ def check_decision_edges(elf, seed):
         rig.reset(23)
         rig.mem.w32(rig.actor + 0xF4, deadline)
         rig.mem.w32(rig.actor + 0x300, age)
-        rig.run()
+        rig.execute_tick()
         assert rig.transitions() == expected
         count += 1
     return count
@@ -189,7 +189,7 @@ def check_decision_edges(elf, seed):
 
 def check_charge(elf, seed):
     rig, rng, count = Rig(elf, seed), random.Random(seed), 0
-    for running, gore, close, far, target, events, flags in itertools.product(
+    for moving, overlay_present, close, far, target, events, flags in itertools.product(
             (0, 1), (0, 1), (0, 1), (0, 1), (0, 1), (0, 1), (0, 8, 16, 24)):
         rig.reset(12, target=bool(target))
         own = rng.getrandbits(32)
@@ -200,13 +200,13 @@ def check_charge(elf, seed):
         for offset, value in ((0xD0, -7), (0xD2, 117), (0xD4, 311)):
             rig.mem.w16(rig.actor + offset, value & 0xFFFF)
         rig.emu.stub(0x1162B0, ret=events)
-        rig.emu.stub(0x170D88, function=lambda e: running if e.r[5] == 0x701000 else gore)
+        rig.emu.stub(0x170D88, function=lambda e: moving if e.r[5] == 0x701000 else overlay_present)
         rig.sight(({0x289F18} if close else set()) | ({0x289FF0} if far else set()))
-        calls = rig.run()
+        calls = rig.execute_tick()
         present = [c.args[1] for c in calls if c.target == 0x170D88]
-        assert present == ([0x701000, 0x700C00] if running else [0x701000])
+        assert present == ([0x701000, 0x700C00] if moving else [0x701000])
         animations = [c for c in calls if c.target in (contract.CHANGE, contract.BLEND)]
-        overlay = bool(running and not gore and close)
+        overlay = bool(moving and not overlay_present and close)
         assert len(animations) == (2 if overlay else 0)
         if overlay:
             assert [(c.target, c.args[:3]) for c in animations] == [
@@ -246,7 +246,7 @@ def check_hit_forwarding(elf, seed):
         rig.mem.w16(rig.actor + 0x38, facing & 0xFFFF)
         for offset, value in zip((0xD0, 0xD2, 0xD4), values):
             rig.mem.w16(rig.actor + offset, value & 0xFFFF)
-        calls = rig.run()
+        calls = rig.execute_tick()
         damage = [c for c in calls if c.target == DAMAGE]
         assert len(damage) == int(bool(target and visible))
         if damage:
@@ -370,7 +370,7 @@ def check_death_and_draw(elf, seed):
     for events in (0, 1, 0x135):
         rig.reset(20)
         rig.emu.stub(0x1162B0, ret=events)
-        calls = rig.run()
+        calls = rig.execute_tick()
         corpse = next(c for c in calls if c.target == 0x1108A0)
         assert corpse.args[:2] == (rig.actor, events)
         assert corpse.args[3] == 0 and corpse.fargs[0] == combat.f32(20.0)
@@ -428,7 +428,8 @@ def check_base_flags(elf, seed):
 
 def check_hide_masks(elf, archive):
     rig = Rig(elf, 0)
-    model = find_in_lump(archive, 'minotaur.vif')
+    exe = combat.Exe(str(elf))
+    model = find_in_lump(archive, definition_member(exe, 0).casefold())
     assert model is not None and len(model) >= 0x30
     address = rig.emu.alloc(len(model))
     rig.mem.write(address, model)
@@ -446,7 +447,7 @@ def check_hide_masks(elf, archive):
                     expected = (expected | rig.mem.u64(row)) & ~rig.mem.u64(row + 8)
         actual = rig.emu.call(0x179550, address, variant, max_steps=2000)
         assert actual == expected
-        print(f'private minotaur.vif: selector {variant}, mask 0x{actual:016x}', flush=True)
+        print(f'private definition index 0: selector {variant}, mask 0x{actual:016x}', flush=True)
     return 4
 
 
@@ -465,7 +466,7 @@ def main():
         total += count
         print(f'seed {args.seed}: {check.__name__}: {count} cases, zero mismatches', flush=True)
     if args.iso:
-        count = check_hide_masks(args.elf, read_archives(args.iso)['MINOTAUR.LMP'])
+        count = check_hide_masks(args.elf, read_archives(args.elf, args.iso)['actor'])
         total += count
         print(f'seed {args.seed}: check_hide_masks: {count} cases, zero mismatches', flush=True)
     print(f'seed {args.seed}: {total} added bounded cases, zero mismatches')

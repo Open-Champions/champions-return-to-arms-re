@@ -5,7 +5,7 @@ Resource indexes here are zero-based; the constructor's event API is one-based.
 """
 
 STATE = 0x28A16C
-RUN = 0x2894B8
+TICK = 0x2894B8
 CTOR = 0x288FDC
 DEF = 0x501200
 VTABLE = 0x5165F0

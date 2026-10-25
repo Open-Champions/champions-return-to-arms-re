@@ -10,6 +10,7 @@ this is NOT a full AI/fight verification. --iso enables private stats/clip CSVs.
 import argparse
 import csv
 import hashlib
+import json
 import mmap
 import random
 import struct
@@ -26,7 +27,7 @@ import ref_anim as animation
 
 def fixture(elf):
     emulator = EE(str(elf))
-    emulator.follow = {contract.STATE, contract.RUN}
+    emulator.follow = {contract.STATE, contract.TICK}
     actor = emulator.alloc(0x470)
     memory = emulator.mem
     memory.w32(actor + 0x24, contract.DEF)
@@ -88,7 +89,7 @@ def check_states(elf, seed):
 def check_attacks(elf, seed):
     rng = random.Random(seed)
     emulator, actor = fixture(elf)
-    emulator.follow = {contract.RUN}
+    emulator.follow = {contract.TICK}
     emulator.stub(0x10C0F0, ret=1)
     count = 0
     for state in contract.ATTACK_CLIPS:
@@ -104,7 +105,7 @@ def check_attacks(elf, seed):
                     memory.w16(actor + offset, value)
                 emulator.stub(0x1162B0, ret=event)
                 emulator.reset_log()
-                emulator.call(contract.RUN, actor)
+                emulator.call(contract.TICK, actor)
                 calls = emulator.calls
                 hits = [call for call in calls if call.target == 0x119938]
                 assert len(hits) == (event & 1 != 0), (state, event)
@@ -163,7 +164,7 @@ def check_constructor(elf, seed):
 
 def check_decisions(elf, seed):
     emulator, actor = fixture(elf)
-    emulator.follow = {contract.RUN}
+    emulator.follow = {contract.TICK}
     emulator.stub(0x10C0F0, ret=1)
     has_target = emulator.mem.u32(contract.VTABLE + 0xCC)
     cases = (
@@ -198,7 +199,7 @@ def check_decisions(elf, seed):
         emulator.stub(0x1509D0, ret=1 if attacking else 0)
         emulator.stub(0x118D40, function=lambda current: int(current.calls[-1].site in sight_sites))
         emulator.reset_log()
-        emulator.call(contract.RUN, actor)
+        emulator.call(contract.TICK, actor)
         actual = [call.args[1] for call in emulator.calls if call.target == contract.STATE]
         assert actual == ([] if expected is None else [expected]), (state, sight_sites, actual)
     for state in (23,):
@@ -207,7 +208,7 @@ def check_decisions(elf, seed):
             emulator.mem.w32(actor + 0x300, age)
             emulator.mem.w32(actor + 0xF4, 100)
             emulator.reset_log()
-            emulator.call(contract.RUN, actor)
+            emulator.call(contract.TICK, actor)
             actual = [call.args[1] for call in emulator.calls if call.target == contract.STATE]
             assert actual == expected
     print(f'seed {seed}: {len(cases) + 3} AI decision/timer cases, zero mismatches (sight/holder services stubbed)')
@@ -222,7 +223,7 @@ def check_clips(elf, archive, output):
     rig.emu.mem.w32(actor + 0x24, contract.DEF)
     clips = {}
     for index in range(2, 20):
-        name = exe.cstr(exe.u32(contract.DEF + 8 + 8 * index))
+        name = definition_member(exe, index)
         clip = rig.load_clip(entries[name.lower()], name)
         clips[index] = clip
         rig.emu.mem.w32(contract.DEF + 12 + 8 * index, rig.ptr(clip))
@@ -248,20 +249,48 @@ def check_clips(elf, archive, output):
     print('18 private Minotaur clips: original relocate/configure/advance vs existing animation model, zero mismatches')
 
 
-def read_archives(iso):
-    wanted = {'BALANCE.LMP', 'MINOTAUR.LMP'}
+def definition_member(exe, index):
+    """Resolve a private resource identifier from its owned definition entry."""
+    assert 0 <= index < 26
+    return exe.cstr(exe.u32(contract.DEF + 8 + 8 * index))
+
+
+def read_archives(elf, iso, output=None):
+    # balance_load 0x223998 uses these two executable string addresses.
+    # Class archive identity is the string pointer at definition +0.
+    exe = combat.Exe(str(elf))
+    wanted = {'balance': exe.cstr(0x53FC78),
+              'actor': exe.cstr(exe.u32(contract.DEF))}
+    roles = {name.casefold(): role for role, name in wanted.items()}
+    assert len(roles) == len(wanted)
     result = {}
     with iso.open('rb') as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as image:
         for name, offset, size in iso_files(image):
-            basename = name.rsplit('/', 1)[-1].upper()
-            if basename in wanted:
-                result[basename] = image[offset:offset + size]
-    assert result.keys() == wanted
+            role = roles.get(name.rsplit('/', 1)[-1].casefold())
+            if role is not None:
+                assert role not in result
+                result[role] = image[offset:offset + size]
+    assert result.keys() == wanted.keys()
+    if output is not None:
+        private_root = Path(__file__).resolve().parents[1] / 'local'
+        assert private_root in output.resolve().parents
+        mapping = {
+            'archive_roles': wanted,
+            'balance_member': exe.cstr(0x53FC88),
+            'definition': hex(contract.DEF),
+            'resources': [{'index': index, 'name': definition_member(exe, index)}
+                          for index in range(26)],
+            'archive_members': {role: [name for name, _, _ in lmp_entries(blob)]
+                                for role, blob in result.items()},
+        }
+        (output / 'private-members.json').write_text(json.dumps(mapping, indent=2) + '\n')
     return result
 
 
 def check_stats(elf, seed, balance, output):
-    blob = find_in_lump(balance, 'monsters.bal')
+    exe = combat.Exe(str(elf))
+    blob = find_in_lump(balance, exe.cstr(0x53FC88).casefold())
+    assert blob is not None
     rows = struct.unpack_from('<H', blob)[0]
     matching = [struct.unpack_from('<5H', blob, 4 + index * 12)
                 for index in range(rows)
@@ -324,9 +353,9 @@ def main():
         if args.out is None or 'local' not in args.out.resolve().parts:
             parser.error('--iso requires a private --out under local/')
         args.out.mkdir(parents=True, exist_ok=True)
-        archives = read_archives(args.iso)
-        check_stats(args.elf, args.seed, archives['BALANCE.LMP'], args.out / f'stats-{args.seed}.csv')
-        check_clips(args.elf, archives['MINOTAUR.LMP'], args.out / f'clips-{args.seed}.csv')
+        archives = read_archives(args.elf, args.iso, args.out)
+        check_stats(args.elf, args.seed, archives['balance'], args.out / f'stats-{args.seed}.csv')
+        check_clips(args.elf, archives['actor'], args.out / f'clips-{args.seed}.csv')
 
 
 if __name__ == '__main__':

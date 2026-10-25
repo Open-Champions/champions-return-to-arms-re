@@ -10,7 +10,7 @@ class MinotaurContractTests(unittest.TestCase):
             self.assertEqual(contract.stored_state(state), 0)
             self.assertEqual(contract.state_animation(state), [])
 
-    def test_charge_taunt_once(self):
+    def test_charge_overlay_once(self):
         self.assertEqual(len(contract.state_animation(12, first_charge=True)), 2)
         self.assertEqual(len(contract.state_animation(12, first_charge=False)), 1)
 
