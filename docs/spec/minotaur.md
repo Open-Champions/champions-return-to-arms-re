@@ -4,7 +4,7 @@
 exact live combat, rendering and loot pickup remain unverified.
 
 **Observed / scope, 2026-10-24:** this is research in `t3/research-minotaur`,
-not a native-client implementation. The initial worktree was clean at `9911a6b`.
+not a native-client implementation. The recovered work is based on `9911a6b`.
 Private executable identity is SHA-256
 `292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675`.
 Instruction evidence is the executable and the read-only translation
@@ -116,6 +116,26 @@ base initialization and writes `1 << (draw & 1)` at +0xe8. Case-insensitive
 that class-local draw. Both call `model_buildHideMask(modelSlot0, variant)`.
 Base HP RNG comes earlier. Never replace either own draw with the shared seed.
 
+**Observed / executed continuation:** `difftest_minotaur_ai.py::check_base_flags`
+runs the class, `Creature_ctor` and `GameObject_ctor` together in 16 cases per
+seed. Property lookups, stat assignment, resources, grid linking, animation
+and final init remain call-outs. Starting flags are preserved, with `MiniBoss`
+adding 1, `IgnoreDamage` adding 0x1000000000000, and any of `light1`, `light2`,
+`ambient` adding 0x40000000 (base 0x10a0dc–0x10a190; the probe selects `light1`).
+The class then ORs 0x200040000 and accepted state0 clears 0x200. Thus a zeroed
+allocation with none of those overrides has **0x200040000 before final init**;
+this is not a claim that scripts/activity/load leave flags unchanged afterwards.
+Position, signed16 facing, definition and property pointer forwarding are
+also checked. No replacement base-HP formula or resource manager is used.
+
+**Observed / reused placement check:** the six actual Valor Minotaur records
+in `VALOR.GOB` (SHA-256
+`8b8a7cb9c88a33ad60d14b7ce8f48918e9c586b199062b0c73e083d4b84c292b`)
+have only `name` property entries. There are no placement overrides of the
+flags or perception defaults above/below. Later script/save effects remain
+outside that statement. The continuation uses the existing
+`research-campaign-combat` parser; it does not replace the loader.
+
 **Observed:** final sequence is hide mask → `anim_clear(this+0x114)` 0x1707b0
 → `Minotaur_setState(this,0)` → `obj_runEvery60` 0x14f2b8 → eight definition
 event configurations via 0x118378 → `Creature_init` 0x10a230. That last service
@@ -178,6 +198,23 @@ the per-level/difficulty/own-seed results. Some extra combinations intentionally
 cross a Valor L with another difficulty to isolate the two effects. This is
 not a measured campaign seed, nor new multiplayer/MinotaurBoss execution.
 
+**Observed / executed Valor summary:** ordinary rank0, one player, matching
+level scale/difficulty, all five own-roll residues. HP endpoints below are
+**raw f32 bits**, not rounded decimal HP. The private CSVs contain each roll.
+
+| Difficulty | L | HP minimum–maximum bits | Armour | Damage low–high | Attack | XP value |
+|---|---:|---|---:|---:|---:|---:|
+| 1 | 22 | 0x4475e687–0x449aade9 | 615 | 84–169 | 307 | 1599 |
+| 2 | 50.5 | 0x453add8f–0x456b16bc | 1413 | 194–388 | 706 | 4796 |
+| 3 | 77.5 | 0x45b3493c–0x45e18daf | 2169 | 298–596 | 1084 | 8449 |
+| 4 | 104.5 | 0x46107794–0x4635bfba | 2925 | 402–804 | 1462 | 12544 |
+| 5 | 131.5 | 0x4652c28f–0x46849329 | 3681 | 506–1012 | 1840 | 16997 |
+
+**Observed:** these are outgoing stat inputs, not guaranteed player HP loss;
+the damage pipeline below still applies. The 1..160 probe interval is a test
+domain, not an inferred maximum legal monster level. Use the reused formula
+for other levels, including its signed16 conversion/wrap behavior.
+
 ## 5. Resource, animation and presentation bindings
 
 **Observed:** definition slot/resource pointer i lives at `def+12+8*i`.
@@ -221,11 +258,24 @@ Most blend times are raw **0x3dcccccc**, not the host-rounded representation
 of decimal 0.1. Preserve flags and both blend arguments, rather than guessing
 clip duration as the attack cooldown.
 
-**Observed:** draw 0x289400 obtains model via virtual slot 16, calls
-`Creature_draw(this, model, definition texture slot1, 0)`, retains its return,
-then calls holder slot 18 with `(holder, definition, model, drawResult)`.
+**Observed / executed continuation:** `model_buildHideMask` 0x179550 starts
+with the complement of the model's u64 at +8. If u16 +0x10 has mask0x2, each set
+selector bit applies its 16-byte row at `model + 16*u8(model+0x21) + 16*bit`:
+OR the first u64, then AND the complement of the second. Original instructions
+on the private, unmodified `minotaur.vif` give selector0 → **0x233**, ordinary
+selector1 → **0x433**, ordinary selector2 → **0xb3**, boss selector4 → **0x15c**.
+The probe compares this metadata calculation and the original return; it
+does not claim rendered visibility from the mask alone.
+
+**Observed / executed continuation:** draw 0x289400 obtains model via virtual
+slot16, calls `Creature_draw` 0x10b048 with
+`(this, model, definition texture slot1, 0)`, retains that result, obtains
+model via slot16 **again**, then calls holder slot18 with
+`(holder, definition, secondModel, drawResult)` if a holder exists.
 This is how held axe/shield presentation joins the body draw, not separate
-world enemies. Hide-mask generation, texture/material/part interpretation,
+world enemies. Four zero/nonzero-result/holder cases check this call order;
+they do not impose a returned draw-chain value on the class draw method.
+Texture/material/part interpretation,
 actual visual quality and live animation-to-damage alignment are **Unknown**
 in this new probe; the shared holder/placement research supplies the service
 contracts, not a new rendered Minotaur proof.
@@ -243,6 +293,11 @@ contracts, not a new rendered Minotaur proof.
 7. virtual slot 23 `Creature_pickTarget(this,0)`; then read signed16 state
    +0x232 and dispatch it.
 
+**Observed / executed continuation:** eight combinations of holder presence,
+base-run early exit and active/inactive result compare the complete ordered
+prefix and arguments above. These are class control-flow checks; the base
+services and holder effects are recording stubs.
+
 **Observed / reused:** aggro is shared `Creature_pickTarget` 0x10ded0, not a
 Minotaur-specific fixed chase radius. See `docs/spec/creature-tick.md` section
 6: serial-staggered 32-frame scans, HomeRange box/leash, last-attacker/current
@@ -252,6 +307,18 @@ target scoring and target-handle lifecycle. `Creature_canSeeTarget` slot 25
 root/stun/cooldown, and clears targets on zero-state selection. Reuse the
 base constructor's perception/properties and these helpers; neither an
 always-true sight stub nor a hard-coded target implements aggro.
+
+**Observed / reused from WarBoar `dbc3d59`, also executed in the Minotaur base
+probe:** default HomeRange1000, pointblankrange300, visualrange500,
+visualarc0x4000; same-named properties override them. Slot25 first uses facing0,
+arc0x7fff, near0/far pointblankrange; on failure, actual facing/visualarc and
+visualrange. `force=0` does not imply terrain is ignored. For distance d,
+attacker radius ra, target radius rt and wrapped signed16 bearing delta,
+the shared sight geometry requires `abs(delta) < arc`, `d-rt-ra < far`,
+and `near <= d+rt-ra`; angular and far boundaries are strict. The terrain ray
+still has to pass. See the pinned WarBoar handoff and creature-tick section6
+for scan/leash/scoring and section9 for movement/path/terrain. A Minotaur's
+radius25 does not turn a far36 attack query into center distance36.
 
 **Observed:** all sight tuples below are `(near, far, facing offset, arc)`
 with lead 0 and rayMode 0 at 0x118d40. Arc units are signed16 angle units,
@@ -299,6 +366,23 @@ queries, movement, common tick and state transitions are stubbed in this
 decision probe. The full state3/state5/charge behavior above is **read**, not
 a claim that those 20 cases cover every branch or a real battle.
 
+**Observed / executed continuation:** 116 additional decision cases per seed
+check idle/wander, both charge-entry range orders, holder/cooldown equality,
+both armed-forward random choices, one-f32-step neighbors of both health
+thresholds, block choices, reaction/stun/flee exits and signed timer edges.
+Another **256 charge cases** cross run/gore presence, both sight results,
+target presence, event0/1 and animation flags0/8/16/24. They compare actual
+overlay call arguments, target-dependent hits, exit requests, own RNG and
+deadline stores. Sight/animation/movement/base services remain scripted.
+No live blend, trajectory or final damage follows from this coverage.
+
+**Observed / executed continuation:** 11 composed state-filter cases run
+0x10a9c0, root/stun/readiness helpers and the original class method together:
+root redirect takes precedence, then stun, then cooldown; no target clears
+cooldown; death clears the status timers; inert state1 is refused before
+class-side flag clearing. PvP-mode global refusal and the general filter
+model remain reused shared research, not newly exhaustive filter coverage.
+
 ## 7. Attack and damage contract
 
 **Observed / executed:** each attack uses `Creature_hitTargetInArc` 0x119938
@@ -320,9 +404,15 @@ processDamage; do not maintain a second detached Minotaur HP counter.
 
 **Observed / executed:** 96 attack event/animation cases per seed compare
 call arguments and next-state requests for states6–11, with masks0/1/4/5 and
-anim flags0/8/16/24. Event4 on `atak_left` alone makes **no hit**. The current
-probe's descriptor getter returns zero; nonzero descriptor contents and
-live player damage are **Unknown in this probe**, not proved absent.
+anim flags0/8/16/24. Event4 on `atak_left` alone makes **no hit**. The original
+probe's descriptor getter returns zero. The continuation adds **48 cases**
+that execute the real WeaponShield slot17 (0x11be20) and
+`Creature_hitTargetInArc`, with target/no-target, sight pass/fail and
+holder/no-holder. Hand1 returns `holder+0x50` (actor+0x418), forwarded to
+`damage_apply` for states7–11; state6 still forwards null. Signed negative
+and positive stat fields are checked through their float conversions.
+Descriptor contents, geometric sight and damage outcomes remain call-outs
+or synthetic memory; live player HP loss is **Unknown**.
 
 ## 8. Death, corpse and loot
 
@@ -363,11 +453,28 @@ gold object. Rank1/2 and tint alter calls/scaling, and the generator has
 early-return paths. Actual ground objects, landing, pickup and player-record
 credit need the shared Gold/PhProp/pickup chain, not a direct HUD increment.
 
+**Observed / reused execution refreshed:** the continuation calls only
+`research-campaign-combat`'s existing `check_minotaur_source`, using its
+actual first Valor record and the same private executable. Seed20973 gives
+one Gold request and 645 shared draws; seed7 gives none and 7 draws. The
+logged outcomes are respectively `done` and `no equipment roll`. The existing
+generator model agrees with the original; constructors, physics/terrain and
+world publication remain recording stubs. These are not 645 draws consumed
+by the Minotaur class itself, nor live seed-stream measurements.
+
 **Observed:** state18 (hit reaction) drops both held parts only below the
 strict maxHP×0x3ea8f5c2 threshold, then blends `hitreaction` flags0x810.
 State16 writes cooldown60 at +0x318 and runs/rewinds; state19 changes to
 idle1 with blend0x3e999999. State20's later tick uses shared corpse sinking,
 blood and deletion via `Creature_deadUpdate` 0x1108a0, not immediate despawn.
+
+**Observed / executed continuation:** 17 cases cover four class death
+sequences (holder/no-holder and two own seeds), four draw sequences, six
+reaction-drop threshold cases and three corpse-event forwards. Death call
+snapshots show the old state remains stored through loot, holder drops,
+death animation and onDeath; state20 is stored afterwards. This prevents
+reordering those side effects or treating a dropped held part as an inventory
+award. Corpse sinking/deletion bodies themselves are reused shared research.
 
 ## 9. Verification, capture limitation and remaining work
 
@@ -378,10 +485,29 @@ for seed in 20973 7; do
   PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_minotaur.py \
     /Users/syndicatemike/champions-re/SLUS_209.73 --seed "$seed" \
     --iso "$HOME/Library/Application Support/Play-RTA/Champions - Return to Arms (v2.00).iso" \
-    --out local/minotaur
+    --out local/minotaur/continuation
+  PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_minotaur_ai.py \
+    /Users/syndicatemike/champions-re/SLUS_209.73 --seed "$seed" \
+    --iso "$HOME/Library/Application Support/Play-RTA/Champions - Return to Arms (v2.00).iso"
 done
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools -p 'test_*.py'
 ```
+
+**Observed / executed results:** each seed passes 168 state/health/charge,
+96 event/attack, 100 constructor and 20 initial decision cases, plus 4,125
+stats cases and 18 original clip relocation/configuration/advancement checks.
+The continuation adds **476 cases per seed**: ordered tick8, decisions116,
+charge256, descriptor/hit forwarding48, state-filter11, death/draw/corpse17,
+base flags/ABI16, private-model masks4. Total: **4,985 cases per seed** plus
+18 clips, zero mismatches; 657 Python tests pass. These are case counts, not
+instruction-coverage percentages, native acceptance or full-fight validation.
+
+**Observed / private evidence:** `local/minotaur/continuation/` contains
+`recovered-{20973,7}.log`, `ai-{20973,7}.log`, `stats-{20973,7}.csv`,
+`clips-{20973,7}.csv`, `shared-loot.log`, `unittest-recovered.log`,
+`unittest-final.log` and the evidence manifest. No new gameplay pictures exist.
+The recovered research was committed as `9f7616a`; the continuation is a
+separate local commit. No native implementation files are changed here.
 
 **Observed:** no native/Godot build was necessary or performed. No source,
 disc, translation, emulator config or other worktree was modified outside
@@ -393,8 +519,10 @@ v2.8.2. A separate `-datapath <worktree>/local/pcsx2` configuration/boot attempt
 created `local/pcsx2/PCSX2/inis/PCSX2.ini` with
 `SetupWizardIncomplete=true`. Both that profile's BIOS directory and the
 existing `~/Library/Application Support/PCSX2/bios` directory contain no
-BIOS file. The owned PCSX2 process was terminated by its exact recorded PID;
-existing user profiles were not changed. Private logs:
+BIOS file. During continuation the interrupted boot was still running as
+PID50442, with its command line selecting this worktree's isolated datapath.
+SIGTERM did not stop it; SIGKILL to that **exact PID** did, and a subsequent
+PID check confirmed exit. Existing user profiles were not changed. Private logs:
 `local/minotaur/pcsx2-{config,boot}*`. **No PCSX2 game frame or Minotaur
 capture was obtained; there are no new gameplay pictures.**
 
@@ -406,7 +534,7 @@ capture was obtained; there are no new gameplay pictures.**
   simulation frame/seed and a Minotaur's constructor, attack, hit, death and
   pickup sequence. Do not relabel the prior assisted Play! capture as PCSX2.
 - Live blend/overlay/root-motion timing, shared sight/terrain/holder effects,
-  nonzero descriptors, final damage and exact animation appearance are not
+  runtime descriptor contents, final damage and exact animation appearance are not
   established by class-local stubs or fresh-stack clip stepping. Capture and
   cross-check these against the runtime, preserving inherited base state.
 - The adapter still needs real state-filter, holder tick/query/drop/draw,
