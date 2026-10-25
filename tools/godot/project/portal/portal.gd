@@ -42,9 +42,11 @@ const Profile := preload("res://portal/profile.gd")
 const Notices := preload("res://portal/notices.gd")
 const Handover := preload("res://portal/handover.gd")
 const GameFlow := preload("res://portal/gameflow.gd")
+const Edition := preload("res://portal/edition.gd")
 
 const SCREENS := {
 	"first": "res://portal/screens/first.gd",
+	"modes": "res://portal/screens/modes.gd",
 	"disc": "res://portal/screens/disc.gd",
 	"home": "res://portal/screens/home.gd",
 	"friends": "res://portal/screens/friends.gd",
@@ -143,7 +145,7 @@ func _ready() -> void:
 	_layout()
 	var first := String(options.start)
 	if first == "":
-		first = "home" if profile.first_start_done() else "first"
+		first = "modes" if profile.first_start_done() else "first"     # the first screen: which game (Classic / Remastered)
 	go(first, {}, true)
 
 
@@ -362,7 +364,7 @@ func back() -> void:
 	if stack.size() > 1:
 		stack.pop_back()
 		_show(-1)
-	elif current_name() == "home":
+	elif current_name() == "home" or current_name() == "modes":
 		confirm("Leave the game?", "", "Quit", func() -> void: quit(), false, "Stay")
 
 
@@ -701,6 +703,50 @@ func play_alone() -> void:
 	handover.call("start", {"kind": "alone", "character": profile.character()})
 
 
+# ---- which game: Classic or Remastered (edition.gd, screens/modes.gd) -------------------------------------------------
+func edition() -> String:
+	return profile.edition()
+
+
+func set_edition(kind: String) -> void:
+	# remembered in the profile; the interface and the view follow it; a game that already runs takes it at once
+	if kind != Edition.CLASSIC and kind != Edition.REMASTERED:
+		return
+	var was: String = profile.edition()
+	if was == kind:
+		return
+	if kind == Edition.CLASSIC:
+		if was != "":
+			profile.cfg.set_value("settings", "view_remastered", String(profile.setting("view")))
+		profile.set_setting("view", "overhead")
+		profile.set_setting("interface", "original")
+	else:
+		var view := String(profile.cfg.get_value("settings", "view_remastered", ""))
+		if view == "":
+			view = "chase"              # Remastered's first time: behind the character (all five views: V or Settings)
+		if view != "":
+			profile.set_setting("view", view)
+		profile.set_setting("interface", "new")
+	profile.set_setting("game", kind)
+	print("portal: the game is now %s (was %s)" % [kind, was if was != "" else "not chosen"])
+	handover.call("apply_edition")
+	if gameflow != null:
+		gameflow.set("copy_said", "")       # what this copy says of itself in a room: said again with the type
+	top.call("build")
+	if screen != null:
+		screen.call("rebuild")
+
+
+func play_edition(kind: String, how: String) -> void:
+	# a card's buttons: Play (alone, at once) or Online (the rooms, friends and characters of home)
+	set_edition(kind)
+	if how == "play":
+		go("home")
+		play_alone()
+	else:
+		go("home")
+
+
 func host_game() -> void:
 	if not session.online():
 		toast("You are offline - a room needs the connection.", "error", String(session.me().get("problem", "")))
@@ -713,6 +759,19 @@ func host_game() -> void:
 	pending_room = true
 	session.host({"level": "", "difficulty": 1, "mode": 0, "open_to": Session.OPEN_FRIENDS})
 	go("room")
+
+
+func start_room() -> int:
+	# the host's Start: refused here while a copy in the room says the other type (Classic / Remastered, edition.gd) -
+	# the game library itself only compares Hardcore and aiming, which it makes a guest follow
+	if edition() != "":
+		for m in session.room().get("members", []):
+			var k: String = Edition.of_member(m)
+			if k != "" and k != edition():
+				print("portal: the start is refused: %s plays %s, this room %s" % [String(m.get("name", "")), k, edition()])
+				toast("%s plays %s - they must switch first" % [String(m.get("name", "")), Edition.title(k)], "error")
+				return Session.ERR_REFUSED
+	return session.start()
 
 
 func join_code(code: String) -> void:

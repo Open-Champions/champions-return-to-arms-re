@@ -354,6 +354,20 @@ func portrait(ci: CanvasItem, rect: Rect2, character: Dictionary, framed: bool, 
 	return true
 
 
+# ---- the first screen's two cards (portal/screens/modes.gd): a painting of the game behind each -------------------
+func mode_art(ci: CanvasItem, rect: Rect2, kind: String, e: float) -> bool:
+	var id: String = PORTRAITS[0] if kind == "classic" else PORTRAITS[4]
+	if not _on() or not GA.has(id):
+		return false
+	var img := GA.image(id)
+	var src := Vector2(img.get_size()) / GA.texel(id)
+	var k := maxf(rect.size.x / src.x, rect.size.y / src.y)
+	var cut := rect.size / k
+	var tone := Color(0.92, 0.86, 0.76) if kind == "classic" else Color(1.0, 0.82, 0.70)
+	GA.draw_part(ci, id, rect, Rect2((src - cut) * 0.5, cut), tone.lerp(Color.WHITE, 0.12 * e))
+	return true
+
+
 # ---- controller hints ---------------------------------------------------------------------------------
 func pad_glyph(ci: CanvasItem, rect: Rect2, name: String, glyph_style: String) -> bool:
 	if not _on() or glyph_style != "ps":

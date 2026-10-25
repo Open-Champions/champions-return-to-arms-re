@@ -36,6 +36,8 @@ var hud: Node
 var state := IDLE
 var level := 0.0                        # 0 the game's music .. 1 the player's track
 var tracks: PackedStringArray = PackedStringArray()
+var er_tracks := false                 # the portal's Remastered: the player's own Elden Ring boss tracks too, when they are on
+                                        # this computer (portal/edition.gd er_boss_tracks: never shipped, never fetched)
 var bag: Array = []                     # what is left of the shuffle
 var last_track := ""
 var folder := ""
@@ -99,8 +101,11 @@ func scan() -> void:
 			if name.get_extension().to_lower() in EXTENSIONS and not name.begins_with("."):
 				tracks.append(folder.path_join(name))
 		tracks.sort()
+	if er_tracks:
+		for path in (load("res://portal/edition.gd") as GDScript).call("er_boss_tracks"):
+			tracks.append(path)
 	bag = bag.filter(func(path): return path in tracks)
-	say("%d track(s) in %s" % [tracks.size(), folder])
+	say("%d track(s) in %s%s" % [tracks.size(), folder, " and the player's Elden Ring boss tracks" if er_tracks else ""])
 
 
 func _next_track() -> String:

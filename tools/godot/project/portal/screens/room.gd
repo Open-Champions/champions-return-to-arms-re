@@ -10,12 +10,14 @@ extends "res://portal/screen.gd"
 # After the game the same room is back, with "Play again".
 
 const Session := preload("res://portal/session.gd")
+const Edition := preload("res://portal/edition.gd")
 
 var chat_typed := ""
 var played := false
 var room := {}
 var leaving := false
 var auto_key := ""
+var offered := ""                   # the switch to the room's type was offered for this room and type
 
 
 func hints() -> Array:
@@ -45,6 +47,15 @@ func build() -> void:
 	var y := 0.0
 	var title := "Your room" if i_host else "%s's room" % String(host_member.get("name", "The host"))
 	say(Rect2(0, 0, left_w, UI.px(60)), title, 44, UI.TEXT, UI.serif_bold())
+	# the room's type (Classic / Remastered, edition.gd): the host's - shown at the right of the title
+	var mine_kind := String(portal.call("edition"))
+	var room_kind := _room_kind(host_member, i_host)
+	if room_kind != "" or mine_kind != "":
+		# a chip after the title: CLASSIC / REMASTERED (the host's choice; the host changes it in Settings -> Game)
+		var chip := KindChip.new()
+		chip.text = Edition.title(room_kind if room_kind != "" else mine_kind).to_upper() + ("" if room_kind != "" else "  ?")
+		var tx := UI.text_width(title, UI.serif_bold(), 44) + UI.px(22)
+		put(chip, Rect2(tx, UI.px(12), UI.text_width(chip.text, UI.spaced(UI.bold(), 3.0), 18) + UI.px(40), UI.px(40)))
 	y += UI.px(70)
 	# ---- only when something is wrong ----
 	_find_odd(members, host_member)
@@ -79,6 +90,9 @@ func build() -> void:
 			member = {}
 		seat.member = member
 		seat.odd = not member.is_empty() and _is_odd(member, host_member)
+		if not member.is_empty() and mine_kind != "" and room_kind != "" and Edition.of_member(member) != "" and Edition.of_member(member) != room_kind:
+			seat.odd = true
+			seat.odd_text = "Plays " + Edition.title(Edition.of_member(member))
 		put(seat, Rect2(k * (seat_w + seat_gap), y, seat_w, seats_h))
 		seat.build()
 		if member.is_empty():
@@ -100,6 +114,11 @@ func build() -> void:
 	var combat := gameflow_active() and bool(portal.gameflow.call("combat_available"))
 	# aiming by looking (tools/recomp/app/fpaim.h): a room option the same way (bit 0x4000 of the copy's word count)
 	var aim := gameflow_active() and bool(portal.gameflow.call("aim_available"))
+	# with the portal's Classic / Remastered choice both are part of the type: one "Type" choice in their place
+	var typed := mine_kind != ""
+	if typed:
+		combat = false
+		aim = false
 	var columns := 2 + (1 if combat else 0) + (1 if aim else 0) + 1
 	var cw := (left_w - UI.px(14) * (columns - 1)) / columns
 	# the game's own four (net2_options.difficulty 1..4; 0 means the first).
@@ -170,6 +189,22 @@ func build() -> void:
 		main.text = "Starting..."
 		main.disabled = true
 		note = _routes_text(members)
+	elif typed and room_kind != "" and room_kind != mine_kind:
+		# a guest of the other type: the one thing to press is the switch (or Leave)
+		main.text = "Switch to " + Edition.title(room_kind)
+		main.icon = "check"
+		note = "This room plays %s; you chose %s. The two cannot play in one room." % [Edition.title(room_kind), Edition.title(mine_kind)]
+		var to := room_kind
+		main.activated.connect(func() -> void: _switch(to))
+		if offered != String(room.get("code", "")) + to:
+			offered = String(room.get("code", "")) + to
+			_offer.call_deferred(to)
+	elif typed and i_host and not _other_kind(members, room_kind).is_empty():
+		# a guest of the other type is in my room: nothing starts until they switch (or leave)
+		main.text = "Start the game"
+		main.icon = "sword"
+		main.disabled = true
+		note = "Waiting for %s to switch to %s." % [_names(_other_kind(members, room_kind)), Edition.title(room_kind)]
 	elif gameflow_active() and not portal.gameflow.call("has_character"):
 		# the game's side: a character for this game first, on the game's own screens
 		main.icon = "person"
@@ -201,7 +236,7 @@ func build() -> void:
 			note = "You can start alone - friends can still come in by the code."
 		else:
 			note = "Everybody is ready."
-		main.activated.connect(func() -> void: portal.session.start())
+		main.activated.connect(func() -> void: portal.call("start_room"))
 	else:
 		var ready := bool(mine.get("ready", false))
 		main.text = "Not ready after all" if ready else ("Ready - play again" if played else "I am ready")
@@ -268,6 +303,43 @@ func build() -> void:
 		want_focus = auto_key
 
 
+# the names of the members whose copy says the other type (edition.gd)
+static func _other_kind(members: Array, kind: String) -> Array:
+	var out := []
+	if kind == "":
+		return out
+	for m in members:
+		var k := Edition.of_member(m)
+		if k != "" and k != kind:
+			out.append(String(m.name))
+	return out
+
+
+func _room_kind(host_member: Dictionary, i_host: bool) -> String:
+	# the type the room plays: what the host's copy says of itself (edition.gd ROOM_BIT); mine when I am the host
+	if i_host:
+		return String(portal.call("edition"))
+	return Edition.of_member(host_member)
+
+
+func _offer(kind: String) -> void:
+	if portal.get("screen") != self or not portal.get("shown"):
+		return
+	var mine := String(portal.call("edition"))
+	print("portal: room %s plays %s, this copy %s: the switch is offered" % [String(room.get("code", "")), kind, mine])
+	portal.call("menu", "This room plays " + Edition.title(kind), [
+		{"text": "Switch to " + Edition.title(kind), "icon": "check", "kind": "primary", "run": func() -> void: _switch(kind)},
+		{"text": "Leave the room", "icon": "door", "run": _leave},
+		{"text": "Not now", "kind": "ghost"}],
+		"You chose %s. Classic and Remastered players cannot be in the same room." % Edition.title(mine))
+
+
+func _switch(kind: String) -> void:
+	portal.call("set_edition", kind)
+	portal.call("toast", "You play %s now" % Edition.title(kind), "good")
+	rebuild()
+
+
 func gameflow_active() -> bool:
 	return portal.gameflow != null and bool(portal.gameflow.active)
 
@@ -304,15 +376,15 @@ func _find_odd(members: Array, host_member: Dictionary) -> void:
 		return
 	var groups := {}
 	for m in members:
-		var k := "%d/%d/%d" % [int(m.get("fix_set", 0)), int(m.get("fix_words", 0)), int(m.get("arith_does", 0))]
+		var k := "%d/%d/%d" % [int(m.get("fix_set", 0)), int(m.get("fix_words", 0)) & ~Edition.ROOM_BIT, int(m.get("arith_does", 0))]
 		groups[k] = int(groups.get(k, 0)) + 1
-	var host_key := "%d/%d/%d" % [int(host_member.get("fix_set", 0)), int(host_member.get("fix_words", 0)), int(host_member.get("arith_does", 0))]
+	var host_key := "%d/%d/%d" % [int(host_member.get("fix_set", 0)), int(host_member.get("fix_words", 0)) & ~Edition.ROOM_BIT, int(host_member.get("arith_does", 0))]
 	var best := host_key
 	for k in groups:
 		if int(groups[k]) > int(groups.get(best, 0)):
 			best = k
 	for m in members:
-		var k := "%d/%d/%d" % [int(m.get("fix_set", 0)), int(m.get("fix_words", 0)), int(m.get("arith_does", 0))]
+		var k := "%d/%d/%d" % [int(m.get("fix_set", 0)), int(m.get("fix_words", 0)) & ~Edition.ROOM_BIT, int(m.get("arith_does", 0))]
 		if k != best:
 			odd_ids[String(m.id)] = true
 
@@ -333,6 +405,17 @@ func _mismatch_text(members: Array, mine: Dictionary, host_member: Dictionary) -
 	# the combat mode first, whether or not the service calls the room mismatched (a copy that says nothing of itself is
 	# left out of its checks, but net2_start refuses a room whose copies differ in the souls mode all the same): every
 	# copy must play with the host's choice - a copy whose game has no souls-style mode cannot
+	if String(portal.call("edition")) != "":
+		var host_kind := Edition.of_member(host_member)
+		var other := []
+		for m in members:
+			var k := Edition.of_member(m)
+			if host_kind != "" and k != "" and k != host_kind and not bool(m.host):
+				if bool(m.me):
+					return "This room plays %s and you chose %s - switch to play here, or leave." % [Edition.title(host_kind), Edition.title(k)]
+				other.append(String(m.name))
+		if not other.is_empty():
+			return "This room plays %s - %s chose the other game and must switch." % [Edition.title(host_kind), " and ".join(PackedStringArray(other))]
 	var without := []
 	for m in members:
 		if _souls_of(m) != _souls_of(host_member) and not bool(m.host):
@@ -435,6 +518,7 @@ func _ask_leave() -> void:
 func _leave() -> void:
 	leaving = true
 	portal.session.leave()
+	portal.handover.call("apply_edition")     # the room's type may have been taken up by the game library: mine again
 	portal.call("home")
 
 
@@ -462,6 +546,7 @@ class Seat extends W.Focusable:
 	var member := {}
 	var starting := false
 	var odd := false
+	var odd_text := "Different version"
 	var portrait: Control
 
 	func build() -> void:
@@ -580,7 +665,7 @@ class SeatText extends Control:
 		var colour := UI.FAINT
 		var icon_name := ""
 		if bool(seat.get("odd")):
-			mark = "Different version"
+			mark = String(seat.get("odd_text"))
 			colour = UI.RED
 			icon_name = "warn"
 		elif bool(seat.get("starting")) and not bool(member.get("me", false)):
@@ -695,3 +780,15 @@ class Banner extends Control:
 			UI.text(self, Rect2(x, UI.px(38), size.x - x - UI.px(20), UI.px(24)), detail, UI.sans(), 15, Color(1, 0.82, 0.8, 0.85))
 		else:
 			UI.text(self, Rect2(x, 0, size.x - x - UI.px(20), size.y), text, UI.bold(), 21, UI.TEXT)
+
+
+class KindChip extends Control:
+	var text := ""
+
+	func _init() -> void:
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	func _draw() -> void:
+		var r := Rect2(Vector2.ZERO, size)
+		draw_style_box(UI.box(size.y * 0.5, Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.12), Color(UI.GOLD.r, UI.GOLD.g, UI.GOLD.b, 0.7), maxf(1.0, UI.px(1.5))), r)
+		UI.text(self, r, text, UI.spaced(UI.bold(), 3.0), 18, UI.GOLD_HI, HORIZONTAL_ALIGNMENT_CENTER)

@@ -12,7 +12,7 @@ extends "res://portal/screen.gd"
 # Left / right changes a value at once; nothing has to be "applied".
 
 const Session := preload("res://portal/session.gd")
-const TABS := [["view", "View", "eye"], ["display", "Display", "screen"], ["sound", "Sound", "speaker"], ["controls", "Controls", "pad"],
+const TABS := [["game", "Game", "layers"], ["view", "View", "eye"], ["display", "Display", "screen"], ["sound", "Sound", "speaker"], ["controls", "Controls", "pad"],
 	["interface", "Interface", "layers"], ["online", "Online", "people"], ["you", "You", "person"]]
 const VIEWS := [
 	["overhead", "Overhead", "The classic camera, high above."],
@@ -58,6 +58,7 @@ func build() -> void:
 	panel_at(page, 18.0)
 	var inner := page.grow(-UI.px(28))
 	match tab:
+		"game": _page_game(inner)
 		"view": _page_view(inner)
 		"display": _page_display(inner)
 		"sound": _page_sound(inner)
@@ -76,7 +77,30 @@ func _title(r: Rect2, title: String, note: String) -> float:
 	return r.position.y + UI.px(42 + 28 + 22 if note != "" else 60)
 
 
+func _page_game(r: Rect2) -> void:
+	# Classic or Remastered (edition.gd): the same choice as the first screen's cards
+	var y := _title(r, "Game", "Which game you play. A room plays its host's; joining the other one offers the switch.")
+	var kind := String(portal.call("edition"))
+	var Edition: GDScript = load("res://portal/edition.gd")
+	var er := bool(Edition.call("er_models_found"))
+	var which := W.Choice.new("Game", PackedStringArray(["Classic", "Remastered"]), 1 if kind == "remastered" else 0,
+		"The original game, as it was (sharp art pack, 60 fps)." if kind == "classic" else ("The combined version, with the Elden Ring layer." if er else "The combined version. Elden Ring look: needs your own Elden Ring copy - see setup"))
+	which.key = "game"
+	which.changed.connect(func(index: int) -> void:
+		portal.call("set_edition", "remastered" if index == 1 else "classic")
+		want_focus = "game"
+		rebuild())
+	_rows(r, y, [which])
+	var lines := ["Classic: the game's own HUD, the overhead camera, original combat and music; no Elden Ring layer.",
+		"Remastered: new HUD, lighting, cleaner models, 120 Hz, five views, Hardcore, aim where you look, boss music."]
+	for k in lines.size():
+		say(Rect2(r.position.x, y + UI.px(100 + 34 * k), minf(r.size.x, UI.px(980)), UI.px(30)), lines[k], 17, UI.DIM)
+
+
 func _page_view(r: Rect2) -> void:
+	if String(portal.call("edition")) == "classic":
+		_title(r, "The view", "Classic plays in the game's own overhead view. Remastered has all five (Settings -> Game).")
+		return
 	var y := _title(r, "The view", "How you look at the game. In the game, V switches the view as well.")
 	var current := String(portal.profile.setting("view"))
 	var gap := UI.px(14)

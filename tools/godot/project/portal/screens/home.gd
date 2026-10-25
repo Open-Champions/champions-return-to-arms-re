@@ -34,6 +34,20 @@ func build() -> void:
 		b.activated.connect(func() -> void: portal.call("go", "disc"))
 		strip.text_right = b.position.x - UI.px(16)
 		y0 = UI.px(72 + 20)
+	var kind := String(portal.call("edition"))
+	if kind != "":
+		# which game this is (the first screen's choice, edition.gd) and the way back to change it
+		var label := say(Rect2(0, y0, size.x * 0.5, UI.px(52)), ("CLASSIC" if kind == "classic" else "REMASTERED"), 22, UI.GOLD_HI, UI.spaced(UI.serif_bold(), 5.0))
+		label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		var change_game := W.Btn.new("Change game", "layers", "ghost")
+		change_game.height = 52.0
+		change_game.font_size = 18.0
+		change_game.key = "edition"
+		add_child(change_game)
+		change_game.size = change_game.custom_minimum_size
+		change_game.position = Vector2(roundf(UI.text_width(label.text, UI.spaced(UI.serif_bold(), 5.0), 22) + UI.px(24)), y0)
+		change_game.activated.connect(func() -> void: portal.call("go", "modes"))
+		y0 += UI.px(52 + 12)
 	var avail := size.y - y0
 	var gap := UI.px(44)
 	var card_w := clampf(size.x * 0.33, UI.px(420), UI.px(560))

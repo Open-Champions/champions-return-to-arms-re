@@ -141,6 +141,8 @@ func _say_copy(game: Node) -> void:
 	if at < 0:
 		return
 	var text := info.substr(at + 6).get_slice(" ", 0).replace(",", " ")
+	# the portal's Classic / Remastered choice travels with it (edition.gd ROOM_BIT): a copy of the other type differs
+	text = (load("res://portal/edition.gd") as GDScript).call("copy_text", text, String(portal.call("edition")))
 	if text != copy_said:
 		copy_said = text
 		var r: int = portal.session.setting("copy", text)

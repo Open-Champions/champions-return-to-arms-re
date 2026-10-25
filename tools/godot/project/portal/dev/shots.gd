@@ -68,7 +68,7 @@ func _ready() -> void:
 	add_child(view)
 	DirAccess.make_dir_recursive_absolute(out_dir)
 	await get_tree().process_frame
-	for name in ["smoke", "walk", "states", "friends", "room", "join", "settings", "ratios", "real", "duo", "noservice", "duo2", "room5"]:
+	for name in ["smoke", "walk", "states", "friends", "room", "join", "settings", "ratios", "modes", "real", "duo", "noservice", "duo2", "room5"]:
 		if only.is_empty() and (name in ["smoke", "real", "duo", "noservice", "duo2", "room5"]):
 			continue
 		if only.is_empty() or only.has(name):
@@ -109,7 +109,8 @@ func open_portal(size: Vector2i, setup := {}, options := {}) -> void:
 	add_child(vp)
 	view.texture = vp.get_texture()
 	portal = (load("res://portal/portal.tscn") as PackedScene).instantiate()
-	var o := {"embedded": true, "test": "pictures", "data": data, "mock": true, "mock_speed": speed, "stub_game": true, "service": "", "start": ""}
+	var o := {"embedded": true, "test": "pictures", "data": data, "mock": true, "mock_speed": speed, "stub_game": true, "service": "",
+		"start": "home" if setup.has("name") else ""}     # (the pictures of before the first screen asked which game: home)
 	o.merge(options, true)
 	portal.options = o
 	UI.pad_glyphs = bool(setup.get("pad", false))
@@ -987,6 +988,7 @@ func scenario_room5() -> void:
 	var p := "real5/" + role + "-"
 	await type("Tester One" if role == "a" else "Tester Two")
 	await key(KEY_ENTER)
+	await pick_edition(p)
 	await until(func() -> bool: return portal.session.online(), 60.0)
 	me_says("online")
 	if role == "a":
@@ -1058,6 +1060,9 @@ func scenario_room5() -> void:
 		await wait(0.8)
 		flow_says("joined by " + join_by)
 		await shot(p + "03-in-the-room")
+	if OS.get_environment("RTA_SHOTS_MISMATCH") == "1":
+		await mismatch(p)
+		return
 	if OS.get_environment("RTA_SHOTS_COMBAT") == "souls":
 		if await combat_souls(p):
 			return
@@ -1091,6 +1096,7 @@ func scenario_room5() -> void:
 	await shot(p + "08-in-the-hub")
 	var card: Variant = portal.call("character_card")
 	print("shots: %s character card %s" % [role, "a texture" if card is Texture2D else "none"])
+	dump_effective(p + "08")
 	if level_to != "":
 		await until(func() -> bool: return String(portal.gameflow.status.get("level", "")) == level_to and game_tick() >= 0, 600.0)
 		var at := game_tick()
@@ -1098,6 +1104,7 @@ func scenario_room5() -> void:
 		await until(func() -> bool: return game_tick() >= at + stay, 300.0 + stay / 30.0)
 		flow_says("in " + level_to)
 		await shot(p + "09-in-" + level_to)
+		dump_effective(p + "09")
 	post(role + "_done")
 	await fetch("b_done" if role == "a" else "a_done", 300.0)
 	await wait(2.0)
@@ -1186,3 +1193,131 @@ func combat_souls(p: String) -> bool:
 		post("a_done")
 		return true
 	return false
+
+
+# ---- Classic / Remastered (portal/edition.gd, screens/modes.gd) -----------------------------------------------------
+# room5 with RTA_SHOTS_EDITION_A / _B = classic | remastered: after the name, the first screen; the card's Online
+# button (as a player presses it) -> home.  Without it: home at once (the portal as before the choice).
+func pick_edition(p: String) -> void:
+	var kind := OS.get_environment("RTA_SHOTS_EDITION_" + role.to_upper())
+	await until(func() -> bool: return portal.current_name() == "modes", 10.0)
+	await wait(0.6)
+	if kind == "":
+		portal.home()
+		await wait(0.3)
+		return
+	await shot(p + "00-choose-your-game")
+	await focus_key(kind + "_online")
+	await key(KEY_ENTER)
+	await wait(0.5)
+	print("shots: %s chose %s on the first screen: now on %s, the profile says %s" % [role, kind, portal.current_name(), String(portal.call("edition"))])
+	await shot(p + "00b-home-" + kind)
+
+
+# what the game scene has in force now (main.gd effective_settings), printed and written beside the pictures
+func dump_effective(name: String) -> void:
+	var g: Node = portal.handover.game
+	if g == null or not g.has_method("effective_settings"):
+		print("shots: %s effective settings: no game scene" % role)
+		return
+	var d: Dictionary = g.call("effective_settings")
+	d["portal_edition"] = String(portal.call("edition"))
+	var text := JSON.stringify(d, "  ", true)
+	print("shots: %s effective settings %s" % [role, JSON.stringify(d, "", true)])
+	var f := FileAccess.open(out_dir.path_join(name + "-effective.json"), FileAccess.WRITE)
+	if f != null:
+		f.store_string(text + "\n")
+		f.close()
+
+
+# room5 with RTA_SHOTS_MISMATCH=1 (A Remastered, B Classic; B joins by the code): B is offered the switch, A's Start
+# stays disabled and a start is refused; then B takes the switch and the room agrees
+func mismatch(p: String) -> void:
+	if portal.current_name() != "room":
+		portal.go("room")
+	await until(func() -> bool:
+		var kinds := {}
+		for m in room_members():
+			kinds[String(m.get("name", ""))] = (load("res://portal/edition.gd") as GDScript).call("of_member", m)
+		return room_members().size() >= 2 and not kinds.values().has(""), 300.0)
+	await wait(1.0)
+	var words := []
+	for m in room_members():
+		words.append("%s %08x/%d (%s)" % [String(m.get("name", "")), int(m.get("fix_set", 0)), int(m.get("fix_words", 0)),
+			(load("res://portal/edition.gd") as GDScript).call("of_member", m)])
+	flow_says("both copies have said what they are: " + ", ".join(PackedStringArray(words)) + "; room mismatch %s, warning: %s" % [str(portal.session.room().get("mismatch", 0)), String(portal.session.room().get("warning", ""))])
+	if role == "b":
+		await until(func() -> bool: return String((portal.modal as Dictionary).get("title", "")).begins_with("This room plays"), 60.0)
+		await wait(0.5)
+		print("shots: b offered: \"%s\" - %s" % [String(portal.modal.get("title", "")), String(portal.modal.get("text", ""))])
+		await shot(p + "04m-switch-offered")
+		post("b_offered")
+		await fetch("a_refused", 120.0)
+		await key(KEY_ENTER)            # the menu's first item: "Switch to Remastered"
+		await until(func() -> bool: return String(portal.call("edition")) == "remastered", 20.0)
+		print("shots: b switched: the profile says %s" % String(portal.call("edition")))
+	else:
+		await fetch("b_offered", 120.0)
+		portal.screen.rebuild()
+		await wait(0.6)
+		var b: Control = portal.screen.find_key(portal.screen, "main")
+		print("shots: a mismatch: the main button %s, \"%s\"" % ["disabled" if b != null and bool(b.get("disabled")) else "ENABLED", String(b.get("text")) if b != null else "-"])
+		await shot(p + "04m-start-refused")
+		var r: int = portal.call("start_room")
+		await wait(1.0)
+		print("shots: a mismatch: the room's Start (portal.start_room) -> %d (%s); room state %d" % [r, portal.session.error_text(r), int(portal.session.room().get("state", 0))])
+		post("a_refused")
+	# both: the room agrees once B's copy says Remastered
+	await until(func() -> bool:
+		var all := room_members().size() >= 2
+		for m in room_members():
+			all = all and (load("res://portal/edition.gd") as GDScript).call("of_member", m) == "remastered"
+		return all and not bool(portal.session.room().get("mismatch", 0)), 120.0)
+	await wait(1.0)
+	portal.screen.rebuild()
+	await wait(0.5)
+	words = []
+	for m in room_members():
+		words.append("%s %08x/%d" % [String(m.get("name", "")), int(m.get("fix_set", 0)), int(m.get("fix_words", 0))])
+	flow_says("after the switch: " + ", ".join(PackedStringArray(words)) + "; room mismatch %s" % str(portal.session.room().get("mismatch", 0)))
+	await shot(p + "04n-after-the-switch")
+	post(role + "_done")
+	await fetch("b_done" if role == "a" else "a_done", 120.0)
+
+
+# pictures of the first screen and what follows it (the mock session, the stand-in game)
+func scenario_modes() -> void:
+	for spec in [[Vector2i(1920, 1080), ""], [Vector2i(1280, 720), "720p-"], [Vector2i(1440, 1080), "4x3-"]]:
+		await open_ready(spec[0], {}, {"mock_speed": "4", "start": "modes"})
+		await wait(0.5)
+		await shot("modes/" + spec[1] + "01-choose-your-game")
+		if spec[1] != "":
+			continue
+		await focus_key("classic_online")
+		await shot("modes/02-classic-online-focused")
+		await key(KEY_ENTER)
+		await wait(0.5)
+		print("shots: classic online -> %s, edition %s, view %s, interface %s" % [portal.current_name(), String(portal.call("edition")), String(portal.profile.setting("view")), String(portal.profile.setting("interface"))])
+		await shot("modes/03-home-classic")
+		portal.go("settings", {"tab": "game"})
+		await shot("modes/04-settings-game-classic")
+		portal.go("settings", {"tab": "view"})
+		await shot("modes/05-settings-view-classic")
+		portal.home()
+		await wait(0.3)
+		portal.go("modes")
+		await wait(0.5)
+		await shot("modes/06-choose-again-classic-remembered")
+		await focus_key("remastered_online")
+		await key(KEY_ENTER)
+		await wait(0.5)
+		print("shots: remastered online -> %s, edition %s, view %s, interface %s" % [portal.current_name(), String(portal.call("edition")), String(portal.profile.setting("view")), String(portal.profile.setting("interface"))])
+		await shot("modes/07-home-remastered")
+		portal.go("settings", {"tab": "game"})
+		await shot("modes/08-settings-game-remastered")
+		portal.home()
+		await wait(0.3)
+		portal.go("room")           # the mock's room (the stand-in game): the type in the title and the "Type" choice
+		portal.call("host_game")
+		await wait(2.0)
+		await shot("modes/09-room-remastered")

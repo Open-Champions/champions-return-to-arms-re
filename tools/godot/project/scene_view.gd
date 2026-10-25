@@ -243,6 +243,16 @@ func set_look(text: String) -> void:
 			_put(kv[0].strip_edges(), kv[1].strip_edges())
 
 
+# keys given before (the portal's Classic look) back to their defaults and to the level's presets
+func clear_look(keys: PackedStringArray) -> void:
+	for key in keys:
+		if look_defaults.has(key):
+			look[key] = look_defaults[key]
+			look_given.erase(key)
+	if level != "":
+		_apply_preset(level)            # the level's presets again, now that these keys are free
+
+
 func _put(key: String, value: String, given := true) -> void:
 	if not look.has(key):
 		push_warning("look: no such key " + key)

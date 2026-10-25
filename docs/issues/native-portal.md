@@ -9,6 +9,73 @@ Nothing derived from the game is in the repository: the portal is scripts and tw
 by code. Names of characters, classes and levels on screen come from the session or the game's
 state at run time. Pictures, the staged project and logs are under `local/godot-portal/`.
 
+## STATE (2026-10-25): the first screen - CLASSIC or REMASTERED
+
+The owner: "There should be a portal, to pick which game you want to play, classic or remastered (eldenring combined
+version)."  Built into `local/godot-r16/` (the project staged from the tree; the game library and the extension are
+round 13's from `local/godot-r15`, unchanged: no game code is new).  Tests, logs and pictures: `local/godot-r16/test/`.
+
+- **The first screen** (`portal/screens/modes.gd`): "Choose your game", two big cards, each a picture, its name, one
+  line of what it is, what it keeps, and **Play** (alone, at once) / **Online** (Home: rooms, friends, characters).
+  The pictures are drawn by the portal itself; with the art skin on (the player's disc found) they are the game's own
+  paintings through `gameart/portal_skin.gd` `mode_art` (nothing new of anybody's art).  Classic says "Kept: the sharp
+  art pack, paced at 60 fps"; Remastered says "Elden Ring look: on - your own Elden Ring files", or, without them,
+  "Elden Ring look: needs your own Elden Ring copy - see setup" (everything else stays on).  The portal opens on it
+  every start (after the name question the first time), the remembered choice focused and marked "YOUR CHOICE".
+  Home shows the choice with "Change game"; Settings has a new first tab "Game".  Profile: `[settings] game =
+  classic | remastered` ("" = never chosen: the portal as before).
+- **The mapping** (`portal/edition.gd` `game_options`, handed to `main.gd` `opt` by `handover.gd`; while a game runs,
+  `main.gd apply_settings({"edition": ...})`):
+
+  | | Classic | Remastered |
+  |---|---|---|
+  | HUD | the game's own (HUD mode `original`, interface `original`) | the new HUD (`new`) |
+  | camera | overhead, V does not cycle (`views_locked`) | all five; first time `chase` |
+  | combat / aim | `combat.mode off`, `combat.aim off` | `hardcore`, `look` |
+  | look (scene_view.gd) | sky, fog, sun, lamp, bloom, grade, foliage, fill, lights, backdrop off, contact 0, models off, presets off, er_* off | defaults and level presets; `er_models`, `er_creatures` on when the player's converted models are there |
+  | music | the game's own (boss-music director off) | director on: `<data>/music/boss/` and the player's Elden Ring boss tracks (`souls-ref/er-music`, `BOSS-LIST.tsv`) |
+  | display rate | 60 | auto (120 on a 120 Hz display) |
+  | art pack | kept | kept |
+
+  New in `main.gd` (presentation only): `opt.edition / views_locked / hud_mode / boss_music / boss_music_er`,
+  `_apply_edition`, and `effective_settings()` (what is in force, read back from the library's figures, the look, the
+  HUD and the pacing).  `scene_view.gd clear_look(keys)` frees Classic's keys for the presets again;
+  `hud/music/music.gd er_tracks`.  A key on the command line (`--combat`, `--aim`, `--display-rate`, `--view`,
+  `--look`) still wins.
+- **Online.** The room's type travels in what each copy says of itself (net2 `copy`, the fix-set word count): bit
+  `0x2000` for Remastered, beside Hardcore `0x8000` and aiming `0x4000` (`gameflow.gd` folds it in).  No wire, service
+  or library change.  The room shows the type in a chip after its title; with a choice made, the Combat and Aim
+  choices give way to it (the host changes it in Settings -> Game).  A guest of the other type gets **the offer**
+  ("This room plays Remastered" - Switch / Leave / Not now), its main button is "Switch to ...", its seat says
+  "Plays Classic"; the host's Start is disabled ("Waiting for X to switch") and `portal.start_room()` refuses
+  (`ERR_REFUSED`).  Note: the game library makes a guest follow the host's Hardcore and aiming by itself
+  (`launch.cpp follow_souls`), so only the portal stops a mixed start; leaving the room puts the copy's own choice back.
+
+**Ran** (`local/godot-r16/test/room16.py`: two Godot portals with the game in scene mode, a room service of their own on
+127.0.0.1, each copy pressing its card's Online button on the first screen, then the room5 walk: friends, room, the
+game's character screens, Start, hub, the level change to drunare at one lockstep tick):
+- **Remastered room** (`rem1`): both in the hub and drunare; tick logs compared: 1,866 ticks, "no shared column differs
+  on any tick".  Effective settings (`rem1/pictures/real5/a-09-effective.json`, b the same): edition remastered,
+  souls_on 1, aim_on 1, view chase, display_rate auto at 2 pictures a game frame, hud_mode new, boss music on with 82
+  tracks (the Elden Ring boss tracks), er_models on, er_creatures on, models on, preset on, art pack 122,205 pictures;
+  the copy said `words=57533` (0xE0BD).
+- **Classic room** (`cls1`): 1,851 ticks, "no shared column differs on any tick".  Effective: souls_on 0, aim_on 0,
+  view overhead, views_locked, display_rate 60 at 1 picture a game frame, hud_mode original, boss music off, every
+  look key off, art pack on.  The copy said `fix=9ac29719 words=189` - the same as round 13's room run (mode off: the
+  same description to the byte).
+- **Mismatched join** (`mis1`, A Remastered hosts, B Classic joins by the code): both copies' words seen (A 57533
+  remastered, B 49341 classic: the library had already made B follow Hardcore and aiming); B offered the switch
+  (`b-04m-switch-offered.png`); A's Start disabled, "Waiting for Tester Two to switch to Remastered"
+  (`a-04m-start-refused.png`); `start_room()` -> -7 refused, room state stays open; B pressed Switch -> B's game took
+  Remastered at once, both copies 57533, mismatch 0 (`*-04n-after-the-switch.png`).
+- Pictures of the new screen: `local/godot-r16/test/modes1/pictures/modes/` (the portal's own drawing, mock session:
+  01 the cards at 1920x1080, 720p and 4:3, 03 / 07 home with the choice, 04 / 08 Settings -> Game, 05 Classic's view
+  page, 09 a room with the chip), `modes2/` (no Elden Ring files: the note), and with the game's art
+  `mis1/pictures/real5/a-00-choose-your-game.png`; in a level: `rem1/pictures/a-level-1.png`, `cls1/pictures/a-level-1.png`.
+- **Not run**: Play (alone) from a card into a level (the room runs launched both types); a live switch of the display
+  rate while a level is drawn at 120 (written: `_apply_edition` recomputes the rate; Ran only before a level); the
+  exported application with the new screen.
+
 ## STATE (2026-10-20): game modes in the room, a character from a memory card, the portal in an export of our code only
 
 Seventh Godot round (`native-godot.md`, SEVENTH ROUND).
@@ -265,18 +332,20 @@ tools/godot/project/portal/           everything of the portal (new directory)
   session.gd                          THE one script between the screens and the online session (RtaNet2)
   profile.gd                          portal.cfg: the name, the character played last, known characters, settings
   handover.gd                         into the game scene and back
+  edition.gd                          Classic / Remastered: the choice mapped to the existing settings and room options
   ui.gd, widgets.gd                   the look (colours, fonts, drawing) and the controls (all drawn by code)
   screen.gd                           base of a screen: rebuild from state, focus by key, text with a controller
   keys.gd                             on-screen letters for a controller
   notices.gd                          invitations / requests: one press answers
   background.gdshader                 the animated background (arithmetic only)
   backdrop.gdshader                   the game's picture blurred and dimmed behind the portal
-  screens/first.gd disc.gd home.gd friends.gd join.gd room.gd characters.gd settings.gd
+  screens/first.gd modes.gd disc.gd home.gd friends.gd join.gd room.gd characters.gd settings.gd
   dev/shots.gd, shots.tscn            pictures and the scripted walk-through (development aid)
   dev/stub_game.gd                    a stand-in for the game scene (pictures, tests)
 tools/godot/extension/src/rta_net2.h, rta_net2.cpp     RtaNet2: session.h for Godot scripts (new files)
 local/godot-portal/portal.py          ext | stage | shots NAME | run NAME   (local helper, not in the repository)
 local/godot-portal/check.sh           parse-check of every portal script (headless)
+local/godot-r16/test/room16.py        two portals in a room with the first screen (ROOM_EDITION_A/B, ROOM_MISMATCH)
 local/godot-portal/pictures/          every picture
 local/godot-portal/snap/              tools/godot as it was when this work started
 ```

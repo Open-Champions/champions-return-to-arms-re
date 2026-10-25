@@ -11,6 +11,7 @@ const VIEWS := ["overhead", "action", "chase", "shoulder", "first"]
 const DEFAULTS := {
 	"view": "overhead", "fullscreen": false, "sharpness": 2, "wide": true,
 	"volume": 1.0, "music": 0.8, "effects": 1.0, "interface": "new", "glyphs": "auto",
+	"game": "",                     # classic | remastered (edition.gd; the portal's first screen); "" = never chosen
 }
 
 var folder := "user://"
@@ -47,6 +48,11 @@ func first_start_done() -> bool:
 
 func setting(key: String) -> Variant:
 	return cfg.get_value("settings", key, DEFAULTS.get(key))
+
+
+func edition() -> String:
+	var kind := String(setting("game"))
+	return kind if kind in ["classic", "remastered"] else ""
 
 
 func set_setting(key: String, value: Variant) -> void:

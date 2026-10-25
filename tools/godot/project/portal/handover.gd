@@ -94,6 +94,22 @@ func _make_game() -> Node:
 			opt["size"] = Vector2i(int(pixels.y * (pixels.x / pixels.y if bool(profile.setting("wide")) else 4.0 / 3.0)), int(pixels.y))
 		if String(profile.setting("interface")) == "original":
 			opt["game_hud"] = true
+		var e := edition_options()
+		if not e.is_empty():
+			# Classic / Remastered (edition.gd): the existing options, set from the one choice; a key given on the
+			# command line (--combat, --aim, --display-rate, --view, --look) is read by main.gd after this and wins
+			opt["edition"] = String(e.edition)
+			opt["view"] = String(e.view)
+			opt["views_locked"] = bool(e.views_locked)
+			opt["combat"] = String(e.combat)
+			opt["aim"] = String(e.aim)
+			opt["display_rate"] = String(e.display_rate)
+			opt["hud_mode"] = String(e.hud_mode)
+			opt["boss_music"] = String(e.music)
+			opt["boss_music_er"] = String(e.music_er)
+			if String(e.look) != "":
+				opt["look"] = String(e.look) if String(opt.get("look", "")) == "" else String(e.look) + "," + String(opt.look)
+			print("portal: the game as %s: %s" % [String(e.edition), str(e)])
 		if portal.gameflow.active:
 			# the game walks by itself to its title screen, where the room's character screens and launch begin
 			var more: PackedStringArray = opt.get("args", PackedStringArray())
@@ -101,6 +117,20 @@ func _make_game() -> Node:
 				more.append_array(PackedStringArray(["--opt", "net2-boot=1"]))
 			opt["args"] = more
 	return g
+
+
+func edition_options() -> Dictionary:
+	var Edition: GDScript = load("res://portal/edition.gd")
+	return Edition.call("game_options", String(portal.profile.edition()), String(portal.profile.setting("view")))
+
+
+func apply_edition() -> void:
+	# the choice changed while the game scene is there: what can change at once does (main.gd apply_settings)
+	if game == null or stub or not game.has_method("apply_settings"):
+		return
+	var e := edition_options()
+	if not e.is_empty():
+		game.call("apply_settings", {"edition": e})
 
 
 func _wake(awake: bool) -> void:

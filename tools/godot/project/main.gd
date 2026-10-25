@@ -127,6 +127,8 @@ var opt := {
 	"view": "", "game_hud": true, "light": false, "shadow": false, "pull_back": 1.0, "orbit": 0.0,
 	"look": "", "hud": true, "speed_log": 0, "net2_flow": "", "art_pack": "", "mipmaps": true,
 	"combat": "", "aim": "", "look_presets": "", "frame_log": "", "display_rate": "", "display_upscale": "", "no_vsync": false,
+	# set by the portal's Classic / Remastered choice (portal/edition.gd, handover.gd); "" / false: as before it existed
+	"edition": "", "views_locked": false, "hud_mode": "", "boss_music": "", "boss_music_er": "",
 }
 var speed := {"usec": 0, "cpu": 0.0, "blanks": 0, "last": 0, "late": 0, "worst": 0}
 signal session_over(why: String)
@@ -197,6 +199,8 @@ var between_ok_since := 0
 var stale_ticks := 0                   # ticks in a row whose frame was older than the lead says
 var tween_figs := {"dropped": 0, "pictures": 0, "between": 0, "late": 0, "lead_sum": 0, "lat_sum": 0.0, "lat_n": 0, "waited_us": 0}
 var window_shots: PackedStringArray = PackedStringArray()
+var hud_node: Node                      # res://hud, when it was added
+var art_pictures := 0                   # pictures of the art pack in use
 
 
 func _ready() -> void:
@@ -241,10 +245,13 @@ func _ready() -> void:
 	if opt.hud and opt.mode != "picture" and DisplayServer.get_name() != "headless" and ResourceLoader.exists("res://hud/hud.tscn"):
 		var hud: Node = load("res://hud/hud.tscn").instantiate()
 		add_child(hud)                      # the HUD agent's one line (docs/issues/native-hud.md)
+		hud_node = hud
 		# The new interface in place of the game's own, unless something says otherwise: --hud MODE on the command line,
 		# or the HUD's settings file (the portal's "Interface: new / original" writes it: user://hud.cfg, [hud] mode)
 		if not OS.get_cmdline_user_args().has("--hud") and not FileAccess.file_exists("user://hud.cfg") and hud.has_method("command"):
 			hud.call("command", ["mode", "new"])
+		if String(opt.edition) != "":
+			_edition_hud({"hud_mode": opt.hud_mode, "music": opt.boss_music, "music_er": opt.boss_music_er})
 	if opt.disc == "" and OS.has_environment("RTA_DISC"):
 		opt.disc = OS.get_environment("RTA_DISC")
 	if opt.disc == "":
@@ -524,6 +531,7 @@ func _start() -> void:
 		drawer.call("setup", machine, get_viewport().get_viewport_rid(), size, opt.samples)
 		var pack := _art_pack_folder()
 		var pictures := int(drawer.call("set_art_pack", pack, bool(opt.mipmaps)))
+		art_pictures = pictures
 		print("rta_godot: art pack %s (%d pictures), mip maps %s" % [pack if pack != "" else "none", pictures, "on" if opt.mipmaps else "off"])
 		view.set("drawer", drawer)
 		if opt.size == Vector2i.ZERO:
@@ -612,6 +620,90 @@ func apply_settings(d: Dictionary) -> void:
 		stored["music"] = d.get("music", stored.get("music", 1.0))
 		stored["effects"] = d.get("effects", stored.get("effects", 1.0))
 		_volumes(float(stored.music), float(stored.effects))
+	if d.has("edition"):
+		_apply_edition(d.edition)
+
+
+# ---- Classic / Remastered (portal/edition.gd) -----------------------------------------------------------------------
+# At the first start the choice arrives in `opt` (handover.gd); a change while the game runs comes here.  Nothing of
+# the game's own code is new: the options are the existing ones (combat.mode, combat.aim, the look keys, the HUD's
+# mode and its music director, the display rate, the views).
+func _edition_hud(e: Dictionary) -> void:
+	if hud_node == null or not hud_node.has_method("command"):
+		return
+	if String(e.get("hud_mode", "")) != "":
+		hud_node.call("command", ["mode", String(e.hud_mode)])
+	if String(e.get("music", "")) in ["on", "off"]:
+		hud_node.call("command", ["music", String(e.music)])
+	var director: Node = hud_node.get_node_or_null("Music")
+	if director != null and "er_tracks" in director:
+		director.set("er_tracks", String(e.get("music_er", "")) == "on")
+		director.call("scan")
+
+
+func _apply_edition(e: Dictionary) -> void:
+	opt.edition = String(e.get("edition", ""))
+	opt.views_locked = bool(e.get("views_locked", false))
+	opt.hud_mode = String(e.get("hud_mode", ""))
+	opt.boss_music = String(e.get("music", ""))
+	opt.boss_music_er = String(e.get("music_er", ""))
+	_edition_hud(e)
+	if machine == null or not started:
+		return
+	machine.set_option("combat.mode", String(e.get("combat", "off")))
+	machine.set_option("combat.aim", String(e.get("aim", "off")))
+	if String(e.get("view", "")) != "":
+		machine.set_option("view", String(e.view))
+	if scene_view != null:
+		if opt.edition == "classic":
+			scene_view.call("set_look", String(load("res://portal/edition.gd").CLASSIC_LOOK))
+		else:
+			scene_view.call("clear_look", PackedStringArray(load("res://portal/edition.gd").CLASSIC_KEYS))
+			if String(e.get("look", "")) != "":
+				scene_view.call("set_look", String(e.look))
+	if String(e.get("display_rate", "")) != "" and String(e.display_rate) != rate:
+		opt.display_rate = String(e.display_rate)
+		var refresh := DisplayServer.screen_get_refresh_rate()
+		if refresh < 20.0 or refresh > 1000.0:
+			refresh = 60.0
+		var before := tween_n
+		_display_rate(refresh)
+		if tween_n == 1 and before > 1 and drawer != null:
+			drawer.call("set_scene_option", "tween", 0.0)
+		clock = 0.0
+		game_clock = 0.0
+	print("rta_godot: the game is now %s" % opt.edition)
+
+
+# What is in force now, read back from where each thing lives (the library's own figures, the look, the HUD, the
+# pacing) - for the portal's tests and a bug report.
+func effective_settings() -> Dictionary:
+	var d := {"edition": String(opt.edition), "mode": String(opt.mode), "paced": not bool(opt.unpaced), "display_rate": rate,
+		"pictures_per_game_frame": tween_n, "views_locked": bool(opt.views_locked), "game_hud_option": bool(opt.game_hud),
+		"art_pack": _art_pack_folder() != "", "art_pictures": art_pictures}
+	if machine != null and started:
+		var info := String(machine.info())
+		for key in ["souls_want", "souls_on", "aim_want", "aim_on"]:
+			var at := info.find(" " + key + "=")
+			d[key] = info.substr(at + key.length() + 2).get_slice(" ", 0).to_int() if at >= 0 else -1
+		d["copy"] = info.substr(info.find(" copy=") + 6).get_slice(" ", 0) if info.find(" copy=") >= 0 else ""
+		d["view"] = VIEWS[clampi(int(machine.get_view().get("mode", 0)), 0, VIEWS.size() - 1)]
+	if hud_node != null:
+		var hs: Dictionary = hud_node.get("setting")
+		d["hud_mode"] = String(hs.get("mode", ""))
+		d["boss_music"] = bool(hs.get("music", false))
+		var director: Node = hud_node.get_node_or_null("Music")
+		if director != null:
+			d["boss_tracks"] = (director.get("tracks") as PackedStringArray).size()
+			d["er_tracks"] = bool(director.get("er_tracks")) if "er_tracks" in director else false
+	if scene_view != null:
+		var look: Dictionary = scene_view.get("look")
+		var shown := {}
+		for key in ["preset", "models", "sky", "fog", "sun", "lamp", "bloom", "grade", "lights", "fill", "backdrop", "contact", "er_models", "er_creatures"]:
+			shown[key] = look.get(key)
+		d["look"] = shown
+		d["look_preset_applied"] = String(scene_view.get("preset_applied"))
+	return d
 
 
 func _pointer() -> void:
@@ -1261,7 +1353,7 @@ func report_lines() -> String:
 func _unhandled_key_input(event: InputEvent) -> void:
 	# V: the next camera view (not in a test window, which takes no keys)
 	var key := event as InputEventKey
-	if key != null and key.pressed and not key.echo and key.physical_keycode == KEY_V and started and opt.test == "":
+	if key != null and key.pressed and not key.echo and key.physical_keycode == KEY_V and started and opt.test == "" and not bool(opt.views_locked):
 		var now: int = machine.get_view().get("mode", 0)
 		machine.set_option("view", VIEWS[(now + 1) % VIEWS.size()])
 
