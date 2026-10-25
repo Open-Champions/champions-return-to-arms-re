@@ -17,8 +17,9 @@ Nothing here is a PCSX2 or native gameplay result. The executable is pinned to
 SHA-256 `292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675`.
 The generated translation under the owner's `local/recomp-out/gen-app/` was
 checked against addressed instructions in the executable.
-The two new probe tools are pinned at local commit
-`cbd59bf01bb5ebd4f8f08d88e7677da2caa3b137`.
+The two new probe tools were introduced at local commit
+`cbd59bf01bb5ebd4f8f08d88e7677da2caa3b137`; the resource-selector correction
+to that implementation is recorded in section 9 below.
 
 ## 1. Roll to flying item: exact construction boundary
 
@@ -390,6 +391,32 @@ into tracked fixtures. Logs: `seed-{20973,7}.log`, `resources-{20973,7}.log`,
 The constant-string map is `private-constants.json`; no decoded names are
 required to reproduce the public address-only probes.
 The checked PCSX2 prerequisite state is `pcsx2-prerequisites.json`.
+
+**Observed / Executed — LOOT-01 correction, 2026-10-25:** the resource probe
+now reads its placement-member identifier from executable address `0x53f010`.
+Its standalone-resource directory comes from the parent of the selected
+archive path in the runtime ISO index. Neither selector is a decoded literal
+in the probe. Decoded selector mappings stay in the ignored report
+`local/loot-drop/loot-01/private-runtime-selection.json`.
+
+**Executed:** the identifier scan covers both complete added probe sources,
+this complete handoff, and every added line in `FINDINGS.md`, `docs/pickups.md`
+and `docs/objects.md` since `9911a6b`. It found **zero matches** against 8,720
+case-folded nonpublic identifier candidates from the private mappings,
+filename-shaped executable strings, all 994 ISO file paths, 120 GOB archive
+directories and 941 LMP member directories. The user-supplied executable
+identity and Gold contract label are the only public-term exclusions;
+decoded member, file and directory selectors are not excluded. Negative
+controls detect both audited selectors in the pre-fix probe at `7cb3620`
+(lines 67 and 99), and neither in the corrected source. The helper, full
+corpus, mappings and scan results remain under ignored
+`local/loot-drop/loot-01/`; `identifier-scan.json` records scope and counts.
+
+**Executed, correction rerun:** all four checks in the table above passed
+again on seeds 20973 and 7, and the required unit suite passed 652/652 tests.
+Both disc-probe JSON results exactly match their saved pre-correction reports.
+Fresh logs, private disc reports and the nine zero exit codes in
+`verification.json` are under ignored `local/loot-drop/loot-01/`.
 
 **Unknown / not captured:** original PCSX2 flight, natural pickup, visuals,
 live source-container placement and level save/reload. The installed PCSX2

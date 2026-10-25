@@ -53,7 +53,7 @@ def records(data):
         at += size
 
 
-def sample(iso, index, prefix):
+def sample(iso, index, prefix, placement_member):
     for path, archive in sorted(index.items()):
         if not path.endswith('.gob'):
             continue
@@ -64,7 +64,7 @@ def sample(iso, index, prefix):
             continue
         lump = read_at(iso, archive, placed[1], placed[2])
         ob = next((entry for entry in gob.lmp_entries(lump)
-                   if entry[0].lower() == 'objects.ob'), None)
+                   if entry[0].lower() == placement_member.lower()), None)
         if ob is None:
             continue
         data = lump[ob[1]:ob[1] + ob[2]]
@@ -82,7 +82,10 @@ def run(elf, iso_path, seed):
     private = {}
     try:
         directory_index = {name.lower(): entry for name, entry in iso.walk()}
-        path, archive, directory, placed = sample(iso, directory_index, emu.mem.cstr(0x532f70))
+        placement_member = emu.mem.cstr(0x53f010)
+        path, archive, directory, placed = sample(
+            iso, directory_index, emu.mem.cstr(0x532f70), placement_member)
+        resource_directory = Path(path).parent
         private.update(archive=path, record=placed)
         cache, blobs, sizes = {}, {}, {}
 
@@ -96,7 +99,7 @@ def run(elf, iso_path, seed):
                 if local_entry:
                     lump = read_at(iso, archive, local_entry[1], local_entry[2])
                 else:
-                    standalone = directory_index.get('bg/data/' + key[0])
+                    standalone = directory_index.get((resource_directory / key[0]).as_posix())
                     if standalone is None:
                         raise ValueError('addressed resource lump is absent in the selected level and disc directory')
                     lump = read_at(iso, standalone)
