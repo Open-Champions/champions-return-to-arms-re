@@ -236,8 +236,9 @@ starts is stamped with the slot and generation.
 `voice_alloc` 0x2169f8 walks the 43 voices round robin. Table 0x4f8960 maps a voice to
 (SPU core, voice bit). Register writes are batched as 8-byte commands at 0x875c00 (count
 0x4f89e8, at most 512) with key-on / key-off masks per core at 0x872be0 / 0x872be8;
-`sound_flushSpuCommands` 0x210cd0 sends the batch. Every 8th frame `sound_update` reads two
-SPU switch registers (*Inferred*: the end flags) and frees non-looping voices whose bit is
+`sound_flushSpuCommands` 0x210cd0 sends the batch. When `g_soundFrame` 0x4f8954 has
+its low three bits clear, `sound_update` reads SPU registers 0x1700 and 0x1701
+(**Executed**, `docs/audio-playback.md`) and frees non-looping voices whose bit is
 set. Stopping a sequence stops every
 voice stamped with its slot and generation. `g_delayedSamples` holds up to 32 samples
 waiting for their start frame.
@@ -248,15 +249,18 @@ camera's right vector (0x44f110, 0x44f11c, 0x44f128).
 
 ### Streams (`g_streams` 0x876c10, 3 × 0x1c4)
 
-Stream 2 is music (every music call uses it) and stream 1 is speech (dialog); what plays
-on stream 0 was not established here. `docs/formats/anim-audio.md` section 3.4 has since
-found: ambience one-shots go to stream 2 as well, not to stream 0 as the symbol file had
-inferred, and stream 0 was seen only for the intro movie's soundtrack. Each stream has an
+Stream 2 is music (every music call uses it) and stream 1 is speech (dialog).
+`docs/audio-playback.md` now establishes stream 0 for the intro movie soundtrack and
+the first matching level `amb_` entry when idle (0x322640–0x3226c4). The
+`ambient.bin` one-shots go to stream 2 when no music is active; they are a separate
+path (0x2149d0). Each stream has an
 8-entry queue at +0x40 (0x30 bytes per entry: file name, offset, length, three driver
 parameters, flags) with the count at +0x1c0. The three parameters are, per
 `docs/formats/anim-audio.md` 3.4: the sample rate (passed to the driver, which stores and
 never uses it), the stereo flag, and the loop restart position. Entry flags seen: 2 stop marker, 8 hold until
-released, 0x20 music, 0x40 tested by recall and level change before queuing a stop. The
+released, 0x20 music, 0x40 fade-stop stream 2 from the recall, menu-timer, level-change,
+HUD and front-end slices, 0x80 ambience one-shot, 0x100 kept across cutscene teardown
+(`docs/audio-playback.md`). The
 audio data is in `<level>.vat` (or `mouth.vat` for global entries) and the index is a
 `dialog.bin` table of 0x50-byte entries (name, s16 language at +0x4a, offset at +0x40; the
 length is the next entry's offset minus this one). Despite its name that file is the
@@ -272,7 +276,9 @@ made in blocking mode, so `audio_streamStatus` and `audio_streamPosition` cost a
 to the IOP each time.
 
 Volume: `g_sfxVolume` 0x4f8940, `g_musicVolume` 0x4f8944, stereo flag 0x4f8948; music is
-ducked while stream 1 plays (`music_updateDucking` 0x212500).
+ducked while stream 1's status has bit 0x20. The target written for that case is
+0x3e4cccd0 and then one more 1/60 step, so it holds at 0x3e5ddde1 (`music_updateDucking`
+0x212500; `docs/audio-playback.md`).
 
 ## Player selection, dialog, mission menu
 
@@ -415,13 +421,11 @@ the load screen run before the simulation starts.
 - The 0x60 camera bytes and the meaning of the jump-gate table rows.
 - Header byte +0x6d: `save_game`'s first argument; callers pass a savepoint-related value
   that was not traced.
-- What plays on stream 0, and the exact meaning of entry
-  flags 0x20 / 0x40 and of the three driver parameters in a queue entry. (Stream 0 and
-  the queue-entry parameters: `docs/formats/anim-audio.md` section 3.4.)
 - Not read beyond their strings and callers: `memcard_browser` 0x219b90 (10 KB),
   `memcard_slotList` 0x21c3a4 (8.7 KB), `memcard_importScreen` 0x21fa2c (7 KB),
   `playerSel_task` 0x225478 (18.7 KB) and its helpers 0x22a524–0x22e6a4, the credits, the
-  stream service functions 0x211548 / 0x211df8 / 0x2149d0 / 0x214eb0, sample upload, the
+  stream service functions 0x2149d0 / 0x214eb0 (0x211548 and 0x211df8 are executed
+  for queue flags and loop restart in `docs/audio-playback.md`), sample upload, the
   mission-menu helpers 0x231078–0x2314c8, and the point-list code apart from its accessors.
 - Unreferenced functions (0x2128c8, 0x215bf0, 0x215c98, 0x215d28, 0x216050, 0x2161c0,
   0x216230, 0x216b58, 0x217488, 0x217ee8, 0x217fb8, 0x218418, 0x2186a8, 0x21f0dc,

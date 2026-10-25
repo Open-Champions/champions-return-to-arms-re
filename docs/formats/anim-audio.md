@@ -437,7 +437,7 @@ file size).
 | +0x44 | u32 | sample rate: 24,000 for audio (48,000 in 23 NTSC entries), 0 for `.anm`. Passed to the driver, which stores and **never uses** it | **O** (`func` case 0x40 at HELLO+0xd28 stores it; `alarm` never reads it) |
 | +0x48 | u16 | 1 = stereo, 0 = mono | **O** EE 0x211548 → driver command 0x40 → `alarm` HELLO+0x35c; confirmed by channel correlation in samples |
 | +0x4a | s16 | language; an entry in the current language (0x44fddc) is preferred, language 0 is the fallback. All NTSC records are 0 (PAL tables use 0, 3, 4) | **O** 0x210e60 |
-| +0x4c | u32 | loop restart position for an entry queued with the loop flag: the stream restarts at `offset + (value & 0x7ffffc00) × 2` | **I** code only (`stream_serviceQueues` 0x211df8); 0 in every record |
+| +0x4c | u32 | loop restart. With the loop bit set and the remaining count exactly 0, position = `offset + ((value & 0x7ffffc00) << 1)` and remaining = `length − span`, both 32-bit. Zero rewinds to the offset; a nonzero value skips in 0x800-byte steps and can wrap the remaining word | **Executed** `stream_serviceQueues` 0x211df8, `tools/difftest_audio.py` "loop restart"; 0 in every observed record, nonzero cases synthetic |
 
 **Finding an entry.** By exact name, case sensitive; the whole table is walked and the
 **last** match wins (0x210e60, 0x210f38); 108 records in the NTSC level directories repeat
@@ -479,7 +479,7 @@ stream 1 one voice (mono) — `voicesStream` = {0, 0, 1, 2, 2}, SPU voices 19–
 
 | Stream | Used for | Evidence |
 |---|---|---|
-| 0 | intro movie soundtrack `porko_l.vag` (queued held, released when the movie is ready) | **O** `splash_introMovie` 0x321788; other users not traced |
+| 0 | intro movie soundtrack `porko_l.vag` (queued held, released when the movie is ready); first level-directory `amb_` entry when idle, checked every 16th displayed frame | **O** `splash_introMovie` 0x321788; `mainloop_pollAmbientAudio` 0x322640–0x3226c4 (2026-10-17 correction) |
 | 1 | all speech: cutscene and NPC dialog lines, script `startAudio`, player voice lines | **O** 0x196788, 0x22ec9c, 0x146ba4, `player_voice` 0x1b7ba8 |
 | 2 | music, and the ambience one-shots of `ambient.bin` when no music entry is active or queued | **O** `music_playGlobal` 0x2110e0, `ambient_update` 0x2149d0 |
 
@@ -491,8 +491,11 @@ Queue entry flags as far as read (**O** in `stream_startQueued` 0x211548 and
 2 = fade out and stop what is playing before this entry starts (an entry with only this
 flag and no file is a stop), 4 = wait until the current entry has ended, 8 = hold until
 released, 0x20 = tested by `player_voice` and `ambient_update` to keep quiet while such an
-entry plays, 0x80 = set on ambience one-shots. 0x40 and 0x100 are passed by callers and were
-not traced (**U**). A non-looping entry lets the service routine read the next queued file
+entry plays, 0x80 = set on ambience one-shots. 0x40 and 0x100 are stored and returned
+by `audio_streamStatus`; the service routines do not branch on them. 0x40 makes the
+recall, menu-timer, level-change, HUD and front-end slices fade-stop stream 2.
+0x100 makes cutscene teardown leave that stream-2 entry alone (**Executed**,
+`docs/audio-playback.md`). A non-looping entry lets the service routine read the next queued file
 behind it, so consecutive entries play without a gap.
 
 **Driver interface** (`HELLO.IRX`, SIF RPC server 0x163a5; **O** in `func` HELLO+0x9d8):
@@ -527,8 +530,7 @@ the voice is not playing: 0x800 bytes of mono, or 0x400 + 0x400 of stereo, or th
 ### 3.6 Not established
 
 - Whether the pitch of 0x7fe instead of 0x800 is deliberate.
-- Queue flags 0x40 and 0x100; every user of stream 0.
-- The loop restart field (+0x4c) was never seen non-zero, so its unit is read from code only.
+- Any additional users of stream 0 beyond the intro and the level `amb_` poll.
 - `game_loadLevel` (0x1e55c0) starts as level music the first directory entry whose name
   contains `enttag`; no NTSC directory has such a name, so that path does nothing here.
 

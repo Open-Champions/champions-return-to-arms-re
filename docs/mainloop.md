@@ -497,8 +497,10 @@ dormant.
 ### Movie player
 
 Driven from `gfx_beginFrame` (0x19d904) while `g_movieActive`: `movie_update` reads the
-stream in chunks into two alternating buffers, decodes one picture per call unless audio
-stream 2 is behind the picture count (it holds the picture then), and uploads it. Used by
+stream in chunks into two alternating buffers and uploads one decoded picture per call.
+The hold that compares the picture with audio stream 2 runs only while byte 0x506034
+is set. The intro leaves that byte clear, and nothing in the executable calls
+`movie_enableAudioSync` 0x3205c8 (`docs/audio-playback.md`). Used by
 `splash_introMovie` and by the engine's blocking player 0x19dea4. Not connected to the
 simulation.
 

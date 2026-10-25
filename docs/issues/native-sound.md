@@ -214,7 +214,8 @@ every 74.7 ms.
 | stream driver timer | every 6 ms on the I/O processor, independent of frames |
 
 All calls block the calling thread until the I/O processor has answered; the game takes
-positions and end flags as "now".
+positions and end flags as "now". The 16-frame `audio_sendVolumes` test, and the
+separate `g_drawFrame` test for the `amb_` poll, are in `docs/audio-playback.md`.
 
 **How the game feeds a stream** (**Read** `stream_serviceQueues` 0x211df8,
 `stream_startQueued` 0x211548; **Ran**: the sizes below are the capture's). The service

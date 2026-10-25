@@ -183,7 +183,7 @@
 00872880	g_voices	43 x 0x14 voice records
 008723f8	g_delayedSamples	32 x 0x24
 00875c00	g_spuCmdBatch	512 x 8
-00876c10	g_streams	3 x 0x1c4: 0 seen only for the intro movie soundtrack, 1 voice, 2 music and ambience one-shots (docs/formats/anim-audio.md 3.4; an earlier note inferred 0 = ambience)
+00876c10	g_streams	3 x 0x1c4: 0 intro movie and level amb_ entries (0x322640-0x3226c4), 1 voice, 2 music and ambient.bin one-shots (docs/audio-playback.md)
 00879e38	g_saveHeaderCopy	0x70-byte copy of the save header made by save_load
 00879ec0	g_savedPlayers	PlayerData[4] snapshot with item indices instead of pointers
 0088d3a0	g_memcardState	-1 idle, 0/1 config, 3 save, 4 load, 5 config save, 6 end-game save, 9 import, 10 options
