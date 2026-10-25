@@ -78,7 +78,7 @@ code calls most:
 
 | Address | Name | What it does |
 |---|---|---|
-| 0x166630 / 0x1666e0 | `math_cos16` / `math_sin16` | polynomial on the half angle; 245 and 282 callers. Neither ever returns 0: `sin16(0)` and the other quarter-turn values are ±2⁻²² (`docs/spec/core.md` section 4, executed over all 65,536 angles) |
+| 0x166630 / 0x1666e0 | `math_cos16` / `math_sin16` | polynomial on the half angle, not a table; 245 functions call the cosine (507 sites) and 282 call the sine (604 sites). Neither ever returns 0: `sin16(0)` and the other quarter-turn values are ±2⁻²² (`docs/spec/core.md` section 4, `docs/spec/trig16.md`, executed over all 65,536 angles) |
 | 0x166798 | `math_atan2_16` | `atan2f` × 65536/2π |
 | 0x166c18 | `angle_approach` | turn `current` toward `target` by `rate × |difference|`, clamped to [min, max] |
 | 0x166bc8 | `angle_turnDir` | which way to turn, optional absolute difference |
@@ -568,6 +568,10 @@ the prediction copy. `recall_execute(slot)` is reached from `hud_onMsg`; it cons
 `recallpotion` item and creates a gate object at each living player.
 
 ## Particles, glows, trails, beams (skimmed)
+
+Read in full since: `docs/effects.md` (formats, spawn and retirement rules, emitters,
+decals, gore, skill visuals) and `docs/lighting.md` (light nodes and sources).
+
 
 - Particle definitions are static objects built by `particleDef_ctor` / `particleDef_init`.
   `particle_spawn(…, def, pos, vel)` (175 callers) takes a particle from a fixed pool and does

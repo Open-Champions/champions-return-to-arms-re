@@ -314,7 +314,9 @@ The model is drawn at the chunk translation with the chunk rotation. Models that
 Data: a 0x48-byte particle emitter description (O 0x181d30: the loader keeps up to 16
 distinct descriptions per level and stores the index in chunk +4). Bytes 0–6 and the three
 s16 at +8 are the generator parameters handed to 0x18f118; a short name is at +0x3d. The
-other fields belong to the particle system and were not read. U.
+other fields belong to the particle system and were not read. U. (Read since: the whole
+0x48-byte record is in `docs/effects.md` section 5; it is the same record the `AddParticle`
+helper builds from its property keys.)
 
 ### Light chunks (flag 0x8000)
 
@@ -332,7 +334,9 @@ Data, 0x30 bytes — O 0x18ba18:
 | 0x27 | u8 | non-zero = draw the glow sprite |
 | 0x28 | u8 | first parameter of the glow sprite; I: its size |
 
-At most 16 such lights are live at once (least recently drawn is replaced). The flicker
+Corrections from `docs/lighting.md` 3.1: +0x20 is the glow's size, +0x22 the shift of its
+noise wobble (not a rotation) and +0x28 its depth bias (not its size); each mode's phase lasts
+period + 1 frames. At most 16 such lights are live at once (least recently drawn is replaced). The flicker
 uses the cosmetic random generator, so it differs between machines; it only lights things.
 
 The level's sun and ambient light are **not** in this file: they come from light-marker

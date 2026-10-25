@@ -78,6 +78,7 @@ Beside them:
 | `docs/issues/` | one investigation per file: the live rig, the browser and native builds, lag, the prediction copy, touch handlers, floating point and the others |
 | [FORMATS.md](FORMATS.md), `docs/formats/` | file formats |
 | [data-tables.md](data-tables.md) | where each game rule lives: a table, a file on the disc or a constant in a function |
+| [effects.md](effects.md), [lighting.md](lighting.md) | what a renderer needs to draw the game's particles, emitters, glows, trails, beams, decals, gore and skill visuals, and its lights; models in `tools/ref_particles.py`, `tools/ref_lighting.py` |
 | `tools/rig/`, `tools/play-net/`, `tools/play-web/`, `tools/recomp/` | the test rig, the Mac build, the browser build, the recompiler; each has a README or a notes file in `docs/issues/` |
 
 ## The executable

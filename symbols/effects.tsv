@@ -1,0 +1,74 @@
+# Visual effects and lighting: names from docs/effects.md and docs/lighting.md (2026-10-17, branch t3/research-fx). Round 2 (2026-10-18): lines marked 'executed' were run in ee_emu against a reference (difftest named).
+# ---- functions ----
+0018e840	particleGroup_resetAll	clears the 16 group handles (0x7e1e80 + i*0x138) and sets the group generation 0x44fc9c to 1; callers particle_init and 0x18ebb8
+0018ebb8	particle_resetAll	level reset: frees resident type slots 1-31, returns every page of the global set and of each live group, rebuilds the page free list, resets trails and groups
+0018f118	particleDef_set	(same 16 arguments as particleDef_init): re-runs particleDef_init and, when the definition is resident and its 0x50 bytes changed (memcmp), copies the new VU record into its slot of 0x82c490; 15 callers incl. world_fixup, AddParticle_readEmitterProps, particles_configure
+0018f360	particleDef_setDefaults	size 1->1, gravity 0, colours 0, lifeClass 3, kind 1, tile 1; +4 = -1, +8 = 0
+0018f6e0	particle_retireListSet	(listSet): for each of the 16 lists retires particles while birth + life < clock (FIFO), frees emptied pages, frees a definition slot when its live count reaches 0; returns 1 when any list was non-empty
+0018fae8	particle_rebaseListSet	(listSet): lowers the birth tick of every live particle by 0x8000
+0018fc00	particle_rebaseClock	called when the s16 particle clock reaches -0x8000: 0x18fae8 on the global set and every live group
+001911a8	trail_setWidth	(handle, width): +0x40f = width >> 2
+00192840	trail_updateAll	per tick from particle_updateTask: ages trails without flag 1 (clock +1 unless flag 0x10), drops points older than the lifetime (pairs with flag 2), frees trails with no point left
+001929c8	trail_resetAll	clears the 64 trail handles and the 20 beam active bytes; trail generation 0x44fca4 = 1
+00192a40	beam_buildNodes	executed (difftest_fx_render beams): six cosmetic draws per node, drift.z subtracts offset.y, count = libc rand() & 7 as an integer word; (jitter, beam, depth): recursive offset nodes of 0x1c bytes; cosmetic seed for offsets, libc rand() & 7 for the retarget counters
+00192c50	beam_buildPoints	executed: seed = g_simFrame*0x229 + index*0x3f3 while it runs (trail_drawAll); the ends are not points of the polyline; (amplitude, beam, from, to, depth): recursive midpoint displacement into the two trails (even / odd g_drawFrame)
+00192e80	beam_driftNodes	executed (live cosmetic seed, once per draw, not while frozen); (jitter, beam, depth): per draw, nodes drift toward random targets (drift = (target - offset) * 0.1, counter (seed >> 21) & 7)
+00193040	beam_destroy	(beam*): releases both trails, clears the active byte
+00193360	beam_isAlive	(handle) -> 1 when the beam is active and has both trails
+00195318	particleDef_sameEmitter	(rec a, rec b): bytes 0..0x10 of two emitter records equal (the 17 definition bytes)
+00195400	emitter_run	(pos*, def, rec, now, yaw, negX, negY, swapXY): the 0x48-byte emitter record runner (rate, on/off cycle, box, cone, speed spread); cosmetic seed; callers world_runEmitterChunk, AddParticle_emit
+00195b58	particle_slotAvailable	-> 1 when one of the 32 type slots 0x82c408 is free
+00195bb0	particle_claimSlot	(def) -> 1: lowest free type slot; def+4 = slot; copies def +0x10..+0x4f to 0x82c490 + slot*0x40
+00195d30	particle_staticInit	static initialiser (1, 0xffff): list heads, resource references particletex.tex 0x7d8a80, trail.tex 0x7d8a90, blank.tex 0x7d8aa0 in engine.lmp, the group definition 0x7e1d00
+0018b18c	world_sunVisibility	(world, pos) -> 1.0 always (a stub); scales the sun colour for models (light_emitModelLights) and the floor-decal tint
+0018b930	lightChunk_setGlowTexture	(tex): stores the glow texture of light chunks at 0x7d8a08; caller game_addCoreTasks 0x1e6f0c with *0x4f848c
+00148ff0	light_sampleFloor	(pos) -> packed rgb: lights with node+9 set, weighted by (R^2 - D^2) * falloff * dz / D, plus sun as set * sunDir.z and ambient as set; the colour decal_add gives a new floor decal
+00192650	trail_addPair	(alpha f12, handle, a, b): two ring points of a paired (flag 2) trail, a stamped clock+1, b's stamp field = int(alpha*255) (the pair program's alpha); refused within two of full; executed (difftest_fx_render trail builders)
+00191e58	trail_clear	(handle): clock, oldest and newest = 0; executed
+001911e8	spline_eval	(t f12, points, count, outPos, outTangent): Catmull-Rom spline in Hermite segments, t clamped to [0,1]; reads p[count] at t=1; executed
+001918a0	trail_setSpline	(start f12, end f13, handle, points, count, steps): empties the trail, Hermite points per segment, lifetime per*(count-1); executed; callers SpellWizardBeam_run, SpellUnspokenWord_run
+00191ea0	trail_sweepPairs	(handle, centre, axis, a, b, steps<=60): pairs turned by quat_fromAxisAngle(axis, 0x10000/(steps-2)) per step; executed; caller Innoruuk_run
+001920e0	trail_setCircle	(radius f12, handle, centre, normal, steps<=120): points on a circle in the plane of normal; executed; caller SpellWizardBeam_run
+0019f018	decal_reset	clears the 64 blocks and the 30x30 grid, rebuilds the free list, total 0x4d8a00 = 0; does NOT clear the 16 growing slots 0x840310; executed (difftest_decals)
+00195d30	particle_staticInit	(1, 0xffff) C++ static initialiser: list heads {0,0,1,0x101} of the global set 0x44fa98, the unused set 0x44fb98 and the 16 groups; resource references particletex.tex, trail.tex, blank.tex; the definition 0x7e1d00; executed (difftest_particles)
+# ---- globals ----
+0044fa88	g_particleLifeTicks	s32[4] = 11, 30, 60, 90: lifetime by life class; read-only (0x18ef4c, 0x18f780)
+0044fa98	g_particleLists	the global list set: 16 list heads of 16 bytes {first page, last page, head cell, tail cell}, index kind*4 + lifeClass
+0044fca0	g_particleListSet	list set particle_spawn appends to: 0x44fa98, or a group between particleGroup_begin and _end
+0082cc90	g_particleClock	s16 tick count of the particle system, +1 per particle_updateTask; rebased at -0x8000
+0082c408	g_particleSlotUsed	s32[32]: -1 free; resident type slots
+0082c490	g_particleTypeTable	32 x 0x40: the VU records of resident definitions, uploaded to VU1 qwords 0-127 by particle_draw
+007ec0e0	g_hazeCircle	64 s32 pairs (sine, cosine), stride 8; particle_init 0x18e670 writes trunc(sin16(i<<10)*5), trunc(cos16(i<<10)*5); read only by particle_drawHaze 0x190378 and 0x1903ac; BSS, not in the executable (docs/spec/trig16.md)
+007ec300	g_particlePages	64 pages of 0x1000 bytes: 8 blocks of (VIF header, 30 particles of 16 bytes, MSCAL)
+007d8b00	g_glowQueue	0x400 records of 0x20 bytes queued by glow_add; count 0x82cc94
+0082cc94	g_glowCount	glows queued this frame (at most 0x400)
+0082cd00	g_trails	64 trails of 0x410 bytes (128 points, handle +0x400)
+007e30d0	g_beams	20 beams of 0x734 bytes
+0044fca8	g_trailRowV	f32[10]: v start of each trail.tex row (0, 32, 64, 96, 128, 224, 256, 288, 351, 447)
+007d8a08	g_lightChunkGlowTex	texture of the light-chunk glow sprites; 0 = no glow
+00840310	g_decalGrowing	16 x 0x14: growing decals (mode byte, decal q2 pointer, angle, current size, final size)
+00840450	g_decalBlocks	64 blocks of 0x180: up to 15 decals of 0x18 bytes, free link +0x170, min/max z +0x174/+0x176, count +0x178
+00846458	g_decalGrid	30 x 30 block pointers; cell = ((x + 3840) >> 8, (y + 3840) >> 8)
+004f66a0	g_weatherAngle	angle16 written by Weather_ctor / Weather_run; turns the velocity of emitters with record flag 1 (meaning of the angle Inferred: wind)
+004f66a4	g_weatherActive	written by Weather_ctor / Weather_run; emitters with record flag 1 spawn only while it is non-zero
+0044fb98	g_particleListsUnused	16 list heads initialised by particle_staticInit 0x195d30 and never read or written elsewhere (gxref)
+0044fc98	g_trailsFrozen	while non-zero particle_updateTask does not age trails (0x18fa08) and particle_resetAll calls an empty function; writers not looked for (name from the readers only)
+007e1d00	g_particleSlot0Def	the definition particle_init claims slot 0 for (never released): record colour 2^23, alpha 0, size 0 - what retired cells left in a sent block draw with (invisible)
+0083d100	g_beamNodeCursor	node index of the beam recursions (0x192a40, 0x192c50, 0x192e80); reset to 0 before each walk
+00846450	g_decalFreeBlock	head of the free list of decal blocks (link at block +0x170)
+004d8a00	g_decalTotal	decals made since decal_reset; decal_drawTask does nothing while 0
+004d8a08	g_decalsEnabled	byte; decal_drawTask does nothing while 0; cleared and set by the menu, shop, inventory and save screens and game_resetState
+0044fe04	g_texHalo1	engine.lmp : halo1.tex (engine_init 0x19d810, main 0x32400c): status glow of Creature_draw, Gold, IceBall, ...
+004f848c	g_texHalo2	fx.lmp : halo2.tex (main 0x324028): Fire_run, light-chunk glows (via 0x7d8a08), weapon and model glows
+004f8490	g_texHalo3	fx.lmp : halo3.tex (main 0x324048)
+004f8494	g_texHalo4	fx.lmp : halo4.tex (main 0x324060)
+004f8498	g_texWispHalo	fx.lmp : wisphalo.tex (main 0x324078)
+004f849c	g_texHalo5	fx.lmp : halo5.tex (main 0x324098)
+004f84a0	g_texHalo7	fx.lmp : halo7.tex (main 0x3240b0); StaticFire_draw's flame glows
+004f84a4	g_texHalo8	fx.lmp : halo8.tex (main 0x3240c8); StaticFire_draw below the fade height in the level whose name holds the string at 0x54e788
+004f87bc	g_fxSpawnDefsMade	s32[24]: first-use flags of the 24 definitions fx_spawn constructs; executed (difftest_fx_recipes)
+002c6aa8	StaticFire_wind	(object, angle): drift +0x72/+0x74 = int(3.733333 x unit vector); one own draw picks every 4th flame point to take it; executed (difftest_fx_skills staticfire)
+002c6bc0	StaticFire_addFlame	(object): a flame point at the ring head (+0x78) unless full: unit ball x radius x fade, z positive, x16; drift from two own draws; executed
+002c6df0	StaticFire_moveFlames	(object): every flame point drifts and rises 7; reaching int(+0x58) advances the tail +0x7a; executed
+005038c8	g_arenaCounter	s16 read by SpellArena_run (flag 2 at 61, particles from 30); Inferred: the arena countdown (named by its reader only)
+0018b6c0	path_blockNodes	(f12 radius, world, pos): raises the block counter of path nodes around pos (tools/ref_world.py path_block_nodes); called by StaticFire_initCommon; executed (difftest_fx_skills staticfire)

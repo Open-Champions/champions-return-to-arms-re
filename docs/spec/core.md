@@ -173,7 +173,10 @@ against the true cosine is 7.1·10⁻⁷; no angle gives exactly 0; `cos16(0) = 
 leave a matrix unchanged: `mat3_rotateAxis(identity, Z, 0)` has ±2⁻²² off the diagonal.
 
 `mat3_setRotZ`, `mat34_setPosRotZ` and `mat34_setPosRotZScale` contain inlined copies of
-both; the operations are the same.
+both; the operations are the same. The sine does not call the cosine: its body is the
+same polynomial after subtracting 0x4000 (0x1666e0). There is no coefficient table and
+no interpolation. The operation order, the circle `particle_init` builds from the
+results, and the callers in the effect and combat code are in `docs/spec/trig16.md`.
 
 ### `math_atan2_16` 0x166798 (f12 = y, f13 = x)
 
