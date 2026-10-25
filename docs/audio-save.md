@@ -44,14 +44,19 @@ Tasks registered here (`task_add(fn, priority, name, isDraw)`):
 
 ## Save format
 
+The exact slot layout, the checks on load, and what was executed in `tools/ee_emu.py` are
+in `docs/save-format.md`. Where this section and that file disagree, `docs/save-format.md`
+is the later one. The native client's OCNSAVE file is a different schema.
+
 ### The buffer
 
 `g_saveBuffer` at 0x895580 is 0x4bc78 bytes. The memory-card file is that buffer written in
 one piece: `memcard_saveScreen` queues open (mode 0x202), write (0x895580, 0x4bc78), close
 (0x218afc, state 2). Loading reads the same number of bytes back and calls `save_load`
 (0x219360). Slot files are named `BASLUS-20973_slot<n>` in the directory `BASLUS-20973`
-(`memcard_makeSlotName` 0x21effc). `save_init` also builds the name `BASLUS-20565_config`
-(at 0x88d438); where it is used was not traced.
+(`memcard_makeSlotName` 0x21effc). `save_init` also builds `BASLUS-20565_config` at
+0x88d438. The 760-byte options image is `docs/save-format.md`; which of the two name
+buffers the config open uses is still open there.
 
 `save_build(savepointArg, onePlayer)` 0x221914 writes everything up to the level directory;
 `save_storeLevelState` adds the current level's object state.
@@ -66,7 +71,7 @@ one piece: `memcard_saveScreen` queues open (mode 0x202), write (0x895580, 0x4bc
 | +0x6c | u8 | difficulty index (`g_difficultyIdx`) | game | 0x221a48 |
 | +0x6d | u8 | first argument of `save_game` | game | 0x221a44 |
 | +0x6e | u16 | act index (`g_currentAct`) | game | 0x221a04 |
-| +0x70 | 0xc4 | camera state from `Camera_saveState` 0x203918: position (12), 4 × 4 words from 0x44f110, two u16, five words, 0x60 bytes of camera +0x100 | machine | 0x221a54 |
+| +0x70 | 0xc4 | camera state from `Camera_saveState` 0x203918: position (12), sixteen floats taken as a sliding window of 0x44f110, two u16, five words, 0x60 bytes of camera +0x100 (`docs/save-format.md`) | machine | 0x221a54 |
 | +0x134 | 0x1e4 | jump-gate destinations: u32 count byte, 0x1e0 bytes from 0x8e3a50 (`jumpgate_saveDestinations`) | game | 0x221a60 |
 | +0x318 | u32 | minimap mode (`g_minimapMode` 0x4f8400) | machine | after 0x221a60 |
 | +0x31c | u32 | `g_numPlayers` | game | same |
@@ -104,11 +109,12 @@ pointer +0x43d8.
 
 Level state: `save_storeLevelState(name)` looks the level up in the directory (adding it if
 there is room; at most 10 levels and the whole buffer must stay under 0x4bc78) and has
-`save_writeLevelState` write length-prefixed object and decal sections (0x14e5c8,
-0x19ee10), then a fixed 0x16c8-byte explored-map section (0x16865c). The size
-reserved per level comes from the act table (0x4f8e48:
-per act a list of {name, u16 size}; 0x4f8e10 counts; 0x4f8e7c number of acts). Skipped
-while the card state is 4 or bit 0x800 in 0x44fe08 is set.
+`save_writeLevelState` write a length-prefixed object block (0x14e5c8), a length-prefixed
+decal block (0x19ee10) and a fixed 0x16c8-byte automap (0x16865c, no length of its own).
+A name whose first three characters are `hub` is stored under the current act's first row.
+The framing and the empty bodies are in `docs/save-format.md`. The size reserved per level
+comes from the act table (0x4f8e48: per act a list of {name, u16 size}; 0x4f8e10 counts;
+0x4f8e7c number of acts). Skipped while the card state is 4 or bit 0x800 in 0x44fe08 is set.
 
 The object-state overlay, class examples, script restart and terrain reload
 boundary are detailed in `docs/save-world.md`.
