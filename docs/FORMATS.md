@@ -17,6 +17,12 @@ little endian unless noted. "Unknown" means nobody has looked yet.
 | `.vif` models | understood: header, part and variant tables, attach points, meshes as VIF1 streams for the model vertex program (positions, normals, strips, texture coordinates, joint weights); the file holds no skeleton or texture name — see [formats/model-texture.md](formats/model-texture.md) | `tools/model_info.py` (can export OBJ) |
 | `.tex` textures | understood: 0x80-byte header plus one GS upload packet; 8-bit images in GS memory order, some 4-bit and 32-bit, no mipmaps | `tools/model_info.py` (can export PPM/PGM) |
 | `<LEVEL>.TEX` level textures | understood: cell directory, 0x40-byte headers, block-table form (every texture on the disc): 16 × 16-texel blocks coded with a canonical Huffman code over literals, back-references and a successor table, a shared palette per group, uploaded as 32-bit rectangles and sampled as PSMT8 — see [formats/level-texture.md](formats/level-texture.md). Blend, depth order, environment rows and automap tile codes: [formats/level-draw.md](formats/level-draw.md) | `tools/ref_leveltex.py` (can export PPM); draw state in `tools/ref_leveldraw.py` |
+| `PICCACHE.DAT` inventory pictures | serialized header, GIF uploads, swizzle and field weave audited across 11,511 entries; visual comparison pending — [contract](formats/inventory-icons.md) | `tools/ref_inventory_icons.py` |
+| `.fnt` UI fonts | bounded header/tables, embedded texture, glyph rectangles and ASCII width; full styled text partial — [contract](formats/ui-fonts.md) | `tools/ref_ui_layout.py` |
+
+Original interface resource rectangles, tiled border assembly and base player HUD
+coordinates are documented in [hud-layout.md](hud-layout.md). This identifies
+separate frame textures; it does not invent a shared original atlas.
 
 ## GOB
 
