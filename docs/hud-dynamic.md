@@ -271,7 +271,9 @@ Portrait (name at 0x4f6b48) at (499 - w/2, frame h - portrait h + 366), then
 second wrap), then the meter branch (clipped `bar_yellow` at `0x17fb88`, then
 `fieldmeter.tex` at (511, 371)) or the number branch (`fieldnumber.tex`), then
 the portrait, then the frame. Same layer, so the frame is the first thing
-painted. Not executed as a whole.
+painted. Executed as a whole in [ui-text-gaps.md](ui-text-gaps.md) section 3,
+which corrects two points: the caption font is the small font (word `0x4f7104`),
+and the meter branch has one wrap only, at (527, 389).
 
 **Flying numbers (O / high for the lifetime and the draw arithmetic).**
 Constructor `0x202158` stores kind at +0x8c, the crit word at +0x84, random drift
@@ -377,7 +379,9 @@ The '%c' glyph (byte `0x41b978`) is at x = 324 − halfWidth − 25; the
 `Affirmation` string is left-aligned at 324 − halfWidth; both use y = wrap
 height + 139. Frame `0x17fbb8` at (116, 94), size 416 by (height + 76), tint
 `color_scale(0x80808080)`. Inner `ui_drawFrameImpl` at (124, 104), same width,
-height = the wrap height, tint word `0x3f000000`, layer 6. Confirm on a raw
+height = the wrap height + 76 (corrected 2026-10-21: both frame calls take the
+register after the add at `0x1dce00`), style 0 (`ctile`), tint word `0x3f000000`,
+layer 6. Executed in [ui-text-gaps.md](ui-text-gaps.md) section 2. Confirm on a raw
 pad stores close delay 60, clears the open flag, and (offline) runs the post
 action. The delay decrement at the top of the function only blocks that input.
 

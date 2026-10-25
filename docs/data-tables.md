@@ -559,6 +559,9 @@ availability is stored per difficulty (record +0x4bbf + difficulty × 13 + missi
   `<skill name>_rankdesc`, `<passive name>Desc` (0x53b660), `menu_mis0…12`, `mb_<class>`
   for monster names (`Creature_getName` 0x118418). About 1,900 keys are generated ids (a
   few letters of the English text plus hex digits) used by scripts and dialog.
+- Executed since, with registration, unregistration, the miss ring, the formatter and the HUD
+  text commands: `docs/strings.md` (`tools/ref_strings.py`, `tools/difftest_strings.py`). Two
+  level lumps also carry a `.uni` that joins the same table while the level is loaded.
 - Item names are assembled from several entries with language-dependent grammar
   (`docs/startup.md`, "Display names").
 

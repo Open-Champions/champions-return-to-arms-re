@@ -10,7 +10,7 @@ little endian unless noted. "Unknown" means nobody has looked yet.
 | `script.scr` level script | understood, all 51 opcodes in use decoded | `tools/scr.py` |
 | `.cut` cutscene | header and key records understood; most camera key types unnamed | none yet |
 | `objects.ob` object placement | property strings readable; record layout given below (from `docs/issues/sync-breakers.md`) | none yet |
-| `.dbin` dialog trees | understood: 0x448-byte nodes with condition script, text key, voice name, speaker and choices — see [formats/anim-audio.md](formats/anim-audio.md) | `tools/anim_audio_info.py` |
+| `.dbin` dialog trees | understood: 0x448-byte nodes with condition script, text key, voice name, speaker and choices — see [formats/anim-audio.md](formats/anim-audio.md); the machine that runs them: [dialog.md](dialog.md) | `tools/anim_audio_info.py`, `tools/ref_dialog.py`, `tools/dialog_census.py` |
 | `*_dialog.bin` voice-stream directory, `.VAT` streams, `.vag` samples | understood: PS2 ADPCM throughout; directory gives offset, rate, stereo flag and language | `tools/anim_audio_info.py` (can decode to WAV) |
 | `.anm` animation | understood: bind offsets, joint hierarchy, velocity-coded key stream at 60 ticks per second; not yet compared against the game on screen | `tools/anim_audio_info.py` (can dump tracks to CSV) |
 | `.world` level geometry | understood: header, chunk tree, render batches (ready-made VIF packets), terrain heights and flags, path grid; water colour, waves and draw order are [formats/water-draw.md](formats/water-draw.md); a few fields still open — see [formats/world.md](formats/world.md) | `tools/world_info.py`; water in `tools/ref_waterdraw.py` |

@@ -287,8 +287,9 @@ A lump in memory starts with a 16-bit entry count, then 12-byte records
   `g_lumpGeneration` changes.
 - `lump_fixup` (0x1717d0) walks a fresh lump and calls `lump_fixupEntry` (0x17153c), which
   dispatches on the file extension: `.anm` → `anm_relocate` + `anm_bindSounds`, `.vif` →
-  `model_relocate`, `.tex` → `tex_relocate`, `.world` → `world_fixup`, `.uni`/`.txt` →
-  `text_registerTable`, plus `.fnt`, `.vag`. Region prefixes (`ntsc_`, `pal_…`) are handled
+  `model_relocate`, `.tex` → `tex_relocate`, `.world` → `world_fixup`, `.uni` →
+  `text_registerTable` (`.txt` only for `credits.txt`, which `credits_splitLines` 0x223ba0 cuts
+  into lines; corrected in `docs/strings.md` 1.1), plus `.fnt`, `.vag`. Region prefixes (`ntsc_`, `pal_…`) are handled
   there.
 - Lifetime: `lump_raiseKeepLevel(n)` marks everything loaded so far; `lump_unloadUpToLevel(n)`
   frees lumps from the end of the table whose level is ≤ n.
@@ -334,7 +335,9 @@ store can make the value non-zero and no other reference exists, so the finding 
 - Every drawer first checks that `g_dlCapacity − used` leaves 3000 units and silently draws
   nothing otherwise (this is the "render buffer" test of finding D13).
 - Text: `text_begin(font, …)`, any number of `text_draw*`, `text_end()`. Strings are 16-bit.
-  `wstr_format` is the engine's sprintf (%d, %s, %.2f).
+  `wstr_format` is the engine's sprintf: `%%`, `%d`, `%c`, `%s` (8-bit), `%u` (a 16-bit string) and
+  `%f` (always two decimals), every argument a float in f12–f19; executed in `docs/strings.md`
+  section 2 (the earlier line said %d, %s, %.2f).
 
 ## World, terrain and water
 

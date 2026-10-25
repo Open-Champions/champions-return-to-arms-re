@@ -633,7 +633,7 @@ Conventions for the tables:
 | 107 | `newWorldParameter` | 0x1471fc | - | Reads the selected object's property list for `level=`; if found, `net_closeLocalMenus(0)` and `script_setNextWorld(value)`. No gate, no null check on the selected object. | next world | NET only through `net_closeLocalMenus`. | 0 / 0 |
 | 121 | `setEntrance` | 0x142a94 | s name | Copies the name to 0x4f8468 (entrance used when players are placed in the next level). | 0x4f8468 | - | 76 / 30 |
 | 105 | `cutScene` | 0x143f1c | s name | Builds "<level>.lmp" from the current level name 0x41b721 and "<name>.cut", finds it with `res_find` and calls `cut_start` (0x19b4dc). | cutscene state (cut_start) | `cut_start` closes local menus in a net game. | 58 / 43 |
-| 15 | `startDialog` | 0x143824 | s name, i a, i b | Preloads the level lump, clears 0x4fdce8, then calls `dialog_start` (0x22fa50). (Executed: the clear is inside `dialog_start`, after a `Camera_update` on the local camera that this row did not mention; the handler also formats "<name>.dbin" into a buffer nothing reads.) That function does not start the dialog itself: if the active player is local to this machine and no dialog is open, it sends game message 0 carrying the name, the active player, a, b, and **this machine's camera position and two camera angles**. The dialog opens when the message is processed. | none directly (the message handler does the work) | AP, LOCAL SLOT, CAMERA: exactly one machine sends; the camera values in the message are that machine's (P5). | 45 / 24 |
+| 15 | `startDialog` | 0x143824 | s name, i a, i b | (Contract with everything after the message: `docs/dialog.md`.) Preloads the level lump, clears 0x4fdce8, then calls `dialog_start` (0x22fa50). (Executed: the clear is inside `dialog_start`, after a `Camera_update` on the local camera that this row did not mention; the handler also formats "<name>.dbin" into a buffer nothing reads.) That function does not start the dialog itself: if the active player is local to this machine and no dialog is open, it sends game message 0 carrying the name, the active player, a, b, and **this machine's camera position and two camera angles**. The dialog opens when the message is processed. | none directly (the message handler does the work) | AP, LOCAL SLOT, CAMERA: exactly one machine sends; the camera values in the message are that machine's (P5). | 45 / 24 |
 | 18 | `dialogRunning` | 0x143cb0 | - | Wraps `dialog_isOpen` (0x22fbc0): 0x8e2d60 != 0. | - | Dialog progress is driven by a local task (pad and voice stream, 0x22ff48); whether open/closed flips on the same frame everywhere is not established here. | 0 / 0 |
 | 103 | `forceMutexRelease` | 0x1471dc | - | Wraps `menuMutex_release` (0x22fc38): clears 0x4fe53c, the lock taken when an NPC conversation starts. | 0x4fe53c | - | 0 / 0 |
 | 16 | `changeSwoop` | 0x1438b0 | i mode | Stores the value at 0x4fdce4 (camera swoop selection used by the dialog system). | 0x4fdce4 | - | 43 / 3 |
@@ -1072,6 +1072,8 @@ local menu code in the same way.
 
 ### P10. HUD-only differences (Observed, cosmetic)
 
+`docs/strings.md` executes these five with the real string table and formatter: the state each
+writes, the 180-tick message, the 5-tick bust and compass lease, the one-slot help box.
 `setInfo`, `showCompass`, `showBust`, `addHelpMessage` and `addHelpMessageF` write HUD state
 only on machines where the target slot is local or where no local menu is open
 (`hud_showMessage` 0x1d92a0, `hud_setCompassTarget` 0x1df668, `hud_setBust` 0x1dfaa0,

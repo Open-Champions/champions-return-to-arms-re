@@ -236,7 +236,7 @@ frame pieces) and missed 25.
 **Executed.** `difftest_ui_r4` runs `tex_relocate` `0x179e10`,
 `ui_drawSpriteImpl` `0x17b590` and the clipped drawer `0x17b8b0` on the five
 distinct sizes below. A private pass ran the same three functions on all 34
-real headers. Relocation leaves +0 and +2 unchanged (34/34). Both drawers
+real headers (not reproducible from this repository: the pass is not committed and needs the disc). Relocation leaves +0 and +2 unchanged (34/34). Both drawers
 pass source origin `(0, 0)` and the header width and height to
 `ui_emitSpriteQuad` `0x17ab50` (34/34). The plain drawer adds 1 to
 destination y; the clipped drawer does not. A tighter destination clip does

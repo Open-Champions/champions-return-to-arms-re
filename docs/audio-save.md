@@ -288,7 +288,7 @@ ducked while stream 1's status has bit 0x20. The target written for that case is
   `g_players` through `player_initNewCharacter` and the quest variable `needPlayers`. No
   level script calls `setupPlayerSel`, `startPlayerSel` or `playerSelRunning` (searched the
   120 decompiled scripts), so none of this runs inside the simulation.
-- Dialog. Script `startDialog` → `dialog_start` 0x22fa50, which sends message 0 only from
+- Dialog (executed contract: `docs/dialog.md`). Script `startDialog` → `dialog_start` 0x22fa50, which sends message 0 only from
   the machine that owns the script's active player. Channel id at 0x8e2e94, handler
   `dialog_onMsg` 0x22ee2c:
 

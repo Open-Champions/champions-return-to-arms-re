@@ -614,7 +614,9 @@ def help_box(wrap_height, label_width):
 
     The affirmation string is left-aligned at 324 - half its width; the '%c'
     glyph sits 0x19 to its left (0x1dce6c). Frame height is the wrap height
-    plus 0x4c; the inner frame's height is the wrap height itself.
+    plus 0x4c, and so is the inner frame's: both calls take $20 after the
+    addiu at 0x1dce00 (corrected 2026-10-21, executed by
+    tools/difftest_ui_text_gaps.py help.task; the inner frame is style 0, ctile).
     """
     half = _half_toward_zero(label_width)
     y = wrap_height + 0x8b
@@ -622,7 +624,7 @@ def help_box(wrap_height, label_width):
         'button': (0x144 - half - 0x19, y),
         'label': (0x144 - half, y),
         'frame_height': wrap_height + 0x4c,
-        'inner_height': wrap_height,
+        'inner_height': wrap_height + 0x4c,
     }
 
 

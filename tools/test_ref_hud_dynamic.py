@@ -240,6 +240,7 @@ class CompassAndBoxes(unittest.TestCase):
         box = H.help_box(42, 20)
         self.assertEqual(box['label'], (324 - 10, 42 + 0x8b))
         self.assertEqual(box['button'][0], box['label'][0] - 0x19)
+        self.assertEqual(box['inner_height'], box['frame_height'])
         self.assertEqual(H.notice_column(1), 320)
         n = H.notice_box(320, 42)
         self.assertEqual(n['title'], (480, 100))

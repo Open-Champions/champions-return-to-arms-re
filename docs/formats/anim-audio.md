@@ -562,14 +562,14 @@ Choice:
 
 | Offset | Type | Meaning | Status |
 |---|---|---|---|
-| +0x00 | char[0x10] | text key of the choice | **I** position and use fit; the draw code that looks it up was not read |
+| +0x00 | char[0x10] | text key of the choice | **O** `dialog_drawTask` 0x230914 looks it up; executed in `tools/difftest_dialog.py` (`docs/dialog.md` §3) |
 | +0x10 | char[0x20] | condition script; the choice is offered when this is empty or returns non-zero | **O** 0x230c74 |
 | +0x30 | char[0x20] | action script, run when the choice is taken (empty = none) | **O** 0x22ee2c case 1 |
 | +0x50 | s32 | next node, −1 = end the conversation | **O** |
 
 Two users:
 
-- **NPC conversation.** `<npc>.dbin` in `<level>.lmp` (script `startDialog`); the node graph
+- **NPC conversation.** `<npc>.dbin` in `<level>.lmp` (script `startDialog`; the whole machine is `docs/dialog.md`); the node graph
   is walked as above.
 - **Cutscene.** `<cutscene>.dbin`; the nodes are simply lines in order, advanced by dialog
   keys of the `.cut` timeline (key type 0 = next line). Conditions and choices are unused.
