@@ -603,6 +603,19 @@ func _gltf(path: String) -> Variant:
 	return null
 
 
+# Every task given to the pool must be waited for: one never asked for again (its figure left the view, the level
+# changed, the program is ending) keeps this script's lambda in the pool, and the pool then destroys it after the
+# script is gone - a crash when the program ends (signal 11 in WorkerThreadPool::finish, seen after a recording).
+func _exit_tree() -> void:
+	for path in loads:
+		var l: Dictionary = loads[path]
+		WorkerThreadPool.wait_for_task_completion(int(l.task))
+		var root: Variant = (l.out as Dictionary).get("root", null)
+		if root is Node:
+			(root as Node).free()
+	loads.clear()
+
+
 func _loading(set_name: String) -> bool:
 	return loads.has(_er_folder().path_join(set_name).path_join("figure.glb"))
 
