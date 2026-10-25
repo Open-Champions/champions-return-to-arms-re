@@ -114,17 +114,25 @@ file order. It does not construct the full level.
 
 ## Resource requests and native coverage
 
+The placement-ordered hostile constructor, layout, balance, synthetic tick,
+damage and death contracts are in [mission2-enemies.md](mission2-enemies.md).
+Its companion `tools/ref_mission2_enemies.py` pins addresses, counts and
+bounded behavior; `tools/difftest_mission2_enemies.py` derives ordered resource
+names from owner inputs and checks the constructor requests on both seeds.
+These are isolated original-function checks.
+
 The four new hostile-class constructor probes execute one representative
 each of `clockworkcutter`, `clockworkhammer`, `Droid` and `IronGuardian`
 through the original factory, `Creature_ctor` and `GameObject_ctor` at both
 seeds. The test reads ordered entry names from the owner executable in memory
 and checks that the executed requests match and the entries occur in the
-owner archives. Only aggregate counts are committed. Null resource results
+owner archives. Ordered names remain in memory during the check or in an
+ignored local manifest. Null resource results
 leave residency, loaded model, animation and fighting behavior Unknown.
 
 | Class or group | Constructor-stage resource result and limit |
 |---|---|
-| Both clockwork variants | Class definition `0x4ff260` makes 26 requests from `clokwork.lmp`. Both variants use one `0x24e124` constructor and the same definition; sub-kind behavior still needs a state/tick comparison. |
+| Both clockwork variants | Class definition `0x4ff260` makes 26 requests from `clokwork.lmp`. Both variants use one `0x24e124` constructor and the same definition; bounded sub-kind ticks are compared in `mission2-enemies.md`, while loaded combat remains untested. |
 | `Droid` | Definition `0x500a88` makes 10 requests from `droid.lmp`. The IronGuardian's separate Droid spawning path remains untested here. |
 | `IronGuardian` | Definition `0x500960` makes 34 requests from `iron.lmp`. `docs/monsters-2.md` also records a separate `droid.lmp` load in this constructor; the new probe stubs that lower service. |
 | `PowderKeg` | A separate direct constructor probe asserts two named resource requests; their names and archive membership are not committed or checked here. |
