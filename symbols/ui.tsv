@@ -204,3 +204,4 @@
 0086a6a0	g_shopMsgChannel
 0086a918	g_goldFloaters	8 x 0x24
 0086ace8	g_goldPending	int[4]
+004f6708	g_controllerOutShown	byte: 1 while hud_drawControllerOut draws the controller-removed message (0x1db580), 0 when its pad search returns a negative index (I: no pad missing); offline game_isFrozen freezes on it unless a dialog or cutscene is up (0x1ebe80, docs/spec/dialog-gaps.md 3)

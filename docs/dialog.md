@@ -9,6 +9,11 @@ counted with `tools/dialog_census.py` (section 10). Nothing here was run on a ga
 nothing is "Ran". Status words are those of `CONTRIBUTING.md`: **O** observed at the
 address given, **I** inferred, **U** unknown, **E** executed (the test is named).
 
+**2026-10-21, `t3/research-dialog-gaps`:** the camera functions, the 24 remaining
+`dialog_isOpen` checks, the box where `box.tex` is not loaded, the cursor glyph and the
+`TestLocation` talkers are executed in [spec/dialog-gaps.md](spec/dialog-gaps.md); the
+sections below point there where it corrects them.
+
 Companions: [reference](../tools/ref_dialog.py), [synthetic tests](../tools/test_ref_dialog.py)
 (no game file needed), [difftest](../tools/difftest_dialog.py), [census](../tools/dialog_census.py).
 Earlier notes this document builds on and corrects: `docs/audio-save.md` ("Player
@@ -159,10 +164,11 @@ In this order:
 13. If swoop: `Camera_setupDialogView(cam, focus, b)` and camera move 0x8e2d50 = 1.
 
 `Camera_setupDialogView` 0x203bb8 reads the object's `dialogOffset` property
-(`"%d,%d,%d,%d"`; I from the uses: added to a distance of 80, added to a height of 70, a
-sideways offset, added to a pitch of 4000) and, when `b` ≠ 0, chooses among
-three angles (±6000 or straight) by where the living players stand within 80 units. It
-was read (O), not executed.
+(`"%d,%d,%d,%d"`: distance added to 80, height added to 70, sideways offset, pitch added
+to 4000) and, when `b` ≠ 0, chooses among three angles (±6000 or straight) by where the
+living players stand within 80 units. Executed in `docs/spec/dialog-gaps.md` 2.2, which
+also shows that without the property the sideways offset is an uninitialised stack word
+(4 swoop openings on the disc).
 
 ## 3. The file: `<npc>.dbin` in `<level>.lmp`
 
@@ -224,7 +230,8 @@ file.
 ### 5.1 The run task, every simulated tick, on every machine (E `tick`)
 
 1. Prompt-shown 0x8e2e90 = 0.
-2. **Camera move** (0x8e2d50 ≠ 0). The float at 0x44f130 is read once. Opening (1):
+2. **Camera move** (0x8e2d50 ≠ 0). The float at 0x44f130 — the z of the camera's forward
+   vector in `g_cameraMatrix` — is read once (`docs/spec/dialog-gaps.md` 2.4, executed). Opening (1):
    `Camera_lookAt(cam, 45, …)`; far clip 720 while that float > −0.491; repeated in the
    same tick until it arrives when `g_swoopDone` is set. Closing (−1): only while
    `g_shopOpen` 0x41b50c = 0, `Camera_lookAt(cam, −45, …)` and far clip 1800 while the float
@@ -315,7 +322,10 @@ nudge is added to every track's time each tick.
   dialog is open). The branch was followed for 10 sites (`Player_run` ×3,
   `Player_processDamage`, `Player_move`, `activateStore`, `activateMissionMenu`,
   `dialog_objIfOpen`, here; `hud_onMsg`, `game_inNoSaveZone` in `docs/spec/game-messages.md`
-  and the symbol notes). For the other 24 only the call is O.
+  and the symbol notes). The other 24 are followed and executed in
+  `docs/spec/dialog-gaps.md` section 3 (props, markers, compass hidden; pause, recall,
+  spell and HUD input refused; `game_isFrozen`'s controller-out exception; the camera
+  shake; the idle voice).
 - `activateStore(i)`: stores the store index (if < 21) at once, but only sets the pending
   flag 0x4fdd30; the shop opens at message 3.
 - `activateMissionMenu`: **refused** (does nothing) while a dialog is open; the other way
@@ -388,7 +398,11 @@ all dialog text.
 
 - `dialog_loadBox` (`game_loadLevel` 0x1e617c) finds `box.tex` in `dlgbox.lmp` unless the
   level is `intro` or arena mode B (`g_pvpModeB`) is on; in those the word 0x4fe538 keeps
-  its last value (I: then the sprite call draws whatever it held; not followed).
+  its last value (0 from the executable, or the previous level's box). With 0 the sprite
+  call reads addresses 0 and 2. No dialog can open there with the shipped data
+  (`docs/spec/dialog-gaps.md` section 4).
+- The cursor and "more" glyph byte 0x41b978 is 0x7e or 0x7b, set by `game_initCamera`
+  from the layout byte 0x41b69c (`docs/spec/dialog-gaps.md` section 5).
 - **Bust / portrait**: the dialog machine draws none. The only portrait-like element is the
   HUD bust panel (`showBust`, `hud_drawBust` 0x1dfb6c, `docs/hud-dynamic.md` §7), refused
   while the dialog is open (6.1). `docs/ui-parity.md` on `t3/research-ui` lists "dialogue
@@ -413,7 +427,10 @@ all dialog text.
 
 ## 9. Seeds, lockstep and the save
 
-**Seeds.** The dialog machine draws none: no instruction in 0x22ec9c–0x231078,
+**Seeds.** (Correction: the dialog's camera calls `Camera_apply`, which draws the cosmetic
+seed three times when `g_cameraShake` > 0 — even while frozen if a dialog is open; and
+the dialog holds the idle-voice draw and skips `fx_modelStatusEffects`;
+`docs/spec/dialog-gaps.md` section 7.) The dialog machine itself draws none: no instruction in 0x22ec9c–0x231078,
 `Creature_interact`, `Creature_trigger`, `Camera_setupDialogView` or the script built-ins
 above touches `g_randSeed` 0x404464, `g_cosmeticSeed` 0x404460 or 0x404468
 (`tools/gxref.py`), the animation calls it makes do not reach `anim_randomizeTopTime`, and
@@ -485,18 +502,17 @@ US v2.00, 120 archives, 120 level scripts, 18,675 objects.
 6. **Voice and mouth** (4 step 4, 5.1 step 6, 5.4): stream 1 with the held start; the voice
    gate when the text option is off; lip-sync `.anm` or the talk/idle pair.
 7. **Camera** (2.4 step 13, 5.1 step 2): `Camera_setupDialogView`, the swoop in and out,
-   far clip, the sender's camera in message 0.
+   far clip, the sender's camera in message 0 — now executed; the ranked list in
+   `docs/spec/dialog-gaps.md` section 9 moves it first.
 
 ## 12. Open questions
 
-- `Camera_setupDialogView` and `Camera_lookAt` 0x204250 were read, not executed; the
-  meaning of the float at 0x44f130 is not established (I: a camera axis component).
+- (Settled in `docs/spec/dialog-gaps.md`: the two camera functions, the float at 0x44f130,
+  the 24 call sites, the box without `box.tex`, the `TestLocation` talkers.)
 - What `cd_readAsync` does with the ready flag between the call and completion (the
   harness models "cleared, set when done"; I from the spin loops on it).
-- The branches behind 24 of the 34 `dialog_isOpen` call sites (6.1) were not followed.
 - `Creature_interactPrompt`'s flag tests were read, not executed; the meaning of +0x312 and
   of bit 26 of +0xa8 in the hostile test is not named.
-- What the sprite call draws when `box.tex` was not loaded (level `intro`, arena mode B).
 - Which built-in branch a turn-in takes depends on the item and quest state; this document
   counts reachability, it does not run the entries (`docs/quests.md` §7 item 7).
 - No run on a game (Play!, PCSX2 or a console).
