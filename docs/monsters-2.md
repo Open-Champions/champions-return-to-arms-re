@@ -2331,6 +2331,12 @@ Open: object flag bit 0 cleared for dead blockers — meaning of the bit not rea
 
 #### AntQueen  (factory `AntQueen`; vtable 0x511078; size 0x3e8)
 
+2026-10-21: constructor, set-state and the run prologue Executed: `docs/spec/combat-ctors.md`
+(state 0 is stored without its entry, so `+0xf4` starts at 0).
+Later the same day: the whole run (every state), `AntQueen_pickFlyDest`, `AntQueen_takeDamage`
+and the destructor Executed: `docs/spec/antqueen-run.md`, `docs/spec/combat-ctors-2.md`. State 0
+calls slot 25 twice; `pickFlyDest` probes 150 behind her own facing with a strict ±12 window.
+
 Functions: ctor 0x236c70, draw 0x236f10, run 0x236f78, slot 3 0x2378f4 (empty), takeDamage
 0x2378fc (plain jump to Creature_takeDamage), setState 0x237918, helpers 0x238150 (pick fly
 destination), 0x238448 (update banking), 0x2385dc (fade banking tracks out), 0x238360 (gib
@@ -5480,6 +5486,11 @@ is cast with the ally in the caster argument (the skill's cast body was not read
 
 #### Skeleton  (factory names `WatSkel`, `Skeleton*`; vtable 0x5175f8; size 0x478)
 
+2026-10-21: constructor, set-state and the run prologue Executed: `docs/spec/combat-ctors.md`
+(an inactive skeleton returns before its switch; the blocking flinch clip of 0x12 is dead).
+Later the same day: `Skeleton_isEnemy`, `Skeleton_takeDamage` (a framed call, not a tail call)
+and the destructor Executed: `docs/spec/combat-ctors-2.md`. The run past states 0 and 1 is not.
+
 Functions: ctor 0x2a5af4, draw 0x2a67c4, run 0x2a6864, saveState 0x2a7508, loadState
 0x2a75d4, slot 12 (notify) 0x2a7688, takeDamage 0x2a774c, setState 0x2a7768, hasShield
 0x2a7da0, slot 20 (isEnemy) 0x2a7e04, shatter 0x2a7ef0, and two unreferenced formation
@@ -5641,6 +5652,12 @@ Open: where the speed comes from (root motion is Inferred); the meaning of the t
 chosen from the variant bits; the Wraith helper at 0x2bfd5c (not in this range).
 
 #### Soul  (factory name `Soul`, exact; also created by Minion as `soul`; vtable 0x517740; size 0x3e0)
+
+2026-10-21: constructor, set-state and the run prologue Executed: `docs/spec/combat-ctors.md`
+(state 0 is stored without its entry draw; the 0x21 burst is flat; unknown requests are stored).
+Later the same day: `Soul_takeDamage` (a Demon attacker only; exactly six flat particles at random
+sample points; a null attacker throws bad_typeid) and the destructor Executed:
+`docs/spec/combat-ctors-2.md`. The run's switch is not.
 
 Functions: ctor 0x2a9478, draw 0x2a9678, run 0x2a9870, takeDamage 0x2aa908, slot 3 (empty)
 0x2aab60, saveState 0x2aab68, loadState 0x2aabd0, setState 0x2aac38, slot 16 (get model)

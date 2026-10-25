@@ -20,10 +20,10 @@
 002378f4	AntQueen_trigger	vtable 0x511078 slot 3; purpose not established (was AntQueen_vslot3)
 002378fc	AntQueen_takeDamage	vtable 0x511078 slot 2
 00237918	AntQueen_setState	vtable 0x511078 slot 27
-00238654	AntWave_ctor	constructor; installs vtable 0x50d298
-00238750	AntWave_dtor	vtable 0x50d298 slot 1
-002387d0	AntWave_draw	vtable 0x50d298 slot 5
-00238938	AntWave_run	vtable 0x50d298 slot 4
+00238654	AntWave_ctor	(block, target, pos, facing, life): Creature_ctor(10000); +0xb0 0.6, +0xb8 100, +0x1c target r+10, +0x3cc clock+life, handle +0x3d0; executed (difftest_antwave)
+00238750	AntWave_dtor	slot 1: handle_clear +0x3d0 twice when set (once when 0), Creature_dtor, pool_free with bit 0; executed (difftest_antwave)
+002387d0	AntWave_draw	slot 5: every 3 ticks one particle 0x4febe0 from the wave's own generator +0x44 (shared with Creature_moveTo); executed (difftest_antwave)
+00238938	AntWave_run	slot 4: Creature_run, moveTo target, every 60 ticks target slot 2 (wave, 0x100; 1.0) if dist < r strictly, delete when target lost or +0x3cc < clock; executed (difftest_antwave)
 00238bb8	Arenabeast_ctor	constructor; installs vtable 0x512ee8; object size 0x3d8; factory type names: Arenabeast
 00238f18	Arenabeast_draw	vtable 0x512ee8 slot 5
 00238f5c	Arenabeast_run	vtable 0x512ee8 slot 4
@@ -615,13 +615,13 @@
 002a55ec	Scorpion_setState	vtable 0x50fe88 slot 27
 002a5af4	Skeleton_ctor	constructor; installs vtable 0x5175f8; object size 0x478; factory type names: WatSkel, Skeleton* (red*, blue* variants)
 002a67c4	Skeleton_draw	vtable 0x5175f8 slot 5
-002a6864	Skeleton_run	vtable 0x5175f8 slot 4
+002a6864	Skeleton_run	vtable 0x5175f8 slot 4; every state executed (docs/spec/skeleton-run.md 3); without a target state 8 requests 0 and still counts +0xf4 down that tick
 002a7508	Skeleton_saveState	vtable 0x5175f8 slot 9
 002a75d4	Skeleton_loadState	vtable 0x5175f8 slot 8
-002a7688	Skeleton_onNearbyEvent	vtable 0x5175f8 slot 12; purpose not established (was Skeleton_vslot12)
+002a7688	Skeleton_onNearbyEvent	vtable 0x5175f8 slot 12 (creature, code, position, other): on code 2, with a shield (Skeleton_hasShield), in state 3 or 5, other within +-9999 of the facing -> slot 27 (0x11, block); the position is copied and unused. Executed: docs/spec/skeleton-run.md 6
 002a774c	Skeleton_takeDamage	vtable 0x5175f8 slot 2
 002a7768	Skeleton_setState	vtable 0x5175f8 slot 27
-002a7e04	Skeleton_isEnemy	vtable 0x5175f8 slot 20; purpose not established (was Skeleton_vslot20)
+002a7e04	Skeleton_isEnemy	vtable 0x5175f8 slot 20 (this, other): Creature_isEnemy + 1 (2 or 5) when that is nonzero; else 1 for a live Skeleton on the opposite side (+0x3d4 2/1 or 1/2) while this +0x312 is 0; else 0 (docs/spec/combat-ctors-2.md)
 002a8770	Skelight_ctor	constructor; installs vtable 0x5174b0; object size 0x468; factory type names: Skelight
 002a8a64	Skelight_draw	vtable 0x5174b0 slot 5
 002a8b84	Skelight_run	vtable 0x5174b0 slot 4
@@ -630,7 +630,7 @@
 002a91b8	Skelight_setState	vtable 0x5174b0 slot 27
 002a9478	Soul_ctor	constructor; installs vtable 0x517740; object size 0x3e0; factory type names: Soul
 002a9678	Soul_draw	vtable 0x517740 slot 5
-002a9870	Soul_run	vtable 0x517740 slot 4
+002a9870	Soul_run	vtable 0x517740 slot 4; every state executed (docs/spec/soul-run.md)
 002aa908	Soul_takeDamage	vtable 0x517740 slot 2
 002aab60	Soul_trigger	vtable 0x517740 slot 3; purpose not established (was Soul_vslot3)
 002aab68	Soul_saveState	vtable 0x517740 slot 9

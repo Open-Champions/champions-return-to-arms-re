@@ -3,7 +3,7 @@
 00160a88	ParticleMorphEffect_ctor	GameObject_ctor then vtable 0x512338; start and end (start+150) stamped from g_simFrame; caller script_particleMorph
 00160b20	ParticleMorphEffect_run	vtable slot 4; picks model sample points on two objects with its own generator (GameObject_rand) and spawns particles between them
 00161270	world_damageInRadius	(inner, outer, attacker, pos, maxDamage, type, minDamage, skipFlags): box query, linear falloff, damage through 0x1e8230; a player attacker hits only what its vtable slot 20 accepts
-001614f0	world_collectObjectsInArc	(f12 radius, f13 arcDegrees, f14 a third float; a0 pos, a1 facing16, a2 out, a3 ...): box query filtered by direction; the third value, given as ? in the earlier note, is a float argument (read into f22 at 0x16152c; the player tick passes 0.0, docs/spec/player-tick.md section 12); 19 callers, mostly skills; output format not read
+001614f0	world_collectObjectsInArc	(pos, facing16, out list, filter; f12 radius, f13 arc degrees (-1 none), f14 width): the box is the only range test; creatures without flags 0xd; filter = slot 20; partnerless nodes via handle_insertNode, so a destroyed object stays listed; first entry the nearest, the rest in reverse order of acceptance; 19 callers, mostly skills; executed (difftest_combat_spells)
 001618d4	StrongStancePhantom_ctor	sets vtable 0x50f448, starts an animation with anim_startBlendInOut; callers 0x308578, 0x3130f4
 00161a54	StrongStancePhantom_run	vtable slot 4
 00161adc	StrongStancePhantom_draw	vtable slot 5
@@ -61,11 +61,11 @@
 00166ec0	bbox_setEmpty	
 00166ef8	math_init	calls math_buildNoiseTable; caller engine_init
 # ---- rigid body helpers used by the physics props in the objects area (0x167008-0x1685ef) ----
-00167008	rigidbody_pointVelocity	(body, point, out): angular x (point - position) + linear
-00167408	rigidbody_applyCollisionImpulse	(restitution, body, point, normal)
-00167730	rigidbody_integrate	(dt, body, force, torque): advances orientation quaternion +0x1c, momentum +0x2c and +0x38
+00167008	rigidbody_pointVelocity	(body, point, out): angular velocity x (point - position) + momentum x inverse mass; executed docs/spec/phprop-run.md
+00167408	rigidbody_applyCollisionImpulse	(restitution, body, point, normal): nothing unless vn*e - vn > 0; executed docs/spec/phprop-run.md
+00167730	rigidbody_integrate	(dt, body, force, torque): quaternion, momenta, R = transpose of the quaternion matrix, world inverse inertia, angular velocity; position not moved; executed docs/spec/phprop-run.md
 00167a58	rigidbody_updateDerived	normalises the quaternion and rebuilds the rotation matrix at +0x44
-00167c18	rigidbody_addForceAtPoint	(body, point, force, forceAcc, torqueAcc)
+00167c18	rigidbody_addForceAtPoint	(body, point, force, forceAcc, torqueAcc); executed docs/spec/phprop-run.md
 001682f0	rigidbody_init	(mass, ..., dims, body): clears 0x98 bytes; the initial orientation quaternion takes one value from g_cosmeticSeed (0x168350)
 # ---- automap ----
 0016a760	automap_revealAll	sets the top four bits of every cell of the grid at 0x4044f0; caller script_revealMap
@@ -97,7 +97,7 @@
 00170838	anim_push	(state, anm, flags): adds a track at full weight if there is room; 87 callers
 001708c0	anim_pushWithWeights	(f13 weight, f14 rate, f15 life, f16 life rate; a0 state, a1 anm, a2 flags): as anim_push with the four values given (stores 0x170920-0x17092c); f12 is set by the callers (e.g. 0x237a48) and not read - an earlier note listed the four values as the first four float arguments
 00170938	anim_pushChained	(state, anm, flags): new track starts at (previous track time - previous length + 2)
-001709d8	anim_advanceUnitSpeed	anim_advance with speed 1.0
+001709d8	anim_advanceUnitSpeed	anim_advance with speed 1.0 (f12 set, tail jump, arguments unchanged); executed (difftest_prop_dtors)
 001709f8	anim_syncToSimFrame	(state) every track time = g_simFrame modulo track length; 61 callers
 00170bc8	anim_jumpTopToEnd	(state) top track time = its length
 00170c80	anim_snapTopToEnd	(state) top track time = its length, both weights 1
@@ -149,7 +149,7 @@
 00179130	model_relocate	fix-up of a .vif model after load; caller lump_fixupEntry
 00179400	model_getBounds	(model, hideMask, six outputs): bounds of the meshes not hidden
 00179550	model_buildHideMask	(model, variantBits) -> 64-bit mesh SHOW mask (a set bit draws the mesh): the complement of the hidden-by-default set at model +0x08, with each selected variant record OR-ing in and clearing meshes; the name says hide mask, the result is the opposite (docs/formats/model-texture.md); 77 callers
-001795f8	model_getAttachMatrix	(scale, model, animState, index, out mat34)
+001795f8	model_getAttachMatrix	(scale, model, animState, index, out): rec+4 x joint x scale, model space; executed (difftest_attach_matrix)
 00179978	model_resetDrawState	restores the draw parameters at 0x41c149-0x41c170 to defaults; 37 callers
 001799c8	model_getSamplePointCount	
 00179e10	tex_relocate	fix-up of a .tex texture after load

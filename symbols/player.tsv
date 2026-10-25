@@ -27,29 +27,29 @@
 001b3b90	Player_regenHealth	skips the prediction copy; hp += max*0.0001 scaled by passive 0x10 and item modifier 0xb; then drains the pending potion amount +0xb4 at rate +0xb8
 001b3d90	Player_clampToScreen	(player, velocity, outMask) tests the move against the four view planes at 0x4f8350; only called when g_networkMode is 0
 001b4020	Player_move	(player, mode 0-6, pad, extVelocity) stick + per-slot camera yaw (0x13e0c8) -> facing and velocity, speed scale, water test, then creature move/collide 0x1186d8; returns footstep event bits
-001b5330	Player_takeDamage	vslot 2 (amount, attacker, flags): early-outs, block handling (states 8/0xb), mana-shield spell, then accumulates pending damage +0xc8 / flags +0x2dc and links the attacker at +0x2e4
+001b5330	Player_takeDamage	vslot 2 (amount, attacker, flags): early-outs, block handling (states 8/0xb: one g_randSeed draw for the clip in state 8 only; attacker in the front half-plane: hit 0, or x0.5 with flag 0x20000, then Player_blockSparks), Holy Shield (mana pays a fraction), then accumulates pending damage +0xc8 / flags +0x2dc and links the attacker at +0x2e4; executed (difftest_combat_ptick)
 001b5790	player_recalcArmor	(slot) zeroes object +0x5c..+0x6c, sums equipped items and returns the value player_recalcStats stores at object +0xe4
 001b5d68	Player_vslot27	(player, arg) arg 0: play an animation and set state 0; arg 1: set state 1; meaning of the slot not established
 001b5ea8	Player_isEnemy	vslot 20: monsters yes unless charmed/hidden; other players only in PvP mode A and on a different team (+0x4c24)
 001b5fa0	player_recallTick	counts g_recallCountdown down; at 60 starts the blue aura on every player, at 1 stores each player's return position (+0x44) and level (+0x24) and requests the level change
 001b6338	player_itemWeight	(slot, item) item_getScaledField08 times class/skill reductions; summed into record +0x120
 001b6458	player_recalcStats	every player: effective stats +0x90.. = base +0x78.. + item modifiers 7-10, max hp +0xb0, max mana +0xc4, load limit +0x124, armour, clamps hp/mana to max
-001b6a98	Player_meleeHit	(scale, player, target, a, flags) returns at once for the prediction copy; line-of-sight test, picks main or second weapon, Player_recalcDamage, then the damage function 0x1e8230
+001b6a98	Player_meleeHit	(scale; player, target, unused, extra flags): nothing for the prediction copy; ray test (an AutoProp is hit anyway), main or second weapon (odd combo step with passive 0x40000), Player_recalcDamage, bow/thrown recompute as unarmed keeping the weapon flags, heavy attack x1.9 in place + Player_hitSparks, then the damage function 0x1e8230; executed all branches (difftest_combat_melee)
 001b7ba8	player_voice	(slot, kind) plays a character voice line; returns at once unless slot is local; also gated by cutscene, local menu and audio status 0x216388
 001b8f28	Player_startSpawnProtection	sets +0x4b4 to 60 (90 in a net game), may hide the player, creates a LightEffect; called by player_respawn
 001b9520	Player_animStep	(speed, player) advances the animation set +0x114 and converts root motion +0xbc/+0xc0 to world axes; passes no position for the machine's own real player (flag 0x200000) so its sound cues are not played; returns event bits
-001b9658	Player_blockSparks	(player, silent) sound and spark particles between the hands when a hit is blocked
+001b9658	Player_blockSparks	(player, silent): silent 0 (callers Player_takeDamage 0x1b5604 and 0x152fa8, both pass 0): sound on the record object, 50 sparks at the hand midpoint, unit-ball points from the player's own seed (>=150 own draws), velocity accumulates; executed (difftest_combat_ptick). silent != 0 still reads the two hand points, then five shared-seed sparks per model sample of the record object; silent 1 uses 0x865810 and silent 2 uses 0x865860; any other nonzero silent draws the balls and spawns nothing; executed (difftest_combat_round4, 302 of 408). Who passes a nonzero silent is not established
 001ba5f8	player_countPotions	(slot, kind) sums the quantity of the nine potion types of one kind in bag 2
 001ba730	playerProjectile_draw	vslot 5 of playerProjectile (vtable 0x50e470, base MissileWeapon; was named Projectile_drawThrown)
-001ba940	playerProjectile_run	vslot 4 of playerProjectile (vtable 0x50e470; thrown weapons and potions; was named Projectile_runThrown); not read in full
+001ba940	playerProjectile_run	vslot 4 of playerProjectile (vtable 0x50e470; thrown weapons and potions; was named Projectile_runThrown): spin, gravity 8.999999, obj_moveAndCollide, destroyed (slot 1 with 3) on any hit; kinds 0 and 4+ executed (difftest_combat_ranged); kinds 1-3 executed (difftest_combat_round4): kind 1 flames from the shared seed, kind 2 a poisonGasSpell, kind 3 a ring and radius damage unless the level is innpit
 001bb3c8	Player_findTarget	(range, player) picks the nearest visible creature in a 60-degree cone ahead and links it at +0x234; clears +0x4b8
 001bb718	Player_weaponSwapInput	(player, pad, force) swap button 0x41ba30: toggles the weapon set +0x4a7c in state 2 and equips that set's weapons; call site in Player_run excludes the prediction copy
-001bba88	Player_pickAttackAnim	(player, weaponClass) chooses the next attack animation variant +0x461 from the model index and a hash of the frame counter; advances g_randSeed once
+001bba88	Player_pickAttackAnim	(player, weaponClass): one g_randSeed draw whose value is unused; variant +0x461 from a hash of g_simFrame, model index R+0x54, class, old variant; net_isLocalSlot result discarded; executed (difftest_combat_melee)
 001bbff8	Player_drawMarker	draw-phase: overhead marker for each player when more than one is in the game and option 0x4f8458 is on
 001bc2f8	Player_idleFidget	(player, pad) rare random fidget animation when standing still (g_randSeed), cancelled by stick movement
 001bc560	Player_tickEnchantTimers	skips the prediction copy; counts down the timed modifiers (ids in the list at 0x537c08) on the 17 equipped items
 001bc768	Player_weaponTrails	cosmetic weapon trail/particle update for the active weapon and the second weapon; in a net game the local slot is handled by the prediction copy only
-001bcc20	Player_hitSparks	(player, target) spark particles between random bones of attacker and target; draws g_randSeed
+001bcc20	Player_hitSparks	(player, target): 100 spark pairs between random sample points of the two models (slot 16); 200 g_randSeed draws; called by Player_meleeHit only for a heavy attack on a creature by the real player; executed (difftest_combat_melee)
 001bce88	player_pollRecallButton	for each local player: raw local pad (use button held + bit 0x100 pressed) and a list of blocking conditions -> hudmsg_sendRecall
 001bd040	player_respawn	(slot, pos, angle, a, b) deletes the old object, hp = half max (full in PvP), new Player object, spawn protection, forces a prediction rebase, rebuilds the alive list, resets the local camera
 001bd458	player_importCharacter	(slot, src) fills a record from a character stored in a different, larger layout (offsets shift by 0x10 after +0xb0, 0x5db0+ bytes); level capped at 50; called from 0x21fa2c
@@ -109,3 +109,4 @@
 0041ba10	g_btnPotionA	u32[4] pad mask per slot: Player_usePotion kind 0, the health potion (Ran: default mask 0x2 = R2, docs/issues/live-rig.md 4c)
 0041ba20	g_btnPotionB	u32[4] pad mask per slot: Player_usePotion kind 1, the mana potion (Ran: default mask 0x1 = L2, docs/issues/live-rig.md 4c)
 0041ba30	g_btnWeaponSwap	u32[4] pad mask per slot: swap weapon set; with block held starts state 0xb
+004d8ae8	g_loadLimitBonus	s32 read only by player_recalcStats (0x1b69e0): non-zero adds 5000 to every load limit before the 9999 cap; no writer found by an immediate-offset scan, 0 in the executable image

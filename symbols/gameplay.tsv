@@ -62,7 +62,7 @@
 001eda78	script_resetState	script_clearDeferred and clears the post-cutscene action
 001eda9c	script_setPostAction	script postAction: copies the name to 0x86fa80
 001edac0	script_runPostAction	if a post action is set: clear it, run it with 0x4f8698 = 1; called by cut_runFrame, level setup, 0x1dcc78, 0x22f6a8
-001edb18	GutChunk_run	vtable slot 4 of GutChunk (PhProp subclass 0x50f3b8): bounce, blood decals, deletes itself on first bounce when bit 0 of +0x248 is set
+001edb18	GutChunk_run	vtable slot 4 of GutChunk (0x50f3b8): PhProp_run, then own-draw particle and decals by the bits +0x248; destroys itself through slot 1 (arg 3) on its first bounce when bit 0 is set; executed docs/spec/phprop-run.md
 001ee050	LightEffect_run	vtable slot 4: interpolates colour/radius, follows its owner handle, deletes itself at frame +0xb4
 001ee248	RecallEffect_ctor	creates a GlowingCylinder child
 001ee330	DummyDamager_run	vtable 0x50ea28 slot 4 (class DummyDamager, base Projectile; was named Projectile_run): obj_moveAndCollide; +0x60 bits 1 delete on any hit, 2 delete on world hit, 8 fire (leaves a fire patch), 0x10 cold
@@ -228,3 +228,4 @@
 0020fa64	paths_joinSegments	level setup: merges same-named path pieces whose ends are within 96 units
 0020fd04	stub_empty_20fd04	empty; last call of drawWorld
 0020ffdc	pathFollower_init	zeroes a 0x38-byte follower and stores two arguments at +0 and +0x14
+004f7110	g_cm1Index	s32 cached by game_set4f7110; game_scanCm1Vars(0) returns it; -1 in the executable image; the net launch message carries the host value at +0xf4

@@ -10,17 +10,17 @@
 0010beb8	Creature_onDeath	slot 28 (quiet): clears follow flags, runs deathScript, drops 'dropitem', deletes undrawn creatures, PvP score, stops boss music
 0010bfc8	Creature_revive	slot 32 (withEffect): clears flags 0x9, full hp, state 0, cflag 0x100000000, runs resurrectScript
 0010c238	creature_canSeePoint	(minR, maxR, this, pos, facing, arc): arc and range test, then a terrain ray
-0010c410	creature_objInArcRange	(range, this, obj, arc): obj within arc of facing and within range, with a terrain ray
+0010c410	creature_objInArcRange	(range, this, obj, arc): |s16(0x4000 - atan2(dx, dy) - facing)| below the s16 arc, (distance^2 - obj radius) below range^2, and a terrain ray from this + its full height that misses or passes 1. Executed: docs/spec/skeleton-run.md 4a
 0010c5b8	creature_canSeeObjEdge	(minR, maxR, lead, this, obj, facing, arc, rayMode): as creature_canSeeObj but the range test adds only the target radius
 0010c810	creature_canSeeObj	(minR, maxR, lead, this, obj, facing, arc, rayMode): arc + range (radii subtracted) + terrain ray; lead uses the target velocity +0x308
-0010ca70	creature_findPlayerInCone	(minR, maxR, this, facing, arc): uncharmed creatures scan g_players[0..n) for the nearest visible live player; charmed ones use the enemy scan
+0010ca70	creature_findPlayerInCone	(minR, maxR, this, facing, arc): uncharmed creatures scan g_players[0..n) for the nearest visible live player; charmed ones use the enemy scan; executed (difftest_combat_monsters): far caps the distance (unlike the enemy cone), the ray starts at full height, any object a record names (no flag test); charmed: an inline copy of findEnemyInCone
 0010cf78	creature_findEnemyInCone	(minR, maxR, this, facing, arc): box query, slot 20 score, +1 last attacker, +1 current target, nearest wins; needs a clear terrain ray
 0010d2a8	creature_isBlockedBy	(this, other): other is blocking (player +0x47f or cflag 0x200) and this stands in front of it
 0010d390	creature_inKnockdownAnim	true while the animation is one of the eight knockdown*.anm clips
 0010d4e0	creature_getGuardPoint	(dist, out, this): point dist from the ally (+0x238) toward the target (+0x234)
-0010d5e8	creature_allyInLineOfFire	(range, dist, this, target, prev): every 8th frame, sweeps toward the target and reports another object in the way
+0010d5e8	creature_allyInLineOfFire	(creature, target, previous; range, distance): previous unchanged without a target or on 7 frames in 8 ((g_simFrame ^ s8 +0x230) & 7); else 1 when 4 (previous 0) or 3 (previous set) living non-player creatures stand within target radius x 1.75, creature_objInArcRange(0x4000; range) passes and a world ray from 13 above along the bearing x distance hits 0<t<1 something other than the target; teams never tested ("ally" inferred). Executed: docs/spec/skeleton-run.md 4
 0010d800	creature_countAlliesNear	(radius, this, pos): live creatures of the same side in a box
-0010d940	creature_bossRank	0 normal, 1 MiniBoss property (cflag bit 0), 2 for a fixed list of type names at +0x34 (AntQueen, Innoruuk, raloszek, ...)
+0010d940	creature_bossRank	0 normal; 2 for 14 type names at +0x34 and for 3 name+property pairs, then 2 more names; else 1 when cflag bit 0 (MiniBoss). Executed (tools/difftest_combat.py; docs/spec/combat-death.md)
 0010dbe0	creature_bossMusicName	type name +0x34 -> boss music stream name, or 0
 0010de10	Creature_isSameTeam	slot 22 (other): both have a team (player record +0x4c24, or charm team +0x310 while charmed) and they match; never true for the prediction copy
 0010ded0	Creature_pickTarget	slot 23 (force): target selection every 32nd frame staggered by serial +0x230; box query of HomeRange with the exclude mask forced to 8; score = slot 20 + last attacker + current target, nearest wins; leash to home +0x3b4; a scan starts from nothing (a target the query does not return is dropped), and force with a current target takes any other candidate whatever its score (docs/spec/creature-tick.md section 6)
@@ -52,11 +52,11 @@
 00116d50	Creature_interactPrompt	slot 13 (text, playerSlot): prompt text for a named creature (TalkTo / UpToShop / CannotTalk)
 00117230	Creature_emitLinkParticles	(this, other): 100 particles between random bones of the two models, chosen with GameObject_rand; reached through animation-event tables
 001175c0	Creature_aimAngleAtTarget	(projSpeed, this): angle to the target led by its velocity (players only) plus a GameObject_rand spread
-001176e0	creature_buildElementDamage	(this, damageDesc, element): adds an elemental entry (type 0x15.. ) scaled from a skill table entry and the level scale; one g_randSeed draw; 27 callers
-00117d30	creature_dropHeldPartAsProp	(x, part, creature, def, flags): turns a held model part into a 0x248-byte PhProp; called from slot 11 of the three Weapon classes
-00117e88	damageDesc_getElement	maps the entry types of a damage descriptor to 1-4 or 6
-00117f08	creature_drawHeldPart	(x, part, creature): draws a model part at its bone; called from slot 20 of the Weapon classes
-00118058	Weapon2_update	vtable slot 21 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon2_slot21)
+001176e0	creature_buildElementDamage	(x unused, descriptor, kind & 0xff): frees the 4 slots; kinds 1-6 -> slot 0 = (id 0x15/0x16/0x17/0x18/0x26/0x1f, a, a + trunc(a x 0.2 x d/65536), 0), a = slot 11 of a g_skillTable Skill (12, 13, 14, 25 or 26 by kind); ONE SHARED DRAW; kind 0 or >= 7 only frees. Executed: docs/spec/weapon-holder.md 3.1
+00117d30	creature_dropHeldPartAsProp	(x, part, creature, definition, flags): flags default 0x4001, +0x100 for cflag 0x101000000; PhProp_ctor(definition +0, record +0, record +8, 1, flags, 0; scale +0xdc). Executed: docs/spec/weapon-holder.md 3.3
+00117e88	damageDesc_getElement	(x, descriptor) -> element: the last of ids 0x15/0x16/0x17 -> 1/2/3, 0x1f -> 6, 0x18 -> 4; 0x26 not reported. Executed: docs/spec/weapon-holder.md 3.2
+00117f08	creature_drawHeldPart	(x, part, c): bone byte +0x13 of word (c+0x24)+8p+4, negative skips; v16, model_getAttachPoint, v16, model_getAttachWorldMatrix, model_draw; no stores. Executed: weapon-holder-slots.md 5.3
+00118058	Weapon2_update	slot 21: both hands; hand 2 uses descriptor +0xe0, effect block +0x9c; no stores, no shared draw. Executed: weapon-holder-slots.md 5.4 (was Weapon2_slot21)
 00118378	creature_setDefEntryParams	(f0..f3, classDef, index, b0..b3): writes four float/byte pairs into resource entry 'index' of a class definition; 59 callers, all monster constructors
 00118410	Creature_slot18	empty; slot 18 is the 'set state' entry that script autoPropSetState calls on props
 00118418	Creature_getName	slot 19 (buf): 'mb_<class>' when usetypeidname is set, else the name property
@@ -68,7 +68,7 @@
 001188a0	Creature_angleAllyToTarget	direction from the ally (+0x238) to the target (+0x234)
 001188f8	Creature_clearStatus	clears the charm, the timers +0x312..+0x31c, the five effect timers +0x340..+0x354 and the effect-source handle +0x360
 00118950	Creature_setEffectTimer	(seconds, this, which 0-4, source): sets +0x340/+0x344/+0x348/+0x34c/+0x350 and records the source object in +0x360
-001189f0	Creature_setCharm	(this, frames, team): monsters only: team +0x310, charm timer +0x312 (-1 = permanent), drops the target; used by script charmMonster and followPlayer
+001189f0	Creature_setCharm	(this, frames, team): nothing when s16 +0x312 == -1, object flag 0x20 clear or 0x40 set; else +0x310 = team byte, +0x312 = frames halfword, handle_clear(+0x234), +0x234 = 0. Soul_ctor charms for good (-1, team 0). Executed: docs/spec/soul-run.md 4
 00118a58	Creature_stun	slot 30 (frames, flash): not for bosses or the dead: +0x31c = frames, state 0x13
 00118af8	Creature_setNoTargetTimer	slot 31 (frames): not in PvP mode A, not for bosses: +0x316 = frames and the target is dropped; pickTarget refuses targets while it runs
 00118c50	Creature_slot35	returns (int)(level scale 0x4f714c * 0.3)
@@ -125,25 +125,25 @@
 0011a868	Creature_updateSpells	slot 17 (Vec3 *pos): calls slot 2 of every attached spell (+0x364) with the position and facing
 0011a920	creature_aimAngleAt	(projSpeed, this, target): lead for player targets plus a GameObject_rand spread of +-900
 0011aa30	creature_leadPoint	(projSpeed, this, target, out): predicted position of target at mid height
-0011aaf8	Creature_leadTargetPoint	(projSpeed, this, out): creature_leadPoint on the target handle; 16 callers
+0011aaf8	Creature_leadTargetPoint	(creature, out or 0; speed): 0 and out untouched without a target object; else target + last move (+0x308, +0x30c) x (2-D distance / speed), z = target z + height x 0.5; returns 1. Executed: docs/spec/skeleton-run.md 5
 0011afb0	Weapon1_slot1	vtable slot 1 of Weapon1 (hand, on): hand 1 sets +8 and bit 0 of +4; hand 2 (Weapon2, WeaponShield only) sets +0x98 and bit 1. Not a destructor
-0011aff0	Weapon1_setElement	vtable slot 8 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon1_slot8)
-0011b020	Weapon1_setHandColour	vtable slot 9 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon1_slot9)
-0011b050	Weapon1_setHandColour2	vtable slot 10 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon1_slot10)
-0011b080	Weapon1_slot11	vtable slot 11 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b0d0	Weapon1_slot12	vtable slot 12 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b0f0	Weapon1_slot13	vtable slot 13 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b110	Weapon1_slot14	vtable slot 14 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b130	Weapon1_slot15	vtable slot 15 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b148	Weapon1_getElement	vtable slot 16 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon1_slot16)
-0011b180	Weapon1_slot17	vtable slot 17 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b198	Weapon1_slot18	vtable slot 18 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b208	Weapon1_slot19	vtable slot 19 of Weapon1 (shared with Weapon2, WeaponShield); weapon holder class (vtable at +0), not a GameObject; body not read
-0011b270	Weapon1_slot20	vtable slot 20 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b2a8	Weapon1_slot21	vtable slot 21 of Weapon1 (shared with WeaponShield); weapon holder class (vtable at +0), not a GameObject; body not read
-0011b3e8	Weapon1_slot22	vtable slot 22 of Weapon1 (shared with Weapon2, WeaponShield); weapon holder class (vtable at +0), not a GameObject; body not read
-0011b510	Weapon1_slot23	vtable slot 23 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
-0011b580	Weapon1_slot24	vtable slot 24 of Weapon1; weapon holder class (vtable at +0), not a GameObject; body not read
+0011aff0	Weapon1_setElement	slot 8 (hand, kind): creature_buildElementDamage(kind & 0xff) for hand 0 or 1. Executed: docs/spec/weapon-holder.md 3.4
+0011b020	Weapon1_setHandColour	slot 9 (hand, a, b, c, d): descriptor halfwords +0x60..+0x66 = low bytes, hand 0 or 1. Executed: docs/spec/weapon-holder.md 3.4
+0011b050	Weapon1_setHandColour2	slot 10 (hand, a, b, c, d): descriptor halfwords +0x68..+0x6e = low bytes, hand 0 or 1. Executed: docs/spec/weapon-holder.md 3.4
+0011b080	Weapon1_slot11	slot 11 (hand, creature, definition, flags): hand 0/1 with bit 0 -> creature_dropHeldPartAsProp(+8), bit 0 cleared. Executed: docs/spec/weapon-holder.md 3.4
+0011b0d0	Weapon1_slot12	slot 12 (hand): hand 0 or 1 -> bit 0 set. Executed: docs/spec/weapon-holder.md 3.4
+0011b0f0	Weapon1_slot13	slot 13 (hand): hand 0 or 1 -> bit 0 cleared. Executed: docs/spec/weapon-holder.md 3.4
+0011b110	Weapon1_slot14	slot 14 (hand) -> carried: hand 1 -> bit 0, else 0. Executed: docs/spec/weapon-holder.md 3.4
+0011b130	Weapon1_slot15	slot 15 (hand) -> part: hand 1 -> +8, else 0. Executed: docs/spec/weapon-holder.md 3.4
+0011b148	Weapon1_getElement	slot 16 (hand) -> element: hand 1 -> damageDesc_getElement(h+4, h+0x50), else 0. Executed: docs/spec/weapon-holder.md 3.4
+0011b180	Weapon1_slot17	slot 17 (hand) -> descriptor: hand 1 -> h + 0x50, else 0. Executed: docs/spec/weapon-holder.md 3.4
+0011b198	Weapon1_drawParts	slot 18 (d, parent, chain): bit 0, part +8 -> model_drawPart(word d+8p+4, word d+8p+0xc, 0, parent, chain, -1, -1, 0). Executed: docs/spec/weapon-holder-slots.md 5.1 (was Weapon1_slot18)
+0011b208	Weapon1_drawGivenPart	slot 19 of all three holders (part, tex, parent, chain): bit 0 and all non-zero -> model_drawPart(part, tex, 0, parent, chain, -1, -1, 0). Executed: weapon-holder-slots.md 5.2 (was Weapon1_slot19)
+0011b270	Weapon1_drawAtBones	slot 20 (c): bit 0 -> creature_drawHeldPart(h+4, part +8, c). Executed: weapon-holder-slots.md 5.3 (was Weapon1_slot20)
+0011b2a8	Weapon1_updateEffects	slot 21 of Weapon1 and WeaponShield (d, c; f): hand 1 only; behind flag 2, isNearView(480), +0x231 bit 8 -> fx_modelStatusEffects; no stores, no shared draw. Executed: weapon-holder-slots.md 5.4 (was Weapon1_slot21)
+0011b3e8	Weapon1_updateEffectsModel	slot 22 of all three (model, c; f): as slot 21 with the model given, part not read. Executed: weapon-holder-slots.md 5.5 (was Weapon1_slot22)
+0011b510	Weapon1_saveState	slot 23 (buf) -> 3: bits, part, element of hand 1. Executed: weapon-holder-slots.md 5.6 (was Weapon1_slot23)
+0011b580	Weapon1_loadState	slot 24 (buf) -> 3: bits, part, then slot 8 (1, element): ONE SHARED DRAW per element 1-6; kind 5 lost. Executed: weapon-holder-slots.md 5.6 (was Weapon1_slot24)
 0011b5f0	Weapon2_setHandPart	vtable slot 1 of Weapon2 (hand, on): hand 1 sets +8 and bit 0 of +4; hand 2 (Weapon2, WeaponShield only) sets +0x98 and bit 1. Not a destructor (was Weapon2_slot1)
 0011b668	Weapon2_setHandColour	vtable slot 9 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon2_slot9)
 0011b6b8	Weapon2_slot10	vtable slot 10 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
@@ -152,22 +152,22 @@
 0011b818	Weapon2_slot13	vtable slot 13 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
 0011b858	Weapon2_isHandFull	vtable slot 14 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon2_slot14)
 0011b898	Weapon2_getHandPart	vtable slot 15 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon2_slot15)
-0011b8c8	Weapon2_getElement	vtable slot 16 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon2_slot16)
+0011b8c8	Weapon2_getElement	slot 16 (hand): 2 -> damageDesc_getElement(+0xe0), 1 -> (+0x50), else 0. Executed: weapon-holder-slots.md 5.7 (was Weapon2_slot16)
 0011b920	Weapon2_getDescriptor	vtable slot 17 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon2_slot17)
-0011b948	Weapon2_draw	vtable slot 18 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read (was Weapon2_slot18)
-0011ba48	Weapon2_slot20	vtable slot 20 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
-0011bac0	Weapon2_slot23	vtable slot 23 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
-0011bb70	Weapon2_slot24	vtable slot 24 of Weapon2; weapon holder class (vtable at +0), not a GameObject; body not read
+0011b948	Weapon2_drawParts	slot 18 of Weapon2: the same code as WeaponShield 18. Executed: weapon-holder-slots.md 5.1 (was Weapon2_draw) (was Weapon2_slot18)
+0011ba48	Weapon2_drawAtBones	slot 20: the same code as WeaponShield 20. Executed: weapon-holder-slots.md 5.3 (was Weapon2_slot20)
+0011bac0	Weapon2_saveState	slot 23 -> 5: bits, part +8, element 1, part +0x98, element 2. Executed: weapon-holder-slots.md 5.6 (was Weapon2_slot23)
+0011bb70	Weapon2_loadState	slot 24 -> 5: inverse; two elements rebuilt (shared draws). Executed: weapon-holder-slots.md 5.6 (was Weapon2_slot24)
 0011bc18	WeaponShield_slot1	vtable slot 1 of WeaponShield (hand, on): hand 1 sets +8 and bit 0 of +4; hand 2 (Weapon2, WeaponShield only) sets +0x98 and bit 1. Not a destructor
-0011bc90	WeaponShield_slot11	vtable slot 11 of WeaponShield; weapon holder class (vtable at +0), not a GameObject; body not read
-0011bd60	WeaponShield_slot12	vtable slot 12 of WeaponShield; weapon holder class (vtable at +0), not a GameObject; body not read
-0011bda0	WeaponShield_slot13	vtable slot 13 of WeaponShield; weapon holder class (vtable at +0), not a GameObject; body not read
-0011bde0	WeaponShield_slot14	vtable slot 14 of WeaponShield; weapon holder class (vtable at +0), not a GameObject; body not read
-0011be20	WeaponShield_slot17	vtable slot 17 of WeaponShield; weapon holder class (vtable at +0), not a GameObject; body not read
-0011be40	WeaponShield_slot18	vtable slot 18 of WeaponShield; weapon holder class (vtable at +0), not a GameObject; body not read
-0011bf40	WeaponShield_slot20	vtable slot 20 of WeaponShield; weapon holder class (vtable at +0), not a GameObject; body not read
-0011bfb8	WeaponShield_slot23	vtable slot 23 of WeaponShield; weapon holder class (vtable at +0), not a GameObject; body not read
-0011c048	WeaponShield_slot24	vtable slot 24 of WeaponShield; weapon holder class (vtable at +0), not a GameObject; body not read
+0011bc90	WeaponShield_slot11	slot 11: as Weapon1, then hand 0/2 with bit 1 -> drop part +0x98, bit 1 cleared. Executed: docs/spec/weapon-holder.md 3.4
+0011bd60	WeaponShield_slot12	slot 12: hand 0/1 -> bit 0 set; hand 0/2 -> bit 1 set. Executed: docs/spec/weapon-holder.md 3.4
+0011bda0	WeaponShield_slot13	slot 13: hand 0/1 -> bit 0 SET (unlike Weapon1); hand 0/2 -> bit 1 cleared. Executed: docs/spec/weapon-holder.md 3.4
+0011bde0	WeaponShield_slot14	slot 14 -> carried: hand 2 -> bit 1, hand 1 -> bit 0, else 0. Executed: docs/spec/weapon-holder.md 3.4
+0011be20	WeaponShield_slot17	slot 17 -> descriptor: hand 1 -> h + 0x50, hand 2 -> 0. Executed: docs/spec/weapon-holder.md 3.4
+0011be40	WeaponShield_drawParts	slot 18: as Weapon1's, then bit 1 with part +0x98. Executed: weapon-holder-slots.md 5.1 (was WeaponShield_slot18)
+0011bf40	WeaponShield_drawAtBones	slot 20: both hands through creature_drawHeldPart. Executed: weapon-holder-slots.md 5.3 (was WeaponShield_slot20)
+0011bfb8	WeaponShield_saveState	slot 23 -> 4: bits, part +8, element 1, part +0x98. Executed: weapon-holder-slots.md 5.6 (was WeaponShield_slot23)
+0011c048	WeaponShield_loadState	slot 24 -> 4: inverse; element rebuilt (shared draw). Executed: weapon-holder-slots.md 5.6 (was WeaponShield_slot24)
 0011c0d0	creature_freezeOne	callback: non-player creature with +0x231 == 0 gets inert bit 0x10, state 0 and loses its target
 0011c150	creature_unfreezeOne	callback: clears inert bit 0x10 on non-player creatures
 0011c1a0	GameObject_clone	slot 15 of plain GameObject and 55 other classes that add no fields: 0x4c bytes, handle lists start empty
@@ -286,3 +286,6 @@
 00131570	StrongStancePhantom_clone	slot 15 of StrongStancePhantom: copy constructor into a new 0x3d8-byte block; base chain GameObject > Creature
 00131b00	net_sendMsgToPeers	(type, peerMask, buf, len): net games only; remote peers get it through the UDP connection, a local slot gets the handler table 0x5d14e0 called directly. Sits after the clone functions, outside the Creature code
 00131cb8	net_kickPeer	(peer): for a remote peer not already flagged: prints the NET KICK line, sets peer +0x44d6 and a pending word at 0x5d1450
+00118bf0	Creature_setAttackCooldown	(c, frames): nothing without a target; slot 27 with 0x10 unless state 0x14; +0x318 = frames. Executed (difftest_combat_monsters)
+00118b58	Creature_setAttackCooldownOn	(c, frames, obj): nothing for a boss or a null obj; target handle = obj; then as 0x118bf0; no direct caller found. Executed (difftest_combat_monsters)
+00202500	Creature_attachState_dtor	(p, flags): frees p only when bit 0 is set; Creature_dtor calls it on +0x320 with 2. Observed (name Inferred)

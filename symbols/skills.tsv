@@ -611,20 +611,31 @@
 00304a84	SkillThrowing_initStats	Skill slot 9: writes the per-level statistic tables
 00304aa8	SkillThrowing_describeRank	Skill slot 4: builds the per-rank description text
 00304b54	SkillThrowing_getStat0Fraction	statistic 0 / 100; called by Player_recalcDamage
+00304bc8	arena_levelName	returns the next level-file name: mode A indexes table 0x5037b8 by game_scanCm1Vars(0); mode B uses recipe 0's low nibble into table 0x503798
 00304c4c	arena_init	registers run task "arena" (0x306b78, priority 100) and draw task "arenaDraw" (0x307284); allocates the spawn-position and monster tables
 00304f5c	arena_begin	caller 0x1e55c0
 00304fb0	arena_shutdown	removes both arena tasks
-003050a4	arena_pickSpawnPoint	offline uses the camera focus to prefer nearby points; net games draw from the shared generator instead
+0030503c	arena_registerSpawn	writes one spawn-table entry (xyz and an s16 angle); index -1 appends and increments the count byte 0x8e7342
+003050a4	arena_pickSpawnPoint	a0 != 0 rings around entry 0; a0 = 0 is the respawn, a shared draw when networked and otherwise points within 240 of the camera focus at 0x44f048
 00305580	arena_onPlayerKilled	called by Player_processDamage; returns at once when the player table entry is the prediction copy (flag 0x20000)
-00305650	arena_loseLife	decrements the slot's life counter; same prediction-copy test
+00305650	arena_loseLife	mode A decrements the kill halfword; otherwise the life halfword. Unsigned, so 0 wraps to 65535. Same prediction-copy test
 003056cc	arena_addKill	credits a kill to a player, or to the owner index at creature+0x5a of a summoned pet
 00305784	arena_respawnPlayer	called by game_checkAllDead; refills hp and mana; the screen effect 0x322954 only for the local slot
 00305904	arena_drawHud	called from hud_netStatusDraw
 00305bbc	SpellArena_run	Spell slot 2 of SpellArena
 00305e9c	arena_nextWave	caller arena_runTask
-00305ed4	arena_startWave	sets the difficulty scale 0x4f714c, restores players, spawns the wave, attaches a SpellArena to each monster
+00305ed4	arena_startWave	stores the wave halfword at 0x8e7338, sets the difficulty scale 0x4f714c, restores players, spawns the wave
+003065b0	arena_setRingStep	one shared draw and the ring divisor 65535 / count, stored at 0x8e7360 and 0x8e7364
+00306af0	arena_visitCreature	respawn walk: a non-player creature takes one shared draw; bit 0 calls the virtual at vtable +0xb8 with argument 1
 00306b78	arena_runTask	run task "arena"
-00307284	arena_drawTask	draw task "arenaDraw"; writes only the prompt fade value 0x8e735c
+00307284	arena_drawTask	draw task "arenaDraw"; its prompt helper 0x3075dc advances the fade at 0x8e735c
+003075dc	arena_drawPrompt	adds 0x3c61029b to the fade at 0x8e735c, caps it at 1.0, then draws the prompt
+00307c80	arena_resetScores	clears the score block, sets 2 lives and a 2.0 overlay timer, and the movement factor 1.25 online or 1.75 offline
+00307df0	arena_compareKills	qsort comparator: -1 when the first slot has more kills; equal kills return 1 when that slot's index is higher
+00307e50	arena_rankSlots	fills 0x8e7348 with the slot order and qsorts it by arena_compareKills
+00307ebc	arena_openEndPrompt	ranks the slots and clears the prompt fade
+00307ee0	arena_grantLife	adds one life, clears the overlay timer, stores 0x80 in the per-slot HUD word, then plays the cue
+00307f68	arena_tickOverlay	climbs each overlay timer by 0x3c2af07f until 2.0, and copies lives into the snapshot when it clamps
 00308284	arena_staticInit	static initialiser, attributed by position to the arena source file; registers particle type descriptors through 0x18f3d0
 0030837c	arena_staticInitThunk	compiler-generated global constructor entry; calls the function above with (1, 0xffff)
 0030839c	SkillStrongStance_ctor	constructs the static Skill object; called from the start-up initialiser 0x16ac74
@@ -858,3 +869,7 @@
 0031d180	SmokeGen_ctor	sets the SmokeGen virtual table; callers 159c94
 0031e2b8	kbd_init	prints the INIT KEYBOARD banner
 0031e310	kbd_free	prints the FREE KEYBOARD banner
+003065fc	arena_spawnMonster	(className or 0, creature) ring search of up to 17 world_findFreeSpot calls (angle +4000 per miss), world_createObject facing the centre or re-places the creature, Creature_scaleStats by the class table 0x5037f0, SpellArena record (one draw), home range 5000, AI state 0; executed, tools/difftest_monster_build.py
+005037f0	g_arenaClassNames	30 class-name pointers; recipe bytes index it and arena_spawnMonster keys its 30 scale constants by strcmp against it
+008e7360	g_arenaRingAngle	u16 angle of the next arena spawn on the radius-200 ring; +4000 per failed free-spot search, + g_arenaRingStep after a spawn
+008e7364	g_arenaRingStep	u16 65535 / group count, stored by arena_setRingStep 0x3065b0

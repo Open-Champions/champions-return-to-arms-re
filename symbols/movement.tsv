@@ -8,3 +8,4 @@
 003a7930	libm_ieee754_powf	kernel of powf, 2 KB; identified from its wrapper's use and its constant table (0x3f763800, 0x3fb8aa00, 0x3eaaaaab ...). Body not read
 001e71b0	game_buildScreenEdgePlanes	(pos*): from the four frustum side planes at 0x44f0a8 builds four ground-plane normals at 0x4f8350 and points at 0x4f8380, the frustum footprint at pos.z moved 60 units inward; callers Player_clampToScreen 0x1b3e2c and 0x1be994. Offline use only as far as read
 00163658	math_rayPlaneDistance	(origin*, dir*, planePoint*, planeNormal*) -> distance along dir to the plane, or -1 when the ray points away or starts behind it; only caller Camera_updateFollow 0x204f28
+008657a0	g_playerMoveVelocity	static Vec3: Player_move 0x1b4020 copies V + root x 60 into it and passes it to creature_moveSimple (0x1b4fa8); Executed (difftest_combat_move)

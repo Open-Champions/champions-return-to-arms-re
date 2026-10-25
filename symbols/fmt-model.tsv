@@ -2,7 +2,7 @@
 # Only addresses that had no name. Address (hex, no 0x), name, note.
 # ---- model drawing ----
 00174e78	model_emitShellPasses	(dl, model, flag, list, count) for models with flag 0x20: for each 8-byte list record {rgba, float} uploads it, MSCAL 0x2a, and re-emits the mesh refs; ends by switching the shell mode off
-00175330	model_getAttachWorldMatrix	(scale, model, pos, facing16, animState or 0, index, out mat34): joint matrix x attach matrix, scaled and placed in the world; 4 callers
+00175330	model_getAttachWorldMatrix	executed (difftest_attach_matrix): (rec+4 x joint) rows x 1/scale, then x setPosRotZScale(scale, pos, facing+0x4000); no draw
 00175670	model_emitDrawSetup	(dl, viewMatrix, pos, model, fade): GS TEXFLUSH/TEX0_1 placeholder/ALPHA_1 from model+0x18 (or a FIX fade)/ALPHA_2 from model+0x20 when flag 0x10/TEST_1, then the 4x4 matrix, ITOP and MSCAL 2
 00175b80	model_evalFacingPoints	(model, animState, matrix): walks the 16-byte records of the flag-0x40 table at header byte +0x23; no file on the disc has the table
 00175fb8	model_emitPartSetup	(dl, part, parent, slotOverride): as model_emitDrawSetup for a part; when part+0x13 is not -1 uploads the parent's attach record (joint x 4, matrix) and runs MSCAL 0x1a
@@ -10,7 +10,7 @@
 00178c28	model_drawPart	(part, tex, layer, parent, chain, showMask, slotOverride, table): draws a part model on a parent's skeleton or attach slot; 14 callers
 00179260	model_emitMeshRefs	(dl, model, showMask, table): one DMA ref per run of adjacent shown meshes
 001791a0	model_getEffectSegment	(model, aOut, bOut) -> bool: the two float vec3 at header byte +0x27, or (0,4.5,0) and (0,38,0) when absent; caller fx_modelStatusEffects
-00179320	model_getHullPoints	(model, mesh) -> eight s8 xyz points of that mesh from the table at header byte +0x25; caller PhProp_run
+00179320	model_getHullPoints	(model, mesh) -> model + byte +0x25 x 16 + mesh x 24 (eight s8 points), or 0; PhProp_run does not test for 0; executed docs/spec/phprop-run.md
 00179358	model_getMeshJoint	(model, mesh) -> joint index byte of the 10-byte mesh record; caller PhProp_ctor2
 001796e0	model_getAttachLocal	(model, animState or 0, index, posOut, dirOut): attach point in model space, no scale or facing
 001797b8	model_setFade	(u8): stores 0x41c149; non-zero makes model_emitDrawSetup blend with FIX = 0x80 - value

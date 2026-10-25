@@ -79,7 +79,7 @@
 001d1bc0	stats_task	draw task "stats" (priority 50); only the unreferenced stats_open registers it
 001d1db8	stats_screen	stat/skill page drawn from itemList_draw; writes record +0xed/+0xee locally, sends stat-point messages, removes stats_task
 001d2eb8	stats_open	unreferenced; would set g_paused with no network test
-001d3150	player_giveExp	(slot, amount) level-ups add stat and skill points, refill hp and mana; called from simulation and from the hud_run cheat
+001d3150	player_giveExp	(slot, amount) level-ups add stat and skill points, refill hp and mana (only with hp > 0); HUD message on every machine, sound only for the local slot. Executed (tools/difftest_combat.py; docs/spec/combat-death.md)
 001d34ac	player_rebuildAbilities	recomputes max hp/mana and the ability records from skill ranks
 001d386c	quest_add	script addQuest: appends (title, text) to the quest lists of the players in slot order (record +0x41d0, count +0x43d0) and STOPS at the first player whose list is full (8) or already has the title - later players get nothing (0x1d38c4, 0x1d38e8; executed, FINDINGS N2). The earlier note said "every player's quest list"
 001d3968	quest_remove	script removeQuest: every matching entry is overwritten with a placeholder, but only the entries behind the last match move up and the count drops by one (executed, FINDINGS N3)
@@ -114,10 +114,10 @@
 001dc194	hud_registerMsgHandler	registers hud_onMsg (channel id 0x86ac40) and the empty handler 0x1e01b0 (channel id 0x86aa60)
 001dc1d0	hud_addTasks	registers hud_run (run, priority 50) and the HUD draw task (draw, priority 51)
 001dc23c	hud_removeTasks
-001dc268	hud_addGoldFloater	(slot, worldPos, amount) gold pickup that flies to the counter; credited after ~43 frames by hud_tickGold
-001dc5f4	hud_flushGold	credits every pending floater at once (level clear)
+001dc268	hud_addGoldFloater	(slot, worldPos, amount): first free floater of 8 at 0x86a900+0x24k (free when +0x1c is 0) gets amount/slot/g_simFrame; screen path from g_viewProj plus one cosmetic draw; none free: record +0xe4 += amount at once, capped 99,999,999. Executed: docs/spec/gold-run.md
+001dc5f4	hud_flushGold	credits every busy floater and positive pending sum at once (capped), then zeroes 0x4f6950[4] and 0x86acd8[4]; from game_clearLevel. Executed: docs/spec/gold-run.md
 001dc708	hud_drawGold
-001dcb80	hud_tickGold	run-task part: moves expired floaters into record +0xe4 an eighth at a time
+001dcb80	hud_tickGold	(hud_run, every tick) a floater with (g_simFrame-start)*3 >= 128 (43 ticks) moves to g_goldPending[slot]; each positive pending pays (p+7)>>3 into record +0xe4 (capped). Frame counter only. Executed: docs/spec/gold-run.md
 001dcc78	help_task	draw task "HelpMessage": draws and dismisses help boxes from the raw local pads; clears g_paused on dismiss without a network test
 001dd240	help_addTask
 001dd270	hud_spellSelect	quick-cast selector drawn and run from hud draw; sends game msgs 0, 1, 13

@@ -69,7 +69,7 @@ Offsets are from the start of the record. "init" = `player_initNewCharacter` 0x1
 | +0xec–0xee | s8 | +0xec stat points (3 per level gained); +0xed, +0xee level-up screen bookkeeping (`docs/ui.md`); init 0, 0, 1. The s32 before them, +0xe8, is the skill points | Observed: `player_giveExp` 0x1d3150. The earlier version gave the meaning as Unknown |
 | +0xef | s8[0x30] | levels of the 48 class passives, parallel to the class skill table | Observed: `player_getPassiveLevel` 0x1bed48 |
 | +0x120 | float | carried load (sum of item weights) | Observed: `player_recalcLoad` 0x1bec10 |
-| +0x124 | float | load limit = strength + 125 + 15 × passive 0x40, capped at 9999 | Observed: stats |
+| +0x124 | float | load limit = strength + 125 + 15 × passive 0x40 (asked for the slot at object +0x3c8), + 5000 when the word 0x4d8ae8 is non-zero, capped at 9999; recomputed only while the record has an object | Executed: `docs/script-items.md` 2.3 (the earlier row lacked the object test and the 5000) |
 | +0x128 | u64 | cleared by script `clearAllSkills` with the passive levels | Observed 0x1458e0; meaning Unknown |
 | +0x130 | item[64] | bag 0, 0x48 bytes per item; count at +0x1330 | Observed: 0x1bec10, import |
 | +0x1338 | item[64] | bag 1; count at +0x2538 | Observed: same loops (stride 0x1208) |
@@ -96,7 +96,7 @@ Offsets are from the start of the record. "init" = `player_initNewCharacter` 0x1
 | +0x4bc8 | s8 | countdown; at 0 clears object flag 0x400000 | Observed: `Player_run` tail 0x1ac6f8 |
 | +0x4bc9 | s8 | countdown; while non-zero no ability can start | Observed: state 2, 0x1ac74c |
 | +0x4bca | s16 | level-change cooldown | Known (D20); decremented at 0x1ac6e8 |
-| +0x4bbf + d×13 + m | u8 | mission flags for difficulty d (1–5) and mission m (0–12): bit 0 available, bit 1 complete | Observed: 0x1bf698–0x1bf770 |
+| +0x4bbf + d×13 + m | u8 | mission flags for difficulty d (1–5) and mission m (0–12): bit 0 available, bit 1 complete. Rows 1–5 are +0x4bcc..+0x4c0c; a row 0 would lie on the skill pairs and countdowns above, which `clearAllSkills` fills with 0xff | Observed: 0x1bf698–0x1bf770; overlap executed, `docs/script-items.md` 3 |
 | +0x4c0d | s8[13] | medal earned per mission | Observed: 0x1bf7e8, 0x1bf838, 0x1bdb80 |
 | +0x4c18 | u64 | bit field. Bits 32–36 (the low five bits of +0x4c1c) hold a character-kind value: init stores its ninth argument, or 1 when that is −1; the only caller that passes anything else is the character screen `playerSel_task`, which passes 2 on its lobby branch (0x228618); script `saveGame` and `net_allPlayersState2` test for 2. +0x4c1a evil bits and +0x4c1b decision bits, one bit per difficulty. The earlier version called bits 32–36 the difficulty index; that is the separate global `g_difficultyIdx` 0x4f719c | Observed: init 0x1b1de8–0x1b1e60, 0x146c34, 0x1ec62c; names.tsv |
 | +0x4c20 | float | movement speed multiplier, 1.0 | Observed: `player_speedScale` 0x1bea10 |
