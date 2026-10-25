@@ -1,5 +1,8 @@
 # Skills and spells (0x2c3cd4–0x320000)
 
+For the player input-to-cast path and the ordered native port contract, see
+[`docs/spec/player-spell-pipeline.md`](spec/player-spell-pipeline.md).
+
 Status: breadth-first pass. Every class in the area was laid out from the virtual tables and
 the start-up initialiser; the mechanical parts (slot functions, constructor fields, statistic
 constants, what each cast allocates) were extracted by script from the disassembly and the
