@@ -1,0 +1,426 @@
+# Minotaur spawn and fight handoff — SLUS_209.73 US v2.00
+
+**Status: MORE.** Addressed class contracts and bounded execution are available;
+exact live combat, rendering and loot pickup remain unverified.
+
+**Observed / scope, 2026-10-24:** this is research in `t3/research-minotaur`,
+not a native-client implementation. The initial worktree was clean at `9911a6b`.
+Private executable identity is SHA-256
+`292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675`.
+Instruction evidence is the executable and the read-only translation
+`/Users/syndicatemike/champions-re/local/recomp-out/gen/c_024.cpp`, functions
+`fn_00288fdc`, `fn_00289400`, `body_002894b8`, `body_0028a16c`.
+All addresses below are EE virtual addresses, not host addresses.
+
+**Observed / continuation:** the interrupted attempt left this handoff,
+`difftest_minotaur.py`, `ref_minotaur.py` and `test_ref_minotaur.py` untracked
+on `9911a6b`, plus ignored logs/CSVs and the isolated PCSX2 setup below.
+The continuation preserved those files and reran both seeds, the private
+archive checks and all 657 Python tests successfully before committing them.
+
+**Observed / evidence vocabulary:** “Executed” here qualifies an **Observed**
+result in `ee_emu.py`, not a running PS2 game. Calls not followed are recording
+stubs. **Inferred** marks integration conclusions. **Unknown** marks evidence
+still needed; none is replaced with a guessed constant.
+
+## 1. Why the native client refuses it
+
+**Observed:** `codex/port-warboar` commit `711eae1` in
+`~/Projects/open-champions/worktrees/port-warboar` implements a bounded actor
+adapter, not Minotaur AI. Its `native/src/campaign_actors.cpp` explicitly throws
+`Minotaur_run: Unknown in campaign-combat rounds 2-8` before common tick work.
+Non-death state dispatch throws `Minotaur_setState: state service Unknown`.
+Construction additionally requires `weapon_shield`, `minotaur_variant`,
+`minotaur_base_flags`, and `minotaur_initial_state`; death requires
+`minotaur_death_remainder`. Removing these checks would not implement the class.
+
+**Observed:** `codex/valor-fight` `252f34a` binds the boar services in
+`native/src/campaign_fight.cpp::boar_services`; that does not supply a Minotaur
+state machine. Its rank/tint/death-ground-object refusals are separate missing
+services. The `work/loop-valor-fight-r2-report.md` fight is a diagnostic-placement
+WarBoarSmall kill, not evidence that Minotaurs fail PS2 resource lookup.
+
+**Inferred:** the immediate cause is deliberately incomplete native bindings,
+not an invalid Minotaur class or a reason to substitute boar stats/animations.
+Existing tests prove those refusals are intentional boundaries, not that all
+the required service implementations are intrinsically unavailable.
+
+## 2. Reuse these results rather than reconstructing them again
+
+**Observed / prior evidence pins:**
+
+| Branch / commit | Existing result to reuse |
+|---|---|
+| `research-campaign-combat` `328b072` | `docs/issues/campaign-combat-handoff.md`, rounds 4–8: real Valor records, factory, definition residency, constructor seams, Minotaur Gold-capable death call, assisted Play! loader capture |
+| `research-combat-ctors` `e9777eb` | base/derived construction and state call-out methodology; not Minotaur full AI |
+| `research-combat-ctors-2` `5b92837` | shared hit/death/loot contracts in `docs/spec/combat-monster-death.md` |
+| `research-combat-ctors-3` `9ff6ae0` | full-placement/held-part and PhProp follow-up; not a Minotaur runtime capture |
+| `research-combat-ctors-4` `6baf4cd` | `docs/spec/full-placement.md`, `weapon-holder-slots.md`, `combat-monster-death.md`, `docs/combat-runtime.md`: shared services and their executed boundaries |
+| `research-creature-stats` `eaebc00` | `docs/creature-stats-port-check.md`: `Creature_setStats`, level scaling, unsigned balance lookup and holder attachment difftests |
+| `research-boar-ai` `dbc3d59` | `docs/issues/warboar-ai-handoff.md`: shared perception defaults, exact sight geometry, target scoring/leash, movement and damage call-outs; its WarBoar state decisions are not Minotaur decisions |
+
+**Observed:** these branch-only documents are not necessarily present on this
+branch; read them in their existing sibling worktrees or with `git show
+<commit>:<path>`. This handoff does not copy their research or merge their trees.
+
+## 3. Factory and construction contract
+
+**Observed / prior round 5:** `world_objectFactory` 0x159c94 selects constructor
+0x288fdc and allocation size **0x470** for all six Valor `Minotaur` records.
+Definition **0x501200**, class vtable **0x5165f0**; run slot 4 is 0x2894b8,
+draw slot 5 is 0x289400, set-state slot 27 is 0x28a16c. Do not use the WarBoar
+constructor's register ordering:
+
+```text
+Minotaur_ctor(this, typeName, positionPointer, signed16Angle, propertiesPointer)
+ -> Creature_ctor(this, typeName, copiedPositionPointer, signed16Angle,
+                  definition=0x501200, propertiesPointer; f12=10.0)
+```
+
+**Observed:** the class saves `typeName` from a1. The old round-5 probe supplies
+an additional unused argument; the body does not require that extra argument.
+`Creature_ctor` 0x109d68 → `GameObject_ctor` 0x14cb10 must complete first,
+including definition-generation resource resolution, properties, identity,
+stats/own RNG, and grid ownership. The nominal base HP argument 10 is replaced
+by `Creature_setStats` whenever a type name is present; it is not Minotaur HP.
+
+**Observed / executed:** `difftest_minotaur.py::check_constructor` checks 100
+cases per seed with the base constructor **stubbed**, but original class code,
+case-insensitive comparison, own RNG and holder setter running. Class-local
+results, before `Creature_init` (that final call is stubbed):
+
+| Object offset | Contract / evidence |
+|---|---|
+| +0x48 | Minotaur vtable 0x5165f0 |
+| +0x50 | pointer to embedded `WeaponShield` at `this+0x3c8` |
+| +0x3c8 | holder vtable 0x50cda0, initialized before virtual hand calls |
+| +0x1c | radius 25, raw f32 0x41c80000 |
+| +0xb0 / +0xb4 / +0xb8 | turn 0x3f999999 (approximately 1.2), kind byte 11, speed word zero |
+| +0xec / +0xf4 | current global simulation frame / that frame +300 (32-bit stores) |
+| +0xa8 | base flags OR 0x200040000; successful state 0 subsequently clears 0x200 |
+| +0x232 / +0x46c | state zero / first-charge marker zero |
+| +0xe8 | body variant bitset, described below |
+| +0x220 | 64-bit return from `model_buildHideMask` 0x179550 |
+
+**Observed:** holder storage initialization also resets flag/entry bytes,
+its embedded trails' halfword fields and sentinels (0x289058–0x2890d8).
+Use the actual holder constructor/contract, not an uninitialized pointer.
+`WeaponShield` slot 1 at 0x11bc18 receives hand 1 / one-based definition entry
+21 (axe) and hand 2 / entry 25 (shield2), with t3=0x20 still present in the
+recorded register call. The established setter writes entry bytes and flags;
+do not invent semantics for that extra register.
+
+**Observed:** ordinary Minotaur consumes **one own-object RNG draw** after
+base initialization and writes `1 << (draw & 1)` at +0xe8. Case-insensitive
+`minotaurboss` instead attaches shield entry 23, writes variant 4, and skips
+that class-local draw. Both call `model_buildHideMask(modelSlot0, variant)`.
+Base HP RNG comes earlier. Never replace either own draw with the shared seed.
+
+**Observed:** final sequence is hide mask → `anim_clear(this+0x114)` 0x1707b0
+→ `Minotaur_setState(this,0)` → `obj_runEvery60` 0x14f2b8 → eight definition
+event configurations via 0x118378 → `Creature_init` 0x10a230. That last service
+must retain terrain, properties, scripts, initial state changes and holder
+placement; the bounded constructor test does not supply those effects.
+
+## 4. Stats for every monster level and difficulty
+
+**Observed:** `balance_lookup` 0x223a4c uses the **type name**, not the C++ class.
+For the actual `Minotaur` match in private `BALANCE.LMP/monsters.bal`, the
+semantic multipliers are HP ×6, armour ×2, damage ×2.5, attack ×1, XP ×2.5.
+These are percentage integers converted by unsigned load and multiplied by
+raw f32 **0x3c23d70a**: even 100 does not become exact 1.0. Do not use rounded
+decimal multipliers when exact replay matters. A `MinotaurBoss` lookup is a
+different row (HP ×8, armour ×4, damage ×2, attack ×2, XP ×3), not the ordinary
+Valor row; arbitrary `Minotaur*` suffixes need their own lookup/default behavior.
+
+**Observed / reused executed model:** use `tools/ref_combat.py::monster_stats`
+and `::level_scale`, not a new approximate stat implementation. Ordinary
+rank-zero, one-player equations below explain those functions; operation order,
+PS2 FPU and software-double behavior remain authoritative in that model:
+
+```text
+L = raw f32 at g_levelMonsterLevel 0x4f714c
+p = five balance_lookup outputs, in HP/armour/damage/attack/XP order
+r = GameObject_rand(this) % 5                 # exactly 0..4
+damageFactor = mul32(p.damage, 0x3fc51eb8)     # approximately 1.54
+HP = toSingleSoftDouble((15.5 + r) * powf(mul32(p.HP,L), 0x3f599999))
+HP = difficultyHPScale(HP)                   # below; maxHP gets same result
+armour = s16(trunc(mul32(mul32(p.armour,14),L)))
+low = s16(trunc(mul32(damageFactor,powf(L,1))))
+high = s16(trunc(mul32(add32(damageFactor,damageFactor),powf(L,1))))
+if high < low+1: high = s16(low+1)
+attack = s16(trunc(mul32(mul32(L,14),p.attack)))
+XP = float32(trunc(mul32(powf(mul32(p.XP,L),0x3fa9374b),8)))
+```
+
+**Observed:** difficulty HP factors are unchanged on 1, ×1.5 on 2, HP+HP on
+3, ×2.5 on 4, ×3 on 5, except `stomedal`/`innpit`. Difficulty also changes
+**L before the stat calculation**: if table byte is b, difficulty 1 gives b+2;
+2–5 give `(b+2)*0.75 + {34,61,88,115}` in PS2 f32 order. Valor row 50 at
+0x4f7210 + 50×0x30 has b=20, hence L is **22, 50.5, 77.5, 104.5, 131.5**.
+Damage/armour/attack/XP change with L; they do not gain another arbitrary
+difficulty multiplier. HP and maxHP are +0x228/+0x22c; armour +0xe4,
+damage +0xd0/+0xd2, attack +0xd4, XP value +0xd8.
+
+**Observed / reused:** rank 1, multiplayer, medal suppression, `Dead`, and
+rank/type-specific exceptions remain exactly those in `monster_stats` and the
+pinned stats research. For 2–4 players with suppression word 0x4f713c zero,
+HP factor gains `1+0.6*(n-1)`, XP gains n, ordinary Minotaur damage gains
+`1+0.15*(n-1)`; rank 1 modifies the inputs further. Do not reapply scaling
+after the model. `Dead` zeroes current HP, not rolled maxHP.
+
+**Observed / executed:** the new script compares original 0x10a620 with the
+existing reference on **4,125 cases per seed**: integer L=1..160 plus all five
+Valor scales, each crossed with difficulties 1..5 and all five possible HP
+roll residues. It compares HP/maxHP float bits, signed stat fields, XP bits
+and ending own seed. Private `local/minotaur/stats-{20973,7}.csv` contains
+the per-level/difficulty/own-seed results. Some extra combinations intentionally
+cross a Valor L with another difficulty to isolate the two effects. This is
+not a measured campaign seed, nor new multiplayer/MinotaurBoss execution.
+
+## 5. Resource, animation and presentation bindings
+
+**Observed:** definition slot/resource pointer i lives at `def+12+8*i`.
+0x118378's event index is **i+1**, not i. The 26 resources in definition order:
+
+| Zero-based index | Resource |
+|---|---|
+| 0, 1 | `minotaur.vif`, `minotaur.tex` |
+| 2–8 | `atak_180`, `atak_back`, `atak_f1`, `atak_f2`, `atak_f3`, `atak_left`, `atak_right` (all `.anm`) |
+| 9–15 | `block`, `death`, `death2`, `gore`, `hitreaction`, `idle1`, `idle2` (all `.anm`) |
+| 16–19 | `run`, `taunt`, `taunt2`, `walk` (all `.anm`) |
+| 20–25 | `axe.vif`, `axe.tex`, `shield.vif`, `shield.tex`, `shield2.vif`, `shield2.tex` |
+
+**Observed / prior runtime evidence:** campaign research round 7 saw all 26
+`res_find` returns nonzero during an assisted Play! Valor load, along with
+six actual constructed Minotaurs. This was **not PCSX2**, not an ordinary gate
+transition, and not a Minotaur fight. Reuse its captured resource identities;
+do not transplant that run's heap addresses into the client.
+
+**Observed / executed:** constructor event settings and original animation
+relocation/configuration/advancement were checked against the existing
+`ref_anim` model on all 18 `.anm` resources. Private clip CSVs record lengths
+and emitted masks; these are isolated, fresh-animation-stack, rate-1 advances
+starting with probe tick **0**, not real combat frame offsets.
+
+| State / clip | Event seconds as raw f32 → mask | Observed isolated tick |
+|---|---|---|
+| 6 / `atak_f1` | 0x3e4ccccc → 1 | 12 |
+| 7 / `atak_f2` | 0x3e4ccccc → 1; 0x3f199999 → 1 | 12; 36 |
+| 8 / `atak_f3` | 0x3ecccccc → 1 | 24 |
+| 9 / `atak_left` | 0x3e4ccccc → 1; 0x3eb851eb → 4 | 12; 21 |
+| 10 / `atak_right` | 0x3e4ccccc → 1 | 12 |
+| 11 / `atak_back` | 0x3f199999 → 1 | 36 |
+| `atak_180` | 0x3f199999 → 1 | 36; no direct attack-state binding here |
+| `gore` | 0x3e4ccccc → 1 | 12; charge overlay, not a separate state |
+
+**Observed:** state animation mapping is in authored `ref_minotaur.state_animation`
+and executed against all 24 switch entries plus invalid requests, at three HP
+bands and both charge-marker states. `CHANGE` is 0x16cfe0; `BLEND` 0x16ceb0.
+Most blend times are raw **0x3dcccccc**, not the host-rounded representation
+of decimal 0.1. Preserve flags and both blend arguments, rather than guessing
+clip duration as the attack cooldown.
+
+**Observed:** draw 0x289400 obtains model via virtual slot 16, calls
+`Creature_draw(this, model, definition texture slot1, 0)`, retains its return,
+then calls holder slot 18 with `(holder, definition, model, drawResult)`.
+This is how held axe/shield presentation joins the body draw, not separate
+world enemies. Hide-mask generation, texture/material/part interpretation,
+actual visual quality and live animation-to-damage alignment are **Unknown**
+in this new probe; the shared holder/placement research supplies the service
+contracts, not a new rendered Minotaur proof.
+
+## 6. Tick order, aggro and AI
+
+**Observed:** 0x2894b8 has this strict order:
+
+1. model slot 16 → `Creature_processDamage` 0x110d30;
+2. model slot 16 again → `Creature_run` 0x112948; nonzero return exits;
+3. `Creature_updateActive` 0x10c0f0; zero return exits;
+4. holder slot 21 `(holder, definition, this; f12=0.5)` if holder exists;
+5. `Creature_stepAnim(this; rate=1)` 0x1162b0, save returned event bits;
+6. `Creature_applyKnockback(this; 0x3f333333)` 0x115eb8;
+7. virtual slot 23 `Creature_pickTarget(this,0)`; then read signed16 state
+   +0x232 and dispatch it.
+
+**Observed / reused:** aggro is shared `Creature_pickTarget` 0x10ded0, not a
+Minotaur-specific fixed chase radius. See `docs/spec/creature-tick.md` section
+6: serial-staggered 32-frame scans, HomeRange box/leash, last-attacker/current
+target scoring and target-handle lifecycle. `Creature_canSeeTarget` slot 25
+0x10e658 supplies point-blank/visual-range/cone tests. `Creature_filterState`
+0x10a9c0 runs **before every Minotaur state change**, may rewrite/reject it for
+root/stun/cooldown, and clears targets on zero-state selection. Reuse the
+base constructor's perception/properties and these helpers; neither an
+always-true sight stub nor a hard-coded target implements aggro.
+
+**Observed:** all sight tuples below are `(near, far, facing offset, arc)`
+with lead 0 and rayMode 0 at 0x118d40. Arc units are signed16 angle units,
+not degrees. Ranges incorporate the shared helper's radius/sight tests.
+
+| State | Observed dispatch behavior / branch evidence |
+|---|---|
+| 0 | slot25 true →1; otherwise away-from-home 0x10eed8 true →1; otherwise remain. **No WarBoar 180-frame idle timeout** in this state. 0x2895d0–0x289614 |
+| 1 | if slot25 true, turn to target then sight `(0,+0x3ae,0,8000)` →3; if slot25 false, move to wander destination. 0x289614–0x289688 |
+| 3 | null target →0; sight `(0,12,0,8000)` →5; if target not charging, sight `(0,36,0,8000)` →5; if still not charging and `(0,36,0,32767)` true, turn only; otherwise if hand1 empty and signed +0x468 < age, `(60,300,0,8000)` →12; else move-to-target. 0x289688–0x2897d4 |
+| 5 | Mid-HP special block first (below); otherwise test unarmed forward `(0,36,0,8000)` →6; armed forward same sight →7 or8 by own draw low bit; then hand1-equipped left `+0x4000` →9, right `-0x4000` →10, back `-0x7fff` →11, each `(0,36,offset,8000)`. Then empty-hand1 + cooldown expiry + `(300,60,0,8000)` →12 **with near/far in that order**, not repaired. Then all-around `(0,36,0,32767)` →turn; else if not rooted →3. 0x2897d4–0x289bd0 |
+| 6–8 | settle and turn; attack only for saved event bit1; when animation flags +0x11a lack bit8 →5. 0x289bd0–0x289cd4 |
+| 9–11 | moveBy(zero input vector, retaining animation root motion), bit1 attack; lack anim bit8 →5. 0x289cd4–0x289ecc |
+| 12 | charge state, detailed below. 0x289ecc–0x28a048 |
+| 16 | attack-ready helper true →0; otherwise flee-from-target(mode0). 0x28a09c |
+| 18 | anim bit0x10 clear →3. 0x28a068 |
+| 19 | not-stunned helper true →3. 0x28a084 |
+| 20 | moveBy(zero) then deadUpdate(this, savedEvents, zeroOffset, noBlood0; height20). 0x28a0e0 |
+| 23 | signed age +0x300 **strictly greater** than +0xf4 →3; equality waits. 0x28a048 |
+| 2,4,13–15,17,21,22 and out of range | request state0. 0x28a134 |
+
+**Observed:** the mid-HP block tests current HP strictly below max×raw
+0x3f28f5c2 and strictly above max×raw 0x3ea8f5c2 (approximately 66% and 33%).
+In state3 entry this band chooses `walk`; outside it chooses `run`. In
+state5, forward sight `(0,36,0,8000)` in this band picks state6 unless the
+target is attacking this Minotaur. Then an own draw `%3 != 0` plus hand2 full
+picks state23 (block); otherwise state6. Thus “low HP always flees” is false.
+State23 entry sets flag0x200 and deadline `age + ownDraw%120 + 60`.
+
+**Observed:** state12 entry changes to `run` flags0x80b; only while +0x46c is
+zero does it overlay `taunt2` flags8 and set that marker to1. Charge tick
+checks animation-presence 0x170d88 for `run` and `gore`. If running without
+gore and forward sight `(0,36,0,8000)` passes, it changes to `idle2` flags
+0x803 and overlays `gore` flags0x818. With a target it turns/settles and
+hits only on bit1, with flags **0x100041** and no descriptor. While anim bit8
+is set and bit0x10 clear, sight `(0,300,0,8000)` must still pass to continue.
+Otherwise, unless bit0x10 is still set while bit8 is set, it schedules
+`+0x468 = age + ownDraw%180 + 300` and requests state3. Preserve both timer
+fields and the once-only marker; they are not a generic attack interval.
+
+**Observed / executed:** 20 targeted decisions/timer-boundary cases per seed
+exercise representative paths at the addressed sight call sites; state23
+deadline equality is checked explicitly. Sight, target acquisition, holder
+queries, movement, common tick and state transitions are stubbed in this
+decision probe. The full state3/state5/charge behavior above is **read**, not
+a claim that those 20 cases cover every branch or a real battle.
+
+## 7. Attack and damage contract
+
+**Observed / executed:** each attack uses `Creature_hitTargetInArc` 0x119938
+with facing +0x38, arc **8000**, near **0**, far **36**, signed16 damage low,
+high and attack from +0xd0/+0xd2/+0xd4. State6 flags **0x440001**, states7/8
+**0x440008**, states9/10/11 **8**. States7–11 fetch holder slot17 descriptor
+for hand1 (or null without a holder); state6 passes null. The run function
+does not directly subtract rolled weapon damage from the player.
+
+**Observed / reused executed helper:** hitTargetInArc tests the target through
+`creature_canSeeObj` (lead0/rayMode0), then calls `damage_apply` 0x1e8230 with
+that victim/attacker, converted low/high, attack, flags and descriptor. There
+is no new class-specific enemy/dead test. Armour, hit rolls, block, elemental
+effects, thorns and status damage remain the shared combat contract in
+`docs/spec/combat.md` and ctor-round4 `combat-runtime.md`; low/high are not
+guaranteed final HP loss. Damage intake is `Creature_takeDamage` 0x116638
+(slot2), which subtracts HP and queues pending reaction data for the next
+processDamage; do not maintain a second detached Minotaur HP counter.
+
+**Observed / executed:** 96 attack event/animation cases per seed compare
+call arguments and next-state requests for states6–11, with masks0/1/4/5 and
+anim flags0/8/16/24. Event4 on `atak_left` alone makes **no hit**. The current
+probe's descriptor getter returns zero; nonzero descriptor contents and
+live player damage are **Unknown in this probe**, not proved absent.
+
+## 8. Death, corpse and loot
+
+**Observed / reused:** common processDamage initiates state20 through virtual
+slot27 when HP reaches zero, sets the death flags, awards XP and handles
+attacker/loot-for-killer effects. The class state method supplies the ordinary
+loot/death-animation/onDeath sequence; do not add a duplicate XP award there.
+Reuse `Creature_processDamage` and `player_giveExp` from the existing combat
+contracts. Neither entering state20 nor a floating damage number alone proves
+an integrated kill or an inventory reward.
+
+**Observed / executed:** after the shared state filter accepts state20,
+0x28a564–0x28a694 does, in order:
+
+1. copy position, pass signed16 facing and null filter to `Creature_dropLoot`
+   0x10f2c8 with f12..f17 raw bits **0x42100000, 0x40000000, 0x3fcccccc,
+   0x3f199999, 0x3fb33333, 0x3e800000**;
+2. holder slot11 0x11bc90, first hand1 then hand2, `(holder, hand, this,0,0)`;
+3. own-object RNG low bit selects `death` or `death2`, change flags0x806,
+   blend raw0x3e4ccccc;
+4. virtual slot28 `(this,0)` → inherited `Creature_onDeath` 0x10beb8;
+5. finally store state20 at +0x232.
+
+**Observed:** six floats above mean zOffset36, throwSpeed2, goldScale≈1.6,
+goldChance≈0.6, qualityRow≈1.4, itemChance0.25, in that order (shared
+`drop_loot` contract in ctor-round4 `ref_combat_monsters.py`). The raw
+patterns are authoritative. The holder calls are **drop-part services**, not
+proof that axe and shield are player inventory drops; their physics objects,
+placement and allocation are shared researched services.
+
+**Observed / prior executed evidence:** campaign round4 already ran this
+death→loot-generator seam with ordinary rank, no tint, one player, level22,
+fresh shared seeds: seed20973 requests Gold; seed7 does not. Those are
+synthetic seeds, not the seed after a live Valor fight. Reuse the actual
+`Creature_dropLoot` rank/tint/eligibility branches and `loot_generateDrops`
+0x100d54; do not set goldChance zero as for a WarBoar or assume a guaranteed
+gold object. Rank1/2 and tint alter calls/scaling, and the generator has
+early-return paths. Actual ground objects, landing, pickup and player-record
+credit need the shared Gold/PhProp/pickup chain, not a direct HUD increment.
+
+**Observed:** state18 (hit reaction) drops both held parts only below the
+strict maxHP×0x3ea8f5c2 threshold, then blends `hitreaction` flags0x810.
+State16 writes cooldown60 at +0x318 and runs/rewinds; state19 changes to
+idle1 with blend0x3e999999. State20's later tick uses shared corpse sinking,
+blood and deletion via `Creature_deadUpdate` 0x1108a0, not immediate despawn.
+
+## 9. Verification, capture limitation and remaining work
+
+**Observed / executed:** run these from this worktree; outputs remain ignored:
+
+```sh
+for seed in 20973 7; do
+  PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_minotaur.py \
+    /Users/syndicatemike/champions-re/SLUS_209.73 --seed "$seed" \
+    --iso "$HOME/Library/Application Support/Play-RTA/Champions - Return to Arms (v2.00).iso" \
+    --out local/minotaur
+done
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools -p 'test_*.py'
+```
+
+**Observed:** no native/Godot build was necessary or performed. No source,
+disc, translation, emulator config or other worktree was modified outside
+this worktree; no processes were killed by name. No public-server contact,
+push, branch creation or PR operation was performed.
+
+**Observed / capture prerequisite, not gameplay:** installed PCSX2 reports
+v2.8.2. A separate `-datapath <worktree>/local/pcsx2` configuration/boot attempt
+created `local/pcsx2/PCSX2/inis/PCSX2.ini` with
+`SetupWizardIncomplete=true`. Both that profile's BIOS directory and the
+existing `~/Library/Application Support/PCSX2/bios` directory contain no
+BIOS file. The owned PCSX2 process was terminated by its exact recorded PID;
+existing user profiles were not changed. Private logs:
+`local/minotaur/pcsx2-{config,boot}*`. **No PCSX2 game frame or Minotaur
+capture was obtained; there are no new gameplay pictures.**
+
+**Unknown / remaining exact-playback requirements:**
+
+- PCSX2 run/capture: supply an owner-provided legally dumped BIOS and complete
+  setup in the isolated profile; use a legitimate Valor save/route, record
+  character/difficulty/equipment/settings/patch and starting-state hashes,
+  simulation frame/seed and a Minotaur's constructor, attack, hit, death and
+  pickup sequence. Do not relabel the prior assisted Play! capture as PCSX2.
+- Live blend/overlay/root-motion timing, shared sight/terrain/holder effects,
+  nonzero descriptors, final damage and exact animation appearance are not
+  established by class-local stubs or fresh-stack clip stepping. Capture and
+  cross-check these against the runtime, preserving inherited base state.
+- The adapter still needs real state-filter, holder tick/query/drop/draw,
+  model-hide, animation stack/events/root motion, common tick/targeting,
+  terrain/movement and class dispatch bindings. This research does not remove
+  refusals or run a native Minotaur encounter.
+- An end-to-end Minotaur kill→XP→loot→ground-object→pickup→credit, including
+  any rank/tint variants requested by the real records, remains unverified.
+  Apply existing shared contracts; do not fill these services with no-ops.
+
+**Inferred / port order:** implement the services in constructor order, bind
+all class states (including filter rewrites), then run the ordered tick and
+event-driven damage path, followed by holder/corpse/loot services. Keep one
+authoritative world object/HP/RNG identity and explicit unsupported paths
+until each service is grounded. This is sufficient to replace the current
+“Unknown” labels with addressed implementation tasks, not to claim exact
+playability has already been achieved.
