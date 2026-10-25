@@ -1,6 +1,7 @@
 # Mission 1 exits: `strife` and `drundar` (SLUS-20973 US v2.00)
 
-2026-10-23. **Research handoff, not a playable native route.** The two keyed
+2026-10-23 research; 2026-10-24 audit correction. **Research handoff, not a
+playable native route.** The two keyed
 `blood1` exits request `strife` (good choice) and `drundar` (evil choice), as
 traced in `t3/research-blood1-scripts` `532f69c`. These destinations are
 separate story levels. `tools/difftest_strife_drundar.py` checks the private
@@ -131,36 +132,34 @@ factory selection does not prove a playable actor or complete load.
 **Executed:** one representative per nine hostile class strings takes a
 derived constructor → `Creature_ctor` 0x109d68 → `GameObject_ctor`
 0x14cb10 chain on each seed. `res_find` 0x17365c is recorded with null
-returns. The class-definition tables and all listed archive members are
-checked against owner inputs. This proves request names/order and archive
-presence, not resident handles or model/animation use.
+returns. The class-definition tables and all requested archive members are
+checked against owner inputs. The definition-table prefixes are compared in
+order; the extra requests are checked for count, paired model/texture suffixes,
+distinct part stems and archive membership. This does not establish resident
+handles or model/animation use.
 
 | Class group | Definition / requests per representative |
 |---|---|
-| Five Orc2 variants | 0x501df8: 45 ordered `orc_vari.lmp` entries (`orc2.vif`, `orc2.tex`, 43 animation entries), then 34 model/texture requests for 17 named parts in `orc_wep2.lmp`; 79 total. |
-| Three Goblin variants | 0x500298: 25 ordered `goblin.lmp` model, texture and animation entries, then 14 model/texture requests for seven named parts in `goblin_z.lmp`; 39 total. |
-| Ogre | 0x501bf8: 15 `ogre.lmp` model, texture, animation and hammer-part entries. |
+| Five Orc2 variants | 0x501df8: 45 ordered definition entries, then 17 model/texture pairs in a second archive; 79 requests per representative. |
+| Three Goblin variants | 0x500298: 25 ordered definition entries, then seven model/texture pairs in a second archive; 39 per representative. |
+| Ogre | 0x501bf8: 15 ordered definition entries, with no additional requests. |
 
-The test compares all **527 ordered requests** through these nine chains and
-checks 89 definition entries across the hostile, Catapult and firebomb tables.
-The Orc part names are `oaxe1`, `obow1`, `ocleever`, `ohook`, `omace`,
-`oquiver`, `oscimitar`, `oshield1`–`oshield5`, `ospear`, `osword1`–`osword3`
-and `oarrow`. The Goblin parts are `g_arrow`, `g_staff`, `g_bow`, `g_shield`,
-`g_axe`, `g_sword1` and `g_sword2`.
+The test checks **527 requests** through nine chains and 89 definition-table
+entries. Archive and member identifiers are read from ignored owner inputs at
+test time; their decoded inventories are not committed.
 
-**Executed bounded direct requests:** Catapult asks `catapult.lmp` for
-`catapult.vif`, `catapult.tex`, `catapult.anm`; `kelethinBomb` asks
-`firebomb.lmp` for `firebomb.vif` and `firebomb.tex`; Barrel asks
-`barrel.lmp` for `barrel.vif` and `barrel.tex`. Blocker, PushTrigger,
-Trigger, Weather, Torch and Firepot made no named direct request with their
-lower services stubbed. The named entries' archive presence is asserted.
+**Executed bounded direct requests:** Catapult makes three requests: its two
+definition entries followed by a same-stem animation. `kelethinBomb` makes
+two definition-table requests. Barrel makes one model/texture pair. Blocker,
+PushTrigger, Trigger, Weather, Torch and Firepot made zero direct requests
+with their lower services stubbed. Every requested member's archive presence
+is asserted.
 
-**Observed property selectors, not executed request lists:** the authored
-`lump`/`lumpname` values are `jumpgate`, `catapult`, `we_sldr`, `ammocart`,
-`boxafay`, `boxbfay`, `dbridge`, `gobstand`, `leanto` in Strife and
-`jumpgate`, `ehubanim`, `uwadoor`, `orkbox`, `uwflag`, `uwswitch` in Drundar.
-The test checks each class's selector, but the actual ordered requests for
-NPC, Portal, AutoContainer, AutoChest, AutoProp, arena door, Savepoint and
+**Observed property selectors, not executed request lists:** nine Strife and
+six Drundar class groups have nonempty selectors consistent within each
+class; the values are resolved from ignored owner inputs in memory. The
+actual ordered requests for NPC, Portal, AutoContainer, AutoChest, AutoProp,
+arena door, Savepoint and
 character lights remain **Unknown**. The simple stub returns empty archive
 strings for some of their dependent calls; those are not a resource contract.
 Sound, cutscene, dialog and particle dependencies also remain outside this
@@ -171,35 +170,52 @@ Sound, cutscene, dialog and particle dependencies also remain outside this
 The script test asserts 47 Strife entries/21 imports and 36 Drundar
 entries/20 imports, selected addressed calls inside their expected entries,
 and per-record NPC, switch, bridge, boss, door and exit links.
-These are **Observed static links**. The objective order below is **Inferred**
-from those links and manual script inspection. The test does not execute the
-script machine, dialog choices, timer/deferred work, collision or cutscene
-playback.
+These are **Observed static links and addressed effects**. The objective order
+below is **Inferred** from those links and guarded bodies. The test does not
+execute the script machine, dialog choices, timer/deferred work, collision or
+cutscene playback.
 
-**Strife:** `preStart` preloads the bust resource and restores the stage-3
-counter. `start` selects which of four scout NPCs is visible according to
-stage-complete variables. The four NPC records link to four distinct dialog
-entry points. A first-scout dialogue action posts the Orc counter and adds a
-quest; later scout actions trigger three named bridges and eventually remove
-that quest. Thirteen Orc records (eight Archers, five Soldiers) carry the
-stage-1 init/death callbacks; two Shamans carry stage-2 callbacks; the two
+**Strife — Observed static effects:** `preStart` calls a resource preload at
+0x594, reads a persistent counter at 0x5e8 and stores it in local slot 0x14c
+at 0x5f8. `start` reads stage variables at 0x678/0x760/0x844/0x928 and has
+four groups of one show plus three hide calls targeting the same four authored
+NPC names (0x6b0–0x9e0). The NPC records link to four distinct dialog entries.
+The first-scout action sets a flag at 0x2040, calls the counter entry at 0x20a4
+and adds a quest at 0x20d8. Later actions call three distinct authored bridge
+targets at 0x1c90/0x1df0/0x1ed4; 0x1f00 removes the same quest key. The
+catapult counter body compares local slot 0x14c with literal two at
+0x1668–0x1678, then has stage-complete and pause calls at 0x16f4/0x1720.
+These cells and their in-memory target relationships are asserted by
+[`stage_effects`](../tools/difftest_strife_drundar.py).
+
+**Strife — Inferred objective order:** thirteen Orc records (eight Archers,
+five Soldiers) carry the stage-1 init/death callbacks; two Shamans carry stage-2 callbacks; the two
 Catapults carry the stage-3 death callback. The counters, deferred delays and
-three named cutscenes lead from the first group through shamans to two
-catapult deaths; `showCatCounter` tests a count of two. The other Orc
-placements are not thereby counted as objective targets. One PushTrigger
+three cutscenes suggest progression from the first group through shamans to
+two catapult deaths. The other Orc placements are not thereby counted as
+objective targets. One PushTrigger
 calls `exitzone`; another and one walk-in Trigger request `blood1`. A second
 Trigger calls the first-scout dialog gate. `exitzone`'s non-demo branch
 requests `drunarm`. Under `demoRunning`, a deferred counter above 150
 calls `grantMission(1)` and requests `hub`. Exact runtime reachability of
 each branch is **Unknown**.
 
-**Drundar:** `start` sets values on the named Ogre miniboss and restores
-eight persistent pillar states. Eight `uwswitch` records each have a distinct
-key/action pair; their actions increment a switch count, set a pillar
-variable and start a particle effect. `showSwitchCount` tests for all eight,
-then inhibits saving, defers `doorsdelay`, and the `doors` entry requests a
-cutscene, clears the inhibit and records the door-seen variable. Four
-`arenadoor` records share the `door` name; `UWStair` uses the `stairs` name.
+**Drundar — Observed static effects:** `start` targets the one authored
+miniboss name at 0x18c/0x1c8/0x204. It reads eight distinct persistent keys
+at 0x47c–0x7a8 and links each to an effect call. Each of eight `uwswitch`
+record pairs resolves to addressed key/action entries (0x1cac–0x22e8);
+each action increments local count slot zero, sets its corresponding key and
+calls the matching effect entry. `showSwitchCount` compares the count with
+literal eight at 0x870–0x878, inhibits saving at 0x89c and defers the entry at
+0x934 from 0x8dc. That entry calls the door entry at 0x9e4. The door entry
+clears the inhibit at 0xaa0, requests a cutscene at 0xacc and writes a
+persistent flag at 0xb00, which `start` reads at 0x338. These cells and
+relationships are asserted by [`switch_effects`](../tools/difftest_strife_drundar.py).
+Four `arenadoor` records share one nonempty name, which `start` targets at
+0x374; the `UWStair` name is targeted at 0x3a8.
+
+**Drundar — Inferred objective order:** the persistent states and switch
+actions suggest an eight-switch gate followed by deferred door work.
 Six walk-in Triggers are linked to two script entries, one for the arena
 message/quest and one for `exitzone`. Eight PushTriggers have only a clock
 icon, one returns to `blood1`, and four use the eight-switch key and call
@@ -255,7 +271,7 @@ python3 -m unittest discover -s tools -p 'test_*.py'
 
 **Results:** each seed passed 553 class-counted records / 21,740 consumed
 loader bytes, 521 factory selections, 89 class-definition entries, 527
-ordered requests through nine hostile constructor chains, nine bounded
+requests through nine hostile constructor chains, nine bounded
 direct probes and two static script/exit contracts. The generic object loader
 passed 5/5 properties on each seed. The full Python unit suite passed
 652/652. All commands used `PYTHONDONTWRITEBYTECODE=1` in one serial

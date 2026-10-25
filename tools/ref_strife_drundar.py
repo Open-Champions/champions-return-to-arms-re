@@ -77,13 +77,10 @@ HOSTILES = {
     "drundar": {"GoblinArcher", "GoblinRecruit", "GoblinSoldier", "Ogre"},
 }
 
-# GameObject_ctor definition tables: address, archive, entry count.
+# GameObject_ctor definition tables: address and anonymous entry count.
 DEFINITIONS = {
-    0x501df8: ("orc_vari.lmp", 45),
-    0x500298: ("goblin.lmp", 25),
-    0x501bf8: ("ogre.lmp", 15),
-    0x4ff240: ("catapult.lmp", 2),
-    0x4ffe08: ("firebomb.lmp", 2),
+    0x501df8: 45, 0x500298: 25, 0x501bf8: 15,
+    0x4ff240: 2, 0x4ffe08: 2,
 }
 HOSTILE_DEF = {
     "Orc2Archer": 0x501df8, "Orc2Leader": 0x501df8,
@@ -98,52 +95,25 @@ HOSTILE_REQUESTS = {
     "GoblinArcher": 39, "GoblinRecruit": 39,
     "GoblinSoldier": 39, "Ogre": 15,
 }
-ORC_WEAPONS = (
-    "oaxe1", "obow1", "ocleever", "ohook", "omace", "oquiver",
-    "oscimitar", "oshield1", "oshield2", "oshield3", "oshield4",
-    "oshield5", "ospear", "osword1", "osword2", "osword3", "oarrow",
-)
-GOBLIN_WEAPONS = (
-    "g_arrow", "g_staff", "g_bow", "g_shield", "g_axe",
-    "g_sword1", "g_sword2",
-)
-DIRECT_REQUESTS = {
-    "Catapult": (("catapult.lmp", "catapult.vif"),
-                 ("catapult.lmp", "catapult.tex"),
-                 ("catapult.lmp", "catapult.anm")),
-    "kelethinBomb": (("firebomb.lmp", "firebomb.vif"),
-                     ("firebomb.lmp", "firebomb.tex")),
-    "Barrel": (("barrel.lmp", "barrel.vif"),
-               ("barrel.lmp", "barrel.tex")),
-    "Blocker": (), "PushTrigger": (), "Trigger": (),
-    "Weather": (), "Torch": (), "Firepot": (),
+DIRECT_REQUEST_COUNTS = {
+    "Catapult": 3, "kelethinBomb": 2, "Barrel": 2,
+    "Blocker": 0, "PushTrigger": 0, "Trigger": 0,
+    "Weather": 0, "Torch": 0, "Firepot": 0,
 }
 
-# Authored property selectors. These identify candidate archives, not proven
-# ordered res_find requests through the property-driven constructors.
-PROPERTY_LUMPS = {
-    "strife": {
-        "Portal": "jumpgate", "Catapult": "catapult",
-        "NPC": "we_sldr", "ammocart": "ammocart",
-        "boxafay": "boxafay", "boxbfay": "boxbfay",
-        "dbridge": "dbridge", "gobstand": "gobstand",
-        "leanto": "leanto",
-    },
-    "drundar": {
-        "Portal": "jumpgate", "UWStair": "ehubanim",
-        "arenadoor": "uwadoor", "orkbox": "orkbox",
-        "uwflag": "uwflag", "uwswitch": "uwswitch",
-    },
+# Authored class groups with a uniform nonempty selector. The selector value
+# is read from ignored owner inputs and never committed.
+PROPERTY_CLASSES = {
+    "strife": ("Portal", "Catapult", "NPC", "ammocart", "boxafay",
+               "boxbfay", "dbridge", "gobstand", "leanto"),
+    "drundar": ("Portal", "UWStair", "arenadoor", "orkbox",
+                "uwflag", "uwswitch"),
 }
 
-# Paired per-record key/action names of the eight authored Drundar switches.
-SWITCH_LINKS = (
-    ("return6d01", "switchcod546"),
-    ("returnb94e", "switchco48ad"),
-    ("returnd0aa", "switchco6b46"),
-    ("returnd4b", "switchcoc9e3"),
-    ("return86a9", "switchco8cc5"),
-    ("return71ee", "switchcod516"),
-    ("return8615", "switchco45bd"),
-    ("returndf30", "switchco1c6a"),
+# Paired script entry offsets, in authored switch-record order.
+SWITCH_OFFSETS = (
+    (0x1d38, 0x1cac), (0x1e08, 0x1d7c),
+    (0x1ed8, 0x1e4c), (0x1fa8, 0x1f1c),
+    (0x2078, 0x1fec), (0x2148, 0x20bc),
+    (0x2218, 0x218c), (0x22e8, 0x225c),
 )

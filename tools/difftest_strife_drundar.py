@@ -138,32 +138,45 @@ def factory(executable, rows, seed):
 def resource_definitions(executable, source_dir):
     elf = Elf(open(executable, "rb").read())
     expected = {}
-    for definition, (archive, count) in R.DEFINITIONS.items():
-        assert elf.cstr(elf.u32(definition)) == archive
+    for definition, count in R.DEFINITIONS.items():
+        archive = elf.cstr(elf.u32(definition))
+        assert archive and archive.lower().endswith(".lmp")
         names = tuple(elf.cstr(elf.u32(definition + 8 + 8 * i))
                       for i in range(count))
         assert len(set(names)) == count and all(names)
         assert elf.u32(definition + 8 + 8 * count) == 0
-        blob = open(os.path.join(source_dir, archive.upper()), "rb").read()
-        present = {name.lower() for name, _off, _size in lmp_entries(blob)}
-        assert all(name.lower() in present for name in names), archive
         expected[definition] = [(archive, name) for name in names]
-    for archive, stems in (("orc_wep2.lmp", R.ORC_WEAPONS),
-                           ("goblin_z.lmp", R.GOBLIN_WEAPONS)):
-        blob = open(os.path.join(source_dir, archive.upper()), "rb").read()
-        present = {name.lower() for name, _off, _size in lmp_entries(blob)}
-        assert all(stem + suffix in present for stem in stems
-                   for suffix in (".vif", ".tex")), archive
-    for requests in R.DIRECT_REQUESTS.values():
-        for archive, entry in requests:
-            blob = open(os.path.join(source_dir, archive.upper()), "rb").read()
-            assert entry.lower() in {name.lower() for name, _off, _size
-                                     in lmp_entries(blob)}, (archive, entry)
+        assert_requests_present(expected[definition], source_dir)
     assert sum(map(len, expected.values())) == 89
     return expected
 
 
-def constructor(executable, row, definition, expected_requests, seed):
+def assert_requests_present(requests, source_dir):
+    by_archive = {}
+    for archive, entry in requests:
+        assert archive and archive.lower().endswith(".lmp") and entry
+        by_archive.setdefault(archive, set()).add(entry.lower())
+    for archive, entries in by_archive.items():
+        blob = open(os.path.join(source_dir, archive.upper()), "rb").read()
+        present = {name.lower() for name, _off, _size in lmp_entries(blob)}
+        assert entries <= present, archive
+
+
+def paired_assets(requests, pairs):
+    assert len(requests) == pairs * 2
+    assert len({archive for archive, _name in requests}) == 1
+    stems = []
+    for model, texture in zip(requests[::2], requests[1::2]):
+        assert model[0] == texture[0]
+        assert model[1].lower().endswith(".vif")
+        assert texture[1].lower().endswith(".tex")
+        stem = model[1][:-4].lower()
+        assert stem and texture[1][:-4].lower() == stem
+        stems.append(stem)
+    assert len(set(stems)) == pairs
+
+
+def constructor(executable, row, definition, prefix, source_dir, seed):
     ctor = R.FACTORY[row["class"].lower()][1]
     emu = EE(executable)
     emu.follow = ConstructorFollow(ctor)
@@ -183,14 +196,25 @@ def constructor(executable, row, definition, expected_requests, seed):
     assert len(base) == len(obj) == 1
     assert base[0].args[4] == obj[0].args[2] == definition
     assert base[0].args[0] == obj[0].args[0] == block
-    assert requests == expected_requests, row["class"]
+    assert requests[:len(prefix)] == prefix, row["class"]
+    assert len(requests) == R.HOSTILE_REQUESTS[row["class"]]
+    tail = requests[len(prefix):]
+    if row["class"].startswith("Orc2"):
+        paired_assets(tail, 17)
+    elif row["class"].startswith("Goblin"):
+        paired_assets(tail, 7)
+    else:
+        assert not tail
+    if tail:
+        assert tail[0][0] != prefix[0][0]
+    assert_requests_present(requests, source_dir)
     return len(requests)
 
 
-def direct_requests(executable, rows_by_level, seed):
+def direct_requests(executable, rows_by_level, definitions, source_dir, seed):
     representatives = {row["class"]: row for rows in rows_by_level.values()
-                       for row in rows if row["class"] in R.DIRECT_REQUESTS}
-    assert set(representatives) == set(R.DIRECT_REQUESTS)
+                       for row in rows if row["class"] in R.DIRECT_REQUEST_COUNTS}
+    assert set(representatives) == set(R.DIRECT_REQUEST_COUNTS)
     for name, row in representatives.items():
         ctor = R.FACTORY[name.lower()][1]
         emu = EE(executable)
@@ -207,7 +231,17 @@ def direct_requests(executable, rows_by_level, seed):
         props, pos = props_for(emu, row), emu.alloc(12)
         assert emu.call(FACTORY, type_name, pos, row["angle"], props,
                         max_steps=1000000) == block
-        assert tuple(requests) == R.DIRECT_REQUESTS[name], name
+        assert len(requests) == R.DIRECT_REQUEST_COUNTS[name], name
+        if name == "Catapult":
+            assert requests[:2] == definitions[0x4ff240]
+            assert requests[2][0] == requests[0][0]
+            assert requests[2][1].lower().endswith(".anm")
+            assert requests[2][1][:-4].lower() == requests[0][1][:-4].lower()
+        elif name == "kelethinBomb":
+            assert requests == definitions[0x4ffe08]
+        elif name == "Barrel":
+            paired_assets(requests, 1)
+        assert_requests_present(requests, source_dir)
     return len(representatives)
 
 
@@ -228,29 +262,143 @@ class ScriptCheck:
         assert len(found) == 1, hex(offset)
         return found[0]
 
+    def entry_at(self, offset):
+        found = [name for name, at in self.entries.items() if at == offset]
+        assert len(found) == 1, hex(offset)
+        return found[0]
+
     def word(self, offset):
         assert offset % 4 == 0 and 0 <= offset < self.end - self.start
         return struct.unpack_from("<I", self.image, self.start + offset)[0]
 
-    def call(self, offset, native, *args):
+    def arguments(self, offset, native, count, string_indices=()):
         assert self.word(offset) == 0x7b
         assert self.word(offset + 4) == self.natives.index(native)
         values = []
-        for i in range(len(args) + 1):
-            at = offset - 8 * (len(args) + 1 - i)
+        for i in range(count + 1):
+            at = offset - 8 * (count + 1 - i)
             assert self.word(at) == 0x27
             values.append(self.word(at + 4))
-        assert values[-1] == len(args) * 4
+        assert values[-1] == count * 4
         actual = list(reversed(values[:-1]))
+        for i in string_indices:
+            actual[i] = self.strings[actual[i]]
+        return tuple(actual)
+
+    def call(self, offset, native, *args):
+        actual = list(self.arguments(offset, native, len(args),
+                                     [i for i, x in enumerate(args)
+                                      if isinstance(x, str)]))
         for i, expected in enumerate(args):
-            if isinstance(expected, str):
-                actual[i] = self.strings[actual[i]]
+            assert actual[i] == expected, (hex(offset), native, actual, args)
         assert tuple(actual) == args, (hex(offset), native, actual, args)
 
 
 def props(rows, cls):
     return [dict(x.split("=", 1) for x in row["properties"].split(";")
                  if "=" in x) for row in rows if row["class"] == cls]
+
+
+def stage_effects(strife, rows, bridges):
+    # VM opcodes come from scr.OPS: 0x0f stores A in a local, 0x69
+    # compares A to a literal, and 0x35 branches when A is zero.
+    assert strife.entry_at(0x568) == strife.entry_for(0x594)
+    assert strife.arguments(0x594, "preloadResource", 1, (0,))[0]
+    counter = strife.arguments(0x5e8, "getv", 1, (0,))[0]
+    assert strife.word(0x5f8) == 0x0f and strife.word(0x5fc) == 0x14c
+    assert strife.word(0x15a0) == 0x14c and strife.word(0x15a4) == 0x27
+    assert strife.strings[strife.word(0x15a8)] == counter
+    assert strife.word(0x15b4) == 0x7b
+    assert strife.word(0x15b8) == strife.natives.index("setv")
+
+    scouts = [p.get("name") for p in props(rows, "NPC")]
+    assert len(scouts) == len(set(scouts)) == 4 and all(scouts)
+    stage_keys = [strife.arguments(at, "getv", 1, (0,))[0]
+                  for at in (0x678, 0x760, 0x844, 0x928)]
+    assert stage_keys[0] == stage_keys[1]
+    assert len(set(stage_keys)) == 3
+    assert strife.word(0x688) == 0x54  # first stage negates the saved flag
+    for branch_at, skip_to in ((0x68c, 0x744), (0x770, 0x828),
+                               (0x854, 0x90c), (0x938, 0x9f0)):
+        assert [strife.word(branch_at), strife.word(branch_at + 4)] == [
+            0x35, skip_to]
+    for sites, visible in (
+            ((0x6b0, 0x6dc, 0x708, 0x734), 0),
+            ((0x794, 0x7c0, 0x7ec, 0x818), 1),
+            ((0x878, 0x8a4, 0x8d0, 0x8fc), 2),
+            ((0x95c, 0x988, 0x9b4, 0x9e0), 3)):
+        targets = [strife.arguments(at, "showMonster" if i == visible
+                    else "hideMonster", 1, (0,))[0]
+                   for i, at in enumerate(sites)]
+        assert targets == scouts
+
+    assert strife.entry_at(0x200c) == strife.entry_for(0x2040)
+    strife.call(0x2040, "setv",
+                strife.arguments(0x1f44, "getv", 1, (0,))[0], 1)
+    assert strife.arguments(0x20a4, "callScript", 1, (0,)) == (
+        strife.entry_at(0xc94),)
+    quest = strife.arguments(0x20d8, "addQuest", 2, (0, 1))
+    assert all(quest)
+    bridge_calls = [strife.arguments(at, "trigger", 2, (0,))[0]
+                    for at in (0x1c90, 0x1df0, 0x1ed4)]
+    assert len(set(bridge_calls)) == 3 and set(bridge_calls) == set(bridges)
+    assert strife.arguments(0x1f00, "removeQuest", 1, (0,)) == (quest[0],)
+
+    assert strife.entry_at(0x15cc) == strife.entry_for(0x1670)
+    assert [strife.word(at) for at in (0x1668, 0x166c, 0x1670,
+                                      0x1674, 0x1678)] == [0x01, 0x14c, 0x69, 2, 0x35]
+    assert strife.word(0x167c) == 0x1690
+    assert [strife.word(at) for at in (0x1694, 0x1698)] == [0x35, 0x1770]
+    assert strife.arguments(0x16f4, "setv", 2, (0,)) == (stage_keys[3], 1)
+    assert strife.arguments(0x1720, "callScript", 1, (0,)) == (
+        strife.entry_at(0x17f8),)
+
+
+def switch_effects(drundar, boss_name, doors, stairs):
+    for at in (0x18c, 0x1c8, 0x204):
+        assert drundar.arguments(at, "setMonsterVal", 3, (0,))[0] == boss_name
+    assert drundar.arguments(0x374, "autoPropSetState", 2, (0,)) == (doors[0], 1)
+    assert drundar.arguments(0x3a8, "autoPropSetState", 2, (0,)) == (stairs[0], 1)
+
+    restore = {}
+    for get_at, effect_at, skip_to in zip(
+            (0x47c, 0x4f0, 0x564, 0x5d8, 0x64c, 0x6c0, 0x734, 0x7a8),
+            (0x4b0, 0x524, 0x598, 0x60c, 0x680, 0x6f4, 0x768, 0x7dc),
+            (0x4d4, 0x548, 0x5bc, 0x630, 0x6a4, 0x718, 0x78c, 0x800)):
+        key = drundar.arguments(get_at, "getv", 1, (0,))[0]
+        effect = drundar.arguments(effect_at, "callScript", 1, (0,))[0]
+        assert [drundar.word(get_at + 0x10),
+                drundar.word(get_at + 0x14)] == [0x35, skip_to]
+        assert key and effect and effect in drundar.entries
+        restore[key] = effect
+    assert len(restore) == 8
+    seen = set()
+    for key_at, action_at in R.SWITCH_OFFSETS:
+        key = drundar.arguments(key_at + 0x2c, "getv", 1, (0,))[0]
+        assert drundar.word(key_at + 0x3c) == 0x54
+        assert [drundar.word(at) for at in (action_at + 0x1c,
+                                            action_at + 0x20)] == [0x6d, 0]
+        assert drundar.arguments(action_at + 0x48, "setv", 2, (0,)) == (key, 1)
+        assert drundar.arguments(action_at + 0x74, "callScript", 1, (0,)) == (
+            restore[key],)
+        seen.add(key)
+    assert seen == set(restore)
+
+    assert [drundar.word(at) for at in (0x868, 0x86c, 0x870,
+                                       0x874, 0x878)] == [0x01, 0, 0x69, 8, 0x35]
+    assert drundar.word(0x87c) == 0x900
+    assert [drundar.word(at) for at in (0x1c54, 0x1c58, 0x1c5c,
+                                       0x1c60)] == [0x01, 0, 0x69, 8]
+    assert drundar.arguments(0x8dc, "addDeferedCall", 1, (0,)) == (
+        drundar.entry_at(0x934),)
+    assert drundar.arguments(0x9e4, "callScript", 1, (0,)) == (
+        drundar.entry_at(0xa3c),)
+    assert drundar.arguments(0xacc, "cutScene", 1, (0,))[0]
+    flag = drundar.arguments(0x338, "getv", 1, (0,))[0]
+    assert [drundar.word(at) for at in (0x348, 0x34c)] == [0x35, 0x3b8]
+    assert drundar.arguments(0xa68, "getv", 1, (0,)) == (flag,)
+    assert [drundar.word(at) for at in (0xa7c, 0xa80)] == [0x35, 0xb10]
+    assert drundar.arguments(0xb00, "setv", 2, (0,)) == (flag, 1)
 
 
 def script_contract(gobs, rows_by_level):
@@ -267,78 +415,85 @@ def script_contract(gobs, rows_by_level):
         script.call(grant, "grantMission", 1)
         script.call(hub, "newWorld", "hub")
         script.call(arena, "newWorld", "drunarm" if level == "strife" else "drunare")
-        assert script.entry_for(back) == "newWorld5d32"
+        assert script.entry_for(back) == script.entry_at(0x464 if level == "strife" else 0x1bf4)
         assert all(script.entry_for(site) == "exitzone"
                    for site in (grant, hub, arena))
-        assert script.entries["newWorld5d32"] == (0x464 if level == "strife" else 0x1bf4)
     strife, drundar = s["strife"], s["drundar"]
     assert strife.entries["start"] == 0x638
     assert drundar.entries["start"] == 0x150
-    for site, scene in ((0xffc, "step1com"), (0x14b0, "step2complete"),
-                        (0x1900, "step3complete")):
-        strife.call(site, "cutScene", scene)
-    for site, wrapper, target in (
-            (0x0b4, "callScri52e", "step1InitScript"),
-            (0x0f8, "callScria77e", "step1DeathScript"),
-            (0x408, "callScri9f82", "step2InitScript"),
-            (0x44c, "callScri4980", "step2DeathScript"),
-            (0x164, "callScri8d4a", "step3DeathScript")):
-        assert strife.entry_for(site) == wrapper
-        strife.call(site, "callScript", target)
+    scenes = [strife.arguments(site, "cutScene", 1, (0,))[0]
+              for site in (0xffc, 0x14b0, 0x1900)]
+    assert len(set(scenes)) == 3 and all(scenes)
+    for site, wrapper_at, target_at in (
+            (0x0b4, 0x88, 0xbbc), (0x0f8, 0xcc, 0xc20),
+            (0x408, 0x3dc, 0x10b0), (0x44c, 0x420, 0x1114),
+            (0x164, 0x138, 0x156c)):
+        assert strife.entry_for(site) == strife.entry_at(wrapper_at)
+        assert strife.arguments(site, "callScript", 1, (0,)) == (
+            strife.entry_at(target_at),)
     assert [strife.entry_for(site) for site in (0xffc, 0x14b0, 0x1900)] == [
-        "step1scene", "step2delay", "step3delay"]
-    drundar.call(0xacc, "cutScene", "doors")
-    assert drundar.entry_for(0x1c94) == "callScri5a82"
-    assert drundar.entry_for(0x2358) == "callScri28d3"
-    drundar.call(0x1c94, "callScript", "exitzone")
-    drundar.call(0x2358, "callScript", "arenaMessage")
-    assert drundar.entry_for(0xacc) == "doors"
+        strife.entry_at(at) for at in (0xf9c, 0x13cc, 0x1850)]
+    assert drundar.arguments(0xacc, "cutScene", 1, (0,))[0]
+    assert drundar.entry_for(0x1c94) == drundar.entry_at(0x1c68)
+    assert drundar.entry_for(0x2358) == drundar.entry_at(0x232c)
+    assert drundar.arguments(0x1c94, "callScript", 1, (0,)) == (
+        drundar.entry_at(0x1918),)
+    assert drundar.arguments(0x2358, "callScript", 1, (0,)) == (
+        drundar.entry_at(0x1adc),)
+    assert drundar.entry_for(0xacc) == drundar.entry_at(0xa3c)
     drundar.call(0x89c, "setSaveInhibit", 1)
     drundar.call(0xaa0, "setSaveInhibit", 0)
     assert [p.get("action") for p in props(rows_by_level["strife"], "PushTrigger")] == [
-        "callScri5a82", "newWorld5d32"]
+        strife.entry_at(at) for at in (0x0, 0x464)]
     assert [p.get("t") for p in props(rows_by_level["strife"], "Trigger")] == [
-        "if9d85", "newWorld5d32"]
+        strife.entry_at(at) for at in (0x4a8, 0x464)]
     assert [p.get("dialogscript") for p in props(rows_by_level["strife"], "NPC")] == [
-        "startDia8851", "startDia30cc", "startDiad2e3", "startDiab722"]
-    assert {p.get("name") for p in props(rows_by_level["strife"], "dbridge")} == {
-        "bridge1", "bridge2", "bridge3"}
+        strife.entry_at(at) for at in (0x17c, 0x214, 0x2ac, 0x344)]
+    bridges = [p.get("name") for p in props(rows_by_level["strife"], "dbridge")]
+    assert len(bridges) == len(set(bridges)) == 3 and all(bridges)
     assert Counter(p.get("deathscript") for p in props(rows_by_level["strife"], "Catapult")) == {
-        "callScri8d4a": 2}
-    for cls, tagged, init, death in (
-            ("Orc2Archer", 8, "callScri52e", "callScria77e"),
-            ("Orc2Soldier", 5, "callScri52e", "callScria77e"),
-            ("Orc2Shaman", 2, "callScri9f82", "callScri4980")):
+        strife.entry_at(0x138): 2}
+    for cls, tagged, init_at, death_at in (
+            ("Orc2Archer", 8, 0x88, 0xcc),
+            ("Orc2Soldier", 5, 0x88, 0xcc),
+            ("Orc2Shaman", 2, 0x3dc, 0x420)):
         linked = [p for p in props(rows_by_level["strife"], cls)
                   if "initscript" in p or "deathscript" in p]
         assert len(linked) == tagged
-        assert all((p.get("initscript"), p.get("deathscript")) == (init, death)
+        assert all((p.get("initscript"), p.get("deathscript")) ==
+                   (strife.entry_at(init_at), strife.entry_at(death_at))
                    for p in linked)
-        assert init in strife.entries and death in strife.entries
     push = props(rows_by_level["drundar"], "PushTrigger")
     assert Counter((p.get("key"), p.get("action")) for p in push) == {
-        (None, None): 8, (None, "newWorld5d32"): 1,
-        ("return56e0", "callScri5a82"): 4}
+        (None, None): 8, (None, drundar.entry_at(0x1bf4)): 1,
+        (drundar.entry_at(0x1c38), drundar.entry_at(0x1c68)): 4}
     assert Counter(p.get("t") for p in props(rows_by_level["drundar"], "Trigger")) == {
-        "callScri28d3": 2, "callScri5a82": 4}
-    assert Counter(p.get("name") for p in props(rows_by_level["drundar"], "arenadoor")) == {
-        "door": 4}
-    assert [p.get("name") for p in props(rows_by_level["drundar"], "UWStair")] == ["stairs"]
-    assert Counter((p.get("name"), p.get("miniboss"))
-                   for p in props(rows_by_level["drundar"], "Ogre")) == {
-        (None, None): 13, ("ogreminiboss", "1"): 1}
+        drundar.entry_at(0x232c): 2, drundar.entry_at(0x1c68): 4}
+    doors = [p.get("name") for p in props(rows_by_level["drundar"], "arenadoor")]
+    assert len(doors) == 4 and len(set(doors)) == 1 and doors[0]
+    stairs = [p.get("name") for p in props(rows_by_level["drundar"], "UWStair")]
+    assert len(stairs) == 1 and stairs[0]
+    boss = [(p.get("name"), p.get("miniboss"))
+            for p in props(rows_by_level["drundar"], "Ogre")]
+    assert boss.count((None, None)) == 13
+    assert len(boss) == 14
+    boss_name = next(name for name, flag in boss if name is not None and flag == "1")
     switches = props(rows_by_level["drundar"], "uwswitch")
     assert len(switches) == 8
-    assert tuple((p["key"], p["action1"]) for p in switches) == R.SWITCH_LINKS
+    assert tuple((p["key"], p["action1"]) for p in switches) == tuple(
+        (drundar.entry_at(key_at), drundar.entry_at(action_at))
+        for key_at, action_at in R.SWITCH_OFFSETS)
     assert all(p["action1"] in drundar.entries and p["key"] in drundar.entries
                for p in switches)
     assert all(p["action"] in strife.entries for p in props(rows_by_level["strife"], "PushTrigger"))
     assert all(p.get("action") in drundar.entries for p in push if p.get("action"))
     for level in ("strife", "drundar"):
-        for cls, wanted in R.PROPERTY_LUMPS[level].items():
+        for cls in R.PROPERTY_CLASSES[level]:
             values = [p.get("lump", p.get("lumpname"))
                       for p in props(rows_by_level[level], cls)]
-            assert values and set(values) == {wanted}, (level, cls)
+            assert values and len(set(values)) == 1 and values[0], (level, cls)
+    stage_effects(strife, rows_by_level["strife"], bridges)
+    switch_effects(drundar, boss_name, doors, stairs)
     assert Counter(bool(p) for p in props(rows_by_level["drundar"], "Crate")) == {
         True: 70, False: 1}
     return 2
@@ -368,18 +523,13 @@ def main():
     for level in ("strife", "drundar"):
         for name in sorted(R.HOSTILES[level]):
             definition = R.HOSTILE_DEF[name]
-            expected = list(resources[definition])
-            if level == "strife":
-                expected += [("orc_wep2.lmp", stem + suffix)
-                             for stem in R.ORC_WEAPONS for suffix in (".vif", ".tex")]
-            elif name != "Ogre":
-                expected += [("goblin_z.lmp", stem + suffix)
-                             for stem in R.GOBLIN_WEAPONS for suffix in (".vif", ".tex")]
+            prefix = list(resources[definition])
             row = next(row for row in rows_by_level[level] if row["class"] == name)
-            assert len(expected) == R.HOSTILE_REQUESTS[name]
-            requests += constructor(args.executable, row, definition, expected, args.seed)
+            requests += constructor(args.executable, row, definition, prefix,
+                                    args.source_dir, args.seed)
     assert requests == 527
-    direct = direct_requests(args.executable, rows_by_level, args.seed)
+    direct = direct_requests(args.executable, rows_by_level, resources,
+                             args.source_dir, args.seed)
     script_contract(gobs, rows_by_level)
     print(f"PASS seed {args.seed}: {total_records} records/{total_bytes} loader bytes, "
           f"{total_selected} factory selections, 89 definition entries, "
