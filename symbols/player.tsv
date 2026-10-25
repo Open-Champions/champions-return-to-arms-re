@@ -16,7 +16,7 @@
 001a2860	eqcache_matchesPlayers	true when the cached slots at 0x865a38 match every player's model index (+0x54) and the multi-player flag
 001a2d48	eqcache_lookupModel	(name, cacheSlot, outA, outB) returns the cached model for an item picture name, starting an async read on a miss
 001a2f88	eqcache_release	(freeAll) waits for a pending read (0x172c20) and clears cache slots; Inferred, read in part
-001a3580	Player_drawEquipped	Inferred: called by Player_draw after Creature_draw with (scale, player, drawResult) and by the inventory model view 0x1c0920; decompile failed, not read
+001a3580	Player_drawEquipped	Observed: reads 17 equipped item pointers, resolves cache or item-model-table mesh/texture pairs, draws attached parts then hair/beard and updates body show mask; docs/spec/player-appearance-layers.md
 001a3f70	Player_updateCast	(player, pad) feeds the hand midpoint to vslot 17; when the ability button is released or mana is gone ends the cast: state 5 -> 2 and tells the channelled spell (+0x588) to stop
 001a42b8	Player_castSkill	(player, abilityRecord) new-style skills only: canUse, cast (vslot 2), cooldown +0x4ae, mana cost; for the prediction copy only skills with flag bit 0 run and the returned spell is destroyed at once
 001ac7a8	classSkills_init	clears the seven class skill tables at 0x4ef530 (stride 0xa88, 48 entries of 0x38 bytes) and fills them
