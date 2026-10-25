@@ -427,8 +427,10 @@ store was not re-read there (`docs/issues/field-claims-audit.md` 6.3).
   mover's 0x20000 flag at 0x14d9ac and skips the other object's slot 6; the copy's own
   slot 6 still runs. `docs/spec/movement-camera.md` read the same test, 0x14d9b0–0x14d9b8,
   and agrees.)
-- State 7: what sets it? No store of 7 to +0x58c exists as a constant; look for a computed
-  store or a clone from another object.
+- State 7: what sets it? An executed scan of all 64 direct stores through +0x58c found
+  no immediate 7 (`difftest_skill_anim.py`). 0x11f15c copies another player's state.
+  0x1abd10 stores a register during cast handling and was not shown to hold 7. The
+  addiu of 7 at 0x1a9cfc writes a stack slot. Who enters state 7 is still unknown.
 - State 0xd for the copy calls the vehicle's slot 17 with the player's position (0x1a5efc)
   and then 0x14f028 (0x1a5f04); whether the vehicle is changed by that was not established.
   (Answered in `docs/issues/prediction-copy.md` section 3.2: the slot is

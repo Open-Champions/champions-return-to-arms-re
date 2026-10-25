@@ -32,3 +32,5 @@
 0041c160	g_modelShellList	pointer to 8-byte shell records {rgba, float}; count at 0x41c164
 0041c168	g_modelDrawOptions	bit set tested by model_draw to wrap the mesh refs in extra GS register writes (0x01 ZBUF, 0x02 DIMX, 0x04 SCISSOR, 0x08/0x20 TEST, 0x10 PRMODECONT/PRMODE); 0x40 (extra light vector at 0x7cbc90) and 0x80 (mirrored attach matrix) are read by model_emitPartSetup
 0041c190	g_texBlockLimit	a texture needing this many blocks or more is treated as no texture by gfx_addSortedPacket
+# ---- program 0x46 in a model (docs/formats/model-row-registers.md) ----		
+00175950	model_emitLevelProgramSetup	(dl, matrix[16], model): DIRECT TEXFLUSH/TEX0_1=0/ALPHA_1=model+0x18/TEST_1=0x507f5, UNPACK 4 rows to VU 0, MSCAL 0x16, MSCAL 0x34, STROW 0,0,0,0 - the set-up a program-0x46 model would need; NO CALLER (docs/formats/model-row-registers.md)

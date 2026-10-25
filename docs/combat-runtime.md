@@ -649,6 +649,7 @@ method stays as it was.
 | 4. spells in combat | `docs/spec/combat-spells.md` | `ref_combat_spells.py` (`QueryModel` / `SpellRuntime`) | `difftest_combat_spells.py` |
 | 5. death, loot, destructors; 6. hit and cooldown helpers | `docs/spec/combat-monster-death.md` | `ref_combat_monsters.py` (`MonsterCombatModel` / `MonsterRuntime`) | `difftest_combat_monsters.py` |
 | all of them in one world | this section, 15.5 | `ref_combat_full.py` (`FullModel` / `FullRuntime`) | - (composition of the above) |
+| walking after a swing; `world_findFreeSpot` beside a walker | `docs/spec/combat-walk.md` | `ref_combat_walk.py` (`WalkRuntime`, on `FullRuntime`) | `difftest_combat_walk.py` |
 
 ### 15.1 Movement and touches (*Executed*)
 

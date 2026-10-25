@@ -11,7 +11,7 @@ understood: see the area document in `docs/` for what has actually been read.
 | netcode | 131d88–13ecf8 | 54 | 54 | 100% | lockstep loop, prediction, input codec, peers, game messages |
 | script | 13ecf8–147300 | 195 | 195 | 100% | level-script VM and its 191 built-in commands |
 | objects | 147300–160000 | 219 | 199 | 98% | GameObject, world grid and lists, memory pool, props |
-| engine | 160000–1a0000 | 546 | 356 | 71% | math, animation, lump files, pads, model drawing, text, terrain, pathfinding, camera, dialog, particles, cutscenes, tasks |
+| engine | 160000–1a0000 | 546 | 365 | 75% | math, animation, lump files, pads, model drawing, text, terrain, pathfinding, camera, dialog, particles, cutscenes, tasks |
 | player | 1a0000–1c0000 | 122 | 111 | 97% | Player class, player record, inventory items, stats |
 | ui | 1c0000–1e8000 | 222 | 191 | 92% | inventory and menus, HUD, shop, game state |
 | gameplay | 1e8000–210000 | 276 | 241 | 88% | damage, triggers, effects, world camera, vehicles |
@@ -21,4 +21,4 @@ understood: see the area document in `docs/` for what has actually been read.
 | mainloop | 320000–323dcc | 39 | 39 | 100% | task scheduler and main loop |
 | netlib | 323dcc–3b0000 | 2066 | 399 | 33% | lobby client, SOE UdpLibrary, AES, Sony SDK libraries |
 | runtime | 3b0000–3e6000 | 1460 | 1137 | 68% | C and C++ runtime, type info, static constructors |
-| **all** | | 7732 | 5255 | 80% | |
+| **all** | | 7732 | 5264 | 80% | |

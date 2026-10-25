@@ -31,7 +31,10 @@ not compared with the live game.
 - The animation state is at `P+0x114`: track count `P+0x118` (s8), a second count
   `P+0x119`, flag word `P+0x11a`, then 0x20-byte tracks from `P+0x11c`
   (+0 animation, +8 the value the cast and block code compare with 1.0 and 10.0,
-  +0x10 weight, +0x14 weight change per tick, +0x18 time). `top(k)` below means
+  +0x10 weight, +0x14 weight change per tick, +0x18 time). Correction 2026-10-17: by
+  `docs/spec/animation.md` 2.1 those are +8 **weight** (+0xc its rate), +0x10 **life** and
+  +0x14 **life rate**; the offsets used below are right, only the names were swapped, so
+  the cast point "1.0 / 0.5" is a weight threshold (`docs/spec/player-animation-dispatch.md`). `top(k)` below means
   `P + count × 0x20 + k`, the addressing the code uses for "the last track" (and, with
   `k` = 0xf0, the one before it).
 - `anim(k)` is a pointer from the player's animation table: `*(P+0x24) + class × 0x68 + k`,

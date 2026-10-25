@@ -13,9 +13,10 @@ little endian unless noted. "Unknown" means nobody has looked yet.
 | `.dbin` dialog trees | understood: 0x448-byte nodes with condition script, text key, voice name, speaker and choices — see [formats/anim-audio.md](formats/anim-audio.md) | `tools/anim_audio_info.py` |
 | `*_dialog.bin` voice-stream directory, `.VAT` streams, `.vag` samples | understood: PS2 ADPCM throughout; directory gives offset, rate, stereo flag and language | `tools/anim_audio_info.py` (can decode to WAV) |
 | `.anm` animation | understood: bind offsets, joint hierarchy, velocity-coded key stream at 60 ticks per second; not yet compared against the game on screen | `tools/anim_audio_info.py` (can dump tracks to CSV) |
-| `.world` level geometry | understood: header, chunk tree, render batches (ready-made VIF packets), terrain heights and flags, path grid; a few fields still open — see [formats/world.md](formats/world.md) | `tools/world_info.py` |
+| `.world` level geometry | understood: header, chunk tree, render batches (ready-made VIF packets), terrain heights and flags, path grid; water colour, waves and draw order are [formats/water-draw.md](formats/water-draw.md); a few fields still open — see [formats/world.md](formats/world.md) | `tools/world_info.py`; water in `tools/ref_waterdraw.py` |
 | `.vif` models | understood: header, part and variant tables, attach points, meshes as VIF1 streams for the model vertex program (positions, normals, strips, texture coordinates, joint weights); the file holds no skeleton or texture name — see [formats/model-texture.md](formats/model-texture.md) | `tools/model_info.py` (can export OBJ) |
 | `.tex` textures | understood: 0x80-byte header plus one GS upload packet; 8-bit images in GS memory order, some 4-bit and 32-bit, no mipmaps | `tools/model_info.py` (can export PPM/PGM) |
+| `<LEVEL>.TEX` level textures | understood: cell directory, 0x40-byte headers, block-table form (every texture on the disc): 16 × 16-texel blocks coded with a canonical Huffman code over literals, back-references and a successor table, a shared palette per group, uploaded as 32-bit rectangles and sampled as PSMT8 — see [formats/level-texture.md](formats/level-texture.md). Blend, depth order, environment rows and automap tile codes: [formats/level-draw.md](formats/level-draw.md) | `tools/ref_leveltex.py` (can export PPM); draw state in `tools/ref_leveldraw.py` |
 
 ## GOB
 
@@ -88,6 +89,7 @@ file of the same name and of any whole multiple of the size is drawn in its plac
 `tools/play-net/disctex.py` works out the same names from the disc for the textures kept
 in lumps (model, monster and item textures, interface art) without playing. It cannot do
 that for level textures: `<LEVEL>.TEX` holds them in a packed form that the game unpacks
+(now documented in [formats/level-texture.md](formats/level-texture.md); `tools/ref_leveltex.py` unpacks it, but the dump names above depend on what the game sent)
 before sending, and that unpacker has not been rewritten.
 
 The rules a replacement has to follow (alpha 128 is opaque, interface art stored as two
