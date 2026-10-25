@@ -20,6 +20,13 @@ extends Node
 #     made from the pose stream - the check that the stream is what the game drew (er check).
 # Nothing here reaches the simulation: two copies in one room, one with the layer and one without, stay in step.
 #
+# Round 4: look.er_style = fit (the default) keeps each player's own figure - face, race, tail, silhouette, and the
+# weapon in its hand - and dresses it in the outfit's PIECES, fitted to its own body and skinned to its own joints
+# (er_fit.gd; er_fit.cfg: which pieces each class leaves out, which classes auto-pick an outfit, the light).  Nothing of
+# the player is hidden then.  look.er_outfits = "class:choice;..." (the portal's Settings, per character class): auto
+# (the class's outfit where er_fit.cfg passed it, else the game's own), original (the game's own), or an outfit's
+# folder name.  er_style = replace is rounds 1-3: the whole figure replaced.
+#
 #   app er check FILE        from now on, every frame: the frame's skeletons into Skeleton3D nodes (rest from the bind
 #                            pose, pose from the joint frames), the game's bind-pose sources skinned through them, compared
 #                            with the corners the game's programs drew; one line per skeleton appended to FILE
@@ -65,6 +72,10 @@ const WEAPON_NAMES := ["", "dagger", "sword", "axe", "mace", "great", "spear", "
 const DT := 1.0 / 60.0
 var models := {}                # outfit -> model (below), or {"failed": why}
 var weapon_models := {}         # weapon class name -> {mesh, materials, axis, side, length} or {} (none)
+const ErFit := preload("res://er_fit.gd")
+var fits := {}                  # outfit|build|class -> {"task", "out"} while fitting, then the fitted figure (er_fit.gd) or {"failed"}
+var fit_cfg: ConfigFile         # er_fit.cfg
+var armour_shader: Shader
 var figures := {}               # key ("slot0".. or "local") -> figure: {set, instances, globals, springs, weapons, used}
 var targets: Array = []         # this frame's: [{key, skeleton, set, slot, wclass, held: [...]}]
 var game_weapons := {}          # signature -> {axis, side} of a game weapon in its own model space (from its vertices)
@@ -236,6 +247,8 @@ func before_frame(wanted: String) -> void:
 			_find_creatures()
 		part_us.find += Time.get_ticks_usec() - t_find
 		for t in targets:
+			if t.has("fit"):
+				continue                # a fitted figure: the player's own figure stays (its pieces are drawn over it)
 			hide.append_array(t.objects)
 			for h in t.held:
 				if h.drawn and not h.own:
@@ -415,12 +428,37 @@ func _find_targets() -> void:
 		# a library from before the players were added: the local player alone, its class not known
 		list.append({"key": "local", "skeleton": player_skeleton, "slot": -1, "cls": -1, "wclass": -1, "item": 0, "local": true})
 	var want_set := String(view.look.get("er_set", "auto")) if view != null else "auto"
+	# first person: the local player is the game's own figure, with the drawer's near cut of its arms mode (anything nearer
+	# the eye than its cut is left out).  Our pieces and weapon are not cut: drawn, the Elden Ring weapon's head floated
+	# where its handle and the arms had been cut away, and a chest piece would stand round the eye
+	var v_now: Dictionary = machine.get_view()
+	var first_person := String(v_now.get("mode_name", "")) == "first" and bool(v_now.get("active", false))
 	for t in list:
 		if who == "me" and not t.local:
 			continue
+		if first_person and t.local:
+			continue
 		var set_name := want_set
-		if want_set == "auto" or want_set == "":
-			set_name = String(CLASS_SETS[t.cls]) if t.cls >= 0 and t.cls < CLASS_SETS.size() else "default"
+		var cls_name := String(CLASS_SETS[t.cls]) if t.cls >= 0 and t.cls < CLASS_SETS.size() else "default"
+		var style := String(view.look.get("er_style", "fit")) if view != null else "fit"
+		if style == "fit":
+			# the player's choice for its class (the portal's Settings), else er_set; auto: the class's own outfit where
+			# er_fit.cfg passed it, else the game's figure
+			var choice := _outfit_choice(cls_name)
+			if choice == "original":
+				continue
+			if choice != "auto" and choice != "":
+				set_name = choice
+			elif want_set == "auto" or want_set == "":
+				var pick: Variant = _fit_table().get_value("auto", cls_name, false)
+				if pick is String and String(pick) != "":
+					set_name = String(pick)     # another outfit passed the review on this class's figure
+				elif pick is bool and bool(pick):
+					set_name = cls_name
+				else:
+					continue
+		elif want_set == "auto" or want_set == "":
+			set_name = cls_name
 		var model := _model(set_name)
 		if model.is_empty() and _loading(set_name):
 			continue
@@ -434,6 +472,14 @@ func _find_targets() -> void:
 			continue
 		t["set"] = set_name
 		t["objects"] = _objects_of(int(s.state))
+		if style == "fit":
+			var fit := _fit_for(t, model, s, cls_name)
+			if fit.is_empty():
+				continue                # being fitted (or it could not be): the game's figure until then
+			t["fit"] = fit
+			t["held"] = []              # the game's own weapon stays in its hand
+			targets.append(t)
+			continue
 		t["held"] = _held(s, t.objects)
 		_weapons_for(t)
 		targets.append(t)
@@ -607,6 +653,10 @@ func _gltf(path: String) -> Variant:
 # changed, the program is ending) keeps this script's lambda in the pool, and the pool then destroys it after the
 # script is gone - a crash when the program ends (signal 11 in WorkerThreadPool::finish, seen after a recording).
 func _exit_tree() -> void:
+	for key in fits:
+		if (fits[key] as Dictionary).has("task"):
+			WorkerThreadPool.wait_for_task_completion(int(fits[key].task))
+	fits.clear()
 	for path in loads:
 		var l: Dictionary = loads[path]
 		WorkerThreadPool.wait_for_task_completion(int(l.task))
@@ -1075,7 +1125,7 @@ func _align(m: Dictionary, p: Dictionary, reader := "person") -> bool:
 			var to: Vector3 = game_rest.call(ga) - game_rest.call(gj)
 			if from.length() > 1e-5 and to.length() > 1e-5:
 				align = _arc(from.normalized(), to.normalized())
-		var entry := {"name": key, "er": eb_bone, "game": gj, "align": align, "fixed": align * (al.axes as Basis) * (m.grest_basis[eb_bone] as Basis)}
+		var entry := {"name": key, "er": eb_bone, "game": gj, "ga": ga, "ea": ea, "align": align, "fixed": align * (al.axes as Basis) * (m.grest_basis[eb_bone] as Basis)}
 		al.map.append(entry)
 		al.by_bone[eb_bone] = entry
 		al.by_name[key] = gj
@@ -1138,6 +1188,9 @@ func _depth_in(m: Dictionary, b: int) -> int:
 # ---------------------------------------------------------------------------------------------------------------------
 # One figure, this frame: its bones from the game's joints, the springs, the skin, the weapons.
 func _draw_figure(t: Dictionary) -> void:
+	if t.has("fit"):
+		_draw_fitted(t)
+		return
 	var p: Dictionary = data.skeletons[t.skeleton]
 	var m: Dictionary = models[t.set]
 	var al: Dictionary = m.aligns[_build_key(p)]
@@ -1329,6 +1382,14 @@ func tween(t: float) -> void:
 			continue
 		var before: Array = f.get("g_before", [])
 		var now: Array = f.get("g_now", [])
+		if f.has("fit"):
+			if before.size() == now.size() and not now.is_empty():
+				var pal: Array = []
+				pal.resize(now.size())
+				for b in now.size():
+					pal[b] = (before[b] as Transform3D).interpolate_with(now[b] as Transform3D, 1.0 + t)
+				_skin_fitted(f, pal)
+			continue
 		if before.size() != now.size() or now.is_empty() or not models.has(f.set):
 			continue
 		var g: Array = []
@@ -1359,19 +1420,12 @@ const LEG_RADIUS := 0.11            # metres (times the figure's units a metre):
 # the game's clearing of the frame among them: a figure of ours goes there too, at the place of the draws it stands in for
 # (get_scene_info().hidden_order), depth tested and written like them.
 func _in_order(mesh: Mesh) -> Array:
+	# (round 4: er_armour.gdshader - cards cut, not blended; the light the level's own; a surface wound the other way
+	# shaded from its outside)
 	var out: Array = []
 	for i in mesh.get_surface_count():
 		var m := mesh.surface_get_material(i)
-		var copy: StandardMaterial3D = (m.duplicate() if m is StandardMaterial3D else StandardMaterial3D.new())
-		copy.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS if copy.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR else BaseMaterial3D.TRANSPARENCY_ALPHA
-		copy.depth_draw_mode = BaseMaterial3D.DEPTH_DRAW_ALWAYS
-		copy.cull_mode = BaseMaterial3D.CULL_DISABLED
-		# the maps (normal, metalness, roughness from the outfit's own textures): the world here has no reflections of
-		# Godot's for a metal to show (the game's scene is drawn by its own shaders), so a metal map at full strength
-		# reads black; it is taken at look.er_metal of its strength (default 0.5)
-		if copy.metallic_texture != null:
-			copy.metallic = float(view.look.get("er_metal", 0.5)) if view != null else 0.5
-		out.append(copy)
+		out.append(_armour_material(m, String(m.resource_name) if m != null else "", _surface_turned(mesh, i)))
 	return out
 
 
@@ -1412,6 +1466,11 @@ func _place(instance: RID, materials: Array, t: Dictionary = {}) -> void:
 	RenderingServer.instance_set_layer_mask(instance, 1 | OWN_LAYER)
 	for i in materials.size():
 		RenderingServer.instance_set_surface_override_material(instance, i, (materials[i] as Material).get_rid())
+	if t.has("fit"):
+		# a fitted figure's pieces: over the player's own figure, which is not left out (so has no place of its own in
+		# the list): after the world's draws, depth tested against them - the figure under it and whatever stands in front
+		RenderingServer.instance_set_pivot_data(instance, 1.0e6, false)
+		return
 	# each figure at the place of the first of its own draws the drawer left out (a creature drawn before the leaves over it
 	# stays under them; the first hidden draw of the whole frame may be another figure's); without one this frame (the
 	# list the drawer took was drawn before the objects were named), the place that figure had last - not the end of
@@ -1941,3 +2000,335 @@ func _auto_four(p: Dictionary) -> Dictionary:
 	out["frame_left"] = int(hips[1])
 	out["frame_right"] = int(hips[2])
 	return out
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Round 4: the outfit's pieces fitted onto the player's own figure (er_fit.gd), look.er_style = fit.
+func _fit_table() -> ConfigFile:
+	if fit_cfg == null:
+		fit_cfg = ConfigFile.new()
+		fit_cfg.load("res://er_fit.cfg")
+	return fit_cfg
+
+
+var _choices_text := "-"
+var _choices := {}
+# look.er_outfits = "barbarian:auto;cleric:original;shaman:berserker" (the portal's Settings) -> this class's choice
+func _outfit_choice(cls_name: String) -> String:
+	var text := String(view.look.get("er_outfits", "")) if view != null else ""
+	if text != _choices_text:
+		_choices_text = text
+		_choices = {}
+		for part in text.split(";", false):
+			var kv := part.split(":")
+			if kv.size() == 2:
+				_choices[kv[0].strip_edges()] = kv[1].strip_edges()
+	return String(_choices.get(cls_name, _choices.get("*", "auto")))
+
+
+# the fitted figure of an outfit on a player's figure: made once (on a worker thread) per outfit, skeleton build and class;
+# {} until it is there
+func _fit_for(t: Dictionary, m: Dictionary, p: Dictionary, cls_name: String) -> Dictionary:
+	var key := "%s|%s|%s" % [m.name, _build_key(p), cls_name]
+	var f: Dictionary = fits.get(key, {})
+	if f.has("ready"):
+		return f
+	if f.has("failed"):
+		return {}
+	if f.has("task"):
+		if not WorkerThreadPool.is_task_completed(int(f.task)):
+			return {}
+		WorkerThreadPool.wait_for_task_completion(int(f.task))
+		var out: Dictionary = (f.out as Dictionary).get("result", {})
+		if out.is_empty() or out.has("failed"):
+			fits[key] = {"failed": String(out.get("failed", "no result"))}
+			print("rta_godot: er fit: %s could not be fitted: %s" % [key, fits[key].failed])
+			return {}
+		fits[key] = _fit_made(out, f.src_materials, key, float(f.upm))
+		return fits[key]
+	# the body's bind-pose vertices are needed: asked for with the next frame's skeletons
+	if not data.has("source_position"):
+		want_mesh = true
+		return {}
+	var job := _fit_job(m, p, cls_name)
+	if job.is_empty():
+		fits[key] = {"failed": "no body"}
+		return {}
+	var out := {}
+	var task := WorkerThreadPool.add_task(func() -> void: out["result"] = ErFit.compute(job))
+	fits[key] = {"task": task, "out": out, "src_materials": job.src_materials, "upm": float(job.k)}
+	job.erase("src_materials")
+	return {}
+
+
+func _fit_job(m: Dictionary, p: Dictionary, cls_name: String) -> Dictionary:
+	var al: Dictionary = m.aligns[_build_key(p)]
+	# the player's body: every skinned piece of an object posed by its animation state, in the bind pose
+	var src: PackedVector3Array = data.source_position
+	var sj: PackedInt32Array = data.source_joints
+	var sw: PackedFloat32Array = data.source_weights
+	var kinds: PackedInt32Array = data.piece_skeleton
+	var flags: PackedInt32Array = data.piece_flags
+	var body_pos := PackedVector3Array()
+	var body_j := PackedInt32Array()
+	var body_w := PackedFloat32Array()
+	var skeletons: Array = data.skeletons
+	for i in kinds.size():
+		var si := kinds[i]
+		if si < 0 or si >= skeletons.size() or (flags[i] & 2) != 0:
+			continue
+		if int(skeletons[si].state) != int(p.state) or int(skeletons[si].joint_count) != int(p.joint_count):
+			continue
+		var first := int(data.piece_source_first[i])
+		var count := int(data.piece_source_count[i])
+		if first + count > src.size() or (first + count) * 4 > sj.size():
+			continue
+		body_pos.append_array(src.slice(first, first + count))
+		body_j.append_array(sj.slice(first * 4, (first + count) * 4))
+		body_w.append_array(sw.slice(first * 4, (first + count) * 4))
+	if body_pos.size() < 50:
+		return {}
+	var sk: Skeleton3D = m.skeleton
+	var names := PackedStringArray()
+	for b in int(m.count):
+		names.append(sk.get_bone_name(b))
+	var surfaces: Array = []
+	var bind_mats: Array = []
+	var bind_bones: Array = []
+	var src_materials: Array = []
+	for md in m.meshes:
+		var mesh: Mesh = md.mesh
+		var mats: Array = []
+		var binds: PackedInt32Array = md.binds
+		for q in binds.size():
+			mats.append((m.grest[binds[q]] as Transform3D) * (md.poses[q] as Transform3D) if binds[q] >= 0 else Transform3D())
+		for si in mesh.get_surface_count():
+			var mat := mesh.surface_get_material(si)
+			var name := String(mat.resource_name) if mat != null else ""
+			if name == "" and mesh is ArrayMesh:
+				name = (mesh as ArrayMesh).surface_get_name(si)
+			var part := name.substr(0, 2) if name.length() > 3 and name[2] == "_" else ""
+			surfaces.append({"arrays": mesh.surface_get_arrays(si), "name": name, "part": part})
+			bind_mats.append(mats)
+			bind_bones.append(binds)
+			src_materials.append(mat)
+	var map: Array = []
+	for e in al.map:
+		map.append({"er": int(e.er), "ea": int(e.ea), "game": int(e.game), "ga": int(e.ga), "name": String(e.name)})
+	var drop := PackedStringArray()
+	for section_key in [cls_name, String(m.name), "*"]:
+		for x in _fit_table().get_value("drop", section_key, []):
+			drop.append(String(x))
+	var bind: Array = []
+	for v in p.bind:
+		bind.append(v)
+	return {"surfaces": surfaces, "bind_mats": bind_mats, "bind_bones": bind_bones, "er_parent": m.parent, "er_rest": m.grest, "er_names": names,
+		"cloth": (m.springs as Dictionary).duplicate(), "axes": al.axes, "k": float(al.scale), "map": map, "game_bind": bind, "game_parent": p.parent,
+		"n": int(p.joint_count), "body_pos": body_pos, "body_joints": body_j, "body_weights": body_w, "drop": drop,
+		"keep_hands": bool(_fit_table().get_value("hands", cls_name, false)), "variants": _fit_table().get_value("variants", "groups", []), "label": "%s on %s" % [m.name, cls_name], "src_materials": src_materials}
+
+
+func _fit_made(out: Dictionary, src_materials: Array, key: String, upm: float) -> Dictionary:
+	var mesh := ArrayMesh.new()
+	var mats: Array = []
+	var names := PackedStringArray()
+	for s in out.surfaces:
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, s.arrays)
+		var src: Material = src_materials[int(s.surface)]
+		mats.append(_armour_material(src, String(s.name), false))
+		names.append(String(s.name))
+	print("rta_godot: er fit: %s in %d ms: %d meshes drawn, left out: [%s], %d hand triangles left out; widening per region: %s" % [out.label, int(out.ms),
+		names.size(), ", ".join(out.left_out), int(out.dropped_hands), out.summary])
+	return {"ready": true, "key": key, "mesh": mesh, "materials": mats, "cloth": out.cloth, "n": int(out.n), "reach": out.reach, "upm": upm, "names": names}
+
+
+func _draw_fitted(t: Dictionary) -> void:
+	var p: Dictionary = data.skeletons[t.skeleton]
+	var fit: Dictionary = t.fit
+	var f: Dictionary = figures.get(t.key, {})
+	if String(f.get("fit_key", "")) != String(fit.key):
+		if not f.is_empty():
+			_free_figure(f)
+		f = {"set": t.set, "fit": true, "fit_key": fit.key, "fit_ref": fit, "instances": [], "weapons": {}, "springs": {}}
+		figures[t.key] = f
+	var n := int(fit.n)
+	var joints: Array = p.joints
+	var bind = p.bind
+	var cloth: Array = fit.cloth
+	var pal: Array = []
+	pal.resize(n + cloth.size())
+	for j in n:
+		pal[j] = (joints[j] as Transform3D) * Transform3D(Basis(), -(bind[j] as Vector3))
+	# the cloth bones: carried by their joint (or the cloth bone above them), swinging as the springs of _draw_figure
+	var springs_on := view == null or String(view.look.get("er_springs", "on")) != "off"
+	var state: Dictionary = f.springs
+	var units := float(fit.upm) * float(p.scale)        # the world's units a metre
+	var down := Vector3(0, 0, -1)
+	var capsules: Array = []
+	if springs_on and not cloth.is_empty():
+		var al: Dictionary = models[t.set].aligns[_build_key(p)]
+		var reach: Dictionary = fit.reach
+		for side in ["left", "right"]:
+			var seg: Array = []
+			var radius: Array = []
+			for part in ["_thigh", "_calf", "_foot"]:
+				if (al.by_name as Dictionary).has(side + part):
+					seg.append((joints[int(al.by_name[side + part])] as Transform3D).origin)
+					radius.append(maxf(float(reach.get(side + part, 0.0)) * float(p.scale) * 1.1, LEG_RADIUS * units * 0.75))
+			for q in range(seg.size() - 1):
+				capsules.append([seg[q], seg[q + 1], radius[q]])
+	var g: Array = []
+	g.resize(cloth.size())
+	for ci in cloth.size():
+		var c: Dictionary = cloth[ci]
+		var from_parent: Transform3D
+		var pc := int(c.parent_cloth)
+		if pc >= 0:
+			from_parent = (g[pc] as Transform3D) * ((cloth[pc].bind as Transform3D).affine_inverse() * (c.bind as Transform3D))
+		else:
+			from_parent = (pal[int(c.joint)] as Transform3D) * (c.bind as Transform3D)
+		g[ci] = from_parent
+		if springs_on:
+			var tip: Vector3 = from_parent * (c.tip as Vector3)
+			var origin := from_parent.origin
+			var s: Dictionary = state.get(ci, {})
+			if s.is_empty() or (s.p as Vector3).distance_to(tip) > 60.0:
+				s = {"p": tip, "v": Vector3.ZERO}
+				state[ci] = s
+			var v: Vector3 = s.v
+			var pos: Vector3 = s.p
+			v += (tip - pos) * SPRING_PULL * DT + down * (SPRING_GRAVITY * units) * DT
+			v *= SPRING_DAMP
+			pos += v * DT
+			var length := (tip - origin).length()
+			var dir := pos - origin
+			if dir.length() > 1e-4 and length > 1e-4:
+				var want := (tip - origin) / length
+				var now := dir.normalized()
+				var angle := want.angle_to(now)
+				if angle > SPRING_MAX:
+					now = want.slerp(now, SPRING_MAX / angle).normalized()
+				pos = origin + now * length
+				for cap in capsules:
+					var a0: Vector3 = cap[0]
+					var ab: Vector3 = (cap[1] as Vector3) - a0
+					var u := clampf((pos - a0).dot(ab) / maxf(ab.length_squared(), 1e-6), 0.0, 1.0)
+					var near := a0 + ab * u
+					var off := pos - near
+					var r := float(cap[2])
+					if off.length() < r:
+						var away := off.normalized() if off.length() > 1e-4 else (pos - origin).normalized()
+						pos = origin + ((near + away * r) - origin).normalized() * length
+						v -= away * minf(0.0, v.dot(away))
+				now = (pos - origin).normalized()
+				g[ci] = Transform3D(_arc(want, now) * from_parent.basis, origin)
+			s.p = pos
+			s.v = v
+		pal[n + ci] = (g[ci] as Transform3D) * (c.bind as Transform3D).affine_inverse()
+	var root_at: Vector3 = (joints[0] as Transform3D).origin
+	var now_frame := int(view.frames_taken) if view != null else 0
+	var before_ok := int(f.get("g_frame", -10)) == now_frame - 1 and (f.get("g_root", root_at) as Vector3).distance_to(root_at) < 40.0
+	f["g_before"] = f.get("g_now", []) if before_ok else []
+	f["g_now"] = pal
+	f["g_frame"] = now_frame
+	f["g_root"] = root_at
+	_skin_fitted(f, pal)
+	var inst: RID = f.instances[0].instance
+	_place(inst, fit.materials, t)
+	RenderingServer.instance_set_visible(inst, true)
+	RenderingServer.instance_set_custom_aabb(inst, AABB(root_at - Vector3(120, 120, 120), Vector3(240, 240, 240)))
+	f["drawn_frame"] = now_frame
+
+
+func _skin_fitted(f: Dictionary, pal: Array) -> void:
+	var fit: Dictionary = f.fit_ref
+	var instances: Array = f.instances
+	if instances.is_empty():
+		var sk_rid := RenderingServer.skeleton_create()
+		RenderingServer.skeleton_allocate_data(sk_rid, pal.size())
+		var inst := RenderingServer.instance_create2((fit.mesh as Mesh).get_rid(), scenario)
+		RenderingServer.instance_attach_skeleton(inst, sk_rid)
+		instances.append({"instance": inst, "skeleton": sk_rid})
+	var rid: RID = instances[0].skeleton
+	for q in pal.size():
+		RenderingServer.skeleton_bone_set_transform(rid, q, pal[q])
+
+
+# The outfit's material as er_armour.gdshader draws it (every outfit, weapon and creature piece): cards cut, not blended
+# (the white streaks); the light the level's own (er_fit.cfg [look] tunes it).
+var _alpha_seen := {}
+const CARD_WORDS := ["hair", "fur", "feather", "cloth", "tatter", "fringe", "lace", "mane", "beard", "leaf", "rope"]
+func _armour_material(src: Material, name: String, flip: bool) -> ShaderMaterial:
+	if armour_shader == null:
+		armour_shader = load("res://shaders/er_armour.gdshader")
+	var sm := ShaderMaterial.new()
+	sm.shader = armour_shader
+	var cut := -1.0
+	if src is BaseMaterial3D:
+		var b: BaseMaterial3D = src
+		var tex: Texture2D = b.albedo_texture
+		sm.set_shader_parameter("albedo_colour", b.albedo_color)
+		if tex != null:
+			sm.set_shader_parameter("albedo_tex", tex)
+		if b.normal_enabled and b.normal_texture != null:
+			sm.set_shader_parameter("normal_tex", b.normal_texture)
+			sm.set_shader_parameter("has_normal", true)
+		var mr: Texture2D = b.metallic_texture if b.metallic_texture != null else b.roughness_texture
+		if mr != null:
+			sm.set_shader_parameter("mr_tex", mr)
+			sm.set_shader_parameter("has_mr", true)
+		if b.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR or b.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_HASH:
+			cut = maxf(b.alpha_scissor_threshold, 0.3)
+		elif tex != null and _has_alpha(tex):
+			# a texture's alpha is a card's outline only on cards (hair, fur, feathers, tatters); elsewhere it is not used
+			# (the first rounds blended every part by it: see-through patches)
+			var low := name.to_lower()
+			for w in CARD_WORDS:
+				if low.contains(w):
+					cut = 0.5
+					break
+	sm.set_shader_parameter("cut", cut)
+	var cfg := _fit_table()
+	for key in ["gain", "fill", "floor_light", "metal_amount", "sun_wrap", "sky_reflect"]:
+		if cfg.has_section_key("look", key):
+			sm.set_shader_parameter(key, float(cfg.get_value("look", key)))
+	if view != null and view.look.has("er_metal") and not cfg.has_section_key("look", "metal_amount"):
+		sm.set_shader_parameter("metal_amount", float(view.look.er_metal))
+	sm.set_shader_parameter("flip", flip)
+	return sm
+
+
+func _has_alpha(tex: Texture2D) -> bool:
+	var id := tex.get_rid().get_id()
+	if _alpha_seen.has(id):
+		return _alpha_seen[id]
+	var img := tex.get_image()
+	var yes := false
+	if img != null:
+		if img.is_compressed():
+			img = img.duplicate()
+			img.decompress()
+		yes = img.detect_alpha() != Image.ALPHA_NONE
+	_alpha_seen[id] = yes
+	return yes
+
+
+# whether a surface's triangles are wound with the outside at the back (Godot's front faces are clockwise): its shading
+# then turns the normal back
+func _surface_turned(mesh: Mesh, i: int) -> bool:
+	var arrays := mesh.surface_get_arrays(i)
+	var pos: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+	var nrm = arrays[Mesh.ARRAY_NORMAL]
+	if nrm == null or pos.is_empty():
+		return false
+	var idx = arrays[Mesh.ARRAY_INDEX]
+	var count: int = (idx as PackedInt32Array).size() if idx != null else pos.size()
+	var facing := 0.0
+	var step := maxi(3, int(count / 3000) * 3)
+	for tri in range(0, count - 2, step):
+		var i0: int = (idx as PackedInt32Array)[tri] if idx != null else tri
+		var i1: int = (idx as PackedInt32Array)[tri + 1] if idx != null else tri + 1
+		var i2: int = (idx as PackedInt32Array)[tri + 2] if idx != null else tri + 2
+		var g := (pos[i1] - pos[i0]).cross(pos[i2] - pos[i0])
+		facing += g.dot((nrm as PackedVector3Array)[i0] + (nrm as PackedVector3Array)[i1] + (nrm as PackedVector3Array)[i2])
+	return facing > 0.0

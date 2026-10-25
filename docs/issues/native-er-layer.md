@@ -7,6 +7,14 @@ Everything below says **Ran** (with what was seen) or **Read**. A successor need
 
 ## STATE
 
+**2026-10-25, round 4** (built into `local/godot-r18/`; pictures `local/er-layer/fit/`; not committed): **fit, not replace** -
+the owner saw the berserker replaced by a whole Elden Ring figure (white streaks on the cape, a hole through the back, the
+body near-black, nothing of the Champions character left). Now every player keeps its own Champions figure (face, race,
+tail, its own weapon) and wears the outfit's pieces, fitted to its own body and skinned to its own joints
+(`look.er_style = fit`, the default; `er_fit.gd`, `er_fit.cfg`, `shaders/er_armour.gdshader`); an outfit picker per class
+in the portal's Settings; all 12 class/gender figures pictured in four levels; paced 90.9 fps with the layer against 90.6
+without; the room: **1,865 ticks in step**. Round 4 below.
+
 **2026-10-22, round 3** (built into `local/godot-r12/`; pictures `local/er-layer/r3/`; not committed): **creatures** -
 `look.er_creatures = on` (default off) draws the game's monsters as Elden Ring enemies of a similar build, each told by its
 class and level record, retargeted from its own skeleton (people by the person reader, four-legged ones by a new reader);
@@ -302,12 +310,88 @@ order, held models of other objects, leg capsules, `app er creatures FILE`), `er
 (`hidden_orders`). Local: `souls-ref/scripts/er_chr.py` (new), `er_gltf.py` (figure's arguments), `er-models/creatures/`,
 `er-layer/{lvroute.py,lvrun.sh,room12.py,mkroute.py}`.
 
+## Round 4 (2026-10-25): the outfit's pieces fitted on the Champions figures
+
+Built into `local/godot-r18/` (a copy-on-write clone of r16's `lib`, `project`, `godot-home`; `build.py project` - no C++ change;
+`local/er-layer/fit/stage.sh` stages the project with the files another agent was changing at the same time taken as committed).
+Tests: `local/er-layer/fit/run.sh NAME R LEVEL:T ...` (`fit_route.py`: power-on with R presses right on the class page, then
+the levels; at each tick idle, run (stick held), attack (square), in the shoulder (close) and chase (gameplay) views, layer off
+and on; `MODES=on:<outfit>` tries an outfit on everyone, `BASE=off` keeps the layer off), `sweep.sh` (all 12 figures, 3 at a
+time), `final_sheets.py`, `local/godot-r18/test/room18.py` (room16 on r18; B given `RTA_ER_MODELS` pointing nowhere).
+
+**What was wrong (Read, then Ran).** (1) Every outfit material that was not alpha-scissor was put in Godot's transparent pass
+*blended by its texture's alpha* with its depth written, in no order: the cards (fur, feathers, tatters, the arm pieces' "hair")
+have white texels round them - the white streaks; and on materials whose alpha is not used at all, see-through patches.
+(2) The figure was the outfit alone: where its armour leaves the body bare (the berserker set is open at the back) there was
+nothing - the hole. (3) The converter mirrored x; triangles wound the other way are shaded from behind when culling is off -
+dark surfaces; and metal at half strength with no reflections in this scene reads black.
+
+**1. Fitting (`er_fit.gd`, once per outfit, skeleton build and class, on a worker thread: 0.2-1.0 s).** The joint map's pairs
+(round 1) are regions: the game joint -> its aim joint in the game's bind pose, and the outfit bone -> its aim bone. Per region,
+3 bands along x 8 sectors round: how far the game's body reaches (its bind-pose vertices, from the library's mesh stream; tail,
+the game's own cape chain and other chains off the trunk excluded - only mapped joints and what hangs off a hand, foot or the
+head) and where the piece's inside is (15th percentile of its distances). Each outfit vertex is carried by its regions (its
+weights): put at the same place along the game's segment (the bone length is the game's) and moved out by as much as the
+piece's inside must move there to sit on the body (+5 % and 0.35 units) - so a pauldron, a crest or a cape keeps its own size
+(first try scaled everything by the ratio: capes and crests blew up, `fit/t2`, `c1` first run). Normals and tangents turn with
+the regions. The vertex is then skinned to **the game's own joints** (outfit bone -> its region's joint) with the skin
+matrices the game's body is drawn with (`joints[j] * T(-bind[j])`), the cloth bones as extra bones with round 2's springs
+(legs as capsules from the body's measured reach). Triangles are re-wound so the front is the outside. Left out per figure: a
+part (HD/BD/AM/LG) of which more than 30 % would need a widening below 0.72 or above 2.1 (logged: e.g. the arm pieces on most
+figures - the Champions arms are much thicker); the arm pieces' hands (the game's hands grip; 248-1,538 triangles); the
+alternatives among a part's numbered meshes (`#24#`/`#25#`/`#26#` ...: drawn together they lay in each other; the lowest of
+each group of `er_fit.cfg [variants]`); and what `er_fit.cfg [drop]` names after review: **helms for every class** (a helm
+large enough for a Champions head reads as a bucket, and it hid the face, ears, horns, the lizard's crest - the berserker's
+horned helm stood a head high: `fit/c1` first run), the wizard set's mantle (it stood up round the head), the cleric set's
+chain skirt (white patches below the robe), the berserker set's feather cards. Nothing of the player is hidden; its own
+weapon stays in its hand (the drawer can leave out whole objects only, and the weapon is part of the body's object).
+
+**2. Materials (`er_armour.gdshader`, every outfit, weapon and creature piece).** Cards are cut (alpha test; the cut lowered with
+the mip level so they do not thin out far away), nothing is blended, so order does not matter: no streaks. Alpha is used only
+on mask materials and on cards by name (hair, fur, feather, cloth, ...) whose texture has alpha. Light as the game's own
+models take it: `rta_light_ambient` where the sun does not reach, the sun with the models' wrap, a small floor; a metal reflects
+the sky (`rta_sky`) dimmed by the level's ambient (a cave's metal does not shine with the sky), a GGX highlight; and the
+level's haze (`rta_haze`) - the figures had no fog before. Tuning in `er_fit.cfg [look]` (gain 1.2, metal 0.6, sky 0.35).
+Replaced figures (creatures, `er_style = replace`) get the same shader and a normal flip when their winding is the other way.
+
+**3. The choice (Ran in pictures; the Settings page built, not seen in a picture).** `look.er_outfits = "class:choice;..."`:
+auto | original | an outfit folder; `*:` for everyone (tests). Settings, Game page (Remastered with the models found): "Outfit
+of" (the seven classes) and "Outfit" (Auto, Champions original, Elden Ring: each local set); kept in the profile
+(`er_outfits`), handed to the game with the edition's look (`edition.gd game_options`) and at once to a running game
+(`apply_edition`). Auto per class (`er_fit.cfg [auto]`, after review): barbarian, cleric, necromancer (shadow knight), ranger,
+wizard their own sets; **berserker the barbarian set** (its own wing cape covers the whole cat, back and tail: `fit/c1`,
+`r6.jpg`); **shaman the necromancer set** (its own scale cloak became a blob over the lizard: `fit/c0` first run).
+
+**4. The gate (Ran).** `local/er-layer/fit/final/`: `overview.jpg` (all 12: hub off | on, cave, evening run) and
+`sheet-cR.jpg` per figure (hub, valor, arachna1 - the dark cave -, islgoth - the dim indoor evening hall; idle, run, attack;
+close and gameplay distance; the game's figure beside). R = 0 Iksar shaman, 1 Vah Shir berserker, 2/3 barbarian m/f,
+4/5 wood-elf ranger m/f, 6/7 cleric m/f, 8/9 Erudite wizard m/f, 10/11 dark-elf shadow knight m/f. Seen: every figure keeps its
+own head, ears, tail; no white streaks; no holes (the body is under every gap); no stretched piece (the stretched ones are
+left out). Not perfect: the Champions skirt of the female wizard shows under the leg pieces; the tail passes through the
+shadow knights' / shaman's tabard; capes are lit flatter than the game's painted figures in the cave; the cleric pictures
+(c6, c7) are from before the chain skirt was dropped (the fps run's cleric has it dropped: `fit/fps-on`).
+**Cost (paced, 3024 x 1964, cleric, hub + valor + arachna1, every view and pose):** 90.9 pictures a second with the layer,
+90.6 without (`fit/fps-{on,off}/frames.csv`, `fps.py`); the layer's own time 0.10 ms a frame (fitting is off the main
+thread; once 33 ms when an outfit's glTF is turned into nodes).
+**The room (`room18.py rm1`, both copies Remastered, B without models):** A drew both players fitted (shaman in the necromancer
+set, berserker in the barbarian set); `compare.py`: **1,865 ticks compared, no shared column differs** (`local/godot-r18/test/rm1.log`).
+
+**First person.** The local player is now never drawn by the layer in the first-person view (`get_view().mode_name ==
+"first"`): its arms mode cuts what is nearer the eye than its cut, and the layer's pieces and weapon are not cut - the floating
+mace head (found by the bug agent) and a chest piece round the eye. Built; not seen in a picture this round.
+
+**Changed (tracked):** `tools/godot/project/er_layer.gd` (fit style, per-class choice, first person, the shader for every piece),
+`er_fit.gd` (new), `er_fit.cfg` (new), `shaders/er_armour.gdshader` (new), `scene_view.gd` (two look keys `er_style`,
+`er_outfits` and their two comment lines - tiny hunk), `portal/edition.gd` (`er_outfit_sets`, `game_options(..., outfits)`),
+`portal/handover.gd` (passes the profile's choice), `portal/profile.gd` (`er_outfits` default), `portal/screens/settings.gd`
+(the two rows), this file. Local: `local/er-layer/fit/*`, `local/godot-r18/`.
+
 ## What is local only
 
 Everything of either game: `local/souls-ref/` (the depot's files, the partial archives `er/Game/Data0.bdt` and
 `Data3.bdt` - sparse, only the fetched ranges - the decrypted headers' index, `er-raw/`, `er-work/`, `er-models/`), the
 patched DepotDownloader and its source, SoulsFormatsNEXT and `flverdump`, the ooz builds, `unkrak.exe`, the .NET SDK,
-`local/godot-r10/`, `local/godot-r11/`, `local/godot-r12/`, `local/er-layer/`, the Windows test machine's scratch folder (removed after each
+`local/godot-r10/`, `local/godot-r11/`, `local/godot-r12/`, `local/godot-r18/`, `local/er-layer/`, the Windows test machine's scratch folder (removed after each
 decompression). Tracked: code and our own joint table only.
 
 ## Not done, and what to know
@@ -318,7 +402,8 @@ decompression). Tracked: code and our own joint table only.
   near the player; fay1's orcs were out of view); the figures do not take the game's fog (far ones stand out bright in
   fire1's haze); the person reader gives a zero-length calf on 3-joint legs (the gnome); the variant and texture choices of
   the enemy models are ours and partly guessed (a demi-human's collar takes the light orange).
-- Players' faces, hair and bare skin are not drawn (the helmets cover them).
+- (Round 4) Players keep their own Champions figures under fitted pieces; helms are left out; arm pieces mostly too
+  (the Champions arms are much thicker than the outfits' sleeves allow without stretching).
 - Metal shows only half its strength (`er_metal`): the scene has no reflections of Godot's. The figure is drawn over
   see-through leaves in the overhead view (it is placed in the draw order at its first hidden draw).
 - A shield drawn by the game as an object of its own is taken since round 3 when it stays at a hand for 4 frames - not

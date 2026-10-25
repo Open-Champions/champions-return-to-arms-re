@@ -121,7 +121,7 @@ func _make_game() -> Node:
 
 func edition_options() -> Dictionary:
 	var Edition: GDScript = load("res://portal/edition.gd")
-	return Edition.call("game_options", String(portal.profile.edition()), String(portal.profile.setting("view")))
+	return Edition.call("game_options", String(portal.profile.edition()), String(portal.profile.setting("view")), String(portal.profile.setting("er_outfits")))
 
 
 func apply_edition() -> void:

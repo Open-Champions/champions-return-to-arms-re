@@ -80,13 +80,30 @@ static func er_boss_tracks() -> PackedStringArray:
 
 # ---- what the game scene is given -----------------------------------------------------------------------------------
 # {edition, view, views_locked, combat, aim, look, display_rate, hud_mode, music, music_er, er_models, er_note}
-static func game_options(kind: String, view: String) -> Dictionary:
+# the outfits the player's own converted models offer (folders of er-models with a figure; not the creatures and weapons)
+static func er_outfit_sets() -> PackedStringArray:
+	var out := PackedStringArray()
+	var dir := DirAccess.open(er_models_folder())
+	if dir == null:
+		return out
+	for name in dir.get_directories():
+		if FileAccess.file_exists(er_models_folder().path_join(name).path_join("figure.glb")):
+			out.append(name)
+	out.sort()
+	return out
+
+
+# outfits: the profile's er_outfits ("class:auto|original|<outfit>;...", the Settings' Game page), handed to the game as
+# the look key of the same name (er_layer.gd)
+static func game_options(kind: String, view: String, outfits := "") -> Dictionary:
 	if kind == CLASSIC:
 		return {"edition": CLASSIC, "view": "overhead", "views_locked": true, "combat": "off", "aim": "off", "look": CLASSIC_LOOK,
 			"display_rate": "60", "hud_mode": "original", "music": "off", "music_er": "off", "er_models": false, "er_note": ""}
 	if kind == REMASTERED:
 		var er := er_models_found()
 		var look := "er_models=on,er_creatures=%s" % ("on" if er_creatures_found() else "off") if er else ""
+		if er:
+			look += ",er_outfits=" + outfits       # (also when empty: a choice put back to Auto replaces the one before)
 		return {"edition": REMASTERED, "view": view if view != "" else "chase", "views_locked": false, "combat": "hardcore", "aim": "look",
 			"look": look, "display_rate": "auto", "hud_mode": "new", "music": "on", "music_er": "on" if not er_boss_tracks().is_empty() else "off",
 			"er_models": er, "er_note": "" if er else "Elden Ring look: needs your own Elden Ring copy - see setup"}

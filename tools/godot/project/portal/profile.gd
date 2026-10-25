@@ -12,6 +12,7 @@ const DEFAULTS := {
 	"view": "overhead", "fullscreen": false, "sharpness": 2, "wide": true,
 	"volume": 1.0, "music": 0.8, "effects": 1.0, "interface": "new", "glyphs": "auto",
 	"game": "",                     # classic | remastered (edition.gd; the portal's first screen); "" = never chosen
+	"er_outfits": "",               # per character class: auto | original | an outfit folder ("class:choice;...", settings.gd Game)
 }
 
 var folder := "user://"

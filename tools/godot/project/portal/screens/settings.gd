@@ -95,6 +95,50 @@ func _page_game(r: Rect2) -> void:
 		"Remastered: new HUD, lighting, cleaner models, 120 Hz, five views, Hardcore, aim where you look, boss music."]
 	for k in lines.size():
 		say(Rect2(r.position.x, y + UI.px(100 + 34 * k), minf(r.size.x, UI.px(980)), UI.px(30)), lines[k], 17, UI.DIM)
+	if kind == "remastered" and er:
+		_outfit_rows(r, y + UI.px(100 + 34 * lines.size() + 16), Edition)
+
+
+# Per character class: which outfit its figure wears in Remastered (er_layer.gd look.er_outfits): Auto (the class's own
+# Elden Ring set where it was passed, er_fit.cfg [auto]), the Champions original, or any of the player's converted sets
+const OUTFIT_CLASSES := [["barbarian", "Barbarian"], ["cleric", "Cleric"], ["necromancer", "Shadow Knight"], ["ranger", "Ranger"],
+	["wizard", "Wizard"], ["berserker", "Berserker"], ["shaman", "Shaman"]]
+var outfit_class := 0
+
+func _outfit_rows(r: Rect2, y: float, Edition: GDScript) -> void:
+	var sets: PackedStringArray = Edition.call("er_outfit_sets")
+	var current := {}
+	for part in String(portal.profile.setting("er_outfits")).split(";", false):
+		var kv := part.split(":")
+		if kv.size() == 2:
+			current[kv[0]] = kv[1]
+	var names := PackedStringArray()
+	for c in OUTFIT_CLASSES:
+		names.append(String(c[1]))
+	var who := W.Choice.new("Outfit of", names, outfit_class, "Each character class wears its own choice.")
+	who.key = "outfit_class"
+	who.changed.connect(func(index: int) -> void:
+		outfit_class = index
+		want_focus = "outfit_class"
+		rebuild())
+	var cls := String(OUTFIT_CLASSES[outfit_class][0])
+	var options := PackedStringArray(["Auto", "Champions original"])
+	var values := ["auto", "original"]
+	for name in sets:
+		options.append("Elden Ring: " + name.capitalize())
+		values.append(name)
+	var at := maxi(0, values.find(String(current.get(cls, "auto"))))
+	var what := W.Choice.new("Outfit", options, at, "Elden Ring armour fitted on the Champions figure, or the figure as it is.")
+	what.key = "outfit"
+	what.changed.connect(func(index: int) -> void:
+		current[cls] = values[index]
+		var parts := PackedStringArray()
+		for key in current:
+			if String(current[key]) != "auto":
+				parts.append("%s:%s" % [key, current[key]])
+		portal.profile.set_setting("er_outfits", ";".join(parts))
+		portal.handover.call("apply_edition"))
+	_rows(r, y, [who, what])
 
 
 func _page_view(r: Rect2) -> void:
