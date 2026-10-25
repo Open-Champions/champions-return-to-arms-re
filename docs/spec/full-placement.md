@@ -424,3 +424,78 @@ to the player in 20 frames.
 | 4 | `PhProp_ctor4` | `0x155bdc` | a deflected plain arrow with model words |
 | 5 | `Minion_run`'s placement of the held Soul | `0x286364`–`0x2863e0` | a Soul held by its owner |
 | 6 | `Gold_draw`, `Gold_ctor`, Weapon2 slots 1–7, 9–15, 17, `AntWave_clone` | — | drawing, a level's placed pile, two-hand holders |
+
+## 8. Round 5: the rigid body, the arrows' hit paths, StaticFire_ctor and the held Soul (2026-10-21)
+
+### 8.1 What was executed
+
+Each ran against a model on seeds 20973 and 7 with 0 mismatches; every document lists the fields
+read and written, the calls with their seed draws and the constants with their addresses. The
+checks of each comparison (a model mutated by hand and caught) are in the documents.
+
+| §7.6 # | Bodies | Figures (per seed) | Document |
+|---|---|---|---|
+| (new) | `rigidbody_init` `0x1682f0` (140/140), `rigidbody_updateDerived` `0x167a58` (111/111), `quat_fromMat3` (146/146), `quat_normalize` (25/25), and `PhProp_initPhysics` composed with all four real | 3,000 + 3,000 + 1,000 composed cases | `rigidbody-init.md` |
+| 2 | `Creature_setEffectTimer` `0x118950` (39/40), `LightEffect_ctor` `0x201bd8` (163/163), and the cold, fire and exploding arrow chains re-run with both real | 3,000 + 3,000 direct; chains 600 arrows, 75,264 and 77,455 calls (unchanged) | `arrow-hit.md` |
+| 3 | `StaticFire_ctor` `0x2c5240` (172/174), `StaticFire_initCommon` `0x2c5814` (82/82), the particle body `0x2c6aa8` (70/70) | 3,000 each | `staticfire-ctor.md` |
+| 5 | `Minion_run` `0x2862c0` from its entry to the state dispatch, with the held Soul's placement `0x286364`–`0x2863e0` (32/32); 89 of 1,116 instructions of the body | 3,000 (1,299 / 1,270 placed a held object) | `minion-place.md` |
+
+**Findings that matter for a port or for sync:**
+
+- **`rigidbody_init` makes one *cosmetic* draw** (`0x404460`, never the shared seed) and clears the
+  0x98-byte body. `PhProp_initPhysics` then overwrites the orientation it drew, so for any PhProp
+  only the inertia, the inverse mass and the seed word survive; a crate keeps the drawn turn
+  (`q = (0, 0, 1, u)`, `u` the draw's high half over 2¹⁶). The three recordings of the native
+  World can be replaced by `rigidbody-init.md` §2–§4.
+- **A cold arrow ADDS to the victim's chill timer** (`+0x344 += stat 3 / 2` through
+  `Creature_setEffectTimer(victim, 1, owner, …)`); it does not set it. The explosion's light lasts
+  `max(trunc(0.25 × 60), 1)` = 15 frames and costs the one shared draw of its `GameObject_ctor`.
+- **A StaticFire costs one shared and two own draws** (initCommon's `mod 300` and the particle
+  body's phase pick); its neighbour count includes every object the 30-unit box finds, and
+  four or more halve its life.
+- **The held Soul is placed every Minion tick after the Minion's own move, animation step and
+  knock-back, before its state handler**: the attach point of index 0 with the Minion's scale
+  and facing, the facing copied, the grid cell updated; no draw.
+
+### 8.2 The probe now
+
+`python3 -u tools/probe_full_placement.py --run-objects --clips --skills --ticks 3000 …` (the
+script is `local/probe/matrix-r5.sh`, the log `local/probe/full-placement-r5.txt`, untracked). The
+rigid-body bodies, `Creature_setEffectTimer`, `LightEffect_ctor` and `StaticFire_ctor` now run for
+real instead of as recording stubs; four services are new (AUTHORED, labelled in the code): the
+circle sweep (flat dry ground, no wall: the whole move), the tagged heap, the path-grid block and
+the always-draw list. A prop with a real body moves sideways, which is why the sweep is asked now
+and was not in round 4. The report now lists the pool objects' lifecycle (built, ran, ended, how,
+after how many frames).
+
+**No row of the 14-row matrix stops**; every body the three fights reach, the objects they leave
+included, is executed or a service. The distances (3,000 ticks, idle and with the player hitting
+every 25):
+
+| Class | Placement | Run | What happens (frames) |
+|---|---|---|---|
+| AntQueen | round5 | idle | as round 4: 0, 1, 3, 8/9, 0x17, 0x18, 3/6; 23 bites land from frame 283; ends at 3,000 |
+| AntQueen | round5 | hit every 25 | flinches 24 and 124, 8 at 187, 9 at 277, **0x14 (death) at 299**; the hits and the death together make **15 gut chunks, 5 loot items (`PhProp`) and 3 gold piles**. **Every gut chunk destroys itself on its first bounce, 56–65 frames after it is built** (913 `GutChunk_run` in all; in round 4, with an all-zero body, they never bounced and ran 402 frames each: 6,030). The 5 items rest after **259–403 frames** (median 403: most on the unconditional rest of the 402nd frame) and become 5 `ItemProp`s the pool keeps and the run lists do not (a loot item waits for a pickup); the gold runs to the end (8,100 `Gold_run`) |
+| Skeleton (kind 1) | round5 / duel | idle | as round 4: walks by root motion, swings from 210 (round5, 19 swings) or the player at 84 (duel) |
+| Skeleton, both kinds, both placements | — | hit every 25 | 0x12 on hits, 0x14 at 299; the shatter's **17 bones** (18 for the bow on duel) rest after **193–403 frames** (median 403); 16 become `Prop`s (the others `ItemProp`s, which wait for a pickup) that run 301 frames and destroy themselves (`Prop_run` 4,816 runs) |
+| SkeletonBow | round5 / duel | idle | arrows from 234 (round5, 23) or 96 (duel, 24; hits the player at 116); each lives 17–22 frames and destroys itself on its hit |
+| Soul | round5 / native | idle / hit | 0/1 alternating for 3,000 frames; wanders up to about 310 from the player. No Minion holds it here: the held placement is executed by `difftest_minion` alone |
+
+Seed-relevant timing, all *Executed* in the probe on the authored world: a loot item or bone prop
+rests on its 193rd–403rd frame; a gut chunk (these all had bit 0) ends on its 56th–65th.
+
+### 8.3 What is still missing, ranked
+
+| # | Body | Address | Reached |
+|---|---|---|---|
+| 1 | The player's own tick on the stand-in: `Player_run`, the pending damage, `obj_moveWithCollision`'s touch dispatch (then the executed `Gold_onTouch`, credit and item pickup) | — | every frame of a real player; unchanged from §7.6 #1 |
+| 2 | `StaticFire_run` `0x2c595c`, `StaticFire_draw` `0x2c65e8`, `StaticFire_dtor` `0x2c5770`, `StaticFire_clone` `0x1300e0`, `StaticFire_ctor2` `0x2c54f8` | as listed | any fire built (burning debris from an exploding container, FireBomblet, ShadowStep): the constructor is executed, the fire's frame is not, so a probe stops on the first fire's first run |
+| 3 | `LightEffect_run` `0x1ee050` (`Observed` in `ref_combat_spells`, no difftest) | `0x1ee050` | the 15 frames after an exploding arrow, and 65 constructor callers |
+| 4 | `Minion_run`'s state dispatch (states 0–0x17, 1,027 of 1,116 instructions) and the Minion class's bodies; who sets and clears the held handle `+0x3c8` | `0x2863ec`–`0x287400` | a Soul held by a Minion (the placement itself is executed) |
+| 5 | `PhProp_ctor4` | `0x155bdc` | a deflected plain arrow with model words |
+| 6 | `Gold_draw`, `Gold_ctor`, `ItemProp` / `Prop` draw bodies, Weapon2 slots 1–7, 9–15, 17, `AntWave_clone` | — | drawing, a level's placed pile, two-hand holders |
+| 7 | The services the probe answers: `terrain_sweepCircle` `0x185a40`, `terrain_heightBelow`, `terrain_height`, `water_test` | — | every prop frame; with real levels the answers are disc data, read at run time: where chunks, bones and items rest on slopes and against walls is not known from this probe (flat dry ground) |
+| 8 | Clip lengths, root motion and the hull tables of the models | disc data | taken at run time with `--clips`; not documented, not committed |
+
+Ranked by how soon the native could reach it: #1 (a player fight), #2 and #3 (any exploding arrow
+or container), then #4.

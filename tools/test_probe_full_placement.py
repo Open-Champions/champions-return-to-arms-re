@@ -31,6 +31,18 @@ class Tables(unittest.TestCase):
         for addr in RC_RUNS:
             self.assertIn(addr, P.RUN_SWITCHES_ENTRIES)
 
+    def test_round5_bodies_are_executed_and_not_services(self):
+        ex = P.executed_bodies()
+        for addr in (0x1682F0, 0x167A58, 0x164330, 0x166550,            # the rigid body
+                     0x118950, 0x201BD8,                                # a cold arrow's hit, an explosion's light
+                     0x2C5240, 0x2C5814, 0x2C6AA8):                     # StaticFire_ctor and what it runs
+            self.assertIn(addr, ex, hex(addr))
+        for name in ('rigidbody_init', 'quat_fromMat3', 'rigidbody_updateDerived', 'StaticFire_ctor',
+                     'Creature_setEffectTimer', 'LightEffect_ctor'):
+            self.assertNotIn(name, P.SERVICES)
+        for name in ('terrain_sweepCircle', 'path_blockNodes', 'obj_addToAlwaysDraw', 'mem_allocTagged'):
+            self.assertIn(name, P.SERVICES)
+
     def test_run_states_executed(self):
         self.assertTrue({0, 1} <= P.RUN_STATES_EXECUTED['Skeleton_run'])
         self.assertEqual(P.RUN_STATES_EXECUTED['AntQueen_run'], set(range(0x1A)))

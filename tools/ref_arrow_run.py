@@ -48,6 +48,7 @@ import ref_core as C
 import ref_creature as RC
 import ref_skills_a as SA
 import ref_skills_b as SB
+import ref_arrow_hit as AH
 from ref_creature import Ext, M32, s8, s16, s32
 
 # ---- entries (Observed) --------------------------------------------------------------------
@@ -84,6 +85,9 @@ BODIES = {
     'ExplodeArrowProjectile_onHit': (0x2DB4F0, 0x2DB50C),
     'ExplodeArrowProjectile_explode': (0x2DB50C, 0x2DBA94),
     'ExplodeArrowProjectile_dtor': (0x3CE30C, 0x3CE378),
+    # the two bodies a cold arrow's hit and an exploding arrow's explosion reach (ref_arrow_hit.py)
+    'Creature_setEffectTimer': (0x118950, 0x1189F0),
+    'LightEffect_ctor': (0x201BD8, 0x201E64),
 }
 
 # bodies tools/difftest_arrow_run.py runs REAL and compares (name -> entry)
@@ -181,11 +185,14 @@ def shape_result(name, args, ret=0, fret=0, outs=None):
         SB.EXTERNALS = saved
 
 
-class Model(SB.Model):
+class Model(AH.HitMixin, SB.Model):
     """The four Skeleton arrows on a memory image (ref_skills_b plumbing: memory, call-outs,
-    handle lists, the Skill statistics)."""
+    handle lists, the Skill statistics).  Creature_setEffectTimer and LightEffect_ctor are
+    executed bodies here (ref_arrow_hit.py), not call-outs."""
 
     def call(self, name, *args):
+        if name in AH.HIT_CALLS and name not in self.external:
+            return getattr(self, name)(*args)
         if name in SB.INTERNAL_CALLS:
             return getattr(self, name)(*args)
         args = tuple(('stack' if SB.MODEL_STACK <= (a & M32) < SB.MODEL_STACK + SB.MODEL_STACK_SIZE else a & M32)
@@ -210,6 +217,15 @@ class Model(SB.Model):
         """GameObject_ctor 0x14cb10, run for real (tools/ref_skills_a.py's body): ONE SHARED
         DRAW seeds the object's own generator +0x44 (the draw's high half)."""
         SA.Model.gameobject_ctor(self, obj, self.vec(pos), class_def, props)
+
+    def game_object_ctor_value(self, obj, pos):
+        """GameObject_ctor with the position already read (a LightEffect copies it to its stack)."""
+        SA.Model.gameobject_ctor(self, obj, tuple(pos), 0, 0)
+
+    def light_effect(self, block, pos, f12, f13, f14, s0, s1, s2, s3, a2=0, a3=0, rest=(0, 0, 0, 0, 0)):
+        """LightEffect_ctor as ref_skills_b's sites call it.  Here the body is executed and its
+        GameObject_ctor counts the shared draw, so this wrapper adds none."""
+        self.call('LightEffect_ctor', block, pos, a2, a3, f12, f13, f14, *(tuple(rest) + (s0, s1, s2, s3)))
 
     # ---- small helpers ------------------------------------------------------------------------
     def type_of(self, obj):
