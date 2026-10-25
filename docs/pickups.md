@@ -8,11 +8,16 @@ means a function ran in `tools/ee_emu.py` on synthetic state. The new probes
 stub called services and do not execute an integrated level, renderer, physics
 world, or inventory UI.
 
+The 2026-10-24 [loot-drop continuation](loot-drop.md) supplies the construction,
+physics-input, disc-backed resource/animation, normal Gold contact and starting
+equipment contracts that this first handoff left open. Its runtime limits remain
+explicit; it does not claim a native or PCSX2 level acceptance result.
+
 ## 1. Interaction gate and proximity
 
 **Observed** (`Player_run` 0x1a5b98–0x1a5c20, `Player_interact`
 0x1b2640; [kill-loot-xp](issues/kill-loot-xp.md) section 4): while the player
-can act, `Player_interact` makes a ±48-unit box query around the player,
+can act, `Player_interact` queries x/y ±48 and z..z+60 around the player,
 chooses the nearest object with the interactable bit `0x100000`, calls its
 virtual prompt slot 13, and on the matching lockstep pad edge calls slot 14.
 The prompt is checked even without a press. A script-active-player slot is set
@@ -23,10 +28,12 @@ that issue); native input parity must retain the existing K1 decision rather
 than assume every locally visible prompt can be activated.
 
 Gold uses the player's movement/touch callback rather than this ±48 prompt
-query (`Gold_onTouch` 0x157a9c). A fixed numeric Gold pickup radius was not
-established by these probes; its contact boundary depends on movement
-collision and object geometry. Treat that radius as **Unknown** until a
-targeted movement/contact test measures it.
+query (`Gold_onTouch` 0x157a9c). The initial probes left its geometry unknown.
+**Observed / Executed in the continuation:** Gold retains radius 24/height 72
+from 0x14cb10; player radius 12 is stored at 0x1a2244. Original movement
+requires horizontal distance plus float bits 0x3a83126e below the radius sum
+(36 for these objects), after the movement box query. This is not a proximity
+sphere; see [the original grid/contact and vertical checks](loot-drop.md#6-gold-source-amount-contact-and-actual-credit).
 
 **Observed/Executed** (`Chest_interactPrompt` 0x29297c–0x292a2c;
 `tools/difftest_pickups.py` on seeds 20973/7): unopened chests show

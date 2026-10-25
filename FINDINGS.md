@@ -597,6 +597,26 @@ Rows FP1-FP8 from [docs/issues/native-first-person-controls.md](docs/issues/nati
 | SV2 | The entry save in the first mission level waits for the end of its opening cutscene on every machine; an NPC dialogue, the mission menu and the gate scroll close another machine's inventory, so the game's own level change cannot produce a late save - a level-change message sent while a menu is open can | Ran (emulator pair) | docs/issues/mac-app-start.md |
 | FS1 | Fix set of the evening of 2026-10-13: 31 sections, 189 words, set figure `9ac29719` (the late-save section and the strafe section added to the 29 of set `073064bb`) | Ran (the figure is read from the built application's log; two, three and four copies in step with the new set) | patches/SLUS-20973_4028A55F.pnach; tools/play-net/sections-suggested.txt; docs/online-setup.md |
 
+## Loot-drop construction continuation (2026-10-24)
+
+Address-only handoff: [docs/loot-drop.md](docs/loot-drop.md), continuing the
+pickup evidence at `9911a6b`. **Unknown:** PCSX2/native real-level flight,
+rendered pickup and save/reload; this is not a client implementation.
+
+| ID | Claim | Kind | Evidence |
+|---|---|---|---|
+| LD1 | All four generator item calls supply scale 1, resource identifier 0x520030, table-selected model/texture, mask 1, flags 0x441 and the 72-byte record; equipment overrides horizontal launch after construction and reinitializes physics | Observed / Executed | 0x101230, 0x1013f4, 0x101560, 0x1018a8, 0x101948; tools/difftest_loot_drop.py |
+| LD2 | PhProp physics derives dimensions from integer model bounds and scale; initializes the body with f12/f13=1/1, copies position, converts Prop velocity with 0x3c888888, consumes three own spin draws and replaces the cosmetic quaternion from its matrix | Observed / Executed | 0x155110–0x155394, 0x1682f0; both new probes; docs/loot-drop.md section 2 |
+| LD3 | A settled item is lost if its 0x190-byte replacement allocation fails; timer expiry selects settling rather than simple item despawn | Observed / Executed | 0x156ad4–0x156d04; new lifetime probe, allocation success/failure and below-player culling |
+| LD4 | Ordinary Chest factory prefix precedence selects variant 0 for the three later exact-match identifiers too; the separately addressed final identifier selects 4 | Observed / Executed | 0x15c068–0x15c170, 0x15c374–0x15c3b0; five original factory calls; no decoded class-name mapping committed |
+| LD5 | A disc-placed Chest constructs through the original factory, binds descriptor 0x501558 to actual owner-disc model/texture/clip resources and reaches opened state 2 after 60 original run calls | Observed / Executed in interpreter | tools/probe_loot_drop_resources.py, seeds 20973/7; synthetic level 22, renderer/loot/action/audio boundaries; private placement mapping in local/loot-drop/ |
+| LD6 | ItemProp ctor2 uses resource/bounds services and launch flags zero at the inventory-drop call; ctor3 takes the supplied settled matrix and does not query fresh bounds during construction | Observed / Executed | 0x1590ec, 0x1592bc, 0x1c47f4, 0x179400; synthetic constructors plus disc-backed ctor2 |
+| LD7 | Manual interaction queries x/y ±48 and z..z+60, capacity 256, ranks origins in 3-D, then uses a pressed remappable use mask; held-only and display calls do not activate | Observed / Executed | 0x1b26bc–0x1b2734, 0x1b2794–0x1b27d0, 0x1b2b24–0x1b2b84; six input cases per seed |
+| LD8 | Gold keeps radius/height 24/72; normal player radius 12 gives a strict 36-unit horizontal overlap sum with epsilon 0x3a83126e, governed by the original movement/query path rather than an authored pickup sphere | Observed / Executed | 0x14cb8c, 0x1a2244, 0x14d7b4–0x14d9d4; original real-grid contact/deletion cases, including vertical broad-phase boundaries |
+| LD9 | AutoContainer's no-placed-item Gold roll uses its own RNG, threshold 24000, allocation before amount draw, amount 1+trunc((draw&3)*levelFactor04) and its own position; the Gold constructor then consumes a shared base-object draw | Observed / Executed with constructor boundary | 0x23f1bc–0x23f428, 0x157668; 64 container cases per seed, constructor verified separately |
+| LD10 | Nine touched Gold stays pending through floater age 42, starts credit at age 43, then transfers ceil(pending/8) each tick; a full eight-slot floater queue credits immediately with the 99,999,999 cap | Observed / Executed | 0x157a9c, 0x1dc268, 0x1dcb80; original movement/touch/floater/credit probes |
+| LD11 | Seven normal starting-gear branches give three armor pieces, class-specific weapon records, three quantity-two consumable stacks and class-3 ammunition quantity 40; debug catalogs are separately gated | Observed / Executed; full equip/stat callbacks remain bounded | 0x1b14a0–0x1b1ba8, 0x1acd28–0x1acd44; real parser/inventory tests, address table in docs/loot-drop.md section 7; names kept private |
+
 ## What "source" the disc contains
 
 | ID | Claim | Kind | Evidence |
