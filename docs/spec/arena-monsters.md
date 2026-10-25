@@ -231,7 +231,9 @@ In order:
     Times are 0x3e4ccccc, 0x3f199999, 0x3e999999, 0x3f4ccccc, 0x3fcccccc and exact halves.
 11. Mounted only: `pool_new(0x3d8)`; with a block `Nightmare_ctor(block, type name text,
     position, facing, 0x500848 + 12 v)`, the two handles linked both ways through `+0x3c8`
-    of each, and `Horsemen_setState(c, 0x1b)` (a direct call).
+    of each, and `Horsemen_setState(c, 0x1b)` (a direct call). The last argument is the
+    mount's property list (`docs/spec/horsemen-mount.md` 2.2, where the real
+    `Nightmare_ctor` runs underneath; the list contents are Unknown there).
 12. `Creature_init(c)` — a call-out (height from the model, element properties,
     `initScript`).
 

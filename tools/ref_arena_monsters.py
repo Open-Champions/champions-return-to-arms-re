@@ -99,7 +99,7 @@ VT_HORSEMEN, VT_SKELIGHT, VT_ZEK = 0x515730, 0x5174B0, 0x5180C8
 VT_HOLDER_BASE, VT_WEAPON1, VT_WEAPONSHIELD = 0x512148, 0x50CF40, 0x50CDA0
 VT_SPELL, VT_SPELL_SUMMON, VT_SPELL_TAGAR, VT_SPELL_MARKER = 0x515BA0, 0x519918, 0x51BA60, 0x51BA90
 DEF_HORSEMEN, DEF_SKELIGHT, DEF_ZEK = 0x5006E8, 0x502728, 0x503688    # class definitions
-NIGHTMARE_DATA = 0x500848                       # 12 bytes per variant, handed to the mount
+NIGHTMARE_DATA = 0x500848                       # the mount's property list, 12 bytes per variant
 
 # strings (addresses only)
 S_WAIT, S_HIDE, S_SHOWNAME, S_DEAD = 0x52F9F0, 0x52F9F8, 0x52FA00, 0x52FA10
@@ -183,7 +183,7 @@ EXTERNALS.update({
     'loot_spawnNamedItem': Ext(0x100BA0, 'vp', 0, 'n', '(position, item descriptor text)'),
     'arena_addKill': Ext(0x3056CC, 'pi', 0, 'n', '(killer object or 0, 0)'),
     'lump_load': Ext(0x173558, 'p', 0, 'n', '(lump name)'),
-    'Nightmare_ctor': Ext(0x270968, 'ppvip', 0, 'n', '(block, type name, position, facing, variant data)'),
+    'Nightmare_ctor': Ext(0x270968, 'ppvip', 0, 'n', '(block, type name, position, facing, property list)'),
     'GroundPoundEffect_ctor': Ext(0x2C74AC, 'pvipip', 0, 'n', '(block, position, facing, skill, level, owner)'),
     'LightEffect_ctor': Ext(0x201BD8, 'pvii', 8, 'n', '(block, position, 0, 0; eight floats; four more on the stack)'),
     'particleDef_ctor': Ext(0x18F3D0, 'piiiiiii', 3, 'n', '(definition, seven integers; three floats; five on the stack)'),

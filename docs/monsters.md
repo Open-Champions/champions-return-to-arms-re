@@ -691,6 +691,9 @@ plus the memory of the last attack.
 Run 0x270bbc: states 6, 0x17, 0x18 kicks; 7 charge. It is also the mount object of the
 mounted Horsemen. From `docs/monsters-2.md` 9.2: 6, 0x17 and 0x18 are the same four-hit kick, and the
 charge does its damage in the slot-11 override 0x271484, not in the run function.
+The mount class, the rider-mount link and the mounted lifecycle are executed in full in
+`docs/spec/horsemen-mount.md` (model `tools/ref_horsemen_mount.py`, test
+`tools/difftest_horsemen_mount.py`).
 
 ### Others with boss-like behaviour (script summary only)
 

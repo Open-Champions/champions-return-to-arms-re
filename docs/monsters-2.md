@@ -1159,7 +1159,11 @@ Constructor 0x270968: Creature_ctor(max hp argument 10, …, class def 0x500680,
 30, turn rate 0.6, move speed 0 (root motion), +0x28 = 50, kind +0xb4 = 10, fire resistance
 +0x5c = 1.0, +0xe0 = -20, scale +0xdc = 1.2, HomeRange +0x3c0 = 2400, visualrange +0x3ae =
 2400, creature flags |= 0x20200040000, +0x3c8 = 0, +0x3cc = 0, +0xf4 = 0. Nightmare_setState
-(0); obj_runEvery60. No property read. Event tables: entries 4 (+0x24) and 8 (+0x44): 0.5->1,
+(0); obj_runEvery60. No property read by the class itself; the constructor's fifth argument
+is a property list passed through to Creature_ctor (for a rider's mount the 12-byte list at
+0x500848 + 12 v, passed as a pointer only: its contents were never decoded, so "a MiniBoss
+flag and a name" is Inferred at most, `docs/spec/horsemen-mount.md` 2.2), and HomeRange, visualrange and scale are then
+overwritten (2026-10-21, executed: `docs/spec/horsemen-mount.md` 2.2-2.3). Event tables: entries 4 (+0x24) and 8 (+0x44): 0.5->1,
 0.8->2, 1.2->2, 1.5->4 (only entry 8 is started by this class).
 Fields:
 | offset | type | meaning | where read |
@@ -1197,7 +1201,8 @@ V23(0). If the state is not 0x14 and clock > +0x3d0: object flag 1 cleared (soli
 - 7 charge: turn to target during the wind-up (animation flag 0x20) and afterwards only while
   Creature_canSeeTargetIn(0,2400,…,arc 6000); zero Creature_moveBy (root motion). While
   running (flag 8 set, 0x10 clear): terrain_raycast(480, from position z+24, facing x 360);
-  a hit in (0,1) starts the braking animation (entry 6, flag 0x810). Flags 8 and 0x10 both
+  a hit in (0,1) starts entry 7 (+0x3c, 0x803, synced) and then blends the braking animation
+  (entry 6, flag 0x810) (executed, `docs/spec/horsemen-mount.md` 4). Flags 8 and 0x10 both
   clear -> 3. Damage comes through the two overrides:
   slot 11 0x271484 (list of objects touched by the move, state 7 only): for every Player
   (object flag 0x40) not in a knock-down animation (0x10d390): damage_apply(2 x +0xd0, 2 x
@@ -1230,8 +1235,8 @@ Per-machine: (a) none found (scan and reading): the charge-target picker walks t
 player table and the terrain; draws are own-generator. (b) draw 0x270b4c writes only the
 global byte 0x41c149 (fade) and calls Creature_draw / model_resetDrawState; no store into the
 object. (c) none.
-Open: which caller requests 0x19 / 0x1a; rider-side meaning of 0x19-0x23 (Horsemen, not
-re-read); slot 1.
+Open: which caller requests 0x19 / 0x1a; slot 1. (The rider side of 0x19-0x23 and the whole
+mount lifecycle are now executed: `docs/spec/horsemen-mount.md`, `tools/ref_horsemen_mount.py`.)
 
 #### Hag  (factory: any type name with the prefix `Hag`, test at 0x15ad9c; vtable 0x5154a0; size 0x3d8)
 
