@@ -444,6 +444,12 @@ the AutoDoor constructor), `AutoEmitter` (0x60, 0x240dc8), `AutoDoor`/`AutoSwitc
 0x23c44c), `Critter` (0x448, 0x2547fc), `Generator` (0x3e8, 0x2657a0), `SmokeGen` (0x490,
 0x31d180). Otherwise the factory returns 0.
 
+Executed since, with the property keys and the no-object cases, in
+`docs/script-session.md` section 3 (`tools/ref_level_factory.py`,
+`tools/difftest_level_factory.py`: every record of the disc's level files, 0 mismatches).
+One correction to the table: the `red` and `blue` tests after the Skeleton prefix test the
+same class string, so they cannot pass and every Skeleton-prefixed record takes variant 0.
+
 The four horsemen entries pass a variant index to one constructor (FINDINGS D3). The clone
 function of each class is listed in `docs/creatures.md` (the clone functions sit in the
 creatures range).
