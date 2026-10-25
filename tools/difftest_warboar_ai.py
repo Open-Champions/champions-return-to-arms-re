@@ -2,10 +2,12 @@
 """Bounded WarBoar branch/ABI difftests, SLUS_209.73 US v2.00.
 
 Run with an owned executable and --seed 20973 or --seed 7. The original
-WarBoar run/setState and object RNG execute in ee_emu. Base tick, activity,
-animation, target selection, geometric queries, movement and damage are
+WarBoar constructor/run/setState and object RNG execute in ee_emu. Base tick,
+activity, animation, target selection, geometric queries, movement and damage are
 recording stubs, except in check_geometry where the original sight body runs
-with a scripted angle and terrain-ray result. This is not live gameplay.
+with a scripted angle and terrain-ray result. Constructor base/resource/event
+services are recording stubs; its type-prefix test runs. This is not live
+gameplay.
 """
 import argparse
 import hashlib
@@ -107,6 +109,37 @@ def check_base_defaults(executable, seed):
     assert rig.emu.mem.u16(rig.obj + 0x3B0) == 0x4000
     assert rig.emu.mem.u32(rig.obj + 0x3C0) == float_to_raw(1000)
     return 1
+
+
+def check_constructor_events(executable, seed):
+    # Call-site contracts from ctor 0x2ba03c, also pinned by
+    # research-campaign-combat 328b072 tools/ref_campaign_combat_r5.py.
+    # Tuple: call site, definition entry, four masks, four raw f32 times.
+    expected = (
+        (0x2BA1F8, 4, (1, 2, 0, 0), (0x3E999999, 0x3F333333, 0, 0)),
+        (0x2BA224, 5, (1, 2, 0, 0), (0x3E999999, 0x3F000000, 0, 0)),
+        (0x2BA250, 6, (1, 2, 0, 0), (0x3E999999, 0x3F333333, 0, 0)),
+        (0x2BA27C, 7, (1, 2, 0, 0), (0x3E999999, 0x3F000000, 0, 0)),
+        (0x2BA2B0, 10, (1, 2, 0, 0), (0x3F000000, 0x3F666666, 0, 0)),
+        (0x2BA2DC, 11, (0x84, 0, 0, 0), (0x3F800000, 0, 0, 0)),
+        (0x2BA308, 12, (0x84, 0, 0, 0), (0x3F800000, 0, 0, 0)),
+    )
+    for small, name in enumerate(("WarBoar", "WarBoarSmall")):
+        rig = Rig(executable, seed)
+        rig.emu.follow = {0x2BA03C, 0x159C20}
+        position = rig.emu.alloc(12)
+        type_data = name.encode("ascii") + b"\0"
+        type_name = rig.emu.alloc(len(type_data))
+        rig.emu.mem.write(type_name, type_data)
+        rig.emu.call(0x2BA03C, rig.obj, position, 0, 0, type_name,
+                     max_steps=20000)
+        assert rig.emu.mem.u8(rig.obj + 0x3D0) == small
+        events = [call for call in rig.emu.calls if call.target == 0x118378]
+        assert all(call.args[0] == rig.obj for call in events)
+        actual = tuple((call.site, call.args[1], call.args[2:6], call.fargs[:4])
+                       for call in events)
+        assert actual == expected, (name, actual)
+    return 2
 
 
 def check_choices(executable, seed):
@@ -323,7 +356,8 @@ def main():
     digest = hashlib.sha256(args.executable.read_bytes()).hexdigest()
     if digest != EXPECTED_SHA256:
         raise SystemExit("wrong executable SHA-256: " + digest)
-    for check in (check_base_defaults, check_idle, check_choices, check_attack, check_set_state, check_recovery,
+    for check in (check_base_defaults, check_constructor_events, check_idle, check_choices,
+                  check_attack, check_set_state, check_recovery,
                   check_geometry, check_sight_wrapper, check_multi_hit):
         print("PASS %s seed=%d cases=%d" %
               (check.__name__, args.seed, check(args.executable, args.seed)))

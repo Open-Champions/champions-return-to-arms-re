@@ -41,7 +41,10 @@ are included in this change.
   actor state. Perception booleans, movement, animation steps, base run and
   damage outcomes are stubbed in class probes. Separate probes execute the
   real base constructor, slot-25 wrapper, geometric sight body and multi-hit
-  loop with their external dependencies stubbed. No whole-tick equivalence,
+  loop with their external dependencies stubbed. The class-constructor probe
+  executes both type variants and checks all seven event-registration calls,
+  including call sites, entry indices, four masks and four raw f32 times;
+  base/resource/event services remain stubbed. No whole-tick equivalence,
   full branch coverage, root trajectory or player HP loss is claimed.
 
 ## Why the native boars remain idle
@@ -178,21 +181,27 @@ No simultaneous attack-slot reservation or group scheduler appears here.
 attack `+0x3cc`. They use blend-in/out raw `0x3e999999` for both sides
 (approximately 0.3 seconds). Resource mapping and source flags:
 
-| State | Definition offset / clip | Flags | Hit / continuation seconds | Clip ticks | Evidence |
+| State | Definition offset / authored description | Flags | Hit / continuation seconds | Clip ticks | Evidence |
 |---|---|---:|---|---:|---|
-| 6 | +0x24 / atak_mid.anm | 8 | raw `3e999999` / `3f333333` (~0.3 / 0.7) | 49 | Observed; ctor, setState; private archive metadata |
-| 7 | +0x54 / chargetak.anm | 0x808 | raw `3f000000` / `3f666666` (0.5 / ~0.9) | 119 | Observed; same; never requested by this class's run |
-| 8 | +0x2c / atak_left_close.anm | 0x4008 | raw `3e999999` / `3f000000` (~0.3 / 0.5) | 49 | Observed; same |
-| 9 | +0x3c / atak_right_close.anm | 0x4008 | raw `3e999999` / `3f333333` (~0.3 / 0.7) | 49 | Observed; same |
-| 10 | +0x34 / atak_front.anm | 0x808 | raw `3e999999` / `3f333333` (~0.3 / 0.7) | 49 | Observed; same |
+| 6 | +0x24 / forward close attack | 8 | raw `3e999999` / `3f333333` (~0.3 / 0.7) | 49 | Observed; ctor, setState; private archive metadata |
+| 7 | +0x54 / attack unused by class run | 0x808 | raw `3f000000` / `3f666666` (0.5 / ~0.9) | 119 | Observed; same; never requested by this class's run |
+| 8 | +0x2c / close attack at facing +8000 | 0x4008 | raw `3e999999` / `3f000000` (~0.3 / 0.5) | 49 | Observed; same |
+| 9 | +0x3c / close attack at facing -8000 | 0x4008 | raw `3e999999` / `3f000000` (~0.3 / 0.5) | 49 | Observed; ctor call `0x2ba27c`, setState; private archive metadata |
+| 10 | +0x34 / forward approach attack | 0x808 | raw `3e999999` / `3f333333` (~0.3 / 0.7) | 49 | Observed; ctor, setState; private archive metadata |
 
 **Observed:** the class's state-10 label “charge” does not select
-`charge.anm` (25 ticks): it selects `atak_front.anm`. The constructor writes
+the separate 25-tick clip: it selects definition `+0x34` (49 ticks).
+Decoded member-name mappings remain private in ignored local evidence.
+The constructor writes
 event mask 1 at the first listed time and mask 2 at the second, through
 `creature_setDefEntryParams` `0x118378`; these are absolute seconds, **not
 fractions of clip duration**. All on-disc event slots were zero in the
 archive metadata check. `anim_advance` crossing behavior and the speed-1
 step raw `0x3f7fffff` are already documented in animation sections 4–6.
+**Observed (Executed constructor arguments):** state 9's definition `+0x3c`
+is entry 7; call `0x2ba27c` supplies continuation time raw `0x3f000000`
+(0.5 seconds), mask 2. `check_constructor_events` checks this registration
+for both ordinary and small boars, alongside the other six registrations.
 **Unknown:** exact live simulation-frame event intervals under blend,
 activity, slow/root/status changes; do not round the table into a cooldown.
 
@@ -252,7 +261,7 @@ is handled independently before the class switch.
 
 **Observed (Executed `0x2bae58–0x2bae9c`):** requesting state 18 while
 old state is 6 through 15 retains the old state with no reaction animation.
-Otherwise blend definition `+0x6c` (`hit2front.anm`) with flags `0x10`,
+Otherwise blend definition `+0x6c` (hit reaction) with flags `0x10`,
 raw `0x3dcccccc` blend times. State 18 waits for animation flag `0x10`
 to clear, then requests 3. State 19 waits for `Creature_isStunOver`
 `0x119608`, then requests 3. The wounded model below 25% HP is a drawing
@@ -301,18 +310,27 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_warboar_ai.py \
 `b19dadfafb4d40f2d54ea1e9e4600e773f5dfe1c502d154e549f45e10bb75e5c`;
 Valor SHA-256
 `8b8a7cb9c88a33ad60d14b7ce8f48918e9c586b199062b0c73e083d4b84c292b`.
-Only metadata/identifiers and authored explanations are published.
+Only hashes, numeric metadata and authored explanations from these archives
+are published.
 
-**Observed (Executed):** the new probes pass 528 cases per seed (20973/7).
+**Observed (Executed audit fixes WBAI-01/WBAI-02):** the probes pass 530
+cases per seed (20973/7), including two constructor variants checking seven
+event registrations each. Both runs use `PYTHONDONTWRITEBYTECODE=1`.
+The seed-7 archive/placement scan also passes. A case-insensitive check of
+all 70 private archive member names finds zero occurrences in this handoff;
+decoded mappings stay in ignored local logs.
 The reused `difftest_creature.py --seed 20973 --ticks 12 -k monster/base/A/off`
 compares 81 calls; `difftest_combat.py --seed 7 --quick -k damage` reports
 39 properties, zero failures (including 315 player-victim cases in its
 reported sample). `python3 -m unittest discover -s tools -p 'test_*.py'`
-passes 652 tests. These are bounded regressions, not full movement coverage.
+passes 652 tests, rerun with `PYTHONDONTWRITEBYTECODE=1` after the audit
+fixes. These are bounded regressions, not full movement coverage.
 
 **Observed:** evidence logs are ignored under this worktree's
 `local/boar-ai/`: `seed-20973.log`, `seed-7.log`, `shared-creature.log`,
 `shared-damage.log`, `unittest.log`, `pcsx2-preflight.log`.
+Audit-fix reruns are under `local/boar-ai/audit-fixes/`:
+`seed-20973.log`, `seed-7.log`, `unittest.log`, `member-name-scan.log`.
 PCSX2 identifies itself as v2.8.2. An isolated `-datapath … -testconfig
 -earlyconsolelog` preflight did not finish in 25 seconds; its log ends
 after DataRoot selection, before a VM/game identity. Only the launched
