@@ -530,7 +530,7 @@ plus the existing bounded round 1–5 probes. No stub result is promoted to a
 **Ran on Play!'s headless PS2 core**, not PCSX2, with the user's SLUS-20973
 v2.00 disc image. The copied `tools/rig` runner, its data directory, scripts,
 states and raw logs are under the ignored `work/valor-capture/` in this
-worktree. No files under `~/champions-re` were changed. No other PCSX2 or
+worktree. No files in the main workspace were changed. No other PCSX2 or
 Play-RTA process was running when the runner started; runs were sequential.
 `loader-targeted.rig` uses the original character-creation buttons from the
 read-only `fight.rig` and then **writes `valor` to the pending-level field** at

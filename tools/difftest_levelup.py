@@ -40,7 +40,7 @@ def original_sends(elf, seed, *, slot=0, page=2, edge=0x40, cursor=0, panel_stat
 
 
 def main(argv):
-    elf = argv[1] if len(argv) > 1 else os.path.expanduser('~/champions-re/SLUS_209.73')
+    elf = argv[1] if len(argv) > 1 else os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'SLUS_209.73')
     with open(elf, 'rb') as f:
         assert hashlib.sha256(f.read()).hexdigest() == EXPECTED_SHA256, 'wrong executable'
     cases = [(dict(cursor=i), [(site, 0, i)]) for i, site in enumerate(

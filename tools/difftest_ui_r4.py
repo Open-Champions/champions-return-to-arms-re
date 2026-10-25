@@ -29,7 +29,7 @@ def elf_path(argv):
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for cand in (os.path.join(here, 'SLUS_209.73'),
                  os.path.join(os.getcwd(), 'SLUS_209.73'),
-                 os.path.expanduser('~/champions-re/SLUS_209.73')):
+                 os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'SLUS_209.73')):
         if os.path.isfile(cand):
             return cand
     return None

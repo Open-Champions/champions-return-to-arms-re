@@ -110,7 +110,7 @@ section 8 (0x19c8fc, 0x19bf04, 0x19cbb0); their consequences are **I**.
 | Translation, picture | `app shot FILE.png` in a script; `--plain` (4:3, no multisampling, mip maps or pack); `--game-hud off`, `--game-hud-text off` | pictures at the drawn size | tools/recomp/app/app_main.cpp:31–51, 1340, 1531–1569 |
 
 Existing private pictures (listed, not copied): under
-`~/champions-re/local/recomp-out/app-test/` there are 113 PNG/BMP files,
+`local/recomp-out/app-test/` there are 113 PNG/BMP files,
 including `shots/` (boot and level pictures, `cmp-fight.png`),
 `emu-shots/` (4 emulator references), `s12/det/<name>/` (tick-keyed route
 pictures with `sums.txt` MD5 lists, compared by `s12/detcmp.py`) and

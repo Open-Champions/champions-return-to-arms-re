@@ -4,7 +4,7 @@ Branch `t3/research-anim`, research base `a2b145b`. The three Python drafts
 left by the interrupted attempt were preserved, reviewed, completed and
 tested. All research changes are local to this worktree. No push, PR, native
 port, live-game run or public-server contact was performed. The owning live
-`~/champions-re` checkout was only read through private `local/` links.
+main workspace was only read through private `local/` links.
 
 | Target | Delivery and remaining boundary |
 |---|---|

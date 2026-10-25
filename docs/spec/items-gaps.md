@@ -179,7 +179,7 @@ Full contract: `docs/spec/generate-monster-names.md`.
 ## 6. What the native client should implement next
 
 Ranked by what each item unblocks in the native sweep
-(`~/Projects/open-champions/worktrees/items/work/loop-items-r1-report.md`: 119
+(the items worktree's private report `work/loop-items-r1-report.md`: 119
 `hideMonster` refusals and 7 `givePlayerItem` refusals), by lockstep risk, and by size.
 
 | Rank | What | Unblocks | Needs | Spec |

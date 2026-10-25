@@ -128,7 +128,7 @@ When byte `+0x239` (in water) is 0 and `g_simFrame` `0x44fdcc` & 7 = 0:
 2. When it answers non-zero:
    - byte `+0x239` = 1;
    - **one own draw**, whose value is not used (`0x15607c`);
-   - `libc_sprintf(buffer, 0x532458 "foly_wtrsplash_sml%d.anm", 1)`. The 1 is a constant
+   - `libc_sprintf(buffer, 0x532458 (the small-splash sound name format), 1)`. The 1 is a constant
      (`0x15608c`);
    - `res_find(0x532478 "fx.lmp", buffer)`, then `sound_playOnObject(entry, prop; 0.2)`.
      The 0.2 is `0x3e4ccccc` at `0x1560b0`;

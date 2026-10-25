@@ -63,7 +63,7 @@ level-light records and four `TestLocation` records also make no object.
 
 ### Native coverage at this date
 
-**Observed** in `~/Projects/open-champions/worktrees/playable-integration`
+**Observed** in the hand-written rebuild's playable-integration worktree
 `native/src/script_commands_objects.cpp` on branch `codex/playable-integration`:
 the script host's `kPorted` contains SmallSpider, Gnaw, Mosquito, Scorpion,
 Badger, Skelight, Zek and Horsemen. None of the **20 constructor selections

@@ -830,7 +830,7 @@ def main(argv):
     if elf is None:
         elf = os.path.join(D.ROOT, 'SLUS_209.73')
     if not os.path.exists(elf):
-        alt = os.path.expanduser('~/champions-re/SLUS_209.73')
+        alt = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'SLUS_209.73')
         elf = alt if os.path.exists(alt) else elf
     if not os.path.exists(elf):
         print('difftest_combat_round6: SLUS_209.73 not found - nothing to compare with (this is not a failure)')

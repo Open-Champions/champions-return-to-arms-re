@@ -496,7 +496,7 @@ the charmed creature.
 
 ## 6. On the disc (counts only)
 
-`python3 tools/strings_census.py --disc ~/Projects/open-champions/private-validation/rta-disc`.
+`python3 tools/strings_census.py --disc /path/to/extracted-disc`.
 The disc folder was only read.
 
 **String files: 10.** Six are `.uni` and four are `.txt`.

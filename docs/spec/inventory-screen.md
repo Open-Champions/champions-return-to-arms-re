@@ -15,7 +15,7 @@ refusal for a native port. The source branches read first were
 `t3/research-items` `49bc578`, `t3/research-items-gaps` `ecf9742`, and
 `t3/research-ui-text-gaps` `523b3db`. The `research-menus-art` name in the
 brief is the native menu report at
-`~/Projects/open-champions/worktrees/menus/work/loop-menus-art-r1-report.md`,
+the menus worktree's private report `work/loop-menus-art-r1-report.md`,
 not a branch in this research repository. The icon placement and item-picture
 chain are in `t3/research-ui`'s `docs/formats/icon-association.md`.
 

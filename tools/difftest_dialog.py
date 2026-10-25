@@ -30,7 +30,7 @@ import ref_core as C  # noqa: E402
 import ref_dialog as R  # noqa: E402
 
 ELF_SHA = '292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675'
-HOME_ELF = os.path.expanduser('~/champions-re/SLUS_209.73')
+HOME_ELF = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'SLUS_209.73')
 
 # ---- the machine ------------------------------------------------------------------------
 F_QUEUE_AUDIO = 0x22EC9C

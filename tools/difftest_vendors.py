@@ -15,7 +15,7 @@ from ee_emu import EE
 from dump_tables import iso_files, objects_from_file
 import ref_vendors as R
 
-ELF = os.path.expanduser('~/champions-re/SLUS_209.73')
+ELF = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'SLUS_209.73')
 SHA = '292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675'
 DISC = os.path.expanduser('~/Library/Application Support/Play-RTA/Champions - Return to Arms (v2.00).iso')
 HUB_SHA = '1d5f240025afb86800040664a168c27c236a8431fc4c02caf388bdcee37b385f'

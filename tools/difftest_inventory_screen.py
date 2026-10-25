@@ -17,7 +17,7 @@ from ee_emu import EE  # noqa: E402
 import ref_inventory_screen as R  # noqa: E402
 
 EXPECTED_SHA = '292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675'
-HOME_ELF = os.path.expanduser('~/champions-re/SLUS_209.73')
+HOME_ELF = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'SLUS_209.73')
 DRAW, GRID, ROWS, INFO, INPUT = 0x1CD208, 0x1CC7E0, 0x1CC130, 0x1C8D38, 0x1CD988
 BUILD, PICTURE = 0x1CBBE8, 0x108358
 RES, RECT, CLIP, BEGIN, COLOR = 0x17365C, 0x17BD30, 0x17FB88, 0x1800B8, 0x1802E0

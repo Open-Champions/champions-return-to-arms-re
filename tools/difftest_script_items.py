@@ -44,7 +44,7 @@ import ref_script_items as R                    # noqa: E402
 ELF_SHA = '292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675'
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CANDIDATES = [os.path.join(ROOT, 'local', 'elf', 'SLUS_209.73'), os.path.join(ROOT, 'SLUS_209.73'),
-              os.path.expanduser('~/champions-re/SLUS_209.73')]
+              os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'SLUS_209.73')]
 OPTIONS = {'cases': 200, 'seed': 20973, 'filter': None, 'verbose': False}
 RESULTS = []
 M32 = 0xFFFFFFFF

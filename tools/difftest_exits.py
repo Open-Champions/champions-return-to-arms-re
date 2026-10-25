@@ -547,7 +547,7 @@ def run(seed, elf):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('elf', nargs='?', default=os.path.expanduser('~/champions-re/SLUS_209.73'))
+    p.add_argument('elf', nargs='?', default=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'SLUS_209.73'))
     p.add_argument('--seed', type=int, default=20973)
     a = p.parse_args()
     if not os.path.isfile(a.elf):

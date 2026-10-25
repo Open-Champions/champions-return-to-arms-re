@@ -402,7 +402,7 @@ quotes inserted at random places in present and missing keys:
 
 ## 9. On the disc (counts only)
 
-`python3 tools/ui_text_gaps_census.py --disc ~/Projects/open-champions/private-validation/rta-disc`.
+`python3 tools/ui_text_gaps_census.py --disc /path/to/extracted-disc`.
 The folder was only read.
 
 | What | Count |

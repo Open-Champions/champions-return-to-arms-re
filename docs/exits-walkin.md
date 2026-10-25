@@ -242,7 +242,7 @@ network host prompt branch, complete jump-gate task or a running game. Those rem
 acceptance gates.
 
 On both seeds, `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_objects.py
-~/champions-re/SLUS_209.73 --quick --seed <seed> -k marker` passed 4/4
+/path/to/SLUS_209.73 --quick --seed <seed> -k marker` passed 4/4
 Player1/free-spot properties across the default and three alternate FPU
 models. `-k run` passed 2/2 offline/network run-list properties per seed.
 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools

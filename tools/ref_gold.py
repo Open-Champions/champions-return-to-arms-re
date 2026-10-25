@@ -195,7 +195,7 @@ class Model(PP.Model):
         """Gold_run 0x157b58 (gold), slot 4.
 
         Nothing once the countdown byte +0x4c is 0.  Otherwise: when +0x50 (Gold_ctor2's
-        frame) equals g_simFrame - 18, the drop sound ('inv_drop_coin' of fx.lmp on the pile,
+        frame) equals g_simFrame - 18, the coin drop sound (0x532838 of fx.lmp on the pile,
         volume 1); then anim_advanceUnitSpeed(+0x58, +0x10, 0, 0); the countdown (re-read)
         loses one when non-zero; and when the anim state's halfword +0x5e has 0x80 (the clip
         has ended) the countdown becomes 0 and obj_stopRunning.  No draws."""

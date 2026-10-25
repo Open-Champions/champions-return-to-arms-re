@@ -26,8 +26,7 @@ import difftest_natives as D                 # noqa: E402
 
 M32 = 0xFFFFFFFF
 SEED, COSMETIC = 0x12345678, 0x11111111
-PRIVATE = os.path.expanduser(
-    '~/Projects/open-champions/private-validation/rta-disc/SLUS_209.73')
+PRIVATE = os.environ.get('CHAMPIONS_ELF', '')
 
 
 def f32(value):

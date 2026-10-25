@@ -34,7 +34,7 @@ def find_elf(argv):
     if len(argv) > 1:
         return argv[1]
     for path in (os.path.join(ROOT, 'local', 'SLUS_209.73'),
-                 os.path.expanduser('~/champions-re/SLUS_209.73')):
+                 os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'SLUS_209.73')):
         if os.path.isfile(path):
             return path
     return None
