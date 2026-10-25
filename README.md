@@ -2,84 +2,89 @@
 
 Part of [Open Champions](https://github.com/Open-Champions), an independent community preservation project.
 
-# Champions: Return to Arms — research
+# Champions: Return to Arms — research and the playable rebuild
 
-An open effort to understand, document and eventually rebuild the code of *Champions:
-Return to Arms* (PS2, US release SLUS-20973, v2.00), the Snowblind-engine action RPG whose
-online service was shut down years ago.
+This repository is where *Champions: Return to Arms* (PS2, US release SLUS-20973, v2.00)
+is taken apart and put back together: the research (symbols, file formats, how every
+system works, the online bugs), the tools that prove it against the original executable,
+and the playable rebuild - the game's own code translated to C++ on each player's machine,
+and the same game hosted inside Godot.
 
-One goal is practical: make online play dependable again on community servers such as
-[Champions Reborn](https://github.com/HikikoMarmy/Champions-Reborn-Server) by finding and
-fixing the bugs that put players "OUT OF SYNC" and make the game lag. The long-term goal is
-a readable C++ reconstruction of the original PS2 executable, verified one function
-at a time, alongside a native Mac and Windows client built with Godot.
+**This repository distributes no game binaries, game data or translated game code.** Every
+player builds from their own disc. See [What may not be committed](CONTRIBUTING.md#what-may-not-be-committed).
 
-**This repository distributes no original game binaries or assets.** Independently
-authored source reconstruction now lives in its dedicated repository. You need your own copy of the
-disc to analyze game files; basic tool checks and synthetic tests need no game data. See [What may not be committed](CONTRIBUTING.md#what-may-not-be-committed).
+## Direction
 
-## Play it
+- **One portal, two games:** *Classic* (the original game, faithful, plus the sharp art pack
+  and a steady 60 fps) and *Remastered* (Godot, 60+ fps, new HUD and lighting, five views,
+  aim where you look, Hardcore combat, the Elden Ring look from your own copy). Rooms are one or the other.
+- **Online play is exact:** every gameplay change is lockstep-safe, a room option all copies
+  agree on, tested in multi-copy rooms; with a mode off the game is byte-identical to the original.
+- **Champions of Norrath** joins later as more campaign content; each player brings their own discs.
+- **No game data, disc images, BIOS, Elden Ring data or personal information in any repository;**
+  everything from a game stays on the player's machine.
+- This repository is the **playable line now**; [open-champions-godot](https://github.com/Open-Champions/open-champions-godot)
+  is the long-term hand-written line aiming at the same product.
 
-The game is playable today, online, for two to four players. **Step-by-step instructions
-for each kind of computer: [docs/DOWNLOADS.md](docs/DOWNLOADS.md).** In short:
+The whole direction: [docs/DIRECTION.md](docs/DIRECTION.md).
 
-| Your computer | What you use | What you do |
-|---|---|---|
-| Mac (Apple silicon, macOS 14 or later) | the Mac application | open the link you were sent, download, open the app; then **Room → Host a room** (read the code out) or **Room → Join a room...** (type the code you were given) - or the **Online** menu for the lobby |
-| Windows PC, or anything else with Chrome | the browser version - nothing to install | open the link you were sent, click *Play in your browser*, pick your disc image file, type a player name, host or join a game in the lobby with a room code |
+## Play
 
-Two ways to play together:
+Step-by-step for every kind of computer: **[docs/DOWNLOADS.md](docs/DOWNLOADS.md)**.
 
-1. **The Room menu (new, Mac application):** a room on our own room service - no lobby, no
-   account, no password. One player chooses *Room → Host a room* and reads out the code
-   it shows; the others choose *Room → Join a room...* and type it; everyone makes or
-   picks a character on the game's own screens; the host chooses *Room → Start the game*.
-   Mac-application players and players of the native program can be in the same room.
-   Rooms start from the game's title screen, so switch off *Online → Go online at start*
-   first.
-2. **The Online menu (as before):** the lobby server - a player name, then *Host a game* or
-   *Join a game...* with a room code. This is the way to play with **browser players**,
-   and the old way still works for everyone.
+- **Native game (Mac, Windows, Linux):** download *Champions Setup*, double-click it; it finds
+  your disc image, translates the game on your computer and builds *Champions* and *Champions
+  Godot* ([DOWNLOADS.md section 8](docs/DOWNLOADS.md#8-native-version-build-it-from-your-own-disc)).
+  You can also make the setups yourself from this repository (same section).
+- **Mac application and browser version** (the emulator line): sections 2 and 3 of DOWNLOADS.md.
+- **Playing together:** rooms with a code, no account (section 4), or the lobby (section 5).
+- You need your own disc image of the US v2.00 release. The download link is private and
+  comes from whoever invited you; nothing of the game is behind it.
 
-- **The link.** There is one link for both versions. It is private: you get it from the
-  person who invited you to play. It is not in this repository (see DOWNLOADS.md for why),
-  and everything needed to build either version yourself is.
-- **You need your own disc image** of the game (US release, SLUS-20973, version 2.00).
-  Nothing of the game is in this repository or behind the link.
-- Mac players and browser players can be in the same game through the lobby; Mac players
-  and native players through a room or the lobby.
+How complete each part is, updated at every check-in: [docs/PROGRESS.md](docs/PROGRESS.md).
 
-## Where it stands
+## Test
 
-- **How complete the playable game is, part by part, updated at every check-in:
-  [docs/PROGRESS.md](docs/PROGRESS.md).**
-- The executable is 3.0 MB of MIPS code in 7,732 functions. Naming coverage is tracked separately;
-  [docs/STATUS.md](docs/STATUS.md) breaks that down by area.
-- The local Ghidra pass produced 7,731 successful decompilations; one function at
-  `001a3580` still fails with a normalization error. Indexed does not mean fully understood.
+The same checks as the [CI workflow](.github/workflows/tools.yml); none needs game files:
+
+```sh
+python3 -m unittest discover -s tools -p 'test_*.py'   # the Python unit suite
+python3 tools/symtab.py check                           # symbol contributions are consistent
+python3 tools/coverage.py --write && git diff --exit-code -- docs/STATUS.md   # coverage page is current
+python3 tools/doctor.py                                 # read-only setup check
+```
+
+The `tools/difftest_*.py` scripts run the original executable's functions in
+`tools/ee_emu.py` and compare them with the reference models; they need your own
+`SLUS_209.73` (put it at the repository root, or set `CHAMPIONS_ELF`). Online changes are
+tested in rooms of several copies: [docs/VALIDATION.md](docs/VALIDATION.md).
+
+## The other repository
+
+[open-champions-godot](https://github.com/Open-Champions/open-champions-godot) is the
+hand-written C++/Godot rebuild: portable libraries checked function by function against
+this repository's research, aiming at the same Classic/Remastered product, the same 60+ fps
+bar and the same lockstep rules. All Open Champions repositories:
+
+| Repository | Responsibility |
+|---|---|
+| [champions-return-to-arms-re](https://github.com/Open-Champions/champions-return-to-arms-re) (this one) | Research, symbols, formats, analysis tools, online-bug evidence; the translated native game and its Godot host (the playable line) |
+| [open-champions-godot](https://github.com/Open-Champions/open-champions-godot) | The hand-written native C++/Godot rebuild for both games (the long-term line) |
+| [champions-return-to-arms](https://github.com/Open-Champions/champions-return-to-arms) | Return to Arms PS2 source reconstruction, byte verifier and progress |
+| [champions-of-norrath](https://github.com/Open-Champions/champions-of-norrath) | Separate Norrath source target; its baseline is not established yet |
+
+[Repository map](docs/REPOSITORIES.md).
+
+## Where the research stands
+
+- The executable is 3.0 MB of MIPS code in 7,732 functions; naming coverage by area is in
+  [docs/STATUS.md](docs/STATUS.md).
 - All 403 C++ class names are recovered and 402 are tied to their virtual tables.
 - The level-script language is fully decoded: all 120 level scripts decompile to readable
   pseudo-code, and all 191 built-in script commands are located.
 - The online model is mapped: deterministic lockstep, the per-frame sync check, the input
-  codec and the local-player prediction system.
-- Several real sources of desync have been found by reading the code. **None has been
-  confirmed on a running game yet** — that needs two emulators side by side, and it is the
-  most useful thing a new contributor could do. [FINDINGS.md](FINDINGS.md) is the evidence
-  ledger; every claim there is marked observed, inferred or unknown, with addresses.
-  Use the [two-client test procedure](docs/VALIDATION.md) to record reproducible results.
-
-## Open Champions repositories
-
-| Repository | Active responsibility |
-|---|---|
-| [champions-return-to-arms-re](https://github.com/Open-Champions/champions-return-to-arms-re) (this repository) | Research, symbols, formats, Python analysis tools and online-bug evidence |
-| [champions-return-to-arms](https://github.com/Open-Champions/champions-return-to-arms) | Return to Arms PS2 source reconstruction, byte verifier and progress |
-| [champions-of-norrath](https://github.com/Open-Champions/champions-of-norrath) | Separate Norrath source target; its baseline is not established yet |
-| [open-champions-godot](https://github.com/Open-Champions/open-champions-godot) | Shared native C++/Godot client work for both games |
-
-The source reconstruction and native inspector have moved to their active homes.
-Their history remains here; new changes belong in the corresponding repository.
-[Repository map](docs/REPOSITORIES.md).
+  codec and the local-player prediction system. [FINDINGS.md](FINDINGS.md) is the evidence
+  ledger for the online bugs; every claim is marked observed, inferred or unknown, with addresses.
 
 ## What is here
 
@@ -91,23 +96,14 @@ Their history remains here; new changes belong in the corresponding repository.
 | `names.tsv`, `symbols/*.tsv` | Symbol map: address, name, note |
 | `rtti_classes.txt`, `vtables.txt`, `ghidra_funcs.tsv` | Class names, virtual tables, function boundaries |
 | `tools/` | Python tools: cross-references, script decompiler, archive unpacker, sync audits |
+| `tools/recomp/` | The translator that turns your own executable into C++, and the native game's runtime |
+| `tools/godot/` | The Godot host of the translated game: portal, views, HUD, lighting, the Elden Ring layer |
+| `tools/install/` | The setups that build the game on a player's machine from their own disc |
+| [docs/DIRECTION.md](docs/DIRECTION.md) | Where the game is going and the rules every change follows |
 | `ghidra/scripts/` | Ghidra scripts: apply the symbol map, decompile everything |
 | `patches/` | PCSX2 patches for testing hypotheses |
 
-## MacBook and Windows support
-
-The research tools run natively in Python; they do not need a PS2 emulator. A
-playable native game client does not exist yet. See the [platform setup guide](docs/COMPATIBILITY.md)
-and [native client roadmap](docs/NATIVE_PORT.md) for the distinction and next milestones.
-The recommended game-client direction is Godot 4 with a portable C++ core; the
-archive reader is implemented in the [Godot repository](https://github.com/Open-Champions/open-champions-godot), while Godot asset display and gameplay are still ahead.
-
-Run `python3 tools/doctor.py` on macOS or `py -3 tools/doctor.py` in Windows PowerShell
-for a read-only setup check. Basic checks work without any game files. The optional
-`--game SLUS_209.73` checks your executable's identity; `--strict-re` additionally
-requires the configured reverse-engineering dependencies.
-
-## Getting started
+## Research setup
 
 You need Python 3, an `llvm-objdump` build with MIPS target support, and [Ghidra](https://ghidra-sre.org/) with the
 [ghidra-emotionengine-reloaded](https://github.com/chaoticgd/ghidra-emotionengine-reloaded)

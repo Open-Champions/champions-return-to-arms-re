@@ -19,9 +19,12 @@ weaken it.
 
 Independently authored C++ reconstructions belong in the dedicated
 [Return to Arms source repository](https://github.com/Open-Champions/champions-return-to-arms).
-Native C++ and Godot work for both games belongs in
+The hand-written native C++/Godot rebuild for both games belongs in
 [open-champions-godot](https://github.com/Open-Champions/open-champions-godot).
-Keep research, symbol maps and original-file analysis tools here. See
+Keep research, symbol maps, original-file analysis tools, the translated native game and
+its Godot host here. Every gameplay change follows the rules in
+[docs/DIRECTION.md](docs/DIRECTION.md): lockstep-safe, a room option all copies agree on,
+tested in multi-copy rooms, byte-identical to the original with the mode off. See
 [the repository map](docs/REPOSITORIES.md) before starting work.
 
 ## The one rule about claims
