@@ -20,6 +20,18 @@
 // One TCP connection (lines of text, inside TLS or not), one UDP socket (carrier.h: hello,
 // punching, the game's datagrams, the relay).  Nothing blocks: a host name is looked up on
 // a thread of its own, everything else is polled.
+//
+// The fallback (docs/issues/native-rendezvous.md, "The fallback"), for networks that let
+// HTTPS out but break TLS to an unknown port, or let no UDP out:
+//   - the link: when the direct link (TLS to host:41900) fails before it is up, the next try
+//     is the same conversation as a WebSocket on the service's web server,
+//     wss://<host>:443/net2 (tls.h ws_link), and so on in turn; a link that came up stays
+//     on its way.  "transport" auto | direct | ws (RTA_NET2_TRANSPORT, net2_set), the
+//     WebSocket's address "ws" (RTA_NET2_WS, or "wss://host[:port]/path" as the service).
+//   - the datagrams: when the service has answered none of this socket's hellos 8 s after
+//     the first, hello and relay go in the conversation as `dg d=<hex>` lines (carrier.h,
+//     the tunnel), and the relay carries the game.  "udp" auto | tunnel | udp
+//     (RTA_NET2_UDP, net2_set).  Tests: RTA_NET2_RELAY=force|never (as net2_set "relay").
 #include "carrier.h"
 #include "hash.h"
 #include "session_impl.h"
@@ -120,6 +132,16 @@ struct Net : Backend {
     std::unique_ptr<n2::TlsLink> tls;           // the link inside TLS
     int tls_rule = n2::TLS_AUTO;
     std::string tls_trust;                      // "" the system's trust store; else the only certificates trusted
+    enum { WAY_AUTO, WAY_DIRECT, WAY_WS };
+    int transport = WAY_AUTO;
+    std::string ws_host, ws_path = "/net2";     // the WebSocket's address when it was named ("ws")
+    uint16_t ws_port = 0;
+    bool ws_tls = true, ws_named = false;
+    bool on_ws = false, link_ws = false, ws_told = false;      // the next try / this link is the WebSocket
+    enum { UDP_AUTO, UDP_TUNNEL, UDP_ONLY };
+    int udp_mode = UDP_AUTO;
+    int64_t udp_since = 0;
+    bool tunnel_told = false;
     bool linked() const { return fd != sock::NONE || tls != nullptr; }
     enum { IDLE, RESOLVING, CONNECTING, GREETING, PROVING, ONLINE } stage = IDLE;
     std::shared_ptr<Resolve> resolving;
@@ -162,6 +184,20 @@ struct Net : Backend {
         put(s.me.problem, "Connecting...");
         // "tls://host:port" and "plain://host:port" say how; "host:port" leaves it to the rule (tls.h)
         std::string address = service_text;
+        if (const char* env = getenv("RTA_NET2_WS"))
+            if (*env) set_ws(env);
+        if (address.compare(0, 6, "wss://") == 0 || address.compare(0, 5, "ws://") == 0) {
+            // the service named by its WebSocket: the datagrams go to the same host's port 41900
+            set_ws(address);
+            transport = WAY_WS;
+            address = ws_host + ":41900";
+        }
+        if (const char* env = getenv("RTA_NET2_TRANSPORT"))
+            if (*env) transport = way_of(env, transport);
+        if (const char* env = getenv("RTA_NET2_UDP"))
+            if (*env) udp_mode = udp_of(env, udp_mode);
+        if (const char* env = getenv("RTA_NET2_RELAY"))     // tests: this copy's routes (force | never | auto), as net2_set "relay"
+            if (*env) relay_policy = std::string(env) == "force" ? n2::RELAY_FORCE : std::string(env) == "never" ? n2::RELAY_NEVER : n2::RELAY_AUTO;
         if (address.compare(0, 6, "tls://") == 0) { tls_rule = n2::TLS_ON; address = address.substr(6); }
         else if (address.compare(0, 8, "plain://") == 0) { tls_rule = n2::TLS_OFF; address = address.substr(8); }
         if (const char* env = getenv("RTA_NET2_TLS"))
@@ -218,6 +254,39 @@ struct Net : Backend {
     }
 
     // ---- the link ------------------------------------------------------------------------
+    static int way_of(const std::string& v, int otherwise) {
+        return v == "auto" ? WAY_AUTO : v == "direct" ? WAY_DIRECT : (v == "ws" || v == "wss" || v == "websocket") ? WAY_WS : otherwise;
+    }
+    static int udp_of(const std::string& v, int otherwise) {
+        return v == "auto" ? UDP_AUTO : v == "tunnel" ? UDP_TUNNEL : (v == "udp" || v == "direct") ? UDP_ONLY : otherwise;
+    }
+    bool set_ws(const std::string& url) {      // "wss://host[:port][/path]" or "ws://..."
+        std::string rest;
+        bool secure;
+        if (url.compare(0, 6, "wss://") == 0) { secure = true; rest = url.substr(6); }
+        else if (url.compare(0, 5, "ws://") == 0) { secure = false; rest = url.substr(5); }
+        else return false;
+        size_t slash = rest.find('/');
+        std::string where = slash == std::string::npos ? rest : rest.substr(0, slash);
+        std::string path = slash == std::string::npos ? "/net2" : rest.substr(slash);
+        size_t colon = where.rfind(':');
+        uint16_t p = secure ? 443 : 80;
+        if (colon != std::string::npos) { p = (uint16_t)atoi(where.c_str() + colon + 1); where = where.substr(0, colon); }
+        if (where.empty() || !p) return false;
+        ws_host = where;
+        ws_port = p;
+        ws_path = path;
+        ws_tls = secure;
+        ws_named = true;
+        return true;
+    }
+    // the WebSocket may be tried: it was named, or the direct link is TLS to a host name (the
+    // service's web server is then wss://<the same host>/net2)
+    bool ws_possible() const { return ws_named || n2::tls_wanted(tls_rule, host_name); }
+    std::string ws_text() const {
+        if (ws_named) return std::string(ws_tls ? "wss://" : "ws://") + ws_host + ":" + std::to_string(ws_port) + ws_path;
+        return "wss://" + host_name + ":443/net2";
+    }
     void stop_for_good(const std::string& why) {
         fatal = true;
         drop_link(why, false);
@@ -231,6 +300,7 @@ struct Net : Backend {
     void drop_link(const std::string& why, bool retry = true) {
         close_link();
         bool was_online = stage == ONLINE;
+        bool before_up = stage >= CONNECTING && stage < ONLINE;
         stage = IDLE;
         inbuf.clear();
         outbuf.clear();
@@ -261,6 +331,13 @@ struct Net : Backend {
         }
         int64_t wait = tries < 1 ? 1000 : tries < 3 ? 3000 : tries < 6 ? 10000 : 30000;
         tries++;
+        udp_since = 0;
+        carrier_.tunnel_out.clear();
+        if (retry && before_up && transport == WAY_AUTO && ws_possible()) {
+            // the link did not come up this way: the other way next (the WebSocket at once)
+            on_ws = !on_ws;
+            if (on_ws) wait = 300;
+        }
         next_try = steady_ms() + wait;
     }
     void begin_connect() {
@@ -292,6 +369,23 @@ struct Net : Backend {
             std::set<uint32_t> own;
             sock::own_addresses(own);
             if ((service.ip >> 24) != 127 && !own.count(service.ip)) { stop_for_good("The service is not on this computer (local only)."); return; }
+        }
+        link_ws = transport == WAY_WS || (transport == WAY_AUTO && on_ws && ws_possible());
+        if (link_ws) {
+            std::string where = ws_named ? ws_host : host_name;
+            uint16_t at = ws_named ? ws_port : 443;
+            uint32_t ip = service.ip;
+            if (where != host_name) {
+                unsigned a, b, c, d;
+                char tail;
+                if (sscanf(where.c_str(), "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) == 4 && a < 256 && b < 256 && c < 256 && d < 256) ip = (a << 24) | (b << 16) | (c << 8) | d;
+                else if (where == "localhost") ip = 0x7F000001;
+                else if (!sock::resolve(where, ip)) { drop_link("The name " + where + " is not known."); return; }
+            }
+            tls.reset(n2::ws_link(ws_named && !ws_tls ? n2::plain_link() : n2::tls_link(), ws_named ? ws_path : "/net2"));
+            tls->start(ip, at, where, tls_trust);
+            stage = CONNECTING;
+            return;
         }
         if (n2::tls_wanted(tls_rule, host_name)) {
             tls.reset(n2::tls_link());
@@ -345,6 +439,13 @@ struct Net : Backend {
 
     void on_line(const Line& l) {
         const std::string& v = l.verb;
+        if (v == "dg") {                                // a datagram of the tunnel
+            const std::string& text = l.get("d");
+            std::vector<uint8_t> data(text.size() / 2);
+            if (text.size() % 2 || !unhex(text, data.data(), data.size())) return;
+            carrier_.inject(data.data(), data.size(), steady_ms());
+            return;
+        }
         if (v == "hi") {
             uint8_t nonce[16];
             if (!unhex(l.get("nonce"), nonce, 16)) { drop_link("The service answered something else."); return; }
@@ -670,8 +771,8 @@ struct Net : Backend {
         } else if (stage == CONNECTING && tls) {
             int r = tls->state();
             if (r == n2::TlsLink::READY) { stage = GREETING; last_heard = now; }
-            else if (r == n2::TlsLink::FAILED) drop_link("No secure link to the service: " + tls->problem());
-            else if (now - stage_since > 15000) drop_link("The service at " + service_text + " does not answer (TLS).");
+            else if (r == n2::TlsLink::FAILED) drop_link((link_ws ? "No link to the service over HTTPS (" + ws_text() + "): " : std::string("No secure link to the service: ")) + tls->problem());
+            else if (now - stage_since > 15000) drop_link(link_ws ? "The service's web server (" + ws_text() + ") does not answer." : "The service at " + service_text + " does not answer (TLS).");
         } else if (stage == CONNECTING) {
             int r = sock::connect_check(fd);
             if (r == sock::CONNECTED) { stage = GREETING; last_heard = now; }
@@ -705,6 +806,18 @@ struct Net : Backend {
             if (!carrier_.is_open() && !carrier_.open(bind_to, problem)) {
                 if (!udp_problem_told) { udp_problem_told = true; s.error(NET2_ERR_SERVICE, problem); }
             } else {
+                // no answer to any hello for 8 s: this network lets no UDP through to the service, and
+                // the datagrams go in the conversation (the tunnel)
+                if (udp_since == 0) udp_since = now;
+                bool tunnel = udp_mode == UDP_TUNNEL || (udp_mode == UDP_AUTO && !carrier_.answered() && now - udp_since > 8000);
+                if (tunnel && !carrier_.tunnelled()) {
+                    carrier_.tunnel(true);
+                    last_hello = 0;
+                    if (udp_mode == UDP_AUTO && !tunnel_told) {
+                        tunnel_told = true;
+                        s.event(NET2_EV_NOTICE, 0, "The service does not hear this computer's datagrams (UDP is blocked on this network): the game's go through the service's link instead.");
+                    }
+                }
                 int64_t every = s.room.state == NET2_ROOM_OPEN ? 3000 : 1000;
                 if (now - last_hello > every) { last_hello = now; carrier_.hello(service, udp_key); }
                 if (!local_sent) {
@@ -735,9 +848,23 @@ struct Net : Backend {
         if (carrier_.is_open()) {
             carrier_.poll(now);
             update_routes(true);
+            send_tunnel();
+        }
+        if (stage == ONLINE && link_ws && transport == WAY_AUTO && !ws_told) {
+            ws_told = true;
+            s.event(NET2_EV_NOTICE, 0, "The direct link to the service does not get through on this network: connected through its web server (HTTPS) instead.");
         }
     }
     bool udp_problem_told = false;
+
+    // the tunnel's datagrams, as lines of the conversation (also called by the game's sends: tunnel_send)
+    void send_tunnel() {
+        if (carrier_.tunnel_out.empty()) return;
+        if (stage == ONLINE)
+            for (const std::vector<uint8_t>& d : carrier_.tunnel_out) send_line("dg d=" + hex(d.data(), d.size()));
+        carrier_.tunnel_out.clear();
+        flush();
+    }
 
     void read_lines() {
         size_t end;
@@ -838,7 +965,10 @@ struct Net : Backend {
             static const char* STAGES[] = {"idle", "resolving", "connecting", "greeting", "proving", "online"};
             out = std::string("stage ") + STAGES[stage] + ", service " + service_text + ", tls " +
                   (n2::tls_wanted(tls_rule, host_name) ? "on" : "off") + " (rule " + n2::tls_rule_text(tls_rule) + ")" +
-                  (tls && stage >= GREETING ? ": " + tls->summary() : "") + ", " + std::to_string(pending.size()) + " requests open, try " + std::to_string(tries);
+                  (tls && stage >= GREETING ? ": " + tls->summary() : "") + ", " + std::to_string(pending.size()) + " requests open, try " + std::to_string(tries) +
+                  ", via " + (linked() && link_ws ? "websocket " + ws_text() : linked() ? std::string("direct") : std::string("-")) +
+                  " (transport " + (transport == WAY_WS ? "ws" : transport == WAY_DIRECT ? "direct" : "auto") + "), udp " +
+                  (carrier_.tunnelled() ? "tunnel" : "direct") + " (" + (udp_mode == UDP_TUNNEL ? "tunnel" : udp_mode == UDP_ONLY ? "udp" : "auto") + ")";
         } else if (what.compare(0, 9, "tls-rule ") == 0) {
             // tests: would this link's rule put a service written so inside TLS (nothing is sent)
             std::string address = what.substr(9);
@@ -872,6 +1002,23 @@ struct Net : Backend {
         if (key == "bind") {            // the UDP socket's own address:port (tests; before the first room)
             if (carrier_.is_open()) return NET2_ERR_STATE;
             bind_to = value;
+            return NET2_OK;
+        }
+        if (key == "udp") {             // the datagrams: auto | tunnel | udp
+            int mode = udp_of(value, -1);
+            if (mode < 0) return NET2_ERR_ARGUMENT;
+            udp_mode = mode;
+            if (mode == UDP_ONLY) carrier_.tunnel(false);
+            return NET2_OK;
+        }
+        if (key == "transport" || key == "ws") {       // how the link is made: it is made again
+            if (key == "transport") {
+                int way = way_of(value, -1);
+                if (way < 0) return NET2_ERR_ARGUMENT;
+                transport = way;
+            } else if (!set_ws(value)) return NET2_ERR_ARGUMENT;
+            on_ws = false;
+            if (linked() && !fatal) { drop_link("Connecting again (" + key + " changed)..."); tries = 0; next_try = steady_ms(); }
             return NET2_OK;
         }
         if (key == "tls" || key == "tls-ca") {         // how the link is made: it is made again

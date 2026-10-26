@@ -16,6 +16,12 @@
 //                       address this socket is seen at and answers
 //        0x21  SEEN     slot 0, session 0; then ip(4, a.b.c.d) port(2): "this is how I see you"
 //
+// The tunnel (docs/issues/native-rendezvous.md, "The fallback"): on a network that lets no
+// UDP through to the service, HELLO and RELAY are not sent as datagrams but handed to the
+// session (tunnel_out), which sends them in its TCP conversation as `dg d=<hex>`; what the
+// service sends back that way (SEEN, RELAYED) is given to inject().  Straight routes to
+// other players are still tried over UDP.
+//
 // The game is given made-up addresses: player k is 10.77.0.(k+1), port 4000, on every
 // machine alike.  It never sees a real address, so nothing in its launch code can mistake
 // one player for another (docs/issues/three-players.md, cause 1) and a route can change
@@ -73,6 +79,14 @@ struct Carrier {
     // to the service from the same socket (so that it sees the address players must send to)
     void hello(const Endpoint& service, const uint8_t key[8]);
     Endpoint seen_as() const { return seen_; }      // what the service answered; unset until then
+    bool answered() const { return answered_; }     // the service answered a hello (by UDP or in the tunnel)
+
+    // the tunnel: hello and relay in the session's conversation instead of UDP
+    void tunnel(bool on) { tunnel_ = on; if (!on) tunnel_out.clear(); }
+    bool tunnelled() const { return tunnel_; }
+    std::deque<std::vector<uint8_t>> tunnel_out;    // whole datagrams for the service, oldest first
+    void inject(const uint8_t* data, size_t size, int64_t now_ms);     // one the service sent in the conversation
+    uint64_t tunnelled_out = 0, tunnelled_in = 0;
 
     int route(int slot) const;          // NET2_ROUTE_*
     int rtt(int slot) const;
@@ -98,8 +112,9 @@ struct Carrier {
     Peer peers_[NET2_PLAYERS];
     Endpoint service_, seen_;
     uint8_t key_[8] = {0};
-    bool relay_ok_ = false;
+    bool relay_ok_ = false, tunnel_ = false, answered_ = false, no_udp_ = false;
     std::deque<Datagram> queue_;
+    void take(const Endpoint& from, bool from_service, const uint8_t* in, size_t got, int64_t now);
     void raw(const Endpoint& to, uint8_t kind, uint8_t slot, uint32_t session, const uint8_t* a, size_t an, const uint8_t* b = nullptr, size_t bn = 0);
 };
 

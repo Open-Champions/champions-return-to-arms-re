@@ -15,11 +15,14 @@
 // cross-compiler, NOT RUN (docs/issues/native-rendezvous-tls.md).
 #include "tls.h"
 
+#include "../net/sock.h"
+
 #include <cstdio>
 #include <cstring>
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <random>
 
 namespace n2 {
 
@@ -91,6 +94,157 @@ bool tls_certificates(const std::string& path, std::vector<std::string>& der, st
     if (der.empty()) { problem = "No certificate in the file of trusted certificates: " + path; return false; }
     return true;
 }
+
+// ---- a plain TCP link, and the WebSocket over either kind -------------------------------
+namespace {
+struct PlainLink : TlsLink {
+    sock::Handle fd = sock::NONE;
+    int st = UNDER_WAY;
+    std::string why;
+    ~PlainLink() override { sock::close(fd); }
+    void start(uint32_t ip, uint16_t port, const std::string&, const std::string&) override {
+        sock::start();
+        fd = sock::tcp();
+        if (fd == sock::NONE) { st = FAILED; why = "No socket: " + sock::error_text(sock::error()); return; }
+        if (sock::connect(fd, ip, port) == sock::FAILED) { st = FAILED; why = "Cannot connect: " + sock::error_text(sock::error()); }
+    }
+    int state() override {
+        if (st == UNDER_WAY) {
+            int r = sock::connect_check(fd);
+            if (r == sock::CONNECTED) st = READY;
+            else if (r == sock::FAILED) { st = FAILED; why = "Cannot connect: " + sock::error_text(sock::error()); }
+        }
+        return st;
+    }
+    int send(const char* data, size_t size) override { return st == READY ? sock::send(fd, data, size) : st == FAILED ? LOST : AGAIN; }
+    int recv(char* into, size_t size) override { return st == READY ? sock::recv(fd, into, size) : st == FAILED ? LOST : AGAIN; }
+    std::string problem() override { return why; }
+    std::string summary() override { return "plain TCP"; }
+};
+
+struct WsLink : TlsLink {
+    std::unique_ptr<TlsLink> under;
+    std::string name, path, why, out, in, data;
+    int phase = 0;                      // 0 the link below is being made, 1 the upgrade was asked, 2 open, -1 failed
+    bool closed = false;
+    std::mt19937 gen{std::random_device{}()};
+    WsLink(TlsLink* below, const std::string& p) : under(below), path(p.empty() ? "/" : p) {}
+    void start(uint32_t ip, uint16_t port, const std::string& host, const std::string& trust) override {
+        name = host;
+        under->start(ip, port, host, trust);
+    }
+    void fail(const std::string& text) { if (phase >= 0) { phase = -1; why = text; } }
+    void frame(uint8_t opcode, const char* payload, size_t size) {
+        out += (char)(0x80 | opcode);
+        if (size < 126) out += (char)(0x80 | size);
+        else if (size < 65536) { out += (char)(0x80 | 126); out += (char)(size >> 8); out += (char)(size & 255); }
+        else { out += (char)(0x80 | 127); for (int k = 7; k >= 0; k--) out += (char)((uint64_t)size >> (8 * k)); }
+        uint32_t m = gen();
+        char mask[4] = {(char)m, (char)(m >> 8), (char)(m >> 16), (char)(m >> 24)};
+        out.append(mask, 4);
+        for (size_t i = 0; i < size; i++) out += (char)(payload[i] ^ mask[i & 3]);
+    }
+    void pump() {
+        if (phase < 0) return;
+        if (phase == 0) {
+            int st = under->state();
+            if (st == FAILED) { fail(under->problem()); return; }
+            if (st != READY) return;
+            char key[16];
+            for (char& c : key) c = (char)gen();
+            static const char* B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            std::string k64;
+            for (int i = 0; i < 16; i += 3) {
+                uint32_t v = (uint8_t)key[i] << 16 | (i + 1 < 16 ? (uint8_t)key[i + 1] << 8 : 0) | (i + 2 < 16 ? (uint8_t)key[i + 2] : 0);
+                k64 += B64[(v >> 18) & 63];
+                k64 += B64[(v >> 12) & 63];
+                k64 += i + 1 < 16 ? B64[(v >> 6) & 63] : '=';
+                k64 += i + 2 < 16 ? B64[v & 63] : '=';
+            }
+            out = "GET " + path + " HTTP/1.1\r\nHost: " + name + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + k64 +
+                  "\r\nSec-WebSocket-Version: 13\r\nUser-Agent: rta-net2\r\n\r\n" + out;
+            phase = 1;
+        }
+        while (!out.empty()) {
+            int n = under->send(out.data(), out.size());
+            if (n == LOST) { fail(under->problem().empty() ? "The link was lost." : under->problem()); return; }
+            if (n <= 0) break;
+            out.erase(0, (size_t)n);
+        }
+        char buffer[8192];
+        for (int rounds = 0; rounds < 16 && !closed; rounds++) {
+            int got = under->recv(buffer, sizeof buffer);
+            if (got == AGAIN) break;
+            if (got == 0) { closed = true; break; }
+            if (got < 0) { fail(under->problem().empty() ? "The link was lost." : under->problem()); return; }
+            in.append(buffer, (size_t)got);
+        }
+        if (phase == 1) {
+            size_t end = in.find("\r\n\r\n");
+            if (end == std::string::npos) {
+                if (in.size() > 16384 || closed) fail("The web server did not take the WebSocket.");
+                return;
+            }
+            std::string status = in.substr(0, in.find("\r\n"));
+            if (status.compare(0, 5, "HTTP/") != 0 || status.find(" 101") == std::string::npos) {
+                fail("The web server did not take the WebSocket (" + status.substr(0, 60) + ").");
+                return;
+            }
+            in.erase(0, end + 4);
+            phase = 2;
+        }
+        while (phase == 2 && in.size() >= 2) {
+            uint8_t b0 = (uint8_t)in[0], b1 = (uint8_t)in[1];
+            uint64_t size = b1 & 127;
+            size_t at = 2;
+            if (size == 126) { if (in.size() < 4) break; size = (uint8_t)in[2] << 8 | (uint8_t)in[3]; at = 4; }
+            else if (size == 127) { if (in.size() < 10) break; size = 0; for (int k = 0; k < 8; k++) size = size << 8 | (uint8_t)in[2 + k]; at = 10; }
+            if (size > (1u << 20)) { fail("The web server sent a frame too large."); return; }
+            size_t mask_at = at;
+            if (b1 & 128) at += 4;                  // a server's frames are not masked; taken anyway
+            if (in.size() < at + size) break;
+            std::string payload = in.substr(at, (size_t)size);
+            if (b1 & 128)
+                for (size_t i = 0; i < payload.size(); i++) payload[i] ^= in[mask_at + (i & 3)];
+            in.erase(0, at + (size_t)size);
+            uint8_t opcode = b0 & 15;
+            if (opcode <= 2) data += payload;
+            else if (opcode == 8) closed = true;
+            else if (opcode == 9) frame(10, payload.data(), payload.size() < 125 ? payload.size() : 125);
+        }
+    }
+    int state() override {
+        pump();
+        return phase == 2 ? READY : phase < 0 ? FAILED : UNDER_WAY;
+    }
+    int send(const char* bytes, size_t size) override {
+        pump();
+        if (phase < 0) return LOST;
+        if (phase != 2) return AGAIN;
+        if (out.size() > 262144) return AGAIN;
+        size_t take = size < 16384 ? size : 16384;
+        frame(2, bytes, take);
+        pump();
+        return (int)take;
+    }
+    int recv(char* into, size_t size) override {
+        pump();
+        if (!data.empty()) {
+            size_t n = data.size() < size ? data.size() : size;
+            memcpy(into, data.data(), n);
+            data.erase(0, n);
+            return (int)n;
+        }
+        if (closed) return 0;
+        return phase < 0 ? LOST : AGAIN;
+    }
+    std::string problem() override { return why; }
+    std::string summary() override { return "WebSocket " + path + " over " + under->summary(); }
+};
+}  // namespace
+
+TlsLink* plain_link() { return new PlainLink(); }
+TlsLink* ws_link(TlsLink* under, const std::string& path) { return new WsLink(under, path); }
 
 }  // namespace n2
 

@@ -159,10 +159,74 @@ class Service:
         return text
 
 
+class WsSock:
+    """A socket's sendall/recv/settimeout/close over a WebSocket (a client's frames are masked)."""
+
+    def __init__(self, sock, real_ip=None, path='/net2'):
+        self.sock, self.buf = sock, b''
+        key = secrets.token_bytes(16).hex()[:22] + '=='
+        head = 'GET %s HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n' % (path, key)
+        if real_ip:
+            head += 'X-Real-IP: %s\r\n' % real_ip
+        sock.sendall((head + '\r\n').encode())
+        reply = b''
+        while b'\r\n\r\n' not in reply:
+            data = sock.recv(4096)
+            if not data:
+                break
+            reply += data
+        self.status, _, self.buf = reply.partition(b'\r\n\r\n')
+        self.accept = re.search(rb'Sec-WebSocket-Accept: (\S+)', self.status)
+        self.expected = __import__('base64').b64encode(hashlib.sha1(key.encode() + R.WS_GUID).digest())
+        self.frames = bytearray(self.buf)
+        self.buf = b''
+
+    def frame(self, payload, opcode=2, masked=True):
+        n = len(payload)
+        head = bytes([0x80 | opcode]) + (bytes([(0x80 if masked else 0) | n]) if n < 126 else bytes([(0x80 if masked else 0) | 126]) + struct.pack('!H', n))
+        if not masked:
+            return head + payload
+        mask = secrets.token_bytes(4)
+        return head + mask + bytes(b ^ mask[i & 3] for i, b in enumerate(payload))
+
+    def sendall(self, data):
+        self.sock.sendall(self.frame(data))
+
+    def settimeout(self, t):
+        self.sock.settimeout(t)
+
+    def recv(self, size):
+        while True:
+            if len(self.frames) >= 2:
+                n, at = self.frames[1] & 0x7f, 2
+                if n == 126 and len(self.frames) >= 4:
+                    n, at = struct.unpack_from('!H', self.frames, 2)[0], 4
+                elif n == 127 and len(self.frames) >= 10:
+                    n, at = struct.unpack_from('!Q', self.frames, 2)[0], 10
+                if n < 126 or at > 2:
+                    if len(self.frames) >= at + n:
+                        opcode = self.frames[0] & 0x0f
+                        payload = bytes(self.frames[at:at + n])
+                        del self.frames[:at + n]
+                        if opcode == 8:
+                            return b''
+                        if opcode in (1, 2) and payload:
+                            return payload
+                        continue
+            data = self.sock.recv(65536)
+            if not data:
+                return b''
+            self.frames += data
+
+    def close(self):
+        self.sock.close()
+
+
 class Player:
     """A client: one TCP connection, one UDP socket, the device secret."""
 
-    def __init__(self, port, name=None, secret=None, connect=True, tls=None, host='127.0.0.1'):
+    def __init__(self, port, name=None, secret=None, connect=True, tls=None, host='127.0.0.1', ws=None):
+        self.ws = ws                # WebSocket: ('tcp', port) or ('unix', path, X-Real-IP or None)
         self.port, self.name = port, name
         self.tls, self.host = tls, host     # an ssl.SSLContext: the conversation inside TLS, the certificate checked for `host`
         self.secret = secret or secrets.token_bytes(32)
@@ -182,10 +246,20 @@ class Player:
             self.connect()
 
     def connect(self):
-        self.sock = socket.create_connection((self.host, self.port), 5)
+        if self.ws and self.ws[0] == 'unix':
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.settimeout(5)
+            self.sock.connect(self.ws[1])
+        else:
+            self.sock = socket.create_connection((self.host, self.ws[1] if self.ws else self.port), 5)
         if self.tls:
             self.sock = self.tls.wrap_socket(self.sock, server_hostname='localhost' if self.host == '127.0.0.1' else self.host)
         self.sock.settimeout(5)
+        if self.ws:
+            self.sock = WsSock(self.sock, real_ip=self.ws[2] if self.ws[0] == 'unix' else None)
+            if b' 101 ' not in self.sock.status:
+                self.closed = {'status': self.sock.status.decode('latin-1')}
+                return None
         self.buf, self.lines, self.closed = b'', [], None
         hi = self.expect('hi', 'bye')
         if hi[0] == 'bye':
@@ -302,6 +376,22 @@ class Player:
         if data[:3] != b'N2\x21' or len(data) != 14:
             return None
         return socket.inet_ntoa(data[8:12]), struct.unpack_from('<H', data, 12)[0]
+
+    def tunnel(self, data):
+        """A datagram in the conversation (the fallback when UDP does not get through)."""
+        return self.raw('dg d=' + data.hex())
+
+    def tunnel_hello(self):
+        self.tunnel(b'N2\x20\x00\x00\x00\x00\x00' + self.key)
+        verb, f = self.expect('dg')
+        data = bytes.fromhex(f.get('d', '')) if verb == 'dg' else b''
+        if data[:3] != b'N2\x21' or len(data) != 14:
+            return None
+        return socket.inet_ntoa(data[8:12]), struct.unpack_from('<H', data, 12)[0]
+
+    def tunnel_heard(self, timeout=1.0):
+        verb, f = self.expect('dg', timeout=timeout)
+        return bytes.fromhex(f.get('d', '')) if verb == 'dg' else None
 
     def relay(self, session, to_slot, payload, key=None, sock=None):
         (sock or self.udp).sendto(b'N2\x10' + bytes([to_slot]) + struct.pack('<I', session) + (key or self.key) + payload, ('127.0.0.1', self.port))
@@ -1243,6 +1333,138 @@ def tls_checks(check, work):
     check('a certificate without its key: refused', process.returncode != 0 and 'go together' in process.stderr)
 
 
+def ws_checks(check, work):
+    """The conversation as a WebSocket (behind a web server on 443, or on a port of its own) and
+    the datagrams carried in it (the fallback for networks that break TLS to unknown ports or
+    block UDP)."""
+    unix = os.path.join(tempfile.mkdtemp(prefix='rv-ws-'), 'ws.sock')       # short: a Unix socket's path has a limit
+    service = Service(':memory:', 'registrations_per_hour=1000', 'connections_per_address=3', 'connects_per_minute=1000',
+                      more=('--ws-unix', unix, '--ws-bind', '127.0.0.1:0'))
+    port = service.port
+    service.out.seek(0)
+    found = re.search(r'WebSocket on 127\.0\.0\.1, TCP port (\d+)', service.out.read())
+    ws_port = int(found.group(1)) if found else 0
+    check('WebSocket: the service says where it takes it (a Unix socket for the web server, a TCP port)', ws_port > 0 and os.path.exists(unix))
+    players = []
+    try:
+        a = Player(port, 'Wanda', ws=('tcp', ws_port))
+        players.append(a)
+        check('WebSocket: the upgrade is answered (101, the right Sec-WebSocket-Accept), then the greeting in a frame',
+              b' 101 ' in a.sock.status and a.sock.accept is not None and a.sock.accept.group(1) == a.sock.expected and a.nonce is not None, a.sock.status)
+        check('WebSocket: register and welcome', bool(a.register()))
+        check('WebSocket: a request and its answer', a.ask('ping')[0] == 'ok')
+        b = Player(port, 'Wolf', ws=('unix', unix, '198.51.100.7'))
+        players.append(b)
+        check('WebSocket behind the web server (Unix socket): registered', bool(b.register()))
+        nobody = Player(port, 'NoReal', connect=False, ws=('unix', unix, None))
+        try:
+            nobody.connect()
+            gone = nobody.sock.recv(100) == b''
+        except OSError:
+            gone = True
+        nobody.close()
+        check('behind the web server without X-Real-IP: closed (the address is not known)', gone)
+        same = []
+        for i in range(3):
+            q = Player(port, 'Same%d' % i, connect=False, ws=('unix', unix, '198.51.100.7'))
+            try:
+                q.connect()
+            except OSError:
+                pass
+            same.append(q)
+        refused = 0
+        for q in same:
+            try:
+                q.sock.settimeout(1)
+                refused += q.nonce is None or q.sock.recv(100) == b''
+            except (OSError, AttributeError):
+                refused += 1
+        other = Player(port, 'OtherAddress', ws=('unix', unix, '198.51.100.8'))
+        players.append(other)
+        check('the limit per address counts X-Real-IP: the 4th from one address is refused, another address gets in (3 at once here)',
+              refused >= 1 and other.nonce is not None, refused)
+        for q in same:
+            q.close()
+        bad = socket.create_connection(('127.0.0.1', ws_port), 5)
+        bad.settimeout(3)
+        bad.sendall(b'GET /net2 HTTP/1.1\r\nHost: x\r\n\r\n')
+        check('a request that is not a WebSocket upgrade: 400 and closed', bad.recv(200).startswith(b'HTTP/1.1 400'))
+        bad.close()
+        c = Player(port, 'Unmasked', ws=('tcp', ws_port))
+        c.sock.sock.sendall(c.sock.frame(b'ping n=1\n', masked=False))
+        check('an unmasked frame from a client: closed', c.sock.recv(100) == b'')
+        c.close()
+        d = Player(port, 'Early', ws=('tcp', ws_port))
+        d.raw('dg d=4e3220000000000000000000000000000000')
+        check('a datagram in the conversation before a login: closed', d.expect('bye')[1].get('code') == str(R.E_STATE))
+        d.close()
+        # ---- the tunnel: datagrams in the conversation, between a WebSocket player and a UDP one ----
+        e = Player(port, 'Udo')
+        players.append(e)
+        e.register()
+        code = b.ask('host')[1].get('code', '')
+        e.ask('join', code=code)
+        a.ask('join', code=code)
+        seen = b.tunnel_hello()
+        check('tunnel: a hello in the conversation is answered in it, with the player\'s own address (X-Real-IP) and port 0', seen == ('198.51.100.7', 0), seen)
+        check('tunnel: and over a WebSocket on a port of its own', a.tunnel_hello() == ('127.0.0.1', 0))
+        check('and a UDP player beside them as ever', e.hello() is not None)
+        e.ask('ready', v=1), a.ask('ready', v=1)
+        b.drain()
+        check('the room starts: a tunnelled player counts as seen', b.ask('start')[0] == 'ok')
+        starts = {}
+        for p in (b, e, a):
+            verb, st = p.expect('start')
+            peers = []
+            while True:
+                verb, f = p.expect('peer', 'startend', timeout=2)
+                if verb != 'peer':
+                    break
+                peers.append(f)
+            starts[p] = (st, peers)
+        session = int(starts[b][0]['session'], 16)
+        eps = {f['name']: f.get('eps', '') for f in starts[e][1]}
+        check('a tunnelled player has no address in the start description (nobody punches to it: the relay carries it)',
+              eps.get('Wolf') == '' and eps.get('Wanda') == '', eps)
+        e.relay(session, 0, b'udp to tunnel')
+        got = b.tunnel_heard()
+        check('relay: from UDP into the conversation', got == b'N2\x11\x01' + struct.pack('<I', session) + b'udp to tunnel', got)
+        b.tunnel(b'N2\x10\x01' + struct.pack('<I', session) + b.key + b'tunnel to udp')
+        check('relay: from the conversation to UDP', e.heard() == b'N2\x11\x00' + struct.pack('<I', session) + b'tunnel to udp')
+        b.tunnel(b'N2\x10\x02' + struct.pack('<I', session) + b.key + b'tunnel to tunnel')
+        got = a.tunnel_heard()
+        check('relay: from one conversation to another', got == b'N2\x11\x00' + struct.pack('<I', session) + b'tunnel to tunnel', got)
+        b.tunnel(b'N2\x10\x01' + struct.pack('<I', session) + e.key + b'with a key not its own')
+        check('tunnel: a datagram with another player\'s key is nobody\'s', e.heard(0.4) is None)
+        big = b'N2\x10\x01' + struct.pack('<I', session) + b.key + b'y' * 2100
+        b.tunnel(big)
+        check('tunnel: a datagram larger than any of the game\'s is dropped', e.heard(0.4) is None)
+        b.raw('dg d=' + 'ab' * 2200)
+        check('tunnel: a line longer than any datagram: closed', b.expect('bye')[1].get('code') == str(R.E_LIMIT))
+    finally:
+        for p in players:
+            p.close()
+        text = service.stop()
+    check('the WebSocket service ended without an error, and counts the links and the tunnelled datagrams', 'Traceback' not in text and
+          re.search(r'[1-9]\d* WebSocket links, [1-9]\d* datagrams in / [1-9]\d* out by tunnel', text) is not None, text[-800:])
+    check('its Unix socket is gone after it', not os.path.exists(unix))
+    # inside TLS on a port of its own (as nginx would put it on 443)
+    try:
+        pki = test_certificates(os.path.join(work, 'ws-tls'))
+    except RuntimeError as e:
+        return check('test certificates for the WebSocket inside TLS', False, e)
+    service = Service(':memory:', more=('--ws-bind', '127.0.0.1:0'), tls=(pki['localhost'], pki['localhost.key']))
+    service.out.seek(0)
+    found = re.search(r'WebSocket on 127\.0\.0\.1, TCP port (\d+), TLS', service.out.read())
+    try:
+        t = Player(service.port, 'Wes', tls=client_context(pki['ca']), ws=('tcp', int(found.group(1)) if found else 1))
+        check('WebSocket inside TLS (wss): the upgrade, the greeting and a registration', b' 101 ' in t.sock.status and bool(t.register()))
+        t.close()
+    finally:
+        text = service.stop()
+    check('and that service ended without an error', 'Traceback' not in text, text[-600:])
+
+
 def start_checks(check):
     process = subprocess.run([sys.executable, os.path.join(HERE, 'rendezvous.py'), '--data', ':memory:', '--bind', '0.0.0.0', '--port', '0'],
                              capture_output=True, text=True, timeout=20)
@@ -1285,6 +1507,7 @@ def main():
         limit_checks(check, work)
         exposure_checks(check, work)
         tls_checks(check, work)
+        ws_checks(check, work)
     finally:
         if not args.keep and not args.work:
             shutil.rmtree(work, ignore_errors=True)

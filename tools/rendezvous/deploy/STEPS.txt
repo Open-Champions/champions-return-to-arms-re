@@ -77,3 +77,31 @@ On the Mac: the repository checkout as the working directory.
 
 Nothing else changes: the firewall already has 41900/tcp and 41900/udp open; the lobby,
 the browser page and its relay, nginx and the certificate itself are not touched.
+
+----------------------------------------------------------------------------------------------
+The fallback on port 443 (2026-10-25): the conversation as a WebSocket behind nginx.  RUN on
+the project's server 2026-10-25 (docs/issues/native-rendezvous.md, "The fallback").
+<site> is the nginx site of <server-host> (the one with its `listen 443 ssl` block).
+
+10. Keep what runs now
+   ssh root@<server-address> 'B=/root/champions-net2-ws-backup-YYYYMMDD && mkdir -p $B &&
+     cp -p /opt/champions-net2/rendezvous.py /etc/systemd/system/champions-net2.service /etc/nginx/sites-available/<site> $B/'
+
+11. The service with --ws-unix (the unit of this folder, placeholders filled as in step 4)
+   scp tools/rendezvous/rendezvous.py root@<server-address>:/opt/champions-net2/rendezvous.py
+   scp tools/rendezvous/deploy/champions-net2.service root@<server-address>:/opt/champions-net2/
+   then step 4 and: systemctl daemon-reload && systemctl restart champions-net2
+   Expect in the journal also "WebSocket on the Unix socket /run/champions-net2/ws.sock"; ls -l
+   /run/champions-net2/ws.sock shows srw-rw-rw-.
+
+12. nginx: nginx-net2.conf's location inside the 443 server block of <site>, then
+   ssh root@<server-address> 'nginx -t && systemctl reload nginx'
+   From the Mac: curl -s -o /dev/null -w "%{http_code}\n" -H "Connection: Upgrade" -H "Upgrade: websocket"
+     -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" https://<server-host>/net2
+   Expect 101.  A client forced onto it: RTA_NET2_TRANSPORT=ws (or --service wss://<server-host>/net2).
+
+13. Back
+   ssh root@<server-address> 'B=/root/champions-net2-ws-backup-YYYYMMDD &&
+     cp -p $B/<site> /etc/nginx/sites-available/<site> && nginx -t && systemctl reload nginx &&
+     cp -p $B/champions-net2.service /etc/systemd/system/ && cp -p $B/rendezvous.py /opt/champions-net2/ &&
+     systemctl daemon-reload && systemctl restart champions-net2'

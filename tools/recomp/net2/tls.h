@@ -56,4 +56,14 @@ struct TlsLink {
 // A new link (never null).  On a system this file has no TLS for, its start fails and says so.
 TlsLink* tls_link();
 
+// The same interface without TLS: a plain TCP connection (a WebSocket on a LAN or in tests).
+TlsLink* plain_link();
+// The conversation as a WebSocket (RFC 6455) over `under` (a tls_link() for wss://, a
+// plain_link() for ws://): the fallback for networks that let HTTPS out but break TLS to an
+// unknown port (docs/issues/native-rendezvous.md, "The fallback").  start() opens `under`
+// to the web server's ip:port (TLS checked for `name` as ever), then asks for the upgrade of
+// `path` with Host: `name`; READY once the server said 101.  The bytes of send() and recv()
+// are the conversation's own, carried in binary frames (masked, as a client's must be).
+TlsLink* ws_link(TlsLink* under, const std::string& path);
+
 }  // namespace n2

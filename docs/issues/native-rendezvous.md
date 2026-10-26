@@ -12,6 +12,19 @@ compatibility and is not touched. Every result says whether it was **Ran** or on
 
 ## STATE (rewritten at every step; read this first after a stop)
 
+**2026-10-25 21:10. The fallback, and the real path end to end: done.** For networks that
+break TLS to the service's port or block UDP, the client now falls back by itself to the
+same conversation as a WebSocket on the server's existing HTTPS site (port 443, behind
+nginx), and carries the game's datagrams inside that conversation when UDP does not get
+through; the server runs it since 2026-10-25 19:59 CDT. **Ran**, through the PUBLIC
+service: the Godot portal in REMASTERED between two computers on two different networks
+(host at home, joiner away), each run through a level change (hub > drunare) with no
+shared column differing on any tick - routes found by themselves, the joiner forced onto
+the fallback, the relay forced; and a room of three (host at home, two joiners away), every
+pair in step through a level change. Section "The fallback (2026-10-25)" below; what changed
+on the server and how to undo it is there too. `check.py` 250 of 250, `check_client.py`
+136 of 136.
+
 **2026-10-20 14:50. Two networks: done.** Two computers in two different places - one at
 home, one away on another provider's network - played one game through the service on
 the project's server: the routes were punched straight through both routers (about 50 to
@@ -563,6 +576,129 @@ rules for that port (TCP, UDP); afterwards the unit stopped, both rules deleted,
 folder deleted, nothing listens on that port; the lobby, the relay, the web server, the
 browser page and the `champions-net2` unit were not touched and stayed active.
 
+## The fallback (2026-10-25)
+
+The owner: "online it needs to work". Twice a network was seen that lets TCP and plain HTTP
+out but answers a TLS handshake to the server's address with something that is not TLS
+(`openssl s_client`: "wrong version number"): on such a network a player could not reach
+the public service at all (section "Two networks"). On the network of this run (away from
+home) TLS to both 41900 and 443 got through, so the middlebox itself was not met again; the
+fallback was **forced** for the real-path runs and **simulated** in the checks (below).
+
+### What it is
+
+- **The link.** The service also takes its TCP conversation as a WebSocket (RFC 6455):
+  `rendezvous.py --ws-unix PATH` (a Unix socket for the web server in front; the player's
+  address is taken from `X-Real-IP`, only on that socket, and the limits per address count
+  it) and `--ws-bind ADDRESS:PORT` (tests; inside TLS when the service has a certificate).
+  On the server, nginx's existing HTTPS site of the service's host name passes
+  `location = /net2` with the Upgrade headers to that socket
+  (`tools/rendezvous/deploy/nginx-net2.conf`). The bytes inside are the same lines as ever;
+  the client's own frames are masked, the server's not; a frame that is not masked, too
+  large, or a request that is not an upgrade is refused.
+- **The client** (`session_net.cpp`, `tls.cpp` `ws_link`/`plain_link`): the first try is
+  the direct link (TLS to host:41900); when a link fails before it is up, the next try is
+  `wss://<the same host>:443/net2` - at once - and so on in turn; a link that came up stays
+  on its way. The certificate is checked as for the direct link (the system's trust store,
+  the host name). The player is told once ("connected through its web server (HTTPS)
+  instead"). Settings: `transport` auto | direct | ws (`RTA_NET2_TRANSPORT`, `net2_set`), the
+  WebSocket's address `ws` (`RTA_NET2_WS`, or `wss://host[:port]/path` given as the
+  service). The portal needs nothing: it uses the library.
+- **The datagrams** (the "tunnel", `carrier.h`): when the service has answered none of the
+  UDP socket's hellos 8 s after the first, the hellos and the relay's datagrams go as lines
+  `dg d=<hex>` in the conversation (whichever way it travels), and the service sends the
+  relayed datagrams back the same way; the player is told once. A tunnelled member has no
+  address in the start description, so the others take the relay to it at once; its own
+  probes still try straight routes over UDP. `udp` auto | tunnel | udp (`RTA_NET2_UDP`,
+  `net2_set`). Limits: `tunnel_per_second` 200 / `tunnel_burst` 400 per connection, one
+  line at most `tunnel_line_bytes`; a `dg` before a login closes the connection; a datagram
+  with another player's key is nobody's. Tests also: `RTA_NET2_RELAY=force|never` (this
+  copy's routes) and `RTA_NET2_TEST_NO_UDP=1` (every datagram this copy would send is
+  dropped: a network that lets no UDP out).
+
+### Checks (Ran)
+
+- `check.py` **250 of 250** (225 before; 25 new, `ws_checks`): the upgrade and its
+  `Sec-WebSocket-Accept`, register and requests over a WebSocket on a TCP port, behind the
+  "web server" (Unix socket with `X-Real-IP`), refused without `X-Real-IP`, the limit per
+  address counted by `X-Real-IP` (another address still gets in), a plain HTTP request (400),
+  an unmasked frame, a `dg` before the login; the tunnel: the hello answered in the
+  conversation, a room started with tunnelled members, relay UDP > tunnel, tunnel > UDP,
+  tunnel > tunnel, another player's key, an oversized datagram, an oversized line; the
+  status line counts; the Unix socket removed at the end; a WebSocket inside TLS.
+- `check_client.py` **136 of 136** (118 before; 18 new, `ws_run`): a "middlebox" on the
+  direct port that answers with HTTP instead of TLS - the client comes online through the
+  WebSocket by itself, says so in `debug link` and in a notice; the service named as
+  `wss://host:port/path`; `transport direct` stays off-line; a room of three with a player
+  whose UDP is dropped (auto: tunnel after 8 s, told), one forced to tunnel, one on UDP;
+  the start; routes; datagrams UDP > tunnel, tunnel > UDP, tunnel > tunnel; 60 at once
+  through the tunnel, all arriving.
+- Windows: `tls.cpp`, `carrier.cpp`, `session_net.cpp` compile with the cross-compiler
+  (`-Wall -Wextra`, no new warning); **not run**.
+
+### The real path (Ran, 2026-10-25 evening, CDT)
+
+Program: the Godot portal with the game in scene mode, the round's build of 2026-10-25
+(its project and game library) rebuilt with this net2 code (`local/godot-r24`, local), the
+portal's own two-copy test (`portal/dev/shots.gd`, `--only room5`: friends, a room by
+invitation, a new character, ready, start, drawn play in the hub, the pending level written
+in one lockstep tick, drawn play in drunare), both copies choosing **Remastered** on the
+first screen (effective settings: `edition remastered`); the copy at home without the
+owner's Elden Ring files (the layer off; the same as the second copy here). Service: the
+public one, by its host name. Host: the second Mac at home (macOS 26.6; its own Godot 4.5.2
+editor binary, the project's two libraries with their minimum system lowered to 26.0 by
+`vtool`; the files in a scratch folder there, deleted afterwards). Joiner: this Mac, away
+from home (another provider; its router changes UDP ports, so no straight route was punched
+this time). Tick logs compared with `tools/rig/compare.py ticks` (seed, level, player count,
+button maps, every player's position, state, hit points, gold, experience, out-of-step
+flags, sync hash). Local drivers: `local/godot-r24/test/net24x.py` (two computers; the
+`--sync` files mirrored over ssh), `three24.py`.
+
+| Run | Ways | Ticks compared | Result |
+|---|---|---|---|
+| `x2auto` | both on the direct TLS link and UDP, routes found by themselves: the relay (this side's router changes ports) | 1,864, hub > drunare | no shared column differs on any tick |
+| `x2ws` | the joiner **forced onto the fallback**: WebSocket on 443 + datagrams in the tunnel (`RTA_NET2_TRANSPORT=ws`, `RTA_NET2_UDP=tunnel`); the host on TLS + UDP; the relay between them | 1,856, hub > drunare | no shared column differs |
+| `x2relay` | the relay forced on both (`RTA_NET2_RELAY=force`) | 1,864, hub > drunare | no shared column differs |
+| `three2` | a room of **three** native copies (`n2_headless` of 2026-10-14, `n2party.py`'s scripts): host at home, two joiners here, sockets bound to each computer's own network address; routes: home <> away by the relay, the two here straight | 3,340 every pair, hub > drunare | no shared column differs, every pair |
+
+Also (Ran): `three1`, the same three without binding - the old program (before the change
+of 2026-10-21) took the computers' VPN as a straight route (about 420 ms), 3,302 ticks every
+pair in step; and on this Mac alone, two portals in Remastered through the public service
+with one on the forced fallback (`pubws1`, 1,766 ticks) and both on the forced relay
+(`pubrelay1`, 1,770 ticks), each through the level change, in step. The service's status
+line after the runs: 4 starts, 7,934 relayed datagrams, 5 WebSocket links, 1,211 datagrams
+in and 2,060 out by tunnel, nothing limited.
+
+The disc on the home Mac: the link between the two places carried about 70 kB/s, too slow
+for the whole image. A local test aid (only in the local build, not in the repository)
+wrote down which sectors a run reads; the sectors read by the two copies of `pubrelay1`
+(with a margin, and small files whole: 155 MB of the image) were copied into an image of
+the full size with holes elsewhere, on the home Mac only, deleted afterwards. The home copy
+of `x2auto` wrote its own reads down: every one of them was inside what had been copied.
+
+Not done: the fallback against the real middlebox (not met on this run's network); a
+person at the controls; a Windows or Linux player through the WebSocket; the three-copy
+room with the Godot portal (its test has two roles); a punched straight route between the
+two places this time (this side's router changes ports; the relay carried it, as designed).
+
+### What changed on the server (2026-10-25 19:59 CDT) and how to undo it
+
+Backup first: `/root/champions-net2-ws-backup-20261025/` holds the previous
+`rendezvous.py`, `champions-net2.service` and the nginx site of the service's host name.
+
+- `/opt/champions-net2/rendezvous.py`: this commit's file (it was the one of 2026-10-14).
+- `/etc/systemd/system/champions-net2.service`: `--ws-unix %t/champions-net2/ws.sock` on the
+  command line, `RuntimeDirectory=champions-net2`, `RuntimeDirectoryMode=0755` (and two
+  comment lines); the unit of `tools/rendezvous/deploy/` with the placeholders filled.
+  `/run/champions-net2/ws.sock` is the service's (mode 0666).
+- The nginx site of the service's host name: one block, `location = /net2`
+  (`deploy/nginx-net2.conf`), inside its 443 server, after `location @none`; `nginx -t`
+  passed, nginx reloaded. Nothing else of that site, no other site, the browser page, the
+  lobby, the relay and the firewall were touched (the WebSocket needs no new port).
+- To undo (`tools/rendezvous/deploy/STEPS.txt` step 13):
+  `B=/root/champions-net2-ws-backup-20261025; cp -p $B/<site> /etc/nginx/sites-available/<site> && nginx -t && systemctl reload nginx && cp -p $B/champions-net2.service /etc/systemd/system/ && cp -p $B/rendezvous.py /opt/champions-net2/ && systemctl daemon-reload && systemctl restart champions-net2`
+  (old clients keep working either way: the direct link is unchanged).
+
 ## 7. The emulator application (design only)
 
 Built and run on 2026-10-14 - with one change to point 3 (a pnach section that is not in the
@@ -645,7 +781,8 @@ nothing but the original disc.
 New: `tools/rendezvous/rendezvous.py`, `check.py`, `check_client.py`;
 `tools/recomp/net2/session.h`, `session_impl.h`, `session.cpp`, `session_mock.cpp`,
 `session_net.cpp`, `carrier.h`, `carrier.cpp`, `tls.h`, `tls.cpp` (2026-10-14),
-`hash.h`, `cardchars.cpp`, `clicmd.h`,
+`hash.h`, `cardchars.cpp`, `clicmd.h` (the WebSocket and the tunnel of 2026-10-25 are in `tls.cpp`, `carrier.cpp`,
+`session_net.cpp`, `rendezvous.py`; `deploy/nginx-net2.conf` is new),
 `clicmd.cpp`, `net2cli.cpp`, `game.h`, `launch.cpp`, `hooks.h`, `net2.patch`, `play.sh`,
 `n2party.py`. Local, not in the repository:
 `local/recomp-net2/` (`snap/` the native build's objects and headers of 2026-10-13 13:33,

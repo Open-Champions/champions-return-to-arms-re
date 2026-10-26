@@ -68,9 +68,9 @@ def build_cli(work):
 
 
 class Service:
-    def __init__(self, data, port=0, *limits, tls=None):
+    def __init__(self, data, port=0, *limits, tls=None, more=()):
         self.log = open(os.path.join(data, 'service.log'), 'a+')
-        command = [sys.executable, '-u', os.path.join(HERE, 'rendezvous.py'), '--data', data, '--port', str(port), '--bind', '127.0.0.1']
+        command = [sys.executable, '-u', os.path.join(HERE, 'rendezvous.py'), '--data', data, '--port', str(port), '--bind', '127.0.0.1'] + list(more)
         if tls:
             command += ['--tls-cert', tls[0], '--tls-key', tls[1]]
         for item in limits:
@@ -88,6 +88,9 @@ class Service:
             time.sleep(0.05)
         if not self.port:
             raise RuntimeError('the service did not start')
+        self.log.seek(start)
+        found = re.search(r'WebSocket on 127\.0\.0\.1, TCP port (\d+)', self.log.read())
+        self.ws_port = int(found.group(1)) if found else 0
 
     def stop(self):
         if self.process.poll() is None:
@@ -685,6 +688,127 @@ def tls_run(check, binary, work):
     check('the TLS services ran through all of it without an error', not any('Traceback' in t for t in texts), [t[-800:] for t in texts if 'Traceback' in t])
 
 
+class Middlebox:
+    """A network that breaks TLS to an unknown port: whatever is said to this port, it answers
+    with something that is not TLS and closes (what openssl calls "wrong version number")."""
+
+    def __init__(self):
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.bind(('127.0.0.1', 0))
+        self.listener.listen(16)
+        self.port = self.listener.getsockname()[1]
+        self.hits = 0
+        threading.Thread(target=self.serve, daemon=True).start()
+
+    def serve(self):
+        while True:
+            try:
+                sock, _ = self.listener.accept()
+            except OSError:
+                return
+            self.hits += 1
+            try:
+                sock.settimeout(2)
+                sock.recv(4096)
+                sock.sendall(b'HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n')
+            except OSError:
+                pass
+            sock.close()
+
+    def close(self):
+        self.listener.close()
+
+
+def ws_run(check, binary, work):
+    """The fallback: the conversation as a WebSocket on the service's web server when the direct
+    link does not get through, and the datagrams in the conversation when UDP does not."""
+    import check as service_checks
+    folder = os.path.join(work, 'ws')
+    os.makedirs(folder)
+    pki = service_checks.test_certificates(folder)
+    clients = []
+    box = Middlebox()
+    service = Service(folder, 0, 'registrations_per_hour=1000', 'connections_per_address=64', 'connects_per_minute=1000',
+                      tls=(pki['localhost'], pki['localhost.key']), more=('--ws-bind', '127.0.0.1:0'))
+    ws = 'wss://localhost:%d/net2' % service.ws_port
+
+    def cli(name, address, env=None, extra=()):
+        environment = {'RTA_NET2_TLS_CA': pki['ca']}
+        environment.update(env or {})
+        made = Cli(binary, folder, name, address=address, env=environment, extra=extra)
+        clients.append(made)
+        return made
+
+    try:
+        check('the service takes the WebSocket inside TLS on a port of its own (as the web server would on 443)', service.ws_port > 0)
+        # the direct link is broken by the "middlebox": the client goes to the WebSocket by itself
+        a = cli('Wren', 'tls://localhost:%d' % box.port, env={'RTA_NET2_WS': ws})
+        ida = me_of(a)[0]
+        check('fallback: the direct link is answered with no TLS; the client comes online through the WebSocket by itself', ida is not None and box.hits >= 1,
+              a.ask('me') + ' hits=%d' % box.hits)
+        link = a.ask('debug link')
+        check('it says how: via websocket wss://..., inside TLS (the certificate checked as ever)',
+              re.search(r'TLS 1\.[23].*via websocket wss://localhost:\d+/net2 \(transport auto\)', link) is not None, link)
+        check('and tells the player in words', a.wait(r'EVENT NOTICE .*connected through its web server \(HTTPS\)', 5, since=0) is not None)
+        b = cli('Wynn', ws, env={'RTA_NET2_TEST_NO_UDP': '1'})
+        check('the service named by its WebSocket (wss://host:port/path): online', me_of(b)[0] is not None, b.ask('me'))
+        direct = cli('Dara', 'tls://localhost:%d' % box.port, env={'RTA_NET2_WS': ws, 'RTA_NET2_TRANSPORT': 'direct'})
+        found = direct.until('me', r'link=1 .*problem=No secure link', 15)
+        time.sleep(2.5)
+        check('transport direct: no fallback (it stays off-line, in words)', found is not None and 'link=2' not in direct.ask('me'), direct.ask('me'))
+        c = cli('Cass', 'tls://localhost:%d' % service.port)
+        check('a player on the direct link beside them', me_of(c)[0] is not None)
+        # a room of three: Cass on UDP, Wynn's UDP blocked (auto: the tunnel), Wren told to tunnel
+        a.ask('set udp tunnel')
+        c.send('host')
+        found = c.wait(r'EVENT ROOM code=0 who= room=([A-Z2-9]{5})')
+        room = found.group(1) if found else 'NONE'
+        a.send('join ' + room)
+        b.send('join ' + room)
+        check('the room by its code, over both kinds of link', c.until('room', r'count=3', 10) is not None, c.ask('room'))
+        check('UDP blocked: after 8 s without an answer to a hello the datagrams go in the conversation, and the player is told',
+              b.wait(r'EVENT NOTICE .*UDP is blocked on this network', 20, since=0) is not None and 'tunnel' in b.until('debug udp', r'tunnel', 5).string,
+              b.ask('debug udp'))
+        check('"set udp tunnel": at once', 'tunnel' in (a.until('debug udp', r'tunnel', 5) or re.search('', '')).string, a.ask('debug udp'))
+        for p in (a, b):
+            p.send('ready')
+        c.until('room', r'all_ready=1', 10)
+        time.sleep(1.5)
+        c.send('start')
+        check('the start reaches all three (a tunnelled player counts as heard)', all(p.wait(r'EVENT START', 15) is not None for p in (a, b, c)), c.ask('room'))
+        # Wynn (slot 1) lets no UDP out: the relay both ways.  Wren (slot 2) tunnels to the service but its UDP
+        # works: its probes punch a straight route to Cass all the same (the relay while that is tried)
+        check('routes: the player without UDP is reached by the relay, and reaches everybody by it',
+              c.until('room', r'slot 1 Wynn .*route=relay', 10) is not None and b.until('room', r'slot 0 .*route=relay.*\n.*slot 2 .*route=relay', 10) is not None,
+              c.ask('room') + b.ask('room'))
+        check('a tunnelled player whose UDP works still gets a straight route by punching', c.until('room', r'slot 2 Wren .*route=direct', 10) is not None, c.ask('room'))
+        c.ask('debug send 1 from UDP into the tunnel')
+        check('a datagram from a UDP player arrives in the tunnel', b.until('debug recv', r'from 0: from UDP into the tunnel', 5) is not None)
+        b.ask('debug send 0 from the tunnel to UDP')
+        check('one from the tunnel arrives over UDP', c.until('debug recv', r'from 1: from the tunnel to UDP', 5) is not None)
+        a.ask('debug send 1 from one tunnel to the other')
+        check('and from one tunnel to the other', b.until('debug recv', r'from 2: from one tunnel to the other', 5) is not None)
+        for _ in range(60):
+            b.ask('debug send 0 burst')
+        got = 0
+        for _ in range(80):
+            if 'from 1: burst' in c.ask('debug recv'):
+                got += 1
+        check('60 datagrams at once through the tunnel: all arrive (in order of sending)', got == 60, got)
+        for p in (a, b, c):
+            p.send('over')
+    finally:
+        for p in clients:
+            try:
+                p.quit()
+            except Exception:
+                pass
+        text = service.stop()
+        box.close()
+    check('the service ran through the fallback without an error, and counted the WebSocket links and the tunnel', 'Traceback' not in text and
+          re.search(r'[1-9]\d* WebSocket links, [1-9]\d* datagrams in / [1-9]\d* out by tunnel', text) is not None, text[-900:])
+
+
 def main():
     global VERBOSE
     parser = argparse.ArgumentParser()
@@ -704,6 +828,7 @@ def main():
         binary = args.cli or build_cli(work)
         run(check, binary, work)
         tls_run(check, binary, work)
+        ws_run(check, binary, work)
     finally:
         if made:
             shutil.rmtree(work, ignore_errors=True)

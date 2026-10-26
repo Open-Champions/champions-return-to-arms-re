@@ -27,12 +27,24 @@ datagrams (only between members of one started room, rate-limited).
             plain text - kept for tests on this computer and a LAN: an address that is
             neither loop-back nor private (or 0.0.0.0) is refused without TLS unless --plain
             is said.  The UDP side (hello, relay) is the same either way.
+  --ws-unix PATH
+            also take the conversation as a WebSocket (RFC 6455) on a Unix socket, for a web
+            server in front that terminates TLS on port 443 (nginx: `location /net2`,
+            proxy_pass to this socket with the Upgrade headers and X-Real-IP).  For networks
+            that let HTTPS out but break TLS to an unknown port.  The player's address is
+            taken from X-Real-IP (only on this socket: it is the web server's).
+  --ws-bind ADDRESS:PORT
+            the same on a TCP port (tests): inside TLS when --tls-cert is given.
+  Over either kind of conversation a client whose datagrams do not get through (UDP blocked
+  on its network) may send them as lines `dg d=<hex>` and gets the relay's datagrams back
+  the same way (the "tunnel"; docs/issues/native-rendezvous.md, "The fallback").
   --limit   one of LIMITS below, for a test that wants to hit it.
 
 Standard library only.  docs/issues/native-rendezvous.md has the wire format, what is
 stored and for how long, and the limits; tools/rendezvous/check.py is the self-test.
 """
 import argparse
+import base64
 import hashlib
 import hmac
 import ipaddress
@@ -100,11 +112,61 @@ LIMITS = {
     'relay_burst': 300,
     'relay_bytes_per_second': 262144,
     'datagram_bytes': 2048 + 16,
+    'tunnel_per_second': 200,       # datagrams carried in the conversation (`dg`), per connection, sustained ...
+    'tunnel_burst': 400,            # ... and at once
+    'tunnel_line_bytes': 2 * (2048 + 16) + 16,     # one `dg` line
+    # WebSocket (--ws-unix, --ws-bind)
+    'ws_request_bytes': 8192,       # the HTTP upgrade request
+    'ws_frame_bytes': 65536,        # one frame from a client
     # what is kept on disk
     'player_days': 400,             # a player not seen for so long is deleted with everything about it
     'request_days': 30,             # a friend request nobody answered
     'recent_days': 90,
 }
+
+TUNNEL = ('tunnel', 0)              # conn.seen of a player whose datagrams come in the conversation
+WS_GUID = b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+
+
+def ws_frame(payload, opcode=2):
+    """One unmasked WebSocket frame (server to client)."""
+    n = len(payload)
+    if n < 126:
+        head = struct.pack('!BB', 0x80 | opcode, n)
+    elif n < 65536:
+        head = struct.pack('!BBH', 0x80 | opcode, 126, n)
+    else:
+        head = struct.pack('!BBQ', 0x80 | opcode, 127, n)
+    return head + payload
+
+
+def ws_parse(buffer, most):
+    """The first whole frame of `buffer`: (opcode, payload, bytes used), None when more is needed;
+    raises ValueError for a frame no client may send (unmasked, too large)."""
+    if len(buffer) < 2:
+        return None
+    b0, b1 = buffer[0], buffer[1]
+    if not b1 & 0x80:
+        raise ValueError('an unmasked frame')
+    n, at = b1 & 0x7f, 2
+    if n == 126:
+        if len(buffer) < 4:
+            return None
+        n, at = struct.unpack_from('!H', buffer, 2)[0], 4
+    elif n == 127:
+        if len(buffer) < 10:
+            return None
+        n, at = struct.unpack_from('!Q', buffer, 2)[0], 10
+    if n > most:
+        raise ValueError('a frame too large')
+    if len(buffer) < at + 4 + n:
+        return None
+    mask = bytes(buffer[at:at + 4])
+    data = bytearray(buffer[at + 4:at + 4 + n])
+    for i in range(n):
+        data[i] ^= mask[i & 3]
+    return b0 & 0x0f, bytes(data), at + 4 + n
+
 
 E_ARGUMENT, E_STATE, E_LIMIT, E_NOT_FOUND, E_FULL, E_REFUSED, E_SERVICE = -2, -3, -4, -5, -6, -7, -8
 
@@ -363,6 +425,10 @@ class Conn:
         self.bad_joins = 0
         self.closing = False
         self.wants_write = False
+        self.ws = 0                 # WebSocket: 0 not one, 1 the HTTP upgrade is awaited, 2 open
+        self.ws_proxy = False       # behind the web server: the address comes from X-Real-IP
+        self.ws_in = bytearray()    # WebSocket: bytes not yet a whole request or frame
+        self.tunnel = Bucket(LIMITS['tunnel_per_second'], LIMITS['tunnel_burst'])
 
 
 class Member:
@@ -401,9 +467,10 @@ class Service:
                                                     'room', 'connect')}
         self.counts = {'connections': 0, 'refused': 0, 'lines': 0, 'limited': 0, 'registered': 0, 'logins': 0, 'rooms': 0, 'starts': 0,
                        'hello': 0, 'relayed': 0, 'relay_dropped': 0, 'relay_bytes': 0, 'stray': 0, 'deleted': 0, 'tls': 0, 'tls_failed': 0,
-                       'hello_refused': 0}
+                       'hello_refused': 0, 'ws': 0, 'tunnel_in': 0, 'tunnel_out': 0}
         self.last_sweep = now()
-        self.paused = []            # listeners not watched for a moment: (socket, since)
+        self.paused = []            # listeners not watched for a moment: (socket, since, kind)
+        self.unix_paths = []
 
     def log(self, text):
         if not self.quiet:
@@ -425,6 +492,33 @@ class Service:
         self.udp.append(udp)
         return tcp.getsockname()[1]
 
+    def listen_ws(self, address, port):
+        """The conversation as a WebSocket on a TCP port (inside TLS when the service has a certificate)."""
+        tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        tcp.bind((address, port))
+        tcp.listen(64)
+        tcp.setblocking(False)
+        self.sel.register(tcp, selectors.EVENT_READ, ('listen', 'ws'))
+        self.listeners.append(tcp)
+        return tcp.getsockname()[1]
+
+    def listen_ws_unix(self, path):
+        """The conversation as a WebSocket on a Unix socket, for the web server in front (it may connect: mode 0666)."""
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        unix = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        unix.bind(path)
+        os.chmod(path, 0o666)
+        unix.listen(64)
+        unix.setblocking(False)
+        self.sel.register(unix, selectors.EVENT_READ, ('listen', 'wsunix'))
+        self.listeners.append(unix)
+        self.unix_paths.append(path)
+        return path
+
     def close_all(self):
         for conn in list(self.conns.values()):
             self.drop(conn, tell=False)
@@ -435,8 +529,14 @@ class Service:
                 pass
             sock.close()
         self.listeners, self.udp = [], []
+        for path in self.unix_paths:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        self.unix_paths = []
 
-    def accept(self, listener):
+    def accept(self, listener, kind=None):
         try:
             sock, address = listener.accept()
         except (BlockingIOError, InterruptedError):
@@ -447,15 +547,18 @@ class Service:
             self.counts['refused'] += 1
             try:
                 self.sel.unregister(listener)
-                self.paused.append((listener, now()))
+                self.paused.append((listener, now(), kind))
             except (KeyError, ValueError):
                 pass
             return
-        ip = address[0]
-        many = len(self.conns) >= LIMITS['connections'] or self.per_address.get(ip, 0) >= LIMITS['connections_per_address']
-        if many or not self.windows['connect'].take(ip, LIMITS['connects_per_minute'], 60):
+        proxied = kind == 'wsunix'
+        # behind the web server the player's address is only known from the request (X-Real-IP):
+        # the limits per address are applied then (ws_upgrade)
+        ip = '(proxy)' if proxied else address[0]
+        many = len(self.conns) >= LIMITS['connections'] or (not proxied and self.per_address.get(ip, 0) >= LIMITS['connections_per_address'])
+        if many or (not proxied and not self.windows['connect'].take(ip, LIMITS['connects_per_minute'], 60)):
             self.counts['refused'] += 1
-            if not self.tls:
+            if not self.tls and not kind:
                 # in TLS nothing is said before a handshake, and a refused connection is not worth one
                 try:
                     sock.setblocking(False)
@@ -465,18 +568,22 @@ class Service:
             sock.close()
             return
         sock.setblocking(False)
-        try:
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        except OSError:
-            pass
-        if self.tls:
+        if not proxied:
             try:
-                sock = self.tls.wrap_socket(sock, server_side=True, do_handshake_on_connect=False)
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+        tls = self.tls if not proxied else None
+        if tls:
+            try:
+                sock = tls.wrap_socket(sock, server_side=True, do_handshake_on_connect=False)
             except (ssl.SSLError, OSError):
                 self.counts['tls_failed'] += 1
                 sock.close()
                 return
-        conn = Conn(sock, ip, tls=self.tls is not None)
+        conn = Conn(sock, ip, tls=tls is not None)
+        if kind:
+            conn.ws, conn.ws_proxy = 1, proxied
         self.conns[sock] = conn
         self.keys[conn.udp_key] = conn
         self.per_address[ip] = self.per_address.get(ip, 0) + 1
@@ -514,14 +621,15 @@ class Service:
     def send(self, conn, text):
         if conn.closing:
             return
-        conn.outbuf += text.encode('utf-8') + b'\n'
+        data = text.encode('utf-8') + b'\n'
+        conn.outbuf += ws_frame(data) if conn.ws else data
         if len(conn.outbuf) > LIMITS['output_bytes']:
             self.drop(conn)
             return
         self.flush(conn)
 
     def flush(self, conn):
-        if conn.handshaking:
+        if conn.handshaking or conn.ws == 1:
             return
         try:
             if conn.tls:
@@ -547,7 +655,16 @@ class Service:
 
     def last_words(self, conn, text):
         """A 'bye' before a close, after what was waiting to go (best effort: nothing waits for it)."""
-        if conn.handshaking:
+        if conn.handshaking or conn.ws == 1:
+            return
+        if conn.ws:
+            # after what is waiting (whole frames: a frame cut in two would spoil the rest)
+            if conn.tls_retry:
+                return
+            try:
+                conn.sock.send((bytes(conn.outbuf) + ws_frame(text.encode('utf-8') + b'\n') + ws_frame(b'', 8))[:16384])
+            except OSError:
+                pass
             return
         head = bytes(conn.outbuf[:16384])
         if len(conn.outbuf) > len(head):
@@ -604,17 +721,39 @@ class Service:
         if not data:
             self.drop(conn)
             return
+        if conn.ws:
+            data = self.ws_read(conn, data)
+            if data is None:
+                return
         conn.inbuf += data
         while conn.sock in self.conns:
             cut = conn.inbuf.find(b'\n')
             if cut < 0:
-                if len(conn.inbuf) > LIMITS['line_bytes']:
+                if len(conn.inbuf) > (LIMITS['tunnel_line_bytes'] if conn.inbuf.startswith(b'dg ') else LIMITS['line_bytes']):
                     self.drop(conn, why=(E_LIMIT, 'A line was too long.'))
                 return
             raw, conn.inbuf = conn.inbuf[:cut], conn.inbuf[cut + 1:]
-            if len(raw) > LIMITS['line_bytes']:
+            tunnel = raw.startswith(b'dg ')
+            if len(raw) > (LIMITS['tunnel_line_bytes'] if tunnel else LIMITS['line_bytes']):
                 self.drop(conn, why=(E_LIMIT, 'A line was too long.'))
                 return
+            if tunnel:
+                # a datagram in the conversation: its own rate (a game sends about 30 a second per player)
+                conn.heard = now()
+                if conn.pid is None:
+                    self.drop(conn, why=(E_STATE, 'Log in first.'))
+                    return
+                if not conn.tunnel.take():
+                    self.counts['limited'] += 1
+                    self.counts['relay_dropped'] += 1
+                    continue
+                try:
+                    datagram = bytes.fromhex(raw[5:].decode('ascii')) if raw.startswith(b'dg d=') else b''
+                except (ValueError, UnicodeDecodeError):
+                    datagram = b''
+                self.counts['tunnel_in'] += 1
+                self.on_datagram(datagram, TUNNEL, None, via=conn)
+                continue
             if not conn.lines.take():
                 self.counts['limited'] += 1
                 self.drop(conn, why=(E_LIMIT, 'Too many lines at once.'))
@@ -631,6 +770,85 @@ class Service:
                 self.drop(conn, why=(E_ARGUMENT, 'That line was not understood.'))
                 return
             self.handle(conn, verb, fields)
+
+    # ---- WebSocket ---------------------------------------------------------------------------
+    def ws_read(self, conn, data):
+        """Bytes of a WebSocket connection: the upgrade request first, then frames.  What the frames
+        carry (the conversation's bytes) is returned; None when the connection was dropped."""
+        conn.ws_in += data
+        if conn.ws == 1:
+            end = conn.ws_in.find(b'\r\n\r\n')
+            if end < 0:
+                if len(conn.ws_in) > LIMITS['ws_request_bytes']:
+                    self.drop(conn)
+                    return None
+                return b''
+            request, conn.ws_in = bytes(conn.ws_in[:end]), conn.ws_in[end + 4:]
+            if not self.ws_upgrade(conn, request):
+                return None
+        out = bytearray()
+        while True:
+            try:
+                frame = ws_parse(conn.ws_in, LIMITS['ws_frame_bytes'])
+            except ValueError:
+                self.drop(conn)
+                return None
+            if frame is None:
+                break
+            opcode, payload, used = frame
+            del conn.ws_in[:used]
+            if opcode in (0, 1, 2):
+                out += payload
+            elif opcode == 8:                               # close
+                self.drop(conn)
+                return None
+            elif opcode == 9:                               # ping: pong
+                conn.outbuf += ws_frame(payload[:125], 10)
+                self.flush(conn)
+        return bytes(out)
+
+    def ws_upgrade(self, conn, request):
+        lines = request.decode('latin-1').split('\r\n')
+        head = {}
+        for text in lines[1:]:
+            name, sep, value = text.partition(':')
+            if sep:
+                head[name.strip().lower()] = value.strip()
+        key = head.get('sec-websocket-key', '')
+        if not lines[0].startswith('GET ') or 'websocket' not in head.get('upgrade', '').lower() or not key:
+            try:
+                conn.sock.send(b'HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n')
+            except OSError:
+                pass
+            self.drop(conn)
+            return False
+        if conn.ws_proxy:
+            real = head.get('x-real-ip', '')
+            try:
+                socket.inet_aton(real)
+                ok = real.count('.') == 3
+            except OSError:
+                ok = False
+            if not ok:
+                self.drop(conn)
+                return False
+            # the player's own address from now on: the limits per address count it
+            self.per_address[conn.address] -= 1
+            if self.per_address[conn.address] <= 0:
+                del self.per_address[conn.address]
+            conn.address = real
+            self.per_address[real] = self.per_address.get(real, 0) + 1
+            if self.per_address[real] > LIMITS['connections_per_address'] or not self.windows['connect'].take(real, LIMITS['connects_per_minute'], 60):
+                self.counts['refused'] += 1
+                self.drop(conn)
+                return False
+        accept = base64.b64encode(hashlib.sha1(key.encode('latin-1') + WS_GUID).digest())
+        reply = b'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + accept + b'\r\n\r\n'
+        conn.outbuf[:0] = reply                             # before the greeting that waits
+        conn.ws = 2
+        self.counts['ws'] += 1
+        self.flush(conn)
+        return conn.sock in self.conns
 
     # ---- the conversation ----------------------------------------------------------------
     def answer(self, conn, fields, err=0, text='', **more):
@@ -1220,8 +1438,9 @@ class Service:
             for other_slot, other in enumerate(room.members):
                 p = self.store.player(other.conn.pid)
                 eps = []
-                if other is not m:
+                if other is not m and other.conn.seen != TUNNEL:
                     eps = ['%s:%d' % other.conn.seen] + ['%s:%d' % e for e in other.conn.local if e != other.conn.seen][:3]
+                # a member whose datagrams come in its conversation has no address to punch to: the relay carries its game
                 self.send(c, line('peer', slot=other_slot, id=other.conn.pid, name=p['name'], eps=','.join(eps), cname=p['cname'], ccls=p['ccls'],
                                   clevel=p['clevel']))
             self.send(c, 'startend')
@@ -1283,26 +1502,49 @@ class Service:
             data, address = sock.recvfrom(4096)
         except (BlockingIOError, OSError):
             return False
+        self.on_datagram(data, address, sock)
+        return True
+
+    def deliver(self, conn, data, sock=None):
+        """A datagram to a player: to the address its hello came from, or in its conversation."""
+        if conn.seen == TUNNEL:
+            self.counts['tunnel_out'] += 1
+            self.send(conn, 'dg d=' + data.hex())
+            return
+        (sock or self.udp[0]).sendto(data, conn.seen)
+
+    def on_datagram(self, data, address, sock, via=None):
+        """One datagram: from a UDP socket (address = where from), or carried in the conversation of
+        `via` (address = TUNNEL; then only that player's own key counts)."""
         if len(data) < 16 or len(data) > LIMITS['datagram_bytes'] or data[:2] != b'N2':
             self.counts['stray'] += 1
-            return True
+            return
         kind, slot = data[2], data[3]
         session = struct.unpack_from('<I', data, 4)[0]
         conn = self.keys.get(bytes(data[8:16]))
-        if conn is None or conn.pid is None:
+        if conn is None or conn.pid is None or (via is not None and conn is not via):
             self.counts['stray'] += 1                       # nothing is answered to somebody we do not know
-            return True
+            return
         if kind == 0x20:
             t = now()
+            if via is not None:
+                # the conversation's own player: its datagrams come and go in it from now on
+                if not self.windows['hello'].take(conn.address, LIMITS['hello_per_second'] * 10, 10):
+                    self.counts['limited'] += 1
+                    return
+                conn.seen, conn.seen_at = TUNNEL, t
+                self.counts['hello'] += 1
+                self.deliver(conn, b'N2\x21\x00\x00\x00\x00\x00' + socket.inet_aton(conn.address) + struct.pack('<H', 0))
+                return
             if LIMITS['hello_same_address'] and address[0] != conn.address:
                 # the key alone is not enough (it travels in every datagram): a hello from another
                 # IP address than the player's own TCP connection could point the relay and the
                 # other players at an address that never asked for it
                 self.counts['hello_refused'] += 1
-                return True
+                return
             if not self.windows['hello'].take(address[0], LIMITS['hello_per_second'] * 10, 10):
                 self.counts['limited'] += 1
-                return True
+                return
             conn.seen, conn.seen_at = address, t
             self.counts['hello'] += 1
             try:
@@ -1313,27 +1555,26 @@ class Service:
             room = conn.room
             if room is None or not room.started or session != room.session or slot >= len(room.members):
                 self.counts['relay_dropped'] += 1
-                return True
+                return
             me = self.member(room, conn)
             target = room.members[slot].conn
             # only from the address this member was seen at, only to an address the other one said hello from
             if target is conn or conn.seen != address or target.seen is None or now() - target.seen_at > LIMITS['seen_seconds']:
                 self.counts['relay_dropped'] += 1
-                return True
+                return
             if not conn.relay.take() or not conn.relay_bytes.take(len(data)):
                 self.counts['relay_dropped'] += 1
                 self.counts['limited'] += 1
-                return True
+                return
             out = b'N2\x11' + bytes([room.members.index(me)]) + data[4:8] + data[16:]
             try:
-                sock.sendto(out, target.seen)
+                self.deliver(target, out, sock)
                 self.counts['relayed'] += 1
                 self.counts['relay_bytes'] += len(out)
             except OSError:
                 self.counts['relay_dropped'] += 1
         else:
             self.counts['stray'] += 1
-        return True
 
     # ---- the clock ---------------------------------------------------------------------------
     def sweep(self):
@@ -1361,16 +1602,17 @@ class Service:
         c = self.counts
         return ('%d connections (%d players online), %d rooms (%d started); since start: %d connections, %d refused, %d lines, %d registered, '
                 '%d logins, %d rooms, %d starts, %d hello, %d relayed (%d bytes), %d relay dropped, %d limited, %d strays, %d deleted, '
-                '%d TLS handshakes (%d failed), %d hellos from another address'
+                '%d TLS handshakes (%d failed), %d hellos from another address, %d WebSocket links, %d datagrams in / %d out by tunnel'
                 % (len(self.conns), len(self.online), len(self.rooms), sum(1 for r in self.rooms.values() if r.started), c['connections'],
                    c['refused'], c['lines'], c['registered'], c['logins'], c['rooms'], c['starts'], c['hello'], c['relayed'], c['relay_bytes'],
-                   c['relay_dropped'], c['limited'], c['stray'], c['deleted'], c['tls'], c['tls_failed'], c['hello_refused']))
+                   c['relay_dropped'], c['limited'], c['stray'], c['deleted'], c['tls'], c['tls_failed'], c['hello_refused'], c['ws'],
+                   c['tunnel_in'], c['tunnel_out']))
 
     def step(self, timeout=0.25):
         for key, mask in self.sel.select(timeout):
             kind, conn = key.data
             if kind == 'listen':
-                self.accept(key.fileobj)
+                self.accept(key.fileobj, conn)
             elif kind == 'udp':
                 for _ in range(256):
                     if not self.datagram(key.fileobj):
@@ -1384,8 +1626,8 @@ class Service:
                 if mask & selectors.EVENT_READ and conn.sock in self.conns:
                     self.read(conn)
         if self.paused and now() - self.paused[0][1] > 1.0:
-            for sock, _ in self.paused:
-                self.sel.register(sock, selectors.EVENT_READ, ('listen', None))
+            for sock, _, how in self.paused:
+                self.sel.register(sock, selectors.EVENT_READ, ('listen', how))
             self.paused = []
         if now() - self.last_sweep > 1.0:
             self.last_sweep = now()
@@ -1401,6 +1643,9 @@ def main():
     parser.add_argument('--tls-cert', help='the certificate chain (PEM): the TCP conversation is inside TLS')
     parser.add_argument('--tls-key', help='its private key (PEM)')
     parser.add_argument('--plain', action='store_true', help='allow an address reachable from the Internet without TLS')
+    parser.add_argument('--ws-unix', help='also the conversation as a WebSocket on this Unix socket (for a web server in front)')
+    parser.add_argument('--ws-bind', action='append', default=[], metavar='ADDRESS:PORT',
+                        help='also the conversation as a WebSocket on this TCP address (tests); inside TLS with --tls-cert')
     parser.add_argument('--limit', action='append', default=[], metavar='NAME=VALUE')
     parser.add_argument('--quiet', action='store_true')
     parser.add_argument('--status-every', type=float, default=0)
@@ -1453,6 +1698,15 @@ def main():
     for address in binds:
         port = service.listen(address, args.port)
         service.log('listening on %s, TCP and UDP port %d, %s' % (address, port, 'TLS' if context else 'plain text'))
+    for item in args.ws_bind:
+        host, _, number = item.rpartition(':')
+        if not args.tls_cert and not args.plain and needs_tls(host):
+            parser.error('--ws-bind %s: reachable from the Internet without TLS' % item)
+        got = service.listen_ws(host, int(number))
+        service.log('WebSocket on %s, TCP port %d, %s' % (host, got, 'TLS' if context else 'plain text'))
+    if args.ws_unix:
+        service.listen_ws_unix(args.ws_unix)
+        service.log('WebSocket on the Unix socket %s (for the web server in front; the address from X-Real-IP)' % args.ws_unix)
     service.log('at most %d connections at once' % LIMITS['connections'])
     if purged:
         service.log('%d players not seen for %d days were deleted' % (purged, LIMITS['player_days']))

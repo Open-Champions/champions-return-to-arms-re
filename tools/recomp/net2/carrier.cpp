@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <random>
 
@@ -48,7 +49,11 @@ std::string endpoint_text(const Endpoint& e) {
     return text;
 }
 
-Carrier::Carrier() {}
+Carrier::Carrier() {
+    // tests: a network that lets no UDP out (every datagram this socket would send is dropped)
+    const char* test = getenv("RTA_NET2_TEST_NO_UDP");
+    no_udp_ = test && *test && *test != '0';
+}
 Carrier::~Carrier() { close(); }
 
 bool Carrier::open(const std::string& bind_to, std::string& problem) {
@@ -137,7 +142,9 @@ void Carrier::relay(const Endpoint& service, const uint8_t key[8]) {
 }
 
 void Carrier::raw(const Endpoint& to, uint8_t kind, uint8_t slot, uint32_t session, const uint8_t* a, size_t an, const uint8_t* b, size_t bn) {
-    if (fd_ == -1 || !to.set() || HEAD + an + bn > MOST + 32) return;
+    if (fd_ == -1 || HEAD + an + bn > MOST + 32) return;
+    bool to_tunnel = tunnel_ && (kind == KIND_HELLO || kind == KIND_RELAY);
+    if (!to_tunnel && !to.set()) return;
     uint8_t out[MOST + 64];
     out[0] = 'N';
     out[1] = '2';
@@ -146,7 +153,19 @@ void Carrier::raw(const Endpoint& to, uint8_t kind, uint8_t slot, uint32_t sessi
     put32(out + 4, session);
     if (an) memcpy(out + HEAD, a, an);
     if (bn) memcpy(out + HEAD + an, b, bn);
+    if (to_tunnel) {
+        if (tunnel_out.size() < 512) tunnel_out.emplace_back(out, out + HEAD + an + bn);
+        tunnelled_out++;
+        return;
+    }
+    if (no_udp_) return;
     sock::send_to((sock::Handle)fd_, out, HEAD + an + bn, to.ip, to.port);
+}
+
+void Carrier::inject(const uint8_t* data, size_t size, int64_t now) {
+    if (size > MOST + 64) return;
+    tunnelled_in++;
+    take(service_, true, data, size, now);
 }
 
 void Carrier::hello(const Endpoint& service, const uint8_t key[8]) {
@@ -182,6 +201,54 @@ int Carrier::receive(int& from_slot, uint8_t* into, size_t capacity) {
     return (int)size;
 }
 
+void Carrier::take(const Endpoint& from, bool from_service, const uint8_t* in, size_t got, int64_t now) {
+    if (got < HEAD || in[0] != 'N' || in[1] != '2') { strays++; return; }
+    uint8_t kind = in[2];
+    int slot = in[3];
+    uint32_t session = get32(in + 4);
+    const uint8_t* body = in + HEAD;
+    size_t size = got - HEAD;
+    if (kind == KIND_SEEN) {
+        if (from_service || !service_.set()) {
+            answered_ = true;
+            // in the tunnel the port is 0: the service saw no UDP socket, only the address
+            if (size >= 6 && (body[4] | body[5])) { seen_.ip = ((uint32_t)body[0] << 24) | (body[1] << 16) | (body[2] << 8) | body[3]; seen_.port = (uint16_t)(body[4] | (body[5] << 8)); }
+        } else strays++;
+        return;
+    }
+    if (count_ == 0 || session != session_ || slot < 0 || slot >= count_ || slot == me_) { strays++; return; }
+    Peer& p = peers_[slot];
+    if (kind == KIND_GAME || kind == KIND_RELAYED) {
+        if (kind == KIND_RELAYED && !from_service) { strays++; return; }
+        if (queue_.size() < 1024) queue_.push_back(Datagram{slot, std::vector<uint8_t>(body, body + size)});
+        received++;
+        if (kind == KIND_RELAYED) relayed_in++;
+        else p.last_heard = now;
+    } else if (kind == KIND_PROBE) {
+        if (policy_ == RELAY_FORCE || size < 8) return;
+        raw(from, KIND_ANSWER, (uint8_t)me_, session_, body, 8);
+        // a probe from an address not on the list: the address their router gave this path
+        bool known = false;
+        for (const Endpoint& e : p.tries) known |= e == from;
+        if (!known && p.tries.size() < 8 && p.state != NET2_ROUTE_DIRECT) p.tries.push_back(from);
+    } else if (kind == KIND_ANSWER) {
+        if (policy_ == RELAY_FORCE || size < 8) return;
+        uint64_t nonce;
+        memcpy(&nonce, body, 8);
+        int found = -1;
+        for (int k = 0; k < 16; k++)
+            if (nonce && p.nonces[k] == nonce) found = k;
+        if (found < 0) return;
+        p.rtt = (int)(now - p.sent_at[found]);
+        p.nonces[found] = 0;
+        p.last_heard = now;
+        if (p.state != NET2_ROUTE_DIRECT) {
+            p.direct = from;
+            p.state = NET2_ROUTE_DIRECT;
+        }
+    } else strays++;
+}
+
 void Carrier::poll(int64_t now) {
     if (fd_ == -1) return;
     uint8_t in[MOST + 64];
@@ -189,53 +256,14 @@ void Carrier::poll(int64_t now) {
         Endpoint from;
         int got = sock::recv_from((sock::Handle)fd_, in, sizeof in, from.ip, from.port);
         if (got < 0) break;
-        if ((size_t)got < HEAD || in[0] != 'N' || in[1] != '2') { strays++; continue; }
-        uint8_t kind = in[2];
-        int slot = in[3];
-        uint32_t session = get32(in + 4);
-        const uint8_t* body = in + HEAD;
-        size_t size = (size_t)got - HEAD;
-        if (kind == KIND_SEEN) {
-            if (from == service_ || !service_.set()) {
-                if (size >= 6) { seen_.ip = ((uint32_t)body[0] << 24) | (body[1] << 16) | (body[2] << 8) | body[3]; seen_.port = (uint16_t)(body[4] | (body[5] << 8)); }
-            } else strays++;
-            continue;
-        }
-        if (count_ == 0 || session != session_ || slot < 0 || slot >= count_ || slot == me_) { strays++; continue; }
-        Peer& p = peers_[slot];
-        if (kind == KIND_GAME || kind == KIND_RELAYED) {
-            if (kind == KIND_RELAYED && !(from == service_)) { strays++; continue; }
-            if (queue_.size() < 1024) queue_.push_back(Datagram{slot, std::vector<uint8_t>(body, body + size)});
-            received++;
-            if (kind == KIND_RELAYED) relayed_in++;
-            else p.last_heard = now;
-        } else if (kind == KIND_PROBE) {
-            if (policy_ == RELAY_FORCE || size < 8) continue;
-            raw(from, KIND_ANSWER, (uint8_t)me_, session_, body, 8);
-            // a probe from an address not on the list: the address their router gave this path
-            bool known = false;
-            for (const Endpoint& e : p.tries) known |= e == from;
-            if (!known && p.tries.size() < 8 && p.state != NET2_ROUTE_DIRECT) p.tries.push_back(from);
-        } else if (kind == KIND_ANSWER) {
-            if (policy_ == RELAY_FORCE || size < 8) continue;
-            uint64_t nonce;
-            memcpy(&nonce, body, 8);
-            int found = -1;
-            for (int k = 0; k < 16; k++)
-                if (nonce && p.nonces[k] == nonce) found = k;
-            if (found < 0) continue;
-            p.rtt = (int)(now - p.sent_at[found]);
-            p.nonces[found] = 0;
-            p.last_heard = now;
-            if (p.state != NET2_ROUTE_DIRECT) {
-                p.direct = from;
-                p.state = NET2_ROUTE_DIRECT;
-            }
-        } else strays++;
+        if (no_udp_) continue;
+        take(from, from == service_, in, (size_t)got, now);
     }
     for (int slot = 0; slot < count_; slot++) {
         if (slot == me_) continue;
         Peer& p = peers_[slot];
+        // nothing to punch toward (a player whose datagrams come in its conversation): the relay
+        if (p.state == NET2_ROUTE_TRYING && p.tries.empty() && relay_ok_ && policy_ != RELAY_NEVER) p.state = NET2_ROUTE_RELAY;
         if (p.state == NET2_ROUTE_NONE || p.tries.empty()) continue;
         if (p.since == 0) p.since = now;
         if (policy_ == RELAY_FORCE) {
@@ -274,6 +302,10 @@ std::string Carrier::text() const {
     snprintf(part, sizeof part, "session %08x, %d players, I am %d, socket %s", session_, count_, me_, endpoint_text(local()).c_str());
     out = part;
     if (seen_.set()) out += ", seen as " + endpoint_text(seen_);
+    if (tunnel_) {
+        snprintf(part, sizeof part, ", tunnel (%llu out, %llu in)", (unsigned long long)tunnelled_out, (unsigned long long)tunnelled_in);
+        out += part;
+    }
     for (int slot = 0; slot < count_; slot++) {
         if (slot == me_) continue;
         const Peer& p = peers_[slot];
