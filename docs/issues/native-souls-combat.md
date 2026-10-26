@@ -18,6 +18,22 @@ either is in the repository.
 
 ## STATE (rewritten at every step; read this first after a stop)
 
+**2026-10-25, fourth round - attributes (Vigor, Mind, Endurance, Strength, Dexterity, Intelligence, Faith) and the spellbook
+(the class's skills attuned to slots at save points, spell scaling by Intelligence and Faith), the character sheet in the
+native overlay and in Godot (`hud/sheet.gd`); built, run offline, in Godot and in a room. Not committed.**
+
+- Program: `local/recomp-out/bin/rta_app_next`, `rta_app_next_orig` (the rig). Design 2.9, numbers 3.4 (benched against the
+  owner's copy: the stat curves and the catalysts), runs 4.9 / 4.10.
+- **Ran**: mode off, the rig byte for byte in overhead and first person with the final sources (`off-over11`, `off-first11`);
+  offline every piece with its numbers (4.9); Godot with the r26 library (`local/godot-r26/test/sheet1`); a two-copy room
+  (`stats2c`, 5,630 ticks, 383 columns) through a level-up, points spent, a spell taken out of its slot, a level change,
+  deaths and reloads.
+- Built: Windows (`build_win.py --no-game`), Linux aarch64 in the container, the Godot library (`local/godot-r26`, snapshot
+  `--refresh` + `lib`); `hud/sheet.gd`, `hud/souls.gd` parsed by Godot 4.5.2 `--check-only`.
+- **Not done this round**: a three-copy room; a spell hit inside a room; a memory-card save and load with the spot; the
+  game's own level-up screen extended (its rows are fixed in its code: the mode's points have the mode's own screen); a
+  Windows or Linux run.
+
 **2026-10-21, third round - weapons (equip load, weapon classes, stat scaling with grades, upgrades +1..+10 with the game's
 own whetstones, weapon arts from the game's own skills, two-handing); built, run offline and in rooms. Not committed.**
 
@@ -275,11 +291,99 @@ percent, "2H"; the equip load against the capacity and its tier (amber heavy, re
 art's cooldown; near a save point the next upgrade's price. `hud/souls.gd` draws the same three lines in Godot from the
 block (the weapon's name from the local words +0x1a0).
 
+### 2.9 The fourth round (2026-10-25): attributes and the spellbook
+
+Everything below is in the same wrapper of `Player_run` and in `Creature_takeDamage`, only with the mode in force; every
+number is in `soulscombat::Tuning` (3.4). The block's version is 4: an attributes part per player at +0x600 + slot x 0x80,
+mana costs and ranks per player at +0xa00 + slot x 0x40, header words +0x5e8..+0x5fc (`soulscombat.h` lists the words). All
+of it is written in the tick by every machine alike and is a tick-log column of 4.10. Nothing of the game's or Elden Ring's
+data is in the repository: the spells are the character's own ability records read at run time, their names the skills'
+own internal names read from memory for the HUD, and every figure is ours ("benched against the owner's copy", 3.4).
+
+| Attribute | Where it is | What it does in the mode |
+|---|---|---|
+| **Vigor** | the game's stamina statistic (record +0x84 base, +0x9c effective) | the game's own maximum hit points (`level x a + stamina x b - c`, `player_recalcStats`) |
+| **Mind** | the mode's: the class's start + the points spent (the save spot) | the maximum mana: the game's own + `mana_per_mind_permille` of it per point spent; spell slots |
+| **Endurance** | the mode's | the stamina bar `stamina_max + stamina_per_endurance` per point spent; the equip load's capacity (`load_per_endurance`; the weapons round had the game's stamina here) |
+| **Strength** | the game's strength (+0x78 / +0x90) | the game's own (attack rating, load limit); the weapons' scaling; the capacity |
+| **Dexterity** | the game's dexterity (+0x80 / +0x98) | the game's own; the weapons' scaling |
+| **Intelligence** | the game's intelligence (+0x7c / +0x94) | the game's own maximum mana; the staves' scaling; spell scaling; spell slots |
+| **Faith** | the mode's | spell scaling |
+
+| Mechanic | Input (lockstep row) | Rule | The game's own pieces used |
+|---|---|---|---|
+| **Points** | - | every level the character has (record +0x59, the game's own experience and level-up) gives `points_per_level` of the mode's points: unspent = (level - 1) x `points_per_level` - the points spent. The game's own three points a level stay the game's: its level-up screen spends them on Vigor, Strength, Dexterity and Intelligence as before (the screen is per machine and reaches the simulation through inventory message 6, `docs/spec/levelup.md`; it was not extended: its rows are fixed in its code) | `player_giveExp` 0x1d3150 (the level), the level-up screen |
+| **The character screen** | L3 held + potion B (L2; keys hold X, press 1) within `save_reach` of a save point, standing (state 2) | opens the mode's screen (a word of the block: simulation state); while open the character stands (the stick and every button are taken from the row before the game's run and put back after), up / down choose a row (Mind, Endurance, Faith, then one row per spell of the book), right spends a point (up to `stat_max`, at most 127 spent on one) or puts the chosen spell into a free slot, left takes it out of its slot; block, L3 + L2 again, leaving the save point, a hit that changes the state or a death close it | `Savepoint_run` (the save points, 2.8) |
+| **Spellbook** | - | the character's ability records (15 at record +0x4440) with a skill id 1..101, not the older heavy attack (0x25, the mode's hold). Spell slots = `slot_base` + Mind / `slot_per_mind` + Intelligence / `slot_per_int`, 1..`slot_max` (at most 9); the attuned spells are the marked records, at most the slots (the first in record order). Until the screen is used the first spells of the book are attuned | the ability records |
+| **Attunement** | ability A / B (the game's own skill buttons, tables 0x41b990 / 0x41b9a0) | a press of a skill button whose bound record (+0x4a84 / +0x4a85) is in the book and in no slot is taken from the row (not cast; counted as refused); a spell in a slot is cast by the game exactly as before (its state 5 or instant cast, its mana price, its recast) | `Player_run` state 2 A, instant abilities |
+| **Cast cost** | - | the game's own: `manaCost(rank)` (the skill's virtual slot 5 at the character's rank of it; the older records' +0x2c), read in the tick for the sheet | the skill's slot 5 |
+| **Spell scaling** | - | a cast is seen when the game's recast counter (object +0x4ae) starts from 0 in the run and the selected record is a spell (a skill that is not passive and not of kind 8 - the bow and axe skills fire through the shot -; of the older records not the arrows). For `spell_hit_ticks` after it (ended early by a shot or a death) every hit of the caster on a creature that is not a swing (state 1) or a weapon art is the spell's: x (100 + (`sc_int` x curve(Intelligence) + `sc_faith` x curve(Faith)) / 100) % by the class, in place of the weapon's percentage (the weapons round applied the weapon's to those hits too). Grade letters as the weapons' | `Creature_takeDamage` |
+
+**Where it is kept.** Mind, Endurance, Faith (the points spent on each) and the attuned spells are kept in the last 6 bytes
+of the player record, which the game never reads or writes: +0x4c2a..+0x4c2f, after the marker byte +0x4c29 that
+`player_initNewCharacter` and `player_importCharacter` set. `tools/fieldxref.py 4c2a-4c2f --static 4d8af0,4c30,4` finds no
+access in any function (+0x4c29 only the two marker stores); the whole-record copies take them along: `net_launchUpdate` (the
+launch's copy of every record), `save_packLocalPlayer` / `save_unpackLocalPlayer` and the memory card's whole record
+(`save_snapshotPlayer` rewrites only the item pointers, `docs/audio-save.md`). Layout, 48 bits, low first: Mind, Endurance,
+Faith (7 bits each), the attuned ability records (15 bits, one per record), the tag 0xa (4 bits), a check (FNV-1a of the 40
+bits below it, 8 bits). Anything else there reads as "nothing spent, the first spells attuned"; a fresh record has zeros
+there. **Ran**: kept through a level change offline (`t6/lc`) and in a room through the level change, four deaths and two
+reloads after everybody died (4.10). A first try used +0x43e0..+0x43ef (no access found there either), but **Ran**: a level
+change clears them with the object pointer +0x43d8 (a block clear that the cross-reference does not see) - not used. So the
+attributes are on the memory card with the character and go to every machine at a net game's launch, like the weapons'
+upgrades (2.8). The unmodified game ignores the bytes (Read, as above; not run with such a save on the unmodified program).
+No sidecar file. Attunement is by ability-record index: a skill learned later that makes the game rebuild its records in
+another order can move a mark to another spell (the same on every machine; Read only - not seen). The game's own statistics
+(Vigor, Strength, Dexterity, Intelligence) are not changed by the mode: a character played in Hardcore and then in Classic has
+exactly the game's own statistics.
+
+**The maximum mana.** The game rewrites record +0xc4 whenever it recalculates the character (a level gained, an item put on
+or off, a new object; `player_recalcStats` 0x1b6458 for every player) and then puts the mana down to it. Each tick of a real
+player, before and after its run: when +0xc4 is not the value the mode wrote last, it is the game's own new maximum (kept in
+the block), and mana the game's recalculation cut is given back; then +0xc4 = the game's + the Mind bonus (single float
+operations). At a new object the mode calls `player_recalcStats` once, so the game's own maximum is never mistaken for one
+with a bonus saved in it.
+
+Test aid (changes the simulation; never used outside tests): the block word +0x5e8 = slot + 1 | amount << 8 gives that
+player `amount` experience through the game's own `player_giveExp` in its next tick (its levels, the game's points, the
+refill) - a room's `--tick-do` writes it on every copy in one lockstep tick.
+
+Presentation (our own text): the native overlay draws the **character sheet** - the class, level and points; the seven
+attributes with the hit points, the mana, the stamina bar's length, the equip load and its tier; the weapon's grades and
+percentage; the spells' grades, percentage and slots; every spell of the book with its rank and mana cost, the attuned ones marked;
+on the open screen the chosen row marked and the keys - while the screen is open, and on this machine with
+`app souls sheet`. Under the stamina bar: "LEVEL UP: N POINTS" while points are unspent, "CHARACTER: HOLD L3 + L2" near a
+save point. Godot: `hud/sheet.gd` (new, added by `hud/souls.gd`) draws the same sheet from the block (P toggles it on this
+machine), `hud/souls.gd` the level-up line and the stamina bar's length per player. The local words for them: +0x1c0 the
+sheet asked for, +0x1d0..+0x1dc hit points and mana, +0x1e0 the book's records in order, +0xb00 the records' names.
+
 ## 3. The numbers
 
 All of them are one struct, `soulscombat::Tuning` (`soulscombat.h`); `combat.<name> = value`
 in the settings file or `app souls set NAME VALUE` changes one offline; online the room's figure
 holds them equal. Stamina in hundredths, ticks of 60 a second.
+
+### 3.4 The fourth round's numbers: attributes and spells (2026-10-25)
+
+**Benched against the owner's copy** where its regulation has the figure: the stat correction graphs of hit points by Vigor,
+mana (FP) by Mind, stamina by Endurance and equip load by Endurance, and the catalysts' scaling (staves, seals: median of the
+base weapons' coefficients) - read by a local script beside the earlier ones (`bench_stats.py` under the local reference
+folder; output under `local/stats-round/`), nothing of it in the repository. Our statistics are 2 x the reference's (3.3),
+so one of the reference's levels (one point) is two of our points.
+
+| What | Reference (the owner's copy) | Our value |
+|---|---|---|
+| points a level | one point a level | `points_per_level` 2 (our scale), on Mind, Endurance and Faith only (the game's own three a level stay on its four) |
+| mana by Mind | 79 at 10, 121 at 20, 235 at 40, 350 at 60: about 5 % of a low-level bar per point | `mana_per_mind_permille` 25: +2.5 % of the game's own maximum per our point (5 % per reference point). Ran: a shaman of level 2, 42.2 -> 43.3 -> 44.3 with two points |
+| stamina by Endurance | 96 at 10, 113 at 20, 130 at 30, 155 at 50: about 1.7 a point early | `stamina_per_endurance` 90 (0.9 of our 100 a point; 1.8 per reference point) |
+| equip load by Endurance | 48 at 10, 64 at 20, 91 at 40, 120 at 60 | `load_per_endurance` 1.00 a point (the weapons round's value, now on Endurance) |
+| hit points by Vigor | 415 at 10, 652 at 20, 1450 at 40 | the game's own (Vigor is its stamina statistic) |
+| catalyst scaling | staves: strength 12, intelligence 90; seals: strength 15, faith 80 | `sc_int` / `sc_faith` by class: wizard 90 / 0 (a staff), cleric 0 / 80 (a seal), shaman 30 / 60, shadow knight 45 / 40, ranger 25 / 25, barbarian 0 / 20, berserker 0 / 20; the weapons' curve |
+| not in the regulation (our own) | where the classes start, slots, the spell window | `start_mind` 20 / 36 / 28 / 26 / 44 / 20 / 38, `start_endurance` 40 / 30 / 36 / 34 / 24 / 42 / 28, `start_faith` 20 / 44 / 34 / 24 / 20 / 22 / 40 (barbarian, cleric, shadow knight, ranger, wizard, berserker, shaman); `stat_max` 198; `slot_base` 1, `slot_per_mind` 16, `slot_per_int` 40, `slot_max` 9 (a new wizard 4 slots, a new barbarian 2); `spell_hit_ticks` 240 |
+
+Named for `combat.<name>` / `app souls set` as before; the class arrays as `<name>.<class>` with the labels barbarian, cleric,
+shadowknight, ranger, wizard, berserker, shaman (e.g. `combat.sc_faith.cleric = 80`). `load_per_stamina` is still accepted
+as the earlier name of `load_per_endurance`.
 
 ### 3.3 The third round's numbers: weapons (2026-10-21)
 
@@ -536,6 +640,48 @@ Not reached in a room: a two-handing toggle (none drawn through), a player hit l
 material drop and no interrupt online: they are computed from words every machine has - the tick's own columns - and were
 Ran offline, 4.7), the spear's chip (player against player).
 
+### 4.9 Offline, the attributes and the spellbook (Ran)
+
+`local/souls-combat/t6.py RIGHTS OUT.rig XP SEQ` (the valor route; at valor's start, by its save point: XP experience by the
+test aid, the character screen opened with L3 + L2, the presses SEQ, closed with block; at the boar the skill buttons pressed
+every 100 ticks with the boar held in front and the mana full; the screen asked for again away from a save point).
+`SOULS_LOG=1`, `--combat hardcore`, program `rta_app_next`. Runs `t6/a0`, `a1`, `b4`, `c0`, `d0`, `lc`:
+
+| What | Seen |
+|---|---|
+| level-ups and points | 3,000 experience: level 1 -> 2, 2 points (character 0, a shaman); 20,000: level 6, 10 points (character 4, a ranger) |
+| the screen | open at tick 324 (L3 + L2 by valor's save point), points on Mind 38 -> 40, Endurance, Faith; a press with no points left refused; closed by block; at the boar "refused" (no save point) |
+| Mind -> mana | the shaman's maximum mana, the game's own 42.2 at level 2: 43.25 with one point, 44.31 with two (+2.5 % each); the game's own maximum kept apart and the bonus added again after its recalculations |
+| Endurance -> stamina, load | 2 points: the bar 100 -> 101.8 (`b4`), 1 point 100.9 (`c0`); the capacity follows Endurance |
+| Faith / Intelligence -> spells | the shaman's poison bolt (skill 89) hits the boar 26.0 -> 32.2, 29.0 -> 35.9 ... (x 124 %: INT D, FTH C); the ranger (no spells) 108 % shown after one Faith point |
+| spellbook | the shaman's book one spell, 3 slots; taken out of its slot on the screen: 5 casts refused at the boar (`c0`, `a1`), "spell is in no spell slot"; out and into its slot again: cast and scaled (`d0`) |
+| kept with the character | the save spot (+0x4c2a) written at the first change; through a level change valor > drunare with its object made anew (`lc`): the same bytes, Mind still 39 |
+| pictures | `t6/a0/sheet-open.png`, `sheet-spent.png`, `t6/a1/sheet-spent.png` (the native sheet on the open screen) |
+
+Godot (`local/godot-r26/test/sheet1`, the r26 library with this round's code in the r25 project with `hud/sheet.gd` and
+`hud/souls.gd` of this round, `--mode scene --combat hardcore`, the same script as `t6/a0`): the same log line for line
+(level 2, the screen, Mind 40, the slot changes, the casts x 124 %); `boar-cast.png`: the sheet drawn by `hud/sheet.gd` over
+the scene at the boar (asked for with `app souls sheet`), the level-up line and stamina bar of `hud/souls.gd`. At valor's
+start the Godot HUD is hidden by the game's own intro (phase 0xa42), so the pictures of the open screen there show no HUD.
+
+### 4.10 Rooms with the attributes and the spellbook (Ran)
+
+`local/souls-combat/net/statsroom.sh OUT N PORT` (`n2stats.py`: the drawn input of 4.8, and at valor's save point the
+character screen - L3 + L2, then right, right, down, right, down, right, down, right, right, left, down, right, up x3, block -
+with the drawn play's own presses and stick left out from frame 300 to 600 so that nothing else closes it; the skill buttons
+at 620, 720, 820, 920; 20,000 experience for every player by the test aid at 200 + 10 x slot; 383 tick-log columns with two
+copies: the attributes part, the save spot's bytes, the maximum mana, level and base stamina of every player, the header
+counters).
+
+| Run | Copies | Result | What happened |
+|---|---|---|---|
+| `stats2a` | 2 | 5,617 ticks in step | the drawn play's own presses closed the screen at once (found: they are left out in the window since) |
+| `stats2b` | 2 | 5,632 ticks in step | the save spot at +0x43e0 cleared by the level change (found: moved to +0x4c2a) |
+| `stats2c` | 2 | **5,630 ticks in step**, no shared column differs | both players level 6 (10 points); p0's screen at valor's save point: Mind 38 -> 41, Endurance 28 -> 29, Faith 40 -> 41, the poison bolt taken out of its slot (stamina bar 100.9, maximum mana 64.2 -> 69.0); p1's screen refused (not near enough); p0's skill presses refused (21), p1's casts scaled x 124 %; valor > drunare, four deaths, two reloads after everybody died: p0's attributes the same after all of it |
+
+Not reached: a three-copy room this round; a spell hit on a creature inside a room (the casts were made, no hit landed in
+the drawn input); a save on the memory card and a load of it (the record is saved whole: Read).
+
 ## 5. Files
 
 | File | What |
@@ -550,6 +696,8 @@ Ran offline, 4.7), the spear's chip (player against player).
 | `tools/godot/project/hud/souls.gd`, `hud/hud.gd` | new file; three lines in `_ready` |
 | `docs/issues/native-souls-combat.md` | this |
 | second round (2026-10-21) | `soulscombat.{h,cpp}` (the mechanics of 2.7, the Tuning fields of 3.2, the block's version 2, the test aids, Hardcore names), `hud/souls.gd` (flasks, parry / riposte lines, drop marker); the name in `app_main.cpp`, `win_main.cpp`, `linux_main.cpp` (`--combat hardcore`), `testerkit_app.h`, `net2/session.cpp`, `net2/launch.cpp`, `godot/lib/rtag.cpp`, `godot/project/main.gd`, `portal/screens/room.gd`, `portal/gameflow.gd` |
+
+| fourth round (2026-10-25) | `soulscombat.{h,cpp}` (the attributes and the spellbook of 2.9, the Tuning fields of 3.4, `load_per_stamina` renamed `load_per_endurance`, the block's version 4, the experience test aid, the character sheet in the overlay, `app souls sheet`), `hud/sheet.gd` (new), `hud/souls.gd` (the sheet added, the level-up line, the stamina bar's length per player) |
 
 | third round (2026-10-21) | `soulscombat.{h,cpp}` (the weapons of 2.8, the Tuning fields and arrays of 3.3, `parry_first` named, the block's version 3, the material test aid, the weapon card in the overlay), `testerkit.{h,cpp}` (`testerkit::text`: the overlay's letters for another overlay), `hud/souls.gd` (the weapon card) |
 
@@ -599,6 +747,8 @@ python3 local/souls-combat/rig/check.py off-first7 rta_app_next_orig first
 # third round offline: cd local/souls-combat && python3 t4.py 2 t4/g2.rig && SOULS_LOG=1 PROG=rta_app_next ./run.sh t4/g2 t4/g2.rig --combat hardcore
 #                      python3 t5.py t5.rig && SOULS_LOG=1 PROG=rta_app_next ./run.sh t5 t5.rig --combat hardcore
 # third round rooms:   cd local/souls-combat/net && EXTRA="--level-option valor" ./weaproom.sh weap2b 2 41991   (and 3 copies)
+# fourth round offline: cd local/souls-combat && python3 t6.py 0 t6/d0.rig 3000 d && sed -i '' 's#OUTDIR#t6/d0#g' t6/d0.rig && SOULS_LOG=1 PROG=rta_app_next ./run.sh t6/d0 t6/d0.rig --combat hardcore
+# fourth round rooms:   cd local/souls-combat/net && EXTRA="--level-option valor" ./statsroom.sh stats2c 2 41995
 python3 local/souls-combat/rig/check.py off-over rta_app_combat_orig overhead
 python3 local/souls-combat/rig/check.py off-first rta_app_combat_orig first
 # offline: local/souls-combat/t1.py, t2.py (scripts from the valor route), run.sh DIR RIG --combat souls
@@ -616,4 +766,5 @@ python3 local/souls-combat/rig/check.py off-first rta_app_combat_orig first
 | SC3 | `Player_takeDamage` blocks a hit from the front in states 8 and 0xb unless flag 0x40; the blocked hit still ORs its flags into the pending ones | Read | 0x1b5440-0x1b5698 |
 | SC5 | Hardcore mode's parry, riposte, guard counter, backstab, stance-break critical, flasks and death drop work offline with the numbers of 3.2; two and three copies in a room stay in step with them on through deaths, drops, recoveries, the reload and save point refills | Ran | this document 4.5, 4.6 |
 | SC6 | Hardcore mode's weapons (equip load from the game's item weights, classes from its item records, scaling with grades, upgrades kept in the item record's unused bytes +0x06 / +0x44, the game's whetstones as the material, weapon arts from skills 35 / 37 / 38 / 41, two-handing) work offline with the numbers of 3.3; copies in a room stay in step with them through fights, an upgrade and a level change | Ran | this document 4.7, 4.8 |
+| SC7 | Hardcore mode's attributes (Vigor, Strength, Dexterity, Intelligence the game's own; Mind, Endurance, Faith the mode's, kept in the player record's last 6 bytes +0x4c2a..+0x4c2f), points from the game's level-ups spent at a save point, the spellbook (attunement of the game's ability records, slots from Mind and Intelligence, spell hits scaled by Intelligence and Faith) work offline and in Godot with the numbers of 3.4; two copies in a room stay in step through a level-up, a point spend, a spell taken out of its slot, a level change, deaths and reloads | Ran | this document 4.9, 4.10 |
 | SC4 | With the souls mode (L3 the dodge bit of the row; the mode's numbers in guest memory at 0xE0800, written in the tick by every machine), two and three native copies in one room stay in step through a level change, the arena fight, deaths and a reload, the mode's numbers equal in every tick; a room whose copies differ in the mode is not started | Ran | this document 4.3 |

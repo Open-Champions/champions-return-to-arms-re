@@ -7,6 +7,8 @@ extends Control
 # marker over this player's death drop when it is on this level; and the weapon card over the bar
 # (the weapon, its upgrade, class, scaling grades, damage percent, two-handing, the equip load and
 # its tier, the upgrade materials; near a save point the next upgrade's price).
+# The stats round adds the level-up line (points to spend, the character screen at a save point) and the character sheet
+# (hud/sheet.gd, a child of this piece).
 #
 # It reads the mode's block in the game's memory (0xE0800: "SOUL", then the numbers) through the
 # machine's peek_u32 / peek_f32 - nothing else of the game or the library.  With a library that
@@ -28,7 +30,7 @@ const FL_RIPOSTE := 256
 const FL_COUNTER := 512
 const FL_DRINK := 1024
 const EXT := 0x200                  # the second per-player part (kept over a death): flasks, the death drop
-const STAMINA_MAX := 10000.0        # soulscombat::Tuning::stamina_max
+const STAMINA_MAX := 10000.0        # soulscombat::Tuning::stamina_max (the bar's length with no Endurance spent; version 4 of the block has each player's)
 const WPN := 0x400                  # the weapons part (soulscombat.h, version 3): 0x60 a player
 const CLASSES := ["unarmed", "dagger", "sword", "axe", "mace", "great weapon", "spear", "staff", "bow"]
 const TIERS := ["LIGHT", "MEDIUM", "HEAVY", "OVERLOADED"]
@@ -53,11 +55,18 @@ var card := ""
 var load_line := ""
 var upgrade_line := ""
 var tier := 0
+var level_line := ""                # the level-up's points (the stats round), or the character screen's way in at a save point
+var _sheet: Control
 
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	set_anchors_preset(Control.PRESET_FULL_RECT)
+	# the character sheet (the attributes and the spellbook: hud/sheet.gd), over this piece
+	var sheet: Control = load("res://hud/sheet.gd").new()
+	sheet.set("hud", hud)
+	add_child.call_deferred(sheet)
+	_sheet = sheet
 
 
 func _peek(offset: int) -> int:
@@ -91,7 +100,12 @@ func _process(_delta: float) -> void:
 	if slot < 0 or slot > 3:
 		return
 	on = true
-	stamina = clampf(float(_peek(0x40 + slot * 0x40)) / STAMINA_MAX, 0.0, 1.0)
+	if _sheet != null and _sheet.get("hud") == null:
+		_sheet.set("hud", hud)
+	var most := STAMINA_MAX
+	if _peek(4) >= 4 and _peek(0x600 + slot * 0x80 + 0x38) > 0:
+		most = float(_peek(0x600 + slot * 0x80 + 0x38))
+	stamina = clampf(float(_peek(0x40 + slot * 0x40)) / most, 0.0, 1.0)
 	flags = _peek(0x40 + slot * 0x40 + 8)
 	shown = lerpf(shown, stamina, 0.35)
 	flasks = _peek(EXT + slot * 0x40)
@@ -128,6 +142,13 @@ func _process(_delta: float) -> void:
 		var gold: int = _peek(w + 0x4c)
 		var mats: int = _peek(w + 0x50)
 		upgrade_line = ("UPGRADE TO +%d: %d GOLD, %d WHETSTONE%s  (HOLD L3 + USE)" % [level + 1, gold, mats, "" if mats == 1 else "S"]) if gold > 0 else "FULLY UPGRADED"
+	level_line = ""
+	if _peek(4) >= 4:
+		var points: int = _peek(0x600 + slot * 0x80 + 0x1c)
+		if _peek(w + 0x2c) != 0 and _peek(0x600 + slot * 0x80 + 0x24) == 0:
+			level_line = "CHARACTER: HOLD L3 + L2" + ("  (POINTS TO SPEND)" if points > 0 else "")
+		elif points > 0:
+			level_line = "LEVEL UP: %d POINT%s - SPEND THEM AT A SAVE POINT" % [points, "" if points == 1 else "S"]
 	lock = _peek(0x180) != 0
 	if lock:
 		lock_at = Vector3(hud.machine.peek_f32(BASE + 0x188), hud.machine.peek_f32(BASE + 0x18c), hud.machine.peek_f32(BASE + 0x190))
@@ -202,6 +223,8 @@ func _draw() -> void:
 	draw_string(font, Vector2(rect.position.x, ty - line_h), card, HORIZONTAL_ALIGNMENT_LEFT, -1, cs, Color(0.95, 0.92, 0.82, a))
 	if upgrade_line != "":
 		draw_string(font, Vector2(rect.position.x, ty - 2.0 * line_h), upgrade_line, HORIZONTAL_ALIGNMENT_LEFT, -1, cs, Color(0.63, 0.9, 1.0, a))
+	if level_line != "":
+		draw_string(font, Vector2(rect.position.x, ty - (3.0 if upgrade_line != "" else 2.0) * line_h), level_line, HORIZONTAL_ALIGNMENT_LEFT, -1, cs, Color(0.94, 0.85, 0.5, a))
 	# the death drop: a pale green upright diamond over the spot
 	if drop and hud.gs != null:
 		var dc: Vector3 = hud.gs.project(drop_at)

@@ -39,6 +39,10 @@
 //   L3 held + attack pressed = the weapon art (the attack press and the L3 press are then spent)
 //   L3 held + swap (the other weapon set) pressed = two-handing on / off (the swap is not given to the game)
 //   L3 held + use pressed near a save point = upgrade the weapon in hand by one level (the use is not given to the game)
+//   L3 held + potion B (L2) pressed near a save point = the character screen: up / down choose a row, right spends a point
+//       (Mind, Endurance, Faith) or puts the chosen spell into a slot, left takes it out; block, or L3 + L2 again, closes it.
+//       While it is open the character stands and no other button reaches the game.
+//   ability A / B (the game's own skill buttons): a spell that is not attuned (in one of the spell slots) is not cast
 //
 // State: a block of guest memory at SOULS_BASE (0xE0800, in the first megabyte, where the game
 // has nothing: tools/recomp/soak uses 0xE0000-0xE004F) - the per-player numbers, written in the
@@ -118,7 +122,7 @@ struct Tuning {
     // equip load: the weight of what is equipped (the game's own item_getWeight of each equipped item) against a
     // capacity from the character's statistics, in hundredths: base + per_stamina x stamina + per_strength x strength
     int32_t load_base = 2000;
-    int32_t load_per_stamina = 100;
+    int32_t load_per_endurance = 100;   // (the weapons round had the game's stamina here; Endurance since the stats round)
     int32_t load_per_strength = 25;
     int32_t load_light = 30;            // percent of the capacity: below it light, below load_medium medium,
     int32_t load_medium = 70;           // up to 100 heavy, above 100 overloaded
@@ -166,6 +170,29 @@ struct Tuning {
     int32_t art_slam_percent = 160;          // a slam's shove: this share of the weapon's top damage
     int32_t art_fixed_percent = 30;          // the lunge's and the bolt's own fixed damage (the skills') is scaled by this
     int32_t art_bolt_ticks = 90;             // how long after a bolt its projectile's hits count as the art's
+    // ---- attributes and the spellbook (2026-10-25, fourth round; docs/issues/native-souls-combat.md 2.9 and 3.4) ----
+    // Vigor, Strength, Dexterity and Intelligence are the game's own statistics (stamina, strength, dexterity,
+    // intelligence: the game's level-up screen spends its own points on them); Mind, Endurance and Faith are the mode's,
+    // kept with the character (soulscombat.h, the save spot).  By class (barbarian, cleric, shadow knight, ranger,
+    // wizard, berserker, shaman): where the mode's three start; every level gained gives points_per_level of the mode's
+    // points, spent on them at a save point (the mode's character screen).
+    int32_t points_per_level = 2;
+    int32_t start_mind[7] = {20, 36, 28, 26, 44, 20, 38};
+    int32_t start_endurance[7] = {40, 30, 36, 34, 24, 42, 28};
+    int32_t start_faith[7] = {20, 44, 34, 24, 20, 22, 40};
+    int32_t stat_max = 198;                  // the ceiling of Mind, Endurance and Faith (our scale: 2 x the reference's 99)
+    int32_t mana_per_mind_permille = 25;     // the maximum mana: the game's own + this many thousandths of it per Mind point spent
+    int32_t stamina_per_endurance = 90;      // the stamina bar: stamina_max + this (hundredths) per Endurance point spent
+    // spell slots = slot_base + Mind / slot_per_mind + Intelligence / slot_per_int, 1 .. slot_max (at most 9)
+    int32_t slot_base = 1;
+    int32_t slot_per_mind = 16;
+    int32_t slot_per_int = 40;
+    int32_t slot_max = 9;
+    // spell scaling by class: the bonus in percent of a spell's damage = (sc_int x curve(Intelligence) + sc_faith x
+    // curve(Faith)) / 100 (the weapons' curve); grade letters as the weapons'
+    int32_t sc_int[7] = {0, 0, 45, 25, 90, 0, 30};
+    int32_t sc_faith[7] = {20, 80, 40, 25, 0, 20, 60};
+    int32_t spell_hit_ticks = 240;           // how long after a cast the caster's hits (not swings, not weapon arts) count as the spell's
 };
 enum : int32_t { WC_NONE = 0, WC_DAGGER, WC_SWORD, WC_AXE, WC_MACE, WC_GREAT, WC_SPEAR, WC_STAFF, WC_BOW, WC_COUNT };
 enum : int32_t { ART_NONE = 0, ART_LUNGE, ART_SPIN, ART_SLAM, ART_BOLT };
@@ -205,7 +232,27 @@ const uint32_t SOULS_MAGIC = 0x4c554f53;        // "SOUL"
 // is on the memory card with the character and goes to every machine at a net game's launch
 // local, per machine (presentation; not simulation): +0x180 lock on, +0x184 locked object,
 //   +0x188 x, +0x18c y, +0x190 z, +0x194 hp, +0x198 hp max (f32), +0x19c this player's drop is on this level,
-//   +0x1a0 the name of this player's weapon (32 bytes)
+//   +0x1a0 the name of this player's weapon (32 bytes), +0x1c0 the character sheet asked for on this machine (1),
+//   +0x1d0 this player's hit points, +0x1d4 their maximum, +0x1d8 its mana, +0x1dc the maximum mana (f32), +0x1e0 u8[15] the
+//   ability records of its spellbook in order (the open screen's rows after the three attributes; 0xff none), +0xb00 u8[24][15] the names of its
+//   ability records (0 none)
+// header (version 4, the attributes and the spellbook) +0x5e8 a test aid (slot + 1 | amount << 8: that player is given
+//   `amount` experience by the game's own player_giveExp in its next tick), +0x5ec mode points spent, +0x5f0 attunement
+//   changes, +0x5f4 spells cast, +0x5f8 spell hits scaled, +0x5fc casts refused (not attuned)
+// per player, attributes and spellbook, at +0x600 + slot x 0x80 (s32 each):
+//   +0x00 Vigor  +0x04 Mind  +0x08 Endurance  +0x0c Strength  +0x10 Dexterity  +0x14 Intelligence  +0x18 Faith
+//   +0x1c mode points unspent  +0x20 spent  +0x24 the character screen open (1)  +0x28 its selected row  +0x2c spell slots
+//   +0x30 spells (bit k: ability record k is in the spellbook)  +0x34 attuned (bit k: castable)  +0x38 stamina maximum
+//   +0x3c the game's own maximum mana (f32)  +0x40 the maximum written (f32)  +0x44 the mana at the end of the last tick (f32)
+//   +0x48 spell damage percent  +0x4c spell grades (Intelligence, Faith letters in bytes 0, 1)  +0x50 spell window (ticks since
+//   the cast, -1 none)  +0x54 casts  +0x58 casts refused  +0x5c points spent  +0x60 attunement changes  +0x64 the save spot
+//   was found (1)  +0x68 the level  +0x6c screens opened  +0x70 the class (0-6)  +0x74 spell slots in use
+// per player at +0xa00 + slot x 0x40: u16[15] the mana cost of each ability record (tenths), u8[15] at +0x20 its rank
+// Mind, Endurance, Faith and the attuned spells are kept with the character, in the last 6 bytes of the player record, which
+// the game never reads or writes (+0x4c2a..+0x4c2f, after the marker byte +0x4c29: tools/fieldxref.py finds no access; a
+// level change, a death and the reload keep them - docs/issues/native-souls-combat.md 2.9): 48 bits, low first: Mind,
+// Endurance, Faith (7 bits each, the points spent), the attuned ability records (15 bits), the tag 0xa (4 bits), a check
+// (8 bits, FNV-1a of the 40 below).  Anything else there is "nothing spent, the default slots".
 enum : uint32_t { FL_DODGE = 1, FL_IFRAMES = 2, FL_SPRINT = 4, FL_BLOCK = 8, FL_HEAVY = 16, FL_BROKEN = 32, FL_EMPTY = 64,
                   FL_PARRY = 128, FL_RIPOSTE = 256, FL_COUNTER = 512, FL_DRINK = 1024, FL_COUNTER_HEAVY = 2048 };
 
@@ -230,7 +277,10 @@ int32_t weapon_class_in_hand(int slot, uint32_t* item = nullptr);
 struct Camera { bool valid = false; float eye[3], forward[3], up[3], right[3], fov = 50; };
 void set_camera(const Camera& camera);  // game thread, each draw pass
 void overlay(render::FrameList& frame);
-// "app souls ..." (script / control socket): info | on | off | lock | set NAME VALUE | figures
+// The attributes of player `slot` as the mode has them (Vigor, Mind, Endurance, Strength, Dexterity, Intelligence, Faith),
+// whether or not the mode is on; false without a character.
+bool attributes(int slot, int32_t out[7]);
+// "app souls ..." (script / control socket): info | on | off | lock | set NAME VALUE | figures | stats | sheet
 std::string command(const std::string& text);
 bool setting(const char* key, const char* value);   // "combat.mode", "combat.<tuning name>"
 std::string settings_text();

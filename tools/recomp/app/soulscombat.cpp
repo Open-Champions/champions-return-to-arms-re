@@ -16,6 +16,7 @@
 #include <iterator>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 namespace soulscombat {
 namespace {
@@ -47,6 +48,14 @@ const u32 REC_STR = 0x90, REC_INT = 0x94, REC_DEX = 0x98, REC_STA = 0x9c, REC_MA
 const u32 REC_EQUIP = 0x43f0, REC_SETS = 0x4434, REC_SET = 0x4a7c, REC_BAGS = 0x130, BAG_STRIDE = 0x1208, BAG_COUNT = 0x1200, ITEM = 0x48;
 const u32 FLAG_KNOCK_LIGHT = 0x40000;   // the lightest knock bit: the ground pound's shoves carry it
 const s32 SKILL_OF_ART[5] = {0, 35, 41, 38, 37};   // charge (a lunge), cyclone (a spin), ground pound (a slam), shock (a bolt)
+// the stats round (docs/issues/native-souls-combat.md 2.9): the class (docs/player.md), the level, the ability records and the
+// skill buttons (docs/spec/player-tick.md), the skills (docs/skills.md), the save spot (soulscombat.h)
+const u32 REC_CLASS = 0x50, REC_LEVEL = 0x59, REC_ABILITIES = 0x4440, ABILITY = 0x68, REC_BUTTON_A = 0x4a84, REC_SELECTED = 0x4a60;
+const u32 REC_RANKS = 0x4b08, REC_SPOT = 0x4c2a, P_RECAST = 0x4ae, G_BTN_ABILITY_A = 0x41b990, G_BTN_ABILITY_B = 0x41b9a0;
+const u32 G_BTN_POTION_B = 0x41ba20, SKILL_RECORD_NAME = 0x535e30, PLAYER_GIVE_EXP = 0x1d3150;
+const u32 PLAYER_RECALC_STATS = 0x1b6458;
+const u32 PAD_UP = 0x1000, PAD_RIGHT = 0x2000, PAD_DOWN = 0x4000, PAD_LEFT = 0x8000;
+const s32 ID_HEAVY = 0x25;
 
 bool ok(u32 a, u32 size = 4) { a &= 0x1FFFFFFF; return a >= 0x80000 && a <= RAM_SIZE - size; }
 u32 W(u32 a) { u32 v = 0; if (ok(a)) memcpy(&v, g_ram + (a & 0x1FFFFFFF), 4); return v; }
@@ -68,7 +77,7 @@ enum : u32 { S_STAMINA = 0, S_DELAY = 4, S_FLAGS = 8, S_DODGE = 0xc, S_COOL = 0x
              S_AVOIDED = 0x38, S_BLOCKS = 0x3c };
 enum : u32 { H_MAGIC = 0, H_VERSION = 4, H_MODE = 8, H_UPDATES = 0xc, H_BREAKS = 0x10, H_POISE = 0x14, H_AVOIDED = 0x18, H_BLOCKS = 0x1c,
              H_PARRIES = 0x20, H_RIPOSTES = 0x24, H_STANCE = 0x28, H_BACKSTABS = 0x2c, H_COUNTERS = 0x30, H_REFILLS = 0x34,
-             H_GOLD_BACK = 0x38, H_GOLD_LOST = 0x3c, H_DROPS = 0x300, H_PICKUPS = 0x304, H_DRUNK = 0x308, H_DEAD = 0x30c, H_TEST_GO = 0x31c, BLOCK_SIZE = 0x600,
+             H_GOLD_BACK = 0x38, H_GOLD_LOST = 0x3c, H_DROPS = 0x300, H_PICKUPS = 0x304, H_DRUNK = 0x308, H_DEAD = 0x30c, H_TEST_GO = 0x31c, BLOCK_SIZE = 0xc80,
              L_LOCK = 0x180, L_OBJECT = 0x184, L_X = 0x188, L_Y = 0x18c, L_Z = 0x190, L_HP = 0x194, L_HP_MAX = 0x198, L_DROP = 0x19c };
 // the second per-player part (soulscombat.h): kept over a death and a level change
 u32 ext_off(int slot, u32 field) { return 0x200 + (u32)slot * 0x40 + field; }
@@ -86,6 +95,16 @@ enum : u32 { H_ARTS = 0x320, H_UPGRADES = 0x324, H_MAT_DROPS = 0x328, H_TWOHANDS
              H_CANCELS = 0x338, H_TEST_MAT = 0x33c, H_SCRATCH = 0x340, H_SAVES = 0x380, H_SAVES_LEVEL = 0x3fc, H_ITEM_SCRATCH = 0x5a0, L_NAME = 0x1a0 };
 s32 WR(int slot, u32 f) { return SR(wpn_off(slot, f)); }
 void WW(int slot, u32 f, s32 v) { SW(wpn_off(slot, f), v); }
+// the attributes and spellbook part (soulscombat.h, version 4)
+u32 st_off(int slot, u32 field) { return 0x600 + (u32)slot * 0x80 + field; }
+enum : u32 { A_VIG = 0, A_MND = 4, A_END = 8, A_STR = 0xc, A_DEX = 0x10, A_INT = 0x14, A_FTH = 0x18, A_UNSPENT = 0x1c, A_SPENT = 0x20,
+             A_OPEN = 0x24, A_ROW = 0x28, A_SLOTS = 0x2c, A_BOOK = 0x30, A_ATTUNED = 0x34, A_STAMINA_MAX = 0x38, A_MANA_BASE = 0x3c,
+             A_MANA_WRITTEN = 0x40, A_MANA_LAST = 0x44, A_SPELL_PCT = 0x48, A_SPELL_GRADES = 0x4c, A_SPELL_T = 0x50, A_CASTS = 0x54,
+             A_CAST_REFUSED = 0x58, A_POINTS = 0x5c, A_SWAPS = 0x60, A_SPOT = 0x64, A_LEVEL = 0x68, A_OPENED = 0x6c, A_CLASS = 0x70, A_USED = 0x74 };
+enum : u32 { H_TEST_XP = 0x5e8, H_POINTS = 0x5ec, H_SWAPS = 0x5f0, H_CASTS = 0x5f4, H_SPELL_HITS = 0x5f8, H_CAST_REFUSED = 0x5fc,
+             COST_BASE = 0xa00, L_SHEET = 0x1c0, L_SLOT_REC = 0x1e0, L_SPELL_NAMES = 0xb00 };
+s32 AR(int slot, u32 f) { return SR(st_off(slot, f)); }
+void AW(int slot, u32 f, s32 v) { SW(st_off(slot, f), v); }
 void bump(u32 off, s32 by = 1) { SW(off, SR(off) + by); }
 
 // ---- state ----
@@ -108,7 +127,13 @@ Camera g_camera;
 struct Shown { bool valid = false; int slot = -1; float stamina = 1, max = 1; u32 flags = 0; bool lock = false; float x = 0, y = 0, z = 0, hp = 0, hp_max = 0;
                int flasks = 0, flask_max = 0; bool drop = false; float dx = 0, dy = 0, dz = 0;
                int cls = 0, level = 0, tier = 0, load = 0, cap = 1, mats = 0, gold_next = 0, mats_next = 0, art_cd = 0, damage = 100;
-               u32 grades = 0; bool two = false, near = false; char name[32] = ""; } g_shown;
+               u32 grades = 0; bool two = false, near = false; char name[32] = "";
+               // the character sheet (the attributes and the spellbook of this machine's player)
+               struct Spell { char name[24] = ""; int cost10 = 0, rank = 0; bool attuned = false; };
+               bool sheet = false, open = false; int row = 0, unspent = 0, char_level = 0, cls_of = 0, slots = 0, v[7] = {0, 0, 0, 0, 0, 0, 0};
+               int spell_pct = 100, stamina_most = 10000; u32 spell_grades = 0; float hp_now = 0, hp_most = 0, mana = 0, mana_most = 0;
+               Spell book[15]; int rows[15] = {0}, books = 0, used = 0; } g_shown;
+std::atomic<bool> g_sheet_view{false};  // the sheet asked for on this machine (app souls sheet); presentation only
 // counters (per machine)
 uint64_t g_runs = 0, g_ptd_calls = 0, g_ctd_calls = 0, g_staggers = 0, g_iframe_skips = 0, g_save_calls = 0;
 bool g_log = false;                     // SOULS_LOG: a line for each parry, critical, guard counter, drink, drop
@@ -139,9 +164,10 @@ void charge(int slot, s32 amount) {
     SW(slot_off(slot, S_DELAY), g_tuning.regen_delay);
 }
 
+s32 stamina_most(int slot);
 void reset_slot(int slot) {
     for (u32 f = 0; f < 0x28; f += 4) SW(slot_off(slot, f), 0);
-    SW(slot_off(slot, S_STAMINA), g_tuning.stamina_max);
+    SW(slot_off(slot, S_STAMINA), stamina_most(slot));
     SW(slot_off(slot, S_DODGE), -1);
     SW(slot_off(slot, S_LAST_STATE), -1);
 }
@@ -156,10 +182,11 @@ void reset_ext(int slot) {
 void reset_all() {
     for (u32 a = 0; a < BLOCK_SIZE; a += 4) PW(SOULS_BASE + a, 0);
     SW(H_MAGIC, (s32)SOULS_MAGIC);
-    SW(H_VERSION, 3);
+    SW(H_VERSION, 4);
     for (int k = 0; k < 4; k++) {
         reset_slot(k); reset_ext(k); g_last_object[k] = 0; g_riposte_target[k] = 0;
         WW(k, W_ART_T, -1); WW(k, W_SWING, -1);
+        AW(k, A_SPELL_T, -1);
     }
     g_poise.clear();
     g_ghost = Ghost();
@@ -416,7 +443,7 @@ void weapon_numbers(Ctx* c, int slot, u32 record) {
     const Tuning& t = g_tuning;
     Weapon w = weapon_now(slot);
     s32 load = equip_load(c, record);
-    s32 cap = t.load_base + t.load_per_stamina * (s32)W(record + REC_STA) + t.load_per_strength * (s32)W(record + REC_STR);
+    s32 cap = t.load_base + t.load_per_endurance * AR(slot, A_END) + t.load_per_strength * (s32)W(record + REC_STR);
     if (cap < 100) cap = 100;
     s32 share = (s32)((int64_t)load * 100 / cap);
     s32 tier = share < t.load_light ? 0 : share < t.load_medium ? 1 : share <= 100 ? 2 : 3;
@@ -453,6 +480,197 @@ s32 cast_art(Ctx* c, u32 P, s32 kind, s32 level) {
     return kind;
 }
 
+// ---- the attributes and the spellbook (docs/issues/native-souls-combat.md 2.9) -------------------------------------------
+s32 class_of(u32 record) { s32 c = (s32)W(record + REC_CLASS); return c < 0 || c > 6 ? 0 : c; }
+// The save spot: 16 bytes of the player record that the game never reads or writes (soulscombat.h).  It is on the memory card
+// with the character and goes to every machine at a net game's launch with the whole record.
+struct Spot { bool valid = false; s32 mind = 0, end = 0, faith = 0; u32 attuned = 0; };
+// 48 bits, low first: Mind, Endurance, Faith (7 bits each: the points spent), the attuned ability records (15 bits), the tag
+// 0xa (4 bits), a check of the 40 bits below it (8 bits)
+u64 spot_bits(u32 record) { u64 v = 0; for (u32 k = 0; k < 6; k++) v |= (u64)B(record + REC_SPOT + k) << (8 * k); return v; }
+u8 spot_check(u64 low40) {
+    u32 h = 2166136261u;
+    for (u32 k = 0; k < 5; k++) h = (h ^ (u32)((low40 >> (8 * k)) & 0xff)) * 16777619u;
+    return (u8)(h & 0xff);
+}
+Spot spot_read(u32 record) {
+    Spot sp;
+    u64 v = spot_bits(record), low = v & 0xffffffffffull;
+    if (((v >> 36) & 0xf) != 0xa || (u8)(v >> 40) != spot_check(low)) return sp;
+    sp.valid = true;
+    sp.mind = (s32)(v & 0x7f); sp.end = (s32)((v >> 7) & 0x7f); sp.faith = (s32)((v >> 14) & 0x7f);
+    sp.attuned = (u32)((v >> 21) & 0x7fff);
+    return sp;
+}
+void spot_write(u32 record, const Spot& sp) {
+    auto f = [](s32 x) { return (u64)std::max(0, std::min(127, x)); };
+    u64 low = f(sp.mind) | f(sp.end) << 7 | f(sp.faith) << 14 | (u64)(sp.attuned & 0x7fff) << 21 | (u64)0xa << 36;
+    u64 v = low | (u64)spot_check(low) << 40;
+    for (u32 k = 0; k < 6; k++) PB(record + REC_SPOT + k, (u8)(v >> (8 * k)));
+}
+// The ability records (the game's own skill bindings: docs/player.md): the spellbook is every record with a skill (not the
+// older heavy attack, which the mode's hold of the attack button is)
+u32 ability(u32 record, int k) { return record + REC_ABILITIES + (u32)k * ABILITY; }
+s32 ability_id(u32 record, int k) { return (s16)H(ability(record, k) + 0x20); }
+bool in_book(u32 record, int k) { s32 id = ability_id(record, k); return id >= 1 && id <= 101 && id != ID_HEAVY; }
+bool skill_record(u32 rec) {
+    for (u32 k = 0; k < 0x20; k++) {
+        u8 a = B(rec + k), b = B(SKILL_RECORD_NAME + k);
+        if (a != b) return false;
+        if (!a) return true;
+    }
+    return true;
+}
+u32 skill_of(s32 id) { u32 sk = id >= 1 && id <= 101 ? W(G_SKILL_TABLE + 4 * (u32)id) : 0; return ok(sk, 0x68) ? sk : 0; }
+s32 rank_of(u32 record, s32 id) {
+    for (u32 k = 0; k < 48; k++) {
+        s32 i = (s16)H(record + REC_RANKS + 4 * k);
+        if (i == -1) break;
+        if (i == id) return (s16)H(record + REC_RANKS + 4 * k + 2);
+    }
+    return 0;
+}
+// a record whose hits are a spell's (scaled by Intelligence and Faith): a skill cast as a spell - not a passive, not the bow
+// and axe skills (kind 8, they fire through the shot); of the older records not the arrows
+bool scaled_spell(u32 record, int k) {
+    if (k < 0 || k > 14 || !in_book(record, k)) return false;
+    s32 id = ability_id(record, k);
+    if (skill_record(ability(record, k))) { u32 sk = skill_of(id); s32 kind = sk ? (s32)W(sk + 8) : 3; return kind != 3 && kind != 8; }
+    return id != 4 && id != 5 && id != 6 && id != 0x12 && id != 0x13;
+}
+// The seven attributes: Vigor, Strength, Dexterity, Intelligence the game's own (effective) statistics; Mind, Endurance, Faith
+// the class's start in the mode plus the points spent on them
+struct Attr { s32 v[7] = {0, 0, 0, 0, 0, 0, 0}; s32 cls = 0, level = 1, unspent = 0, spent = 0, slots = 1; Spot sp; };
+Attr attributes_of(u32 record) {
+    const Tuning& t = g_tuning;
+    Attr a;
+    a.cls = class_of(record);
+    a.sp = spot_read(record);
+    a.v[0] = (s32)W(record + REC_STA);
+    a.v[1] = t.start_mind[a.cls] + a.sp.mind;
+    a.v[2] = t.start_endurance[a.cls] + a.sp.end;
+    a.v[3] = (s32)W(record + REC_STR);
+    a.v[4] = (s32)W(record + REC_DEX);
+    a.v[5] = (s32)W(record + REC_INT);
+    a.v[6] = t.start_faith[a.cls] + a.sp.faith;
+    a.level = (int8_t)B(record + REC_LEVEL);
+    a.spent = a.sp.mind + a.sp.end + a.sp.faith;
+    a.unspent = std::max(0, std::max(0, a.level - 1) * t.points_per_level - a.spent);
+    s32 most = std::max(1, std::min(9, t.slot_max));
+    a.slots = std::max(1, std::min(most, t.slot_base + a.v[1] / std::max(1, t.slot_per_mind) + a.v[5] / std::max(1, t.slot_per_int)));
+    return a;
+}
+// the attuned ability records (castable): kept with the character once the screen changed anything, else the first spells of
+// the book; never more than the slots (the first ones in record order)
+u32 attuned_of(u32 record, const Attr& a) {
+    u32 want = a.sp.valid ? a.sp.attuned : 0x7fff, out = 0;
+    s32 n = 0;
+    for (int k = 0; k < 15 && n < a.slots; k++)
+        if (in_book(record, k) && ((want >> k) & 1)) { out |= 1u << k; n++; }
+    return out;
+}
+s32 stamina_most(int slot) { s32 m = AR(slot, A_STAMINA_MAX); return m > 0 ? m : g_tuning.stamina_max; }
+// Everything of the attributes and the spellbook, written to the block (each player tick, every machine alike).  With `costs`
+// the mana cost of each ability record too (the skill's own price at its rank: its virtual slot 5).
+void stats_numbers(Ctx* c, int slot, u32 record, bool costs) {
+    const Tuning& t = g_tuning;
+    Attr a = attributes_of(record);
+    for (u32 k = 0; k < 7; k++) AW(slot, A_VIG + 4 * k, a.v[k]);
+    AW(slot, A_UNSPENT, a.unspent); AW(slot, A_SPENT, a.spent); AW(slot, A_SLOTS, a.slots); AW(slot, A_SPOT, a.sp.valid ? 1 : 0);
+    AW(slot, A_LEVEL, a.level); AW(slot, A_CLASS, a.cls);
+    u32 book = 0, attuned = attuned_of(record, a);
+    s32 used = 0;
+    for (int k = 0; k < 15; k++) if (in_book(record, k)) book |= 1u << k;
+    for (int k = 0; k < 15; k++) used += (attuned >> k) & 1;
+    AW(slot, A_BOOK, (s32)book); AW(slot, A_ATTUNED, (s32)attuned); AW(slot, A_USED, used);
+    AW(slot, A_STAMINA_MAX, std::max(100, t.stamina_max + a.sp.end * t.stamina_per_endurance));
+    AW(slot, A_SPELL_PCT, 100 + (t.sc_int[a.cls] * curve(a.v[5]) + t.sc_faith[a.cls] * curve(a.v[6])) / 100);
+    AW(slot, A_SPELL_GRADES, (s32)((u32)(u8)grade(t.sc_int[a.cls]) | (u32)(u8)grade(t.sc_faith[a.cls]) << 8));
+    if (!costs) return;
+    u32 at = SOULS_BASE + COST_BASE + (u32)slot * 0x40;
+    for (int k = 0; k < 15; k++) {
+        float cost = 0;
+        s32 rank = 0;
+        if (in_book(record, k)) {
+            u32 rec = ability(record, k);
+            s32 id = ability_id(record, k);
+            rank = rank_of(record, id);
+            if (skill_record(rec)) {
+                u32 sk = skill_of(id), vt = sk ? W(sk + 0x60) : 0, fn = ok(vt, 0x30) ? W(vt + 5 * 8 + 4) : 0;
+                if (fn) { call(c, fn, sk, (u32)std::max(1, rank)); cost = flt(g_f0); }
+            } else cost = F(rec + 0x2c);
+        }
+        s32 tenths = cost > 0 && cost < 6000.0f ? (s32)(cost * 10.0f + 0.5f) : 0;
+        PH(at + 2 * (u32)k, (u16)tenths);
+        PB(at + 0x20 + (u32)k, (u8)std::max(0, std::min(255, rank)));
+    }
+}
+// The maximum mana with Mind: the game's own maximum (it rewrites it whenever it recalculates the character: a level gained,
+// an item put on, a new object) plus mana_per_mind_permille of it per Mind point spent.  The game's recalculation also puts
+// the mana down to its own maximum: what was over it is given back.
+void apply_mana(int slot, u32 record) {
+    const Tuning& t = g_tuning;
+    s32 mind = spot_read(record).mind;
+    u32 m = W(record + REC_MANA_MAX), written = (u32)AR(slot, A_MANA_WRITTEN);
+    if (m != written) {
+        float last = flt((u32)AR(slot, A_MANA_LAST));
+        if (written != 0 && W(record + REC_MANA) == m && last > flt(m)) PF(record + REC_MANA, last);
+        AW(slot, A_MANA_BASE, (s32)m);
+    }
+    float base = flt((u32)AR(slot, A_MANA_BASE));
+    float most = base + base * ((float)(mind * t.mana_per_mind_permille) / 1000.0f);
+    if (!(most >= 0.0f) || most > 1000000.0f) most = base;
+    PF(record + REC_MANA_MAX, most);
+    AW(slot, A_MANA_WRITTEN, (s32)bits(most));
+    if (F(record + REC_MANA) > most) PF(record + REC_MANA, most);
+}
+// The character screen at a save point, one press of the lockstep row a tick: up / down a row (Mind, Endurance, Faith, then
+// each spell of the book), right a point on the attribute or the spell put in a slot, left the spell taken out of its slot.
+// Returns false when the press was refused.
+bool screen_press(int slot, u32 record, u32 nav) {
+    const Tuning& t = g_tuning;
+    Attr a = attributes_of(record);
+    int rec_of_row[15], books = 0;
+    for (int k = 0; k < 15; k++) if (in_book(record, k)) rec_of_row[books++] = k;
+    s32 rows = 3 + books, row = std::max(0, std::min(rows - 1, AR(slot, A_ROW)));
+    bool done = true;
+    if (nav & PAD_UP) row = (row + rows - 1) % rows;
+    else if (nav & PAD_DOWN) row = (row + 1) % rows;
+    else if (nav & (PAD_RIGHT | PAD_LEFT)) {
+        Spot sp = a.sp;
+        u32 attuned = attuned_of(record, a);
+        if (!sp.valid) { sp.valid = true; sp.attuned = attuned; }
+        if (row < 3) {
+            s32* f = row == 0 ? &sp.mind : row == 1 ? &sp.end : &sp.faith;
+            s32 start = row == 0 ? t.start_mind[a.cls] : row == 1 ? t.start_endurance[a.cls] : t.start_faith[a.cls];
+            if ((nav & PAD_RIGHT) && a.unspent > 0 && start + *f < t.stat_max && *f < 127) {
+                (*f)++;
+                spot_write(record, sp);
+                AW(slot, A_POINTS, AR(slot, A_POINTS) + 1);
+                bump(H_POINTS);
+                if (g_log) fprintf(stderr, "souls: tick %u: p%d spends a point on %s: %d (%d left)\n", frame_now(), slot, row == 0 ? "Mind" : row == 1 ? "Endurance" : "Faith",
+                                   start + *f, a.unspent - 1);
+            } else done = false;
+        } else {
+            int k = rec_of_row[row - 3];
+            s32 used = 0;
+            for (int q = 0; q < 15; q++) used += (attuned >> q) & 1;
+            bool in = ((attuned >> k) & 1) != 0;
+            if ((nav & PAD_RIGHT) && !in && used < a.slots) sp.attuned = attuned | 1u << k;
+            else if ((nav & PAD_LEFT) && in) sp.attuned = attuned & ~(1u << k);
+            else done = false;
+            if (done) {
+                spot_write(record, sp);
+                AW(slot, A_SWAPS, AR(slot, A_SWAPS) + 1);
+                bump(H_SWAPS);
+                if (g_log) fprintf(stderr, "souls: tick %u: p%d spell %d (record %d) %s a slot\n", frame_now(), slot, ability_id(record, k), k, in ? "out of" : "into");
+            }
+        }
+    }
+    AW(slot, A_ROW, row);
+    return done;
+}
+
 // ---- Player_run (slot 4) ----------------------------------------------------------------------
 void w_player_run(Ctx* c) {
     u32 P = (u32)c->r[4];
@@ -465,7 +683,16 @@ void w_player_run(Ctx* c) {
     if (!copy) {
         g_runs++;
         if (level_changed()) g_poise.clear();
-        if (g_last_object[slot] != P) {
+        bool fresh = g_last_object[slot] != P;
+        // the attributes and the spellbook first: the stamina bar's length comes from Endurance
+        stats_numbers(c, slot, record, fresh || frame_now() % 30 == 0 || AR(slot, A_OPEN) != 0);
+        if (fresh) {
+            // a new object: the game's own figures of the character made anew (so that the maximum mana the mode adds Mind to
+            // is the game's own, whatever the record was saved with)
+            call(c, PLAYER_RECALC_STATS, 0);
+            AW(slot, A_OPEN, 0); AW(slot, A_SPELL_T, -1);
+        }
+        if (fresh) {
             // a new object: the level's entry or a respawn - the flasks are full again (the second part is kept)
             g_last_object[slot] = P; reset_slot(slot);
             if (ER(slot, E_FLASKS) < t.flask_count) { EW(slot, E_FLASKS, t.flask_count); bump(H_REFILLS); }
@@ -488,8 +715,19 @@ void w_player_run(Ctx* c) {
             SW(H_TEST_MAT, 0);
             if (g_log) fprintf(stderr, "souls: tick %u: p%d given %u upgrade materials (bag index %d)\n", frame_now(), slot, (aid >> 8) & 0xff, got);
         }
+        // a test aid for the runs (0 outside a test): the word H_TEST_XP = slot + 1 | amount << 8 gives that player `amount`
+        // experience through the game's own player_giveExp (its levels, points and refill), written by every copy in the same
+        // lockstep tick
+        u32 xp = (u32)SR(H_TEST_XP);
+        if ((xp & 0xff) == (u32)slot + 1) {
+            SW(H_TEST_XP, 0);
+            call(c, PLAYER_GIVE_EXP, (u32)slot, xp >> 8);
+            if (g_log) fprintf(stderr, "souls: tick %u: p%d given %u experience: level %d\n", frame_now(), slot, xp >> 8, (int)(int8_t)B(record + REC_LEVEL));
+            stats_numbers(c, slot, record, false);
+        }
         weapon_numbers(c, slot, record);    // the weapon in hand, the equip load and its tier (every machine alike)
         WW(slot, W_NEAR, near_save(P) ? 1 : 0);
+        apply_mana(slot, record);           // the maximum mana with Mind
     } else if (g_ghost.object != P) { g_ghost = Ghost(); g_ghost.object = P; }
     s32 stamina = SR(slot_off(slot, S_STAMINA));
     s32 state = (s32)W(P + P_STATE);
@@ -503,6 +741,11 @@ void w_player_run(Ctx* c) {
     u32 attack = W(G_BTN_ATTACK + (u32)slot * 4) & 0xffff, block = W(G_BTN_BLOCK + (u32)slot * 4) & 0xffff;
     u32 potion = W(G_BTN_POTION_A + (u32)slot * 4) & 0xffff;
     u32 swap = W(G_BTN_SWAP + (u32)slot * 4) & 0xffff, use = W(G_BTN_USE + (u32)slot * 4) & 0xffff;
+    u32 potion_b = W(G_BTN_POTION_B + (u32)slot * 4) & 0xffff;
+    u32 ability_a = W(G_BTN_ABILITY_A + (u32)slot * 4) & 0xffff, ability_b = W(G_BTN_ABILITY_B + (u32)slot * 4) & 0xffff;
+    bool open = AR(slot, A_OPEN) != 0, screen_toggle = false, cast_refused = false;
+    u32 nav = 0;
+    s16 recast0 = (s16)H(P + P_RECAST);
     s32 atk = copy ? g_ghost.atk : SR(slot_off(slot, S_ATK)), l3 = copy ? g_ghost.l3 : SR(slot_off(slot, S_L3));
     bool light = false, heavy = false, dodge = false, refused = false, counter = false, parry = false, drink = false;
     bool art = false, toggle_two = false, upgrade = false;
@@ -518,7 +761,8 @@ void w_player_run(Ctx* c) {
         if (attack && (pressed & attack)) { art = true; atk = -100000; nh &= ~attack; np &= ~attack; }
         else if (swap && (pressed & swap)) { toggle_two = true; nh &= ~swap; np &= ~swap; }
         else if (use && (pressed & use)) { upgrade = true; nh &= ~use; np &= ~use; }
-        if (art || toggle_two || upgrade) l3 = -100000;
+        else if (potion_b && (pressed & potion_b)) { screen_toggle = true; nh &= ~potion_b; np &= ~potion_b; }
+        if (art || toggle_two || upgrade || screen_toggle) l3 = -100000;
     }
     if (l3 < 0 && (held & L3) && swap) { nh &= ~swap; np &= ~swap; }   // the swap stays the game's only without L3 spent
     // attack: a tap is the game's swing, a hold its heavy attack; pressed in the guard-counter window it is a guard counter
@@ -557,6 +801,28 @@ void w_player_run(Ctx* c) {
     float lx = F(pad + PAD_LX), ly = F(pad + PAD_LY);
     bool sprint = (held & L3) && l3 >= t.sprint_hold && state == 2 && stamina > 0 && lx * lx + ly * ly > 0.25f && t.tier_sprint[tier] > 0;
     if (broken_guard && block) { nh &= ~block; np &= ~block; }
+    // the character screen: the character stands, nothing of the row reaches the game, the presses are the screen's
+    bool stick_held = false;
+    if (open) {
+        nav = pressed & (PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT | block);
+        light = heavy = dodge = counter = parry = drink = art = toggle_two = upgrade = sprint = false;
+        refused = false;
+        atk = 0;
+        if (held & L3) l3 = -100000;
+        nh = 0; np = 0;
+        if (lx != 0.0f || ly != 0.0f) { stick_held = true; PF(pad + PAD_LX, 0.0f); PF(pad + PAD_LY, 0.0f); }
+    } else {
+        // the spellbook: a spell that is in no spell slot is not cast from the game's skill buttons
+        u32 book = (u32)AR(slot, A_BOOK), attuned = (u32)AR(slot, A_ATTUNED);
+        for (u32 b = 0; b < 2; b++) {
+            u32 mask = b ? ability_b : ability_a;
+            if (!mask || !((held | pressed) & mask)) continue;
+            s32 k = (int8_t)B(record + REC_BUTTON_A + b);
+            if (k < 0 || k > 14 || !((book >> k) & 1) || ((attuned >> k) & 1)) continue;
+            nh &= ~mask; np &= ~mask;
+            if (pressed & mask) cast_refused = true;
+        }
+    }
     if (nh != held) PW(pad + PAD_HELD, nh);
     if (np != pressed) PW(pad + PAD_PRESSED, np);
     u32 speed_bits = W(record + REC_SPEED);
@@ -588,6 +854,7 @@ void w_player_run(Ctx* c) {
 
     PW(pad + PAD_HELD, held);
     PW(pad + PAD_PRESSED, pressed);
+    if (stick_held) { PF(pad + PAD_LX, lx); PF(pad + PAD_LY, ly); }
     if (sprint) PW(record + REC_SPEED, speed_bits);
     s32 now = (s32)W(P + P_STATE);
     bool dodged = false;
@@ -677,6 +944,41 @@ void w_player_run(Ctx* c) {
         } else if (can || kind == ART_NONE) refused = true;
         else if (g_log) fprintf(stderr, "souls: tick %u: p%d weapon art not taken: state %d mana %.1f of %.1f cooldown %d\n", frame_now(), slot, now, mana, cost, WR(slot, W_ART_CD));
     }
+    // the attributes and the spellbook: a refused cast, a cast seen (the game's recast counter started from 0), the screen
+    if (cast_refused) {
+        AW(slot, A_CAST_REFUSED, AR(slot, A_CAST_REFUSED) + 1);
+        bump(H_CAST_REFUSED);
+        refused = true;
+        if (g_log) fprintf(stderr, "souls: tick %u: p%d cast refused: the spell is in no spell slot\n", frame_now(), slot);
+    }
+    s32 spell_t = AR(slot, A_SPELL_T);
+    if (recast0 <= 0 && (s16)H(P + P_RECAST) > 0) {
+        s32 k = (int8_t)B(record + REC_BUTTON_A + (H(record + REC_SELECTED) == 1 ? 1u : 0u));
+        if (scaled_spell(record, k)) {
+            spell_t = 0;
+            AW(slot, A_CASTS, AR(slot, A_CASTS) + 1);
+            bump(H_CASTS);
+            if (g_log) fprintf(stderr, "souls: tick %u: p%d casts skill %d (record %d): its hits x %d %%\n", frame_now(), slot, ability_id(record, k), k, AR(slot, A_SPELL_PCT));
+        }
+    } else if (spell_t >= 0) {
+        spell_t++;
+        if (spell_t > t.spell_hit_ticks || !alive || (now == 0 && SR(slot_off(slot, S_LAST_STATE)) != 0)) spell_t = -1;
+    }
+    AW(slot, A_SPELL_T, spell_t);
+    if (screen_toggle) {
+        if (open) AW(slot, A_OPEN, 0);
+        else if (alive && now == 2 && B(P + P_ON_GROUND) && near_save(P)) {
+            AW(slot, A_OPEN, 1); AW(slot, A_ROW, 0); AW(slot, A_OPENED, AR(slot, A_OPENED) + 1);
+        } else refused = true;
+        if (g_log) fprintf(stderr, "souls: tick %u: p%d character screen %s\n", frame_now(), slot, AR(slot, A_OPEN) ? "open" : open ? "closed" : "refused");
+    } else if (open) {
+        if (!alive || now != 2 || !near_save(P) || (nav & block)) {
+            AW(slot, A_OPEN, 0);
+            if (g_log) fprintf(stderr, "souls: tick %u: p%d character screen closed\n", frame_now(), slot);
+        } else if (nav && !screen_press(slot, record, nav)) refused = true;
+    }
+    apply_mana(slot, record);
+    AW(slot, A_MANA_LAST, (s32)W(record + REC_MANA));
     SW(slot_off(slot, S_ATK), atk);
     SW(slot_off(slot, S_L3), l3);
     u32 flags = (u32)SR(slot_off(slot, S_FLAGS)) & (FL_HEAVY | FL_COUNTER_HEAVY);
@@ -835,7 +1137,7 @@ void w_player_run(Ctx* c) {
         else {
             s32 add = now == 8 ? t.regen_per_tick * t.regen_block_percent / 100 : t.regen_per_tick;
             add = add * t.tier_regen[tier] / 100;
-            SW(slot_off(slot, S_STAMINA), std::min(t.stamina_max, SR(slot_off(slot, S_STAMINA)) + add));
+            SW(slot_off(slot, S_STAMINA), std::min(stamina_most(slot), SR(slot_off(slot, S_STAMINA)) + add));
         }
     }
     if (SR(slot_off(slot, S_STAMINA)) <= 0) flags |= FL_EMPTY;
@@ -1001,15 +1303,18 @@ void w_creature_take_damage(Ctx* c) {
     if (kind && amount > 0) amount = amount * ((float)percent / 100.0f);
     else if (counter && amount > 0) amount = amount * ((float)t.guard_counter_damage_percent / 100.0f);
     else if (heavy && amount > 0) amount = amount * ((float)t.heavy_damage_percent / 100.0f);
-    // the weapon's upgrade and the character's statistics (the scaling of its class), every hit of the player
-    s32 dmg = WR(slot, W_DMG);
+    // a spell's hit (the caster's hits in the spell window that are not a swing or a weapon art): Intelligence and Faith; every
+    // other hit of the player: the weapon's upgrade and the character's statistics (the scaling of its class)
+    bool spell_hit = !art_hit && !slam && state != 1 && AR(slot, A_SPELL_T) >= 0;
+    s32 dmg = spell_hit ? AR(slot, A_SPELL_PCT) : WR(slot, W_DMG);
+    if (spell_hit && amount > 0 && amount < 100000.0f) bump(H_SPELL_HITS);
     if (amount > 0 && amount < 100000.0f && dmg > 0 && dmg != 100) amount = amount * ((float)dmg / 100.0f);
     if (amount > 0 && amount < 100000.0f) c->f[12] = bits(amount);
     float hp_before = F(V + C_HP);
     g_orig_ctd(c);
     if (hp_before > 0 && !(F(V + C_HP) > 0)) drop_material(c, V, slot);
-    if (g_log) fprintf(stderr, "souls: tick %u: p%d hits %08x: %.1f -> %.1f (%s, weapon %d %%)%s%s, its hit points %.1f -> %.1f\n", tick, slot, V, raw, amount,
-                       class_name(wc), dmg, heavy ? " (heavy)" : "", slam ? " (slam)" : art_hit ? " (weapon art)" : "", hp_before, F(V + C_HP));
+    if (g_log) fprintf(stderr, "souls: tick %u: p%d hits %08x: %.1f -> %.1f (%s, %s %d %%)%s%s, its hit points %.1f -> %.1f\n", tick, slot, V, raw, amount,
+                       class_name(wc), spell_hit ? "spell" : "weapon", dmg, heavy ? " (heavy)" : "", slam ? " (slam)" : art_hit ? " (weapon art)" : "", hp_before, F(V + C_HP));
     if (!(amount > 0)) return;
     if (kind) {
         if (kind == 1) { EW(slot, E_RIPOSTE, 0); g_riposte_target[slot] = 0; bump(H_RIPOSTES); }
@@ -1154,7 +1459,8 @@ const Named NAMES[] = {
     {"flask_refill_radius", &Tuning::flask_refill_radius},
     {"drop_percent", &Tuning::drop_percent},
     {"drop_radius", &Tuning::drop_radius},
-    {"load_base", &Tuning::load_base}, {"load_per_stamina", &Tuning::load_per_stamina}, {"load_per_strength", &Tuning::load_per_strength},
+    {"load_base", &Tuning::load_base}, {"load_per_endurance", &Tuning::load_per_endurance}, {"load_per_stamina", &Tuning::load_per_endurance},
+    {"load_per_strength", &Tuning::load_per_strength},
     {"load_light", &Tuning::load_light}, {"load_medium", &Tuning::load_medium}, {"twohand_strength_percent", &Tuning::twohand_strength_percent},
     {"twohand_poise_percent", &Tuning::twohand_poise_percent}, {"heavy_interrupt_hp_percent", &Tuning::heavy_interrupt_hp_percent},
     {"spear_chip_percent", &Tuning::spear_chip_percent}, {"upgrade_max", &Tuning::upgrade_max}, {"upgrade_damage_tenths", &Tuning::upgrade_damage_tenths},
@@ -1163,11 +1469,15 @@ const Named NAMES[] = {
     {"material_drop_normal", &Tuning::material_drop_normal}, {"material_drop_miniboss", &Tuning::material_drop_miniboss},
     {"material_drop_boss", &Tuning::material_drop_boss}, {"save_reach", &Tuning::save_reach}, {"art_mana_percent", &Tuning::art_mana_percent},
     {"art_stamina_percent", &Tuning::art_stamina_percent}, {"art_cooldown", &Tuning::art_cooldown}, {"art_slam_percent", &Tuning::art_slam_percent},
-    {"art_fixed_percent", &Tuning::art_fixed_percent}, {"art_bolt_ticks", &Tuning::art_bolt_ticks}};
+    {"art_fixed_percent", &Tuning::art_fixed_percent}, {"art_bolt_ticks", &Tuning::art_bolt_ticks},
+    {"points_per_level", &Tuning::points_per_level}, {"stat_max", &Tuning::stat_max}, {"mana_per_mind_permille", &Tuning::mana_per_mind_permille},
+    {"stamina_per_endurance", &Tuning::stamina_per_endurance}, {"slot_base", &Tuning::slot_base}, {"slot_per_mind", &Tuning::slot_per_mind},
+    {"slot_per_int", &Tuning::slot_per_int}, {"slot_max", &Tuning::slot_max}, {"spell_hit_ticks", &Tuning::spell_hit_ticks}};
 // the tuning's arrays: combat.<name>.<label> (a tier, a weapon class or a curve point's index)
 const char* const TIER_LABELS[] = {"light", "medium", "heavy", "over"};
 const char* const CLASS_LABELS[] = {"none", "dagger", "sword", "axe", "mace", "great", "spear", "staff", "bow"};
 const char* const POINT_LABELS[] = {"0", "1", "2", "3", "4", "5", "6"};
+const char* const CHAR_LABELS[] = {"barbarian", "cleric", "shadowknight", "ranger", "wizard", "berserker", "shaman"};
 struct NamedArray { const char* name; size_t offset; int count; const char* const* labels; };
 const NamedArray ARRAYS[] = {
     {"tier_dodge_move", offsetof(Tuning, tier_dodge_move), 4, TIER_LABELS}, {"tier_iframes", offsetof(Tuning, tier_iframes), 4, TIER_LABELS},
@@ -1177,7 +1487,10 @@ const NamedArray ARRAYS[] = {
     {"wc_str", offsetof(Tuning, wc_str), 9, CLASS_LABELS}, {"wc_dex", offsetof(Tuning, wc_dex), 9, CLASS_LABELS},
     {"wc_int", offsetof(Tuning, wc_int), 9, CLASS_LABELS}, {"wc_guard", offsetof(Tuning, wc_guard), 9, CLASS_LABELS},
     {"wc_crit", offsetof(Tuning, wc_crit), 9, CLASS_LABELS}, {"wc_art", offsetof(Tuning, wc_art), 9, CLASS_LABELS},
-    {"scale_stat", offsetof(Tuning, scale_stat), 7, POINT_LABELS}, {"scale_value", offsetof(Tuning, scale_value), 7, POINT_LABELS}};
+    {"scale_stat", offsetof(Tuning, scale_stat), 7, POINT_LABELS}, {"scale_value", offsetof(Tuning, scale_value), 7, POINT_LABELS},
+    {"start_mind", offsetof(Tuning, start_mind), 7, CHAR_LABELS}, {"start_endurance", offsetof(Tuning, start_endurance), 7, CHAR_LABELS},
+    {"start_faith", offsetof(Tuning, start_faith), 7, CHAR_LABELS}, {"sc_int", offsetof(Tuning, sc_int), 7, CHAR_LABELS},
+    {"sc_faith", offsetof(Tuning, sc_faith), 7, CHAR_LABELS}};
 
 }  // namespace
 
@@ -1186,6 +1499,15 @@ void want(bool on) { g_want = on; }
 bool wanted() { return g_want.load(); }
 void room_agreed(bool on) { g_room = on ? 1 : 0; }
 bool active() { return g_on; }
+
+bool attributes(int slot, int32_t out[7]) {
+    if (!g_ram || slot < 0 || slot > 3) return false;
+    u32 record = G_PLAYERS + (u32)slot * REC;
+    if (!W(record + REC_OBJECT)) return false;
+    Attr a = attributes_of(record);
+    for (int k = 0; k < 7; k++) out[k] = a.v[k];
+    return true;
+}
 
 int32_t weapon_class_in_hand(int slot, uint32_t* item) {
     if (item) *item = 0;
@@ -1242,6 +1564,40 @@ void blank(uint64_t number) {
         for (u32 k = 0; k < 31; k++) { char ch = name && ok(name + k, 1) ? (char)B(name + k) : 0; s.name[k] = ch; if (!ch) break; }
         s.name[31] = 0;
         for (u32 k = 0; k < 32; k += 4) { u32 v = 0; memcpy(&v, s.name + k, 4); PW(SOULS_BASE + L_NAME + k, v); }
+        // the character sheet: the block's attributes part, and from the record the names of the spells (the skills' own
+        // internal names) for the HUDs
+        u32 record = G_PLAYERS + (u32)h.slot * REC;
+        s.open = AR(h.slot, A_OPEN) != 0;
+        s.sheet = s.open || g_sheet_view.load();
+        s.row = AR(h.slot, A_ROW); s.unspent = AR(h.slot, A_UNSPENT); s.char_level = AR(h.slot, A_LEVEL); s.slots = AR(h.slot, A_SLOTS);
+        s.cls_of = class_of(record);
+        for (u32 k = 0; k < 7; k++) s.v[k] = AR(h.slot, A_VIG + 4 * k);
+        s.spell_pct = AR(h.slot, A_SPELL_PCT); s.spell_grades = (u32)AR(h.slot, A_SPELL_GRADES); s.stamina_most = stamina_most(h.slot);
+        s.hp_now = F(record + REC_HP); s.hp_most = F(record + REC_HP_MAX); s.mana = F(record + REC_MANA); s.mana_most = F(record + REC_MANA_MAX);
+        u32 attuned = (u32)AR(h.slot, A_ATTUNED);
+        for (int k = 0; k < 15; k++) {
+            Shown::Spell& sp = s.book[k];
+            if (in_book(record, k)) {
+                s32 id = ability_id(record, k);
+                u32 sk = skill_of(id), name = skill_record(ability(record, k)) && sk ? W(sk) : ability(record, k);
+                for (u32 q = 0; q < 23; q++) { char ch = ok(name + q, 1) ? (char)B(name + q) : 0; sp.name[q] = ch; if (!ch) break; }
+                sp.name[23] = 0;
+                if (!sp.name[0]) snprintf(sp.name, sizeof sp.name, "skill %d", id);
+                sp.cost10 = H(SOULS_BASE + COST_BASE + (u32)h.slot * 0x40 + 2 * (u32)k);
+                sp.rank = B(SOULS_BASE + COST_BASE + (u32)h.slot * 0x40 + 0x20 + (u32)k);
+                sp.attuned = ((attuned >> k) & 1) != 0;
+            }
+            for (u32 q = 0; q < 24; q += 4) { u32 v = 0; memcpy(&v, sp.name + q, 4); PW(SOULS_BASE + L_SPELL_NAMES + 24 * (u32)k + q, v); }
+        }
+        // the book's spells in record order (the rows of the open screen after the three attributes)
+        int n = 0;
+        for (int k = 0; k < 15; k++) if (in_book(record, k) && n < 15) s.rows[n++] = k;
+        s.books = n;
+        for (int j = 0; j < 15; j++) PB(SOULS_BASE + L_SLOT_REC + (u32)j, (u8)(j < n ? s.rows[j] : 0xff));
+        s.used = AR(h.slot, A_USED);
+        SW(L_SHEET, g_sheet_view.load() ? 1 : 0);
+        PF(SOULS_BASE + L_SHEET + 0x10, s.hp_now); PF(SOULS_BASE + L_SHEET + 0x14, s.hp_most);
+        PF(SOULS_BASE + L_SHEET + 0x18, s.mana); PF(SOULS_BASE + L_SHEET + 0x1c, s.mana_most);
     }
     std::lock_guard<std::mutex> hold(g_lock);
     g_shown = s;
@@ -1307,6 +1663,54 @@ void overlay(render::FrameList& frame) {
             else snprintf(line, sizeof line, "FULLY UPGRADED");
             testerkit::text(frame, bx, ty - 9 * px, px, line, 0xa0, 0xe8, 0xff, 0x80);
         }
+    }
+    // the level-up's points and the character screen's way in
+    if (s.unspent > 0 || (s.near && !s.open)) {
+        char line[160];
+        float px = std::max(1.0f, std::floor(Ht / 448.0f + 0.25f));
+        if (s.near) snprintf(line, sizeof line, "CHARACTER: HOLD L3 + L2%s", s.unspent > 0 ? "  (POINTS TO SPEND)" : "");
+        else snprintf(line, sizeof line, "LEVEL UP: %d POINT%s - SPEND THEM AT A SAVE POINT", s.unspent, s.unspent == 1 ? "" : "S");
+        testerkit::text(frame, bx, by + bh + 4 + 3 * px, px, line, 0xf0, 0xd8, 0x80, 0x80);
+    }
+    // the character sheet: the attributes, what they make, and the spellbook (our own text)
+    if (s.sheet) {
+        static const char* const CLASS_WORD[7] = {"BARBARIAN", "CLERIC", "SHADOW KNIGHT", "RANGER", "WIZARD", "BERSERKER", "SHAMAN"};
+        static const char* const TIERS2[4] = {"LIGHT", "MEDIUM", "HEAVY", "OVERLOADED"};
+        float px = std::max(1.0f, std::floor(Ht / 360.0f + 0.25f)), lh = 10 * px;
+        struct Line { std::string text; uint8_t r, g, b; };
+        std::vector<Line> lines;
+        auto add = [&](int row, const char* fmt, auto... args) {
+            char t[200];
+            snprintf(t, sizeof t, fmt, args...);
+            bool chosen = s.open && row >= 0 && row == s.row;
+            lines.push_back({std::string(chosen ? "> " : "  ") + t, (uint8_t)(chosen ? 0xff : 0xe8), (uint8_t)(chosen ? 0xd8 : 0xe4), (uint8_t)(chosen ? 0x70 : 0xd8)});
+        };
+        int cls = std::max(0, std::min(6, s.cls_of)), tier = std::max(0, std::min(3, s.tier));
+        add(-1, "%s  LEVEL %d  POINTS %d", CLASS_WORD[cls], s.char_level, s.unspent);
+        add(-1, "VIGOR         %3d   HP %.0f/%.0f", s.v[0], s.hp_now, s.hp_most);
+        add(0, "MIND          %3d   MANA %.0f/%.0f", s.v[1], s.mana, s.mana_most);
+        add(1, "ENDURANCE     %3d   STAMINA %.0f  LOAD %.1f/%.1f %s", s.v[2], s.stamina_most / 100.0, s.load / 100.0, s.cap / 100.0, TIERS2[tier]);
+        add(-1, "STRENGTH      %3d", s.v[3]);
+        add(-1, "DEXTERITY     %3d", s.v[4]);
+        add(-1, "INTELLIGENCE  %3d", s.v[5]);
+        add(2, "FAITH         %3d", s.v[6]);
+        char g[3] = {(char)(s.grades & 0xff), (char)((s.grades >> 8) & 0xff), (char)((s.grades >> 16) & 0xff)};
+        add(-1, "WEAPON  %s +%d  STR %c DEX %c INT %c  %d%%", s.name[0] ? s.name : "-", s.level, g[0] ? g[0] : '-', g[1] ? g[1] : '-', g[2] ? g[2] : '-', s.damage);
+        char sg[2] = {(char)(s.spell_grades & 0xff), (char)((s.spell_grades >> 8) & 0xff)};
+        add(-1, "SPELLS  INT %c  FTH %c  %d%%   SLOTS %d OF %d (*)", sg[0] ? sg[0] : '-', sg[1] ? sg[1] : '-', s.spell_pct, s.used, s.slots);
+        for (int j = 0; j < s.books; j++) {
+            const Shown::Spell& b = s.book[s.rows[j]];
+            add(3 + j, "%s %-22s RANK %d  %.1f MANA", b.attuned ? "*" : " ", b.name, b.rank, b.cost10 / 10.0);
+        }
+        if (s.books == 0) add(-1, "  (NO SPELLS)");
+        if (s.open) add(-1, "UP/DOWN CHOOSE  RIGHT SPEND / INTO A SLOT  LEFT OUT OF ITS SLOT  BLOCK CLOSES");
+        else if (s.unspent > 0) add(-1, "SPEND THE POINTS AT A SAVE POINT: HOLD L3 + L2");
+        size_t widest = 0;
+        for (const Line& l : lines) widest = std::max(widest, l.text.size());
+        float x0 = X + Wd * 0.04f, y0 = Y + Ht * 0.12f, w = (float)widest * 6 * px;
+        quad(x0 - 5 * px, y0 - 5 * px, x0 + w + 4 * px, y0 + (float)lines.size() * lh + 3 * px, 0x0c, 0x0c, 0x10, 0x68);
+        quad(x0 - 5 * px, y0 - 5 * px, x0 + w + 4 * px, y0 - 4 * px, 0xf0, 0xd8, 0x80, 0x80);
+        for (size_t k = 0; k < lines.size(); k++) testerkit::text(frame, x0, y0 + (float)k * lh, px, lines[k].text, lines[k].r, lines[k].g, lines[k].b, 0x80);
     }
     auto project = [&](float wx, float wy, float wz, float& cx, float& cy) {
         if (!cam.valid) return false;
@@ -1401,12 +1805,13 @@ std::string figures() {
     snprintf(text, sizeof text, "souls: %s, wrappers %s; player ticks %llu, player hits %llu (dodged %llu), creature hits by players %llu, staggers %llu, "
              "parries %d, ripostes %d, stance criticals %d, backstabs %d, guard counters %d, flasks drunk %d, refills %d, save point runs %llu, "
              "drops %d, picked up %d (gold %d), gold lost %d, weapon arts %d, upgrades %d, materials dropped %d, two-hand toggles %d, "
-             "spear chips %d, heavies interrupted %d, swings cancelled %d, tuning %08x",
+             "spear chips %d, heavies interrupted %d, swings cancelled %d, mode points spent %d, slot changes %d, spells cast %d, spell hits %d, "
+             "casts refused %d, tuning %08x",
              g_on ? "on" : "off", g_installed ? "in place" : "not installed", (unsigned long long)g_runs, (unsigned long long)g_ptd_calls,
              (unsigned long long)g_iframe_skips, (unsigned long long)g_ctd_calls, (unsigned long long)g_staggers,
              SR(H_PARRIES), SR(H_RIPOSTES), SR(H_STANCE), SR(H_BACKSTABS), SR(H_COUNTERS), SR(H_DRUNK), SR(H_REFILLS), (unsigned long long)g_save_calls,
              SR(H_DROPS), SR(H_PICKUPS), SR(H_GOLD_BACK), SR(H_GOLD_LOST), SR(H_ARTS), SR(H_UPGRADES), SR(H_MAT_DROPS), SR(H_TWOHANDS),
-             SR(H_CHIPS), SR(H_INTERRUPTS), SR(H_CANCELS), tuning_figure());
+             SR(H_CHIPS), SR(H_INTERRUPTS), SR(H_CANCELS), SR(H_POINTS), SR(H_SWAPS), SR(H_CASTS), SR(H_SPELL_HITS), SR(H_CAST_REFUSED), tuning_figure());
     return text;
 }
 
@@ -1426,7 +1831,11 @@ std::string help_text() {
            "  Two-handing           hold L3 and press the other-weapon-set button (L1, Q, mouse wheel)\n"
            "  Upgrade               near a save point hold L3 and press use (Square, J, Space): gold and whetstones\n"
            "  Equip load            what is equipped against strength and stamina: light, medium, heavy dodge; overloaded, none\n"
-           "  Lock on               R3 (Tab, mouse button 5); flick the mouse or the right stick to change target\n";
+           "  Lock on               R3 (Tab, mouse button 5); flick the mouse or the right stick to change target\n"
+           "  Character             near a save point hold L3 and press L2 (1): spend the level-ups' points on Mind, Endurance,\n"
+           "                        Faith, put spells in the spell slots (arrow keys / d-pad; block closes). Vigor, Strength,\n"
+           "                        Dexterity and Intelligence are the game's own level-up screen's\n"
+           "  Spells                the game's skill buttons; only the spells in a slot are cast; Intelligence and Faith scale them\n";
 }
 
 std::string command(const std::string& text) {
@@ -1452,12 +1861,23 @@ std::string command(const std::string& text) {
                      WR(k, W_ARTS), WR(k, W_UPGRADES), WR(k, W_RECOVER), WR(k, W_SWING));
             out += one;
         }
+        for (int k = 0; k < 4; k++) {
+            char one[320];
+            snprintf(one, sizeof one, " | p%d vig=%d mnd=%d end=%d str=%d dex=%d int=%d fth=%d unspent=%d spent=%d slots=%d book=%x attuned=%x open=%d row=%d "
+                     "stmax=%d mana=%.1f/%.1f spell=%d%% spellt=%d casts=%d refused=%d spot=%d level=%d", k,
+                     AR(k, A_VIG), AR(k, A_MND), AR(k, A_END), AR(k, A_STR), AR(k, A_DEX), AR(k, A_INT), AR(k, A_FTH), AR(k, A_UNSPENT), AR(k, A_SPENT),
+                     AR(k, A_SLOTS), AR(k, A_BOOK), AR(k, A_ATTUNED), AR(k, A_OPEN), AR(k, A_ROW), AR(k, A_STAMINA_MAX),
+                     F(G_PLAYERS + (u32)k * REC + REC_MANA), F(G_PLAYERS + (u32)k * REC + REC_MANA_MAX), AR(k, A_SPELL_PCT), AR(k, A_SPELL_T),
+                     AR(k, A_CASTS), AR(k, A_CAST_REFUSED), AR(k, A_SPOT), AR(k, A_LEVEL));
+            out += one;
+        }
         char tail[96];
         snprintf(tail, sizeof tail, " | breaks=%d poise=%d lock=%d", SR(H_BREAKS), SR(H_POISE), SR(L_LOCK));
         return out + tail;
     }
     if (w == "on" || w == "off") { if (B(G_NETWORK_MODE)) return "souls: not during an online game"; g_want = w == "on"; return "souls: wanted " + w; }
     if (w == "lock") { fpcontrols::lock_toggle(); return "souls: lock toggled"; }
+    if (w == "sheet") { g_sheet_view = !g_sheet_view.load(); return std::string("souls: character sheet ") + (g_sheet_view.load() ? "shown" : "hidden"); }
     // test aids, offline only (they change the simulation): turn the locked creature's back to this player; put this
     // player on its death drop
     if (w == "turn" || w == "go-drop" || w == "pose front" || w == "pose back") {
@@ -1492,7 +1912,7 @@ std::string command(const std::string& text) {
         std::string key = "combat." + w.substr(4, sp - 4);
         return setting(key.c_str(), w.substr(sp + 1).c_str()) ? "souls: set" : "souls: no such number";
     }
-    return "souls: info | on | off | lock | set NAME VALUE";
+    return "souls: info | on | off | lock | sheet | set NAME VALUE";
 }
 
 }  // namespace soulscombat
