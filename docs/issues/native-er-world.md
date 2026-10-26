@@ -21,6 +21,7 @@ and is richer close up, but not clearly better as a whole at play distance). The
 | 2. Grass (MultiMesh, swaying, density by distance, no collision, not on paths / against walls) | **done, Ran**: clears painted flower patches and stones; no tufts in the air; valor 3,509 points |
 | 3. Skies: ER cloud layer tinted by the level's own sky | **done, Ran** |
 | 4. Hub fitted rebuild (ruin pieces fitted to the Champions shapes, a hand's-width check) | **refused on review** (gate 5, see Gate 5; gates 3 and 4 before it); arch **refused** by the check (max 13.4 units off), not retried |
+| Sweep of all 111 levels (classes, grass, sky, per-level table) | **done, Ran** (see "Sweep of all 111 levels"): water, lava, ice classes; grass kept off paths, flagstones, water and pieces the game leaves out; 66 levels with a section of their own; 60+ fps **not verified** (machine loaded by other programs; layer on = off within the noise) |
 | Gate: before/after pictures, 60+ fps, room in step | **Ran**: pictures in `local/er-world/gate5/final/`; room in step (1,858 ticks, A drawing the gate-5 pieces); fps see Gate 5 (the machine was too loaded for a clean number) |
 
 Built into `local/godot-r34/` (extension and project). Not committed.
@@ -609,3 +610,264 @@ pieces stay in `local/er-world/gate5/world/` (`RTA_ER_WORLD_DIR` to see them).
   `tools/godot/project/shaders/er_ruin.gdshader` (rewritten: the level's light, the game's colour, the gold), this file.
 - Local: `local/er-world/gate5/` (dumps `d1/`, fits, runs, `final/`, fps, `world/`), `local/er-world/hubfit/hub-gate5.json`,
   `local/godot-r34/` (build, `test/room34.py`).
+
+## Sweep of all 111 levels (2026-10-26, fourth session, second agent)
+
+Phase 1 had been tuned on hub, valor, arachna1, fire1 and inmine1 only. Every level of the game was now walked in
+Remastered with the layer, its faults found (automatically where possible), fixed generically or by a level's own section
+in `er_world.cfg`, and walked again. **Ran**, `local/godot-r32/` (built from the working tree; the game library from r28's
+snapshot).
+
+### How (local, `local/er-world/sweep/`)
+
+- `walk.py TAG` drives Godot's scene mode through the levels (the `presets.py walk` pattern: power-on, each level asked for
+  by name, the opening scene tapped away), at most 3 programs, 4 levels a program, a program that hangs killed (two levels
+  hold the game with a message box: innovat1, watbonus at first). `route.py` is the rig script.
+- At three stops per level - **a** the chase view standing (300 ticks in), **c** after a walk and a turn, **f** first
+  person - pictures with the layer **on**, then **off** 12 frames later (the first frames after the layer is switched draw
+  without some pieces while their materials are made: an earlier walk "saw" valor's flagstone floor through its grass
+  carpets that way), and at a and c the **class colours** (`er_world_strength -1`), `app er world info`, every grass
+  point near the eye and the frame's packets (`app er world dump`).
+- `sheet.py` (a sheet per level: off / on / classes x a, c, f), `index.py` (5 levels an image), `check.py`, `table.py`.
+- Walks: `v0` (the layer as phase 1 left it), `v1`..`v3` (fixes on the way), **`v4` (final)**. Sheets:
+  `local/er-world/sweep/v4/sheets/LEVEL.jpg`; overview `v4/index-NN.jpg`.
+
+### The automatic checks (`check.py`)
+
+Each grass point near the eye against the frame's packets and the classes read:
+
+| Check | What | Final walk |
+|---|---|---|
+| air | no surface under the point within 3 units, though the level is drawn round it | small counts left; looked at on valor: every one has no packet under it at all in that frame, or only one 80-120 units over it (the game had not drawn the ground there in that frame) - not tufts in the air |
+| offclass | the surface it stands on is of no grass class | 0, but islsm2b's a stop (a boss scene's fade: the picture is black) |
+| covered | a surface of another class lies 0.5..14 units over it (a path laid on the grass) | 0 |
+| water | a see-through sheet (blended, no depth) lies 3..400 units over it | 0 |
+| wall | a steep face within 6 units at its height | under 20 on a few levels (the checker's 6 units is finer than the drawer's 8-unit cells: tufts at the foot of a rock, not in it) |
+| steep | it stands on a face steeper than 37 degrees | 0 |
+
+Per texture: colours that look like water, lava, ice or snow and what they were read as. Per stop: the lower two thirds'
+brightness on / off and colour shift, and the sky's difference (the cloud layer).
+
+### Faults found, and the fixes
+
+**Generic (code):**
+
+1. **Tufts leaning over paths and flagstones** (seen on valor at first; part of what was seen there was the switching
+   artifact above and fault 2, but the cause below is real everywhere): a tuft is 0.8 of its height wide (up to 35 units out from its
+   foot), and only 10 units round its foot were looked at. Now a point keeps its **room** - how far the nearest thing that
+   is not grass lies: rings of 4..34 units in its own texture (a painted flagstone, a path, petals), and the level's other
+   surfaces that are not grass at or over its height, or a little under it where no grass covers them (the edge of a grass
+   carpet over a stone floor). The tuft is made no wider than its room (`er_world.gd`); under `[grass] clear` (10) none.
+2. **Tufts where the game no longer draws the ground** (valor's grass carpets are left out and brought back by the game):
+   each tuft keeps its piece, and a piece not drawn for 90 frames grows none; when it is drawn again the grass is
+   gathered at once (`get_grass_epoch`).
+3. **No grass under water**: a see-through sheet of the level (blended, no depth written: a lake's, a river's surface), or a
+   piece read as water, lava or ice, is noted in cells; a point 3..600 units under one is not drawn.
+4. **Water, lava, ice: new classes** 9, 10, 11 (`rta_world.cpp`, `er_world.gdshaderinc`, `er_world.gd`), with their own
+   materials in the local folder (`local/er-world/work/make_world2.py`: water a neutral albedo with a ripple normal, lava
+   the glow map's brightness with its normal, ice a cracked-ice albedo and normal; low-resolution versions). Their scale /
+   keep / amount are defaults in `er_world.gd` (`CLASS_DEFAULTS`: they keep most of the game's own picture). None of them
+   grows grass; ice that is rough is snow.
+   - **Read only where a level's section says so** (`lava = 1`, `water = 1`). Measured on the sweep: read from colour
+     alone, water was found on 30 levels and lava on 2 that have none in their solid pieces (a blue night light, a blue
+     painted stone, a pale marble; a lamp-lit red wall). The game's lakes and lava seas are not solid level pieces the
+     layer draws (fire3, fire4: the lava stays exactly as the game draws it, and grows nothing); the solid ones that are
+     water or snow by colour are named per level.
+   - Lava is read from the texel itself (it glows whatever the light): a saturated red to orange whose glowing texels
+     (bright orange to yellow) are a quarter of it; on a texture page with a flow in a corner it is the second class,
+     decided per pixel.
+5. **Grass's band of hues** ends at 160 degrees (was 170 with a soft edge to 186): cyan is not grass.
+6. **A texture that reads as no family under its light** (a deep coloured light) is read by its texels alone.
+7. **Underwater and see-through skies**: a level's section may name `sky_amount`; a level's section may turn the layer off
+   (`layer = "off"`, none needed).
+
+**Per level (`er_world.cfg`, a section each, the reason written above its keys):** 65 levels. The reader's mistakes were
+of a few kinds, the same on every level where they occur, and none can be told from the texture alone (measured: wood's
+edge ratio and coherence overlap fully between beams, bricks and cave rock; snow and dull grass have the same hue and
+saturation; the game's textures are stored at about half their drawn brightness, so "pale" cannot be read):
+
+- **boards (wood) on rock, bricks and tiles** - caves, dungeons, the torment levels' stone floors: `remap_wood`;
+- **grass on snow, cave floors, paving, volcanic rock, wooden walkways** - `remap_grass` (snow, stone, dirt, cobble, wood);
+- **earth (dirt) on volcanic rock, bricks, tiled floors, beach sand** - `remap_dirt` (stone, cobble, sand);
+- **cobbles on tree trunks**, **metal on a stone pillar**, **snow and sand on a marble dais**;
+- **clouds under water** (compwat, watbonus, wat1, watg2a/b/c) and **through a see-through dome layer** (airarena, half).
+
+### Sky
+
+- **Clouds under a dome**: on the dome levels (airarena, the torment levels, citadel, pvptor, endgood, intro, ...) the game
+  draws its dome over the cloud layer, so the clouds show only above its upper edge - except where a dome layer is itself
+  see-through: airarena's painted shafts of light (clouds at 0.45 there).
+- **Colour against the level's preset**: the clouds take the level's own sky colours (fire levels: red-orange clouds,
+  night levels: dark). Lower two thirds' brightness on / off: within 0.88..1.15 on every judged stop but valor's a stop
+  (0.81: the dense grass is darker than the game's flat green; as tuned in phase 1).
+
+### Frame rate
+
+Paced, 3024x1964, the layer on and off in one program per level (`fps.py`, `fpsroute.py`: 300 ticks of walking and
+turning in the chase view and first person, each half), 16 heavy levels (most draws, most grass, phase 1's slowest).
+
+**The machine was not free**: other agents' Godot programs ran all the while (load average 60 at the first try, 300-420
+at the second). Under that, every level ran at 21-76 fps **with the layer and without it alike** (mean of the 15 measured:
+on 32.0, off 34.6 fps; within the noise of the load, in either direction). The layer's own time (GDScript) was 55-150 us
+a frame. The 60+ fps check could **not** be made on this machine now; phase 1's gate (a free machine) had 106 fps with the
+layer on and off. To do: `local/er-world/sweep/fps.py OUT LEVELS` when no other program runs.
+
+| Level | fps on | fps off |
+|---|---|---|
+| watbonus | 34.3 | 26.4 |
+| watg2b | 32.9 | 34.7 |
+| watg2a | 32.3 | 39.0 |
+| watmedal | 46.8 | 38.0 |
+| torment2 | 28.5 | 42.9 |
+| pvptor | 76.0 | 76.4 |
+| torment3 | 30.4 | 38.4 |
+| torbonus | 28.5 | 26.4 |
+| valor | - | 30.9 |
+| stomedal | 28.5 | 31.4 |
+| islsm3a | 27.1 | 29.7 |
+| honor2 | 21.3 | 26.7 |
+| swamp1 | 30.8 | 31.3 |
+| fire1 | 28.9 | 28.4 |
+| stobonus | 24.9 | 26.0 |
+| nitmedal | 34.3 | 38.0 |
+
+### Per level (final walk v4)
+
+Result: **fixed** (a section of its own in `er_world.cfg`, or a generic fault it showed), **ok** (nothing wrong seen), or
+**off** (none). "Checks" counts the grass checks' findings at a and c (see above: `air` and `wall` are the checker's own
+noise). "Bright" is the lower two thirds' brightness, layer on / off, at stop a.
+
+| Level | Result | Classes read (a) | Grass points (a) | Checks (a, c) | Bright on/off (a) | Why / what |
+|---|---|---|---|---|---|---|
+| airarena | fixed | stone 96, dirt 2 | 0 | - | 0.99 | a floating rock with a marble dais: the dais is not snow or sand, the rock not grass (`sky_amount = 0.45, remap_snow = stone, remap_sand = stone, remap_grass = stone`) |
+| arachna1 | fixed | stone 4, dirt 3, cobble 1 | 0 | - | 0.979 | a cave: its rock reads as boards (warm, edged one way) (`remap_wood = stone`) |
+| bastion1 | fixed | snow 35 | 0 | - | 0.998 | a snowfield under a deep blue night light: its texels are blue themselves - they read as water, which is snow here (`water = 1, remap_water = snow`) |
+| blomedal | fixed | stone 70, dirt 44 | 0 | - | 0.973 | a cave arena: cracked rock floor reads as boards (`remap_wood = stone`) |
+| blood1 | fixed | dirt 15, stone 4 | 0 | - | 0.97 | rocky ground reads as boards (`remap_wood = stone`) |
+| boar1 | fixed | dirt 52, stone 14 | 0 | - | 0.973 | a cave: its rock reads as boards (`remap_wood = stone`) |
+| bossevil | ok | dirt 28, stone 22, wood 6 | 0 | - | 1.004 | - |
+| bossgood | ok | grass 27, stone 8, dirt 7, wood 1 | 183 | air 2, wall 33 | 1.008 | - |
+| citadel | fixed | cobble 13, stone 10 | 0 | - | 0.97 | stone floors and arches under a red-gold light read as boards and earth (as the torment levels) (`remap_wood = stone, remap_dirt = cobble`) |
+| compblo | fixed | stone 35, dirt 13, grass 1 | 0 | - | 0.978 | rock reads as boards (`remap_wood = stone`) |
+| compdis | ok | dirt 74, wood 28, stone 4, grass 1 | 0 | - | 0.979 | - |
+| compsto | ok | - | - | - | 1.101 | - |
+| compval | ok | stone 43, dirt 8, grass 4, wood 4 | 71 | air 4 | 0.984 | - |
+| compwat | fixed | cobble 31, stone 8, grass 5, wood 1 | 0 | - | 0.993 | under water: no clouds; a pale sea-floor texture reads as ice (`sky_amount = 0.0, remap_ice = stone`) |
+| dis2 | ok | dirt 33, grass 2, wood 1 | 0 | - | 0.993 | - |
+| disbonus | ok | dirt 66, grass 37, stone 16, cobble 2, wood 2 | 0 | - | 0.996 | - |
+| dismedal | fixed | dirt 117 | 0 | - | 0.944 | red, fleshy walls read as boards (`remap_wood = dirt`) |
+| drunare | fixed | stone 29, cobble 1, dirt 1 | 0 | - | 0.986 | brick walls (courses of mortar run one way) read as boards (`remap_wood = cobble`) |
+| drunarm | fixed | dirt 23, stone 8 | 0 | - | 0.958 | a dwarven cave: rock reads as boards (`remap_wood = stone`) |
+| drundar | fixed | dirt 109, stone 10 | 1 | - | 0.97 | a dwarven cave: rock reads as boards (`remap_wood = stone`) |
+| endbad | ok | stone 7, grass 5, dirt 1 | 3 | - | 1.035 | - |
+| endgood | fixed | stone 32, grass 30, wood 7 | 137 | - | 0.993 | a stone pillar reads as metal (`remap_metal = stone`) |
+| fay1 | fixed | dirt 28, stone 13, wood 1 | 0 | - | 0.968 | a cave of roots and mud: its ground reads as grass under the green light (`remap_grass = dirt`) |
+| fay2 | fixed | wood 15, stone 4, dirt 1 | 0 | - | 1.001 | wooden walkways read as grass under the green light (`remap_grass = wood`) |
+| fay3 | ok | grass 68, stone 33, dirt 7, wood 3 | 353 | air 2, wall 4 | 0.917 | - |
+| faybonus | fixed | dirt 28, stone 26, grass 25 | 0 | - | 0.96 | a cave: its rock reads as boards (`remap_wood = stone`) |
+| fearboss | ok | stone 13, grass 12 | 124 | air 3 | 0.878 | - |
+| firbonus | fixed | stone 24 | 0 | - | 0.996 | it has lava: read it (a glowing red to orange) (`lava = 1, remap_dirt = stone`) |
+| fire1 | fixed | stone 50, grass 11 | 4 | wall 2 | 0.988 | it has lava: read it (a glowing red to orange) (`lava = 1, remap_dirt = stone`) |
+| fire2 | fixed | stone 55, wood 4 | 0 | - | 0.997 | it has lava: read it (a glowing red to orange) (`lava = 1, remap_dirt = stone`) |
+| fire3 | fixed | stone 20, wood 4, grass 2 | 0 | - | 1.046 | its lava pools are not level pieces the layer draws (as the game draws them; no grass); it has lava: read it (a glowing red to orange) (`lava = 1, remap_dirt = stone`) |
+| fire4 | fixed | stone 3, wood 1 | 0 | - | 0.992 | its lava sea is not a level piece the layer draws (as the game draws it; no grass); a flow at c reads as lava; it has lava: read it (a glowing red to orange) (`lava = 1, remap_dirt = stone`) |
+| fire5 | ok | stone 118, grass 1 | 0 | - | 1.002 | a boss scene; stop f black; it has lava: read it (a glowing red to orange) (`lava = 1, remap_dirt = stone, remap_wood = stone`) |
+| firmedal | fixed | stone 30 | 0 | - | 1.002 | it has lava: read it (a glowing red to orange) (`lava = 1, remap_dirt = stone`) |
+| honor | fixed | stone 89, cobble 11, dirt 1 | 0 | - | 0.986 | a paved temple: mossy flagstones read as grass (tufts on the paving) (`remap_grass = cobble`) |
+| honor2 | ok | grass 64, stone 52, dirt 31, wood 5 | 435 | air 3 | 0.94 | - |
+| hub | ok | stone 111, grass 33 | 35 | air 1, wall 2 | 0.986 | not changed here (its section is the rebuild's); walked |
+| hub2 | fixed | stone 41, cobble 15 | 0 | - | 1.008 | a paved grotto: its floor reads as earth and boards, its walls as grass (`remap_dirt = cobble, remap_wood = stone, remap_grass = stone`) |
+| inmine1 | ok | grass 133, cobble 14, wood 14, stone 6, dirt 2 | 378 | air 9, wall 21 | 0.981 | - |
+| inmine2 | ok | grass 22, stone 16, cobble 9, wood 2, dirt 1 | 65 | air 2, wall 18 | 0.891 | - |
+| innmedal | ok | dirt 41, stone 10, wood 6, cobble 3, grass 3 | 23 | wall 2 | 0.969 | - |
+| innovat1 | ok | dirt 56, stone 19, wood 14, grass 6, cobble 5 | 47 | wall 2 | 0.979 | - |
+| innovat2 | ok | stone 26, dirt 23, wood 11, cobble 1 | 14 | wall 4 | 0.96 | - |
+| innpit | ok | stone 33, dirt 16, wood 8, cobble 4 | 0 | - | 0.992 | - |
+| intro | ok | grass 23, wood 2 | 15 | wall 24 | 1.002 | - |
+| islc1 | ok | grass 35, stone 19, dirt 12, cobble 2 | 29 | wall 2 | 0.898 | - |
+| islc2 | ok | grass 36, stone 14, cobble 1, dirt 1 | 67 | wall 1 | 0.98 | - |
+| islcave1 | ok | stone 13, grass 12 | 124 | air 1 | 0.882 | - |
+| islgnome | ok | grass 55, wood 9, dirt 6, sand 6 | 324 | air 2, wall 2 | 0.978 | - |
+| islgoth | fixed | stone 29, cobble 17 | 0 | - | 0.973 | a gothic hall: tiled floor reads as earth, stone walls as boards and grass (`remap_dirt = cobble, remap_wood = stone, remap_grass = stone`) |
+| islsm1 | ok | grass 34, stone 17, dirt 13, wood 1 | 183 | air 4 | 0.0 | stop a fading in (on darker than off by the fade) |
+| islsm2a | ok | grass 23, dirt 2, wood 1 | 174 | wall 1 | 0.986 | - |
+| islsm2b | fixed | - | 52 | offclass 44 | 10.776 | stop a is a boss scene's fade (black; its offclass count is from that frame); a beach: its sand reads as earth (`remap_dirt = sand`) |
+| islsm3a | fixed | grass 84, sand 49, stone 24, wood 2 | 717 | air 13, offclass 2, wall 2 | 0.986 | a sandy path reads as earth (`remap_dirt = sand`) |
+| islsm3b | ok | grass 57, stone 19, cobble 2, dirt 1 | 109 | wall 2 | 0.96 | - |
+| nit1 | fixed | stone 23 | 0 | - | 0.991 | a cave: its floor reads as grass, its walls as cobbles (`remap_grass = stone, remap_cobble = stone`) |
+| nit2 | fixed | stone 84, grass 9, dirt 3, wood 3 | 6 | air 1 | 0.979 | tree trunks and rock read as cobbles (`remap_cobble = stone`) |
+| nitbon2 | fixed | dirt 39, stone 34 | 0 | - | 0.986 | a cave: a mossy patch reads as grass (`remap_grass = dirt`) |
+| nitbonus | fixed | grass 16, stone 11, dirt 3, wood 1 | 49 | air 4 | 0.97 | tree trunks and rock read as cobbles (`remap_cobble = stone`) |
+| nitdung1 | fixed | cobble 11, stone 1 | 0 | - | 0.978 | a dungeon: its bricks read as earth and boards (`remap_dirt = cobble, remap_wood = cobble`) |
+| nitdung2 | fixed | cobble 11 | 0 | - | 0.976 | a dungeon: its bricks read as earth and boards (`remap_dirt = cobble, remap_wood = cobble`) |
+| nitdung3 | ok | dirt 72, stone 26, wood 8, cobble 6 | 0 | - | 0.998 | - |
+| nitdung4 | fixed | cobble 7, stone 1 | 0 | - | 0.989 | a dungeon: its bricks read as earth and boards (`remap_dirt = cobble, remap_wood = cobble`) |
+| nitmar1 | ok | dirt 25, cobble 5, wood 4 | 0 | - | 0.95 | - |
+| nitmedal | ok | dirt 35, grass 8, wood 2 | 650 | air 10, offclass 3, steep 1 | 0.97 | - |
+| obsfor1 | ok | stone 13, grass 12 | 124 | air 1 | 0.902 | - |
+| obsidian | fixed | stone 138 | 0 | - | 0.982 | volcanic swirls read as grass (tufts on the rock) and earth (`remap_grass = stone, remap_dirt = stone`) |
+| pvparena | ok | stone 69, dirt 25, wood 20, grass 2 | 0 | - | 0.979 | - |
+| pvpbas | fixed | snow 81, dirt 1, stone 1 | 0 | - | 0.993 | icy mountains read as grass under the blue light; its blue snowfield as water (as bastion1) (`remap_grass = snow, water = 1, remap_water = snow`) |
+| pvpblo | ok | - | 0 | - | 1.0 | - |
+| pvpblo2 | ok | - | 0 | - | 1.0 | - |
+| pvpfire | ok | - | 0 | - | 1.0 | - |
+| pvpfire2 | fixed | stone 26 | 0 | - | 0.995 | it has lava: read it (a glowing red to orange) (`lava = 1, remap_dirt = stone`) |
+| pvpinn | ok | dirt 72, stone 27, wood 23, cobble 8, grass 3 | 0 | - | 0.967 | - |
+| pvpnit | fixed | stone 84, dirt 14, wood 12, grass 8 | 16 | - | 1.006 | tree trunks and rock read as cobbles (`remap_cobble = stone`) |
+| pvptor | fixed | cobble 91, stone 54 | 0 | - | 0.992 | a stone arena under a red light: its floor reads as boards (`remap_wood = stone, remap_dirt = cobble`) |
+| pvpval | ok | stone 35, grass 8, wood 7, dirt 3 | 80 | air 2, wall 1 | 0.987 | - |
+| shame1 | fixed | cobble 11, stone 1 | 0 | - | 0.988 | a dungeon: its bricks read as earth and boards (`remap_dirt = cobble, remap_wood = cobble`) |
+| stobonus | fixed | snow 129 | 0 | - | 1.014 | a snowy forest: its snow reads as grass (a grey green; tufts stood on the snow) (`remap_grass = snow`) |
+| stomedal | ok | grass 92 | 1002 | air 12, wall 16 | 0.954 | - |
+| storm1 | fixed | snow 58 | 0 | - | 1.461 | a boss scene, stop c black (a fade); its brightness on / off differs by the fade, not the layer; a snowy forest: its snow reads as grass (a grey green; tufts stood on the snow) (`remap_grass = snow`) |
+| storm1a | fixed | stone 58, dirt 28, cobble 1, grass 1, sand 1 | 0 | - | 0.99 | a dungeon: stone walls read as boards (`remap_wood = stone`) |
+| storm1b | fixed | stone 13, dirt 7, cobble 3 | 0 | - | 0.981 | a dungeon: a mossy floor reads as grass, walls as boards (`remap_grass = stone, remap_wood = stone`) |
+| storm1c | fixed | stone 56, dirt 15 | 0 | - | 0.963 | a dungeon: stone walls read as boards (`remap_wood = stone`) |
+| storm2 | fixed | stone 63, dirt 4, wood 1 | 0 | - | 0.968 | dark, icy rock reads as grass (`remap_grass = stone`) |
+| storm3 | fixed | snow 36, stone 33, dirt 10 | 0 | - | 1.007 | ice on its icy walls (c); a snowfield reads as grass under the blue light (`remap_grass = snow`) |
+| storm4 | fixed | snow 18, ice 3, dirt 1 | 0 | - | 0.872 | a snowfield: reads as grass under the blue light (`remap_grass = snow`) |
+| storm5 | ok | ice 59, dirt 1 | 0 | - | 0.997 | its frozen ground reads as ice (cracked-ice material) |
+| strife | ok | stone 60, dirt 25, wood 9 | 0 | - | 0.976 | - |
+| swamp1 | ok | grass 99, wood 32, dirt 24, stone 2 | 667 | air 5, wall 4 | 0.975 | - |
+| swamp2 | fixed | dirt 126, stone 16 | 0 | - | 0.969 | red ground reads as boards (`remap_wood = dirt`) |
+| torbonus | fixed | stone 82, cobble 51 | 0 | - | 0.987 | stone floors and arches under a red-gold light read as boards and earth (`remap_wood = stone, remap_dirt = cobble`) |
+| tormedal | fixed | stone 45, cobble 9 | 0 | - | 0.99 | stone floors and arches under a red-gold light read as boards and earth (`remap_wood = stone, remap_dirt = cobble`) |
+| torment0 | fixed | stone 45 | 0 | - | 0.991 | stone platforms under a red light read as boards and earth (`remap_wood = stone, remap_dirt = stone`) |
+| torment2 | fixed | stone 84, cobble 44, grass 2 | 0 | - | 0.984 | stone floors and arches under a red-gold light read as boards and earth (`remap_wood = stone, remap_dirt = cobble`) |
+| torment3 | fixed | stone 86, cobble 79, grass 1 | 0 | - | 0.982 | stone floors and arches under a red-gold light read as boards and earth (`remap_wood = stone, remap_dirt = cobble`) |
+| tormenta | fixed | stone 20 | 0 | - | 0.988 | stone platforms under a red light read as boards and earth (`remap_wood = stone, remap_dirt = stone`) |
+| tormentb | fixed | stone 32, wood 6 | 0 | - | 0.923 | stone towers under a red light read as earth (`remap_dirt = stone`) |
+| valmedal | fixed | stone 23, cobble 21, dirt 13 | 0 | - | 0.985 | a paved arena: mossy paving reads as grass (tufts on the paving) (`remap_grass = cobble`) |
+| valor | fixed | grass 38, stone 26, wood 5 | 429 | - | 0.875 | tufts that leaned over its flagstone floor, and stood where the game had left its grass carpets out (generic 1, 2); denser, darker grass than the game's flat green (0.87) |
+| valor2 | ok | grass 68, stone 49, wood 2, dirt 1 | 718 | air 13, offclass 1, wall 1 | 0.891 | - |
+| wat1 | fixed | - | 0 | - | 0.0 | stop a black (dark start); under water: no clouds; a pale sea-floor texture reads as ice (`sky_amount = 0.0, remap_ice = stone`) |
+| watbonus | fixed | stone 51, grass 5, cobble 1 | 0 | - | 0.997 | under water: no clouds; a pale sea-floor texture reads as ice (`sky_amount = 0.0, remap_ice = stone`) |
+| wate2a | fixed | cobble 45, stone 18, dirt 1 | 0 | - | 0.978 | a sewer: its wet floor reads as grass (`remap_grass = cobble`) |
+| wate2b | fixed | cobble 102, stone 29 | 0 | - | 0.969 | a sewer: its wet floor reads as grass (`remap_grass = cobble`) |
+| wate2c | fixed | cobble 27, stone 16 | 0 | - | 0.982 | stop f black; a sewer: its wet floor reads as grass (`remap_grass = cobble`) |
+| water1 | ok | stone 9, grass 8 | 94 | air 1 | 0.891 | - |
+| watg2a | fixed | stone 10, grass 4, dirt 1 | 0 | - | 0.999 | under water: no clouds (`sky_amount = 0.0`) |
+| watg2b | fixed | stone 3, dirt 1 | 0 | - | 1.002 | under water: no clouds (`sky_amount = 0.0`) |
+| watg2c | fixed | stone 7, dirt 1 | 0 | - | 1.004 | under water: no clouds (`sky_amount = 0.0`) |
+| watmedal | ok | stone 4, dirt 1 | 0 | - | 0.99 | - |
+
+### Not judged / known
+
+- Stops with a black or fading picture (a message box, a scene's fade): see the table's notes; every level has at least
+  two stops judged.
+- Seams: none seen on the class pictures and the on pictures at play distance; no recording was made (flicker not judged).
+- The hub's section is the other agent's (its rebuild); the hub was walked and reads as before.
+- The water / lava / ice materials are the low-resolution versions of the owner's files.
+
+### Changed (this sweep)
+
+- `tools/godot/extension/src/rta_world.cpp`: classes 9-11, lava from the texel, water / lava read per level, the reading
+  without the light, room, ground / cover / sheet cells, pieces present, `lava_member`
+- `tools/godot/extension/src/rta_drawer.{h,cpp}`: their state, `get_grass_epoch`
+- `tools/godot/project/er_world.gd`: 11 classes, a third vector of per-class values, room, epoch, `layer`, `sky_amount`,
+  `lava` / `water` keys, `info` writes tint / hot
+- `tools/godot/project/shaders/er_world.gdshaderinc`: classes 9-11, `er_lava`
+- `tools/godot/project/er_world.cfg`: 66 new level sections, `lava = 1` in fire1's (none of hub's)
+- this file
+- Local: `local/er-world/sweep/` (scripts, walks v0-v4, fps), `local/er-world/work/make_world2.py`, the three materials in
+  `local/souls-ref/er-world/materials/{water,lava,ice}`, `local/godot-r32/`

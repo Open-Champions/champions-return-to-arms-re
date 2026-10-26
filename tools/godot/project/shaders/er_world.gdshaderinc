@@ -10,7 +10,7 @@
 // whole textures).  The relief of the normal map turns the pixel toward or away from the level's light.  Far off, the
 // detail gives way to the texture as it is (no shimmer).
 //
-// Classes: 1 grass, 2 dirt, 3 stone, 4 cobble, 5 wood, 6 metal, 7 sand, 8 snow (layers 0..7).
+// Classes: 1 grass, 2 dirt, 3 stone, 4 cobble, 5 wood, 6 metal, 7 sand, 8 snow, 9 water, 10 lava, 11 ice (layers 0..10).
 
 uniform int er_class = 0;
 uniform int er_class_b = 0;
@@ -19,10 +19,13 @@ uniform int er_class2_b = 0;
 global uniform vec4 rta_er;         // x strength (0 off .. 1), y relief, z distance where the detail is gone, w large repeat share
 global uniform vec4 rta_er_scale_a; // units per repeat: grass, dirt, stone, cobble
 global uniform vec4 rta_er_scale_b; //                   wood, metal, sand, snow
+global uniform vec4 rta_er_scale_c; //                   water, lava, ice
 global uniform vec4 rta_er_keep_a;  // how much of the game's own fine detail stays, per class (0 none .. 1 all)
 global uniform vec4 rta_er_keep_b;
+global uniform vec4 rta_er_keep_c;
 global uniform vec4 rta_er_amount_a; // how strong the material's detail is, per class (0 none .. 1 as it is)
 global uniform vec4 rta_er_amount_b;
+global uniform vec4 rta_er_amount_c;
 global uniform vec4 rta_er_reader;    // x: where grass's band of hues starts (degrees)
 global uniform sampler2DArray rta_er_albedo : filter_linear_mipmap_anisotropic, repeat_enable;
 global uniform sampler2DArray rta_er_normal : filter_linear_mipmap_anisotropic, repeat_enable;
@@ -31,6 +34,19 @@ varying vec3 v_er_normal;           // the game's normal, world space (zero: non
 
 float er_smooth(float a, float b, float x) { return smoothstep(a, b, x); }
 float er_band(float h, float lo, float hi, float soft) { return er_smooth(lo - soft, lo, h) * (1.0 - er_smooth(hi, hi + soft, h)); }
+
+// lava: a saturated red to orange, bright in the texel itself whatever the light - as lava_member() in rta_world.cpp
+float er_lava(vec3 c) {
+	float mx = max(c.r, max(c.g, c.b)), mn = min(c.r, min(c.g, c.b));
+	float sat = (mx - mn) / max(mx, 0.04);
+	float h = 0.0;
+	if (mx - mn > 1e-4) {
+		if (mx == c.r) h = 60.0 * mod((c.g - c.b) / (mx - mn) + 6.0, 6.0);
+		else if (mx == c.g) h = 60.0 * ((c.b - c.r) / (mx - mn) + 2.0);
+		else h = 60.0 * ((c.r - c.g) / (mx - mn) + 4.0);
+	}
+	return (h < 180.0 ? er_band(h, -20.0, 40.0, 10.0) : er_band(h, 340.0, 400.0, 10.0)) * er_smooth(0.5, 0.65, sat) * er_smooth(0.38, 0.52, mx);
+}
 
 // the membership of a colour (0..1, stored values) in a class's family - as member() in rta_world.cpp
 float er_member(int cls, vec3 c) {
@@ -44,25 +60,30 @@ float er_member(int cls, vec3 c) {
 		else h = 60.0 * ((c.r - c.g) / (mx - mn) + 4.0);
 	}
 	float coloured = er_smooth(0.06, 0.16, sat);
-	float snow = er_smooth(0.62, 0.78, lum) * (1.0 - er_smooth(0.10, 0.22, sat));
-	float sand = er_band(h, 26.0, 58.0, 10.0) * coloured * (1.0 - er_smooth(0.55, 0.75, sat)) * er_smooth(0.42, 0.56, lum);
-	if (cls == 1) return er_band(h, rta_er_reader.x, 170.0, 16.0) * er_smooth(0.08, 0.18, sat);
-	if (cls == 2 || cls == 5) return er_band(h, 6.0, 56.0, 10.0) * coloured * (1.0 - sand);
+	float lava = 0.0;           // (er_lava, from the texel itself)
+	float ice = er_band(h, 172.0, 245.0, 12.0) * er_smooth(0.05, 0.1, sat) * (1.0 - er_smooth(0.24, 0.34, sat)) * er_smooth(0.58, 0.72, lum);
+	float snow = er_smooth(0.62, 0.78, lum) * (1.0 - er_smooth(0.10, 0.22, sat)) * (1.0 - ice);
+	float sand = er_band(h, 26.0, 58.0, 10.0) * coloured * (1.0 - er_smooth(0.55, 0.75, sat)) * er_smooth(0.42, 0.56, lum) * (1.0 - lava);
+	if (cls == 1) return er_band(h, rta_er_reader.x, 160.0, 12.0) * er_smooth(0.08, 0.18, sat);
+	if (cls == 2 || cls == 5) return er_band(h, 6.0, 56.0, 10.0) * coloured * (1.0 - sand) * (1.0 - lava);
 	if (cls == 7) return sand;
 	if (cls == 8) return snow;
-	return (1.0 - coloured) * (1.0 - snow);     // stone, cobble, metal
+	if (cls == 9) return er_band(h, 172.0, 250.0, 12.0) * er_smooth(0.25, 0.4, sat) * (1.0 - lava);
+	if (cls == 10) return lava;
+	if (cls == 11) return ice;
+	return (1.0 - coloured) * (1.0 - snow) * (1.0 - ice);     // stone, cobble, metal
 }
 
 float er_scale(int cls) {
-	return cls <= 4 ? rta_er_scale_a[cls - 1] : rta_er_scale_b[cls - 5];
+	return cls <= 4 ? rta_er_scale_a[cls - 1] : cls <= 8 ? rta_er_scale_b[cls - 5] : rta_er_scale_c[min(cls - 9, 3)];
 }
 
 float er_keep(int cls) {
-	return cls <= 4 ? rta_er_keep_a[cls - 1] : rta_er_keep_b[cls - 5];
+	return cls <= 4 ? rta_er_keep_a[cls - 1] : cls <= 8 ? rta_er_keep_b[cls - 5] : rta_er_keep_c[min(cls - 9, 3)];
 }
 
 float er_amount(int cls) {
-	return cls <= 4 ? rta_er_amount_a[cls - 1] : rta_er_amount_b[cls - 5];
+	return cls <= 4 ? rta_er_amount_a[cls - 1] : cls <= 8 ? rta_er_amount_b[cls - 5] : rta_er_amount_c[min(cls - 9, 3)];
 }
 
 // the class's albedo (stored values, 0..1) divided by its own mean - the fine detail as a factor - and its normal
@@ -112,12 +133,14 @@ vec3 er_apply(int cls, int cls_b, vec3 texel, vec3 low, vec3 tint, vec3 p, vec3 
 	if (rta_er.x < 0.0) {
 		// (test aid, look.er_world_strength < 0: each class in a colour of its own over the texel's brightness; the second
 		// class where the texel reads as it, striped)
-		const vec3 K[9] = vec3[9](vec3(1.0), vec3(0.2, 0.9, 0.2), vec3(0.6, 0.35, 0.1), vec3(0.6), vec3(0.2, 0.4, 1.0), vec3(1.0, 0.6, 0.1),
-				vec3(0.9, 0.2, 0.9), vec3(1.0, 0.9, 0.3), vec3(0.8, 1.0, 1.0));
+		const vec3 K[12] = vec3[12](vec3(1.0), vec3(0.2, 0.9, 0.2), vec3(0.6, 0.35, 0.1), vec3(0.6), vec3(0.2, 0.4, 1.0), vec3(1.0, 0.6, 0.1),
+				vec3(0.9, 0.2, 0.9), vec3(1.0, 0.9, 0.3), vec3(0.8, 1.0, 1.0), vec3(0.1, 0.9, 0.8), vec3(1.0, 0.05, 0.0), vec3(0.6, 0.6, 1.0));
 		vec3 lc = clamp(low / 255.0 * tint, 0.0, 1.0);
 		int shown = cls;
-		if (cls_b > 0 && er_member(cls_b, lc) > er_member(cls, lc) && mod(floor(p.x * 0.1 + p.y * 0.1), 2.0) < 1.0) shown = cls_b;
-		return K[clamp(shown, 0, 8)] * (60.0 + dot(texel, vec3(0.3, 0.59, 0.11)));
+		vec3 raw = clamp(low / 255.0, 0.0, 1.0);
+		float sa = cls == 10 ? er_lava(raw) : er_member(cls, lc), sb = cls_b == 10 ? er_lava(raw) : er_member(cls_b, lc);
+		if (cls_b > 0 && sb > sa && mod(floor(p.x * 0.1 + p.y * 0.1), 2.0) < 1.0) shown = cls_b;
+		return K[clamp(shown, 0, 11)] * (60.0 + dot(texel, vec3(0.3, 0.59, 0.11)));
 	}
 	float strength = rta_er.x * (1.0 - er_smooth(rta_er.z * 0.55, rta_er.z, dist));
 	if (strength <= 0.0 || cls <= 0) return texel;
@@ -131,7 +154,9 @@ vec3 er_apply(int cls, int cls_b, vec3 texel, vec3 low, vec3 tint, vec3 p, vec3 
 	vec3 bent = bent_a;
 	if (cls_b > 0) {
 		vec3 lc = clamp(low / 255.0 * tint, 0.0, 1.0);     // as the draw shows it: with the game's vertex light
-		float ma = er_member(cls, lc), mb = er_member(cls_b, lc);
+		vec3 raw = clamp(low / 255.0, 0.0, 1.0);
+		float ma = cls == 10 ? er_lava(raw) : er_member(cls, lc) * (1.0 - er_lava(raw));
+		float mb = cls_b == 10 ? er_lava(raw) : er_member(cls_b, lc) * (1.0 - er_lava(raw));
 		float t = er_smooth(0.3, 0.7, mb / max(ma + mb, 1e-3));
 		if (t > 0.001) {
 			vec3 bent_b;

@@ -11,7 +11,8 @@
 // shader decides between the two per pixel.  The host's table (set_world_layer: by texture name, or a whole class remapped
 // for the level) is put over what was read.
 //
-// Classes: 1 grass, 2 dirt, 3 stone, 4 cobble, 5 wood, 6 metal, 7 sand, 8 snow (0: none - the texture stays as it is).
+// Classes: 1 grass, 2 dirt, 3 stone, 4 cobble, 5 wood, 6 metal, 7 sand, 8 snow, 9 water, 10 lava, 11 ice (0: none - the texture
+// stays as it is).  Water, lava, ice and snow never grow grass.
 //
 // Grass (get_grass): the level's pieces whose texture reads as grass are scattered with points, once per piece (the level's
 // chunks are in world coordinates and do not move): on triangles that face up, as many as their area asks for, each kept
@@ -35,8 +36,9 @@ using namespace rta_variant;
 
 namespace {
 
-enum { C_NONE = 0, C_GRASS = 1, C_DIRT = 2, C_STONE = 3, C_COBBLE = 4, C_WOOD = 5, C_METAL = 6, C_SAND = 7, C_SNOW = 8, C_COUNT = 9 };
-const char* const CLASS_NAMES[C_COUNT] = {"none", "grass", "dirt", "stone", "cobble", "wood", "metal", "sand", "snow"};
+enum { C_NONE = 0, C_GRASS = 1, C_DIRT = 2, C_STONE = 3, C_COBBLE = 4, C_WOOD = 5, C_METAL = 6, C_SAND = 7, C_SNOW = 8, C_WATER = 9, C_LAVA = 10,
+       C_ICE = 11, C_COUNT = 12 };
+const char* const CLASS_NAMES[C_COUNT] = {"none", "grass", "dirt", "stone", "cobble", "wood", "metal", "sand", "snow", "water", "lava", "ice"};
 
 float smooth(float a, float b, float x) {
     float t = std::min(1.0f, std::max(0.0f, (x - a) / (b - a)));
@@ -51,7 +53,11 @@ float band(float h, float lo, float hi, float soft) {
 // where grass's band of hues starts (degrees; the host's table: "grass_hue", per level)
 float grass_hue = 64.0f;
 
-// the membership of one colour (0..1, stored values) in the five families - as er_member in shaders/er_world.gdshaderinc
+// the membership of one colour (0..1, stored values) in the families - as er_member in shaders/er_world.gdshaderinc:
+// grass, dirt, sand, snow, stone, and the liquids and ice (measured on the sweep of every level, docs/issues/native-er-world.md):
+//  - lava: a saturated red to orange that glows (bright); a dark rock under an orange light is not lava
+//  - water: a saturated cyan to blue
+//  - ice: a pale, faintly blue white (a snow is colourless; a blue-grey rock is darker or rougher: world_read)
 void member(float r, float g, float b, float m[C_COUNT]) {
     const float mx = std::max(r, std::max(g, b)), mn = std::min(r, std::min(g, b));
     const float lum = 0.3f * r + 0.59f * g + 0.11f * b;
@@ -64,11 +70,28 @@ void member(float r, float g, float b, float m[C_COUNT]) {
     }
     for (int k = 0; k < C_COUNT; k++) m[k] = 0;
     const float coloured = smooth(0.06f, 0.16f, sat);
-    m[C_GRASS] = band(h, grass_hue, 170, 16) * smooth(0.08f, 0.18f, sat);
-    m[C_SAND] = band(h, 26, 58, 10) * coloured * (1.0f - smooth(0.55f, 0.75f, sat)) * smooth(0.42f, 0.56f, lum);
-    m[C_DIRT] = band(h, 6, 56, 10) * coloured * (1.0f - m[C_SAND]);
-    m[C_SNOW] = smooth(0.62f, 0.78f, lum) * (1.0f - smooth(0.10f, 0.22f, sat));
-    m[C_STONE] = (1.0f - coloured) * (1.0f - m[C_SNOW]);
+    m[C_LAVA] = 0.0f;           // (lava glows whatever the light: lava_member, from the texel itself)
+    m[C_WATER] = band(h, 172, 250, 12) * smooth(0.25f, 0.4f, sat);
+    m[C_ICE] = band(h, 172, 245, 12) * smooth(0.05f, 0.1f, sat) * (1.0f - smooth(0.24f, 0.34f, sat)) * smooth(0.58f, 0.72f, lum);
+    m[C_GRASS] = band(h, grass_hue, 160, 12) * smooth(0.08f, 0.18f, sat);
+    m[C_SAND] = band(h, 26, 58, 10) * coloured * (1.0f - smooth(0.55f, 0.75f, sat)) * smooth(0.42f, 0.56f, lum) * (1.0f - m[C_LAVA]);
+    m[C_DIRT] = band(h, 6, 56, 10) * coloured * (1.0f - m[C_SAND]) * (1.0f - m[C_LAVA]);
+    m[C_SNOW] = smooth(0.62f, 0.78f, lum) * (1.0f - smooth(0.10f, 0.22f, sat)) * (1.0f - m[C_ICE]);
+    m[C_STONE] = (1.0f - coloured) * (1.0f - m[C_SNOW]) * (1.0f - m[C_ICE]);
+}
+
+// lava: a saturated red to orange that is bright in the texture itself (0..1 texel values; the game's textures are stored
+// at about half their drawn brightness) - as er_lava in shaders/er_world.gdshaderinc
+float lava_member(float r, float g, float b) {
+    const float mx = std::max(r, std::max(g, b)), mn = std::min(r, std::min(g, b));
+    const float sat = (mx - mn) / std::max(mx, 0.04f);
+    float h = 0;
+    if (mx - mn > 1e-4f) {
+        if (mx == r) h = 60.0f * std::fmod((g - b) / (mx - mn) + 6.0f, 6.0f);
+        else if (mx == g) h = 60.0f * ((b - r) / (mx - mn) + 2.0f);
+        else h = 60.0f * ((r - g) / (mx - mn) + 4.0f);
+    }
+    return (h < 180.0f ? band(h, -20, 40, 10) : band(h, 340, 400, 10)) * smooth(0.5f, 0.65f, sat) * smooth(0.38f, 0.52f, mx);
 }
 
 int class_of_name(const String& s) {
@@ -110,9 +133,9 @@ void RtaDrawer::world_read(uint32_t id, const float tint[3]) {
     if (t.width < 8 || t.height < 8 || !t.rgba) return;
     // at most 64 x 64 texels looked at
     const int step_x = std::max(1, t.width / 64), step_y = std::max(1, t.height / 64);
-    double sum[C_COUNT] = {0}, rgb[3] = {0, 0, 0}, edge = 0, edge_x = 0, edge_y = 0, lum_sum = 0, lum_sq = 0;
+    double sum[C_COUNT] = {0}, sum_grey[C_COUNT] = {0}, rgb[3] = {0, 0, 0}, edge = 0, edge_x = 0, edge_y = 0, lum_sum = 0, lum_sq = 0;
     double jxx = 0, jyy = 0, jxy = 0, sat_sum = 0;      // the structure tensor of its brightness (which way its edges run)
-    int n = 0, opaque = 0, high = 0, total = 0, coloured = 0, cool = 0;
+    int n = 0, opaque = 0, high = 0, total = 0, coloured = 0, cool = 0, hot = 0;
     std::vector<float> lums;
     lums.reserve(4096);
     // alpha: a texture whose texels all have a low alpha does not use it (a 24-bit texture, its alpha from TEXA, or a draw
@@ -132,7 +155,28 @@ void RtaDrawer::world_read(uint32_t id, const float tint[3]) {
             const float r = std::min(1.0f, p[0] / 255.0f * tint[0]), g = std::min(1.0f, p[1] / 255.0f * tint[1]), b = std::min(1.0f, p[2] / 255.0f * tint[2]);
             float m[C_COUNT];
             member(r, g, b, m);
+            {
+                // lava, from the texel itself: what it takes is taken from the others
+                // (only where the level's section says it has lava: a lamp-lit red wall glows in its texture too)
+                const float lava = world_lava_read ? lava_member(p[0] / 255.0f, p[1] / 255.0f, p[2] / 255.0f) : 0.0f;
+                if (lava > 0.0f) {
+                    for (int k = 1; k < C_COUNT; k++) m[k] *= 1.0f - lava;
+                    m[C_LAVA] = lava;
+                }
+            }
             for (int k = 0; k < C_COUNT; k++) sum[k] += m[k];
+            {
+                // a glowing texel (lava's: bright orange to yellow in the texture itself, whatever the light)
+                const int mx8 = std::max(p[0], std::max(p[1], p[2])), mn8 = std::min(p[0], std::min(p[1], p[2]));
+                if (mx8 > 120 && p[0] == mx8 && (mx8 - mn8) > 0.45f * mx8 && p[1] > 0.3f * p[0]) hot++;
+            }
+            // ... and the texel as it is, without the level's light: what the surface is, whatever colour and strength the
+            // light has (a snowfield under a deep blue night light reads as nothing - or as water - under its own)
+            {
+                float mg[C_COUNT];
+                member(p[0] / 255.0f, p[1] / 255.0f, p[2] / 255.0f, mg);
+                for (int k = 0; k < C_COUNT; k++) sum_grey[k] += mg[k];
+            }
             rgb[0] += r; rgb[1] += g; rgb[2] += b;
             const float l = (0.3f * p[0] + 0.59f * p[1] + 0.11f * p[2]) / 255.0f;
             const uint8_t* px = p + 4 * step_x;
@@ -156,6 +200,23 @@ void RtaDrawer::world_read(uint32_t id, const float tint[3]) {
     if (!opaque) return;
     for (int k = 0; k < 3; k++) w.mean[k] = (float)(rgb[k] / opaque);
     for (int k = 0; k < C_COUNT; k++) w.frac[k] = (float)(sum[k] / opaque);
+    {
+        // water and ice are blue in themselves, not only under a blue light; where the level's light leaves the texture
+        // in no family at all (a deep, coloured light), it is read by its texels alone
+        float grey[C_COUNT], families = 0;
+        for (int k = 0; k < C_COUNT; k++) grey[k] = (float)(sum_grey[k] / opaque);
+        for (int k = 1; k < C_COUNT; k++) families += k == C_WATER || k == C_ICE ? std::min(w.frac[k], grey[k]) : w.frac[k];
+        // (water is read only where the level's section says so: a blue light, a blue painted stone or a pale marble reads
+        // as water as often as a lake does - the sweep found it on 30 levels with no water in their solid pieces; the game's
+        // water surfaces are see-through sheets, which keep the grass off without a class: world_decal)
+        w.frac[C_WATER] = world_water_read ? std::min(w.frac[C_WATER], grey[C_WATER]) : 0.0f;
+        w.frac[C_ICE] = std::min(w.frac[C_ICE], grey[C_ICE]);
+        if (families < 0.35f) {
+            for (int k = 0; k < C_COUNT; k++) w.frac[k] = grey[k];
+            w.lit_grey = true;
+        }
+        if (!world_water_read) w.frac[C_WATER] = 0.0f;
+    }
     const double lum = std::max(lum_sum / opaque, 0.02);
     edge = (edge_x + edge_y) / opaque;
     w.edge = (float)(edge / lum);                                  // strong edges for its brightness: cobbles, blocks, boards
@@ -164,6 +225,7 @@ void RtaDrawer::world_read(uint32_t id, const float tint[3]) {
     w.sat = (float)(sat_sum / opaque);
     w.contrast = (float)(std::sqrt(std::max(lum_sq / opaque - (lum_sum / opaque) * (lum_sum / opaque), 0.0)) / lum);
     w.cool = coloured ? (float)cool / coloured : 0.0f;
+    w.hot = (float)hot / opaque;
     {
         // glints: texels far brighter than the texture's middle (a metal's painted highlights)
         std::vector<float> sorted(lums);
@@ -180,7 +242,16 @@ void RtaDrawer::world_read(uint32_t id, const float tint[3]) {
         if (a == C_NONE || w.frac[k] > w.frac[a]) { b = a; a = k; }
         else if (b == C_NONE || w.frac[k] > w.frac[b]) b = k;
     }
-    if (w.opaque < 0.8f) a = b = C_NONE;                           // a cut-out (foliage, railings): left as it is
+    // lava glows: a red that does not (a carpet, a banner, a dark rock under a red light) is earth
+    // (as a share of what reads as lava: a texture page with a lava flow in a corner)
+    const bool glows = w.frac[C_LAVA] > 0.0f && w.hot / w.frac[C_LAVA] >= world_lava_hot;
+    if (a == C_LAVA && !glows) a = C_DIRT;
+    if (b == C_LAVA && !glows) b = C_NONE;
+    // a lava flow on part of a texture (a page of the level's pieces): the second class, decided per pixel, whatever else
+    // is second
+    if (glows && a != C_LAVA && w.frac[C_LAVA] >= 0.03f) b = C_LAVA;
+    // a cut-out (foliage, railings) is left as it is - but not a liquid whose alpha makes it see-through (a lava flow's edge)
+    if (w.opaque < 0.8f && !(a == C_LAVA || (a == C_WATER && w.opaque > 0.3f))) a = b = C_NONE;
     if (b != C_NONE && w.frac[b] < 0.14f) b = C_NONE;
     // what only the whole texture shows
     //  - wood: warm (earth or sand colours, or a warm grey) with edges running one way - its grain, its boards - at any
@@ -195,6 +266,12 @@ void RtaDrawer::world_read(uint32_t id, const float tint[3]) {
     if (warm && grained && w.edge > world_wood_edge) a = C_WOOD;
     else if (a == C_STONE && w.sat < 0.1f && w.glint > world_metal_glint && w.contrast > world_metal_contrast && w.edge < 0.5f) a = C_METAL;
     else if (a == C_STONE && w.edge > world_cobble_edge) a = C_COBBLE;
+    // ice is smooth: a rough, pale blue-white is snow
+    if (a == C_ICE && w.edge > world_ice_edge) a = C_SNOW;
+    if (b == C_ICE && w.edge > world_ice_edge) b = C_SNOW;
+    if (b == a) b = C_NONE;
+    // a liquid or ice is the whole surface: no second class decided per pixel over it, and none of them under another
+    if (a == C_WATER || a == C_LAVA) b = C_NONE;
     if (b == C_STONE && w.edge > world_cobble_edge) b = C_COBBLE;
     w.guess = (uint8_t)a;
     w.guess_b = (uint8_t)b;
@@ -232,6 +309,8 @@ uint32_t RtaDrawer::world_code(uint32_t game_texture) {
 // "cobble_edge": x, "wood_aniso": x, "wood_edge": x, "grass": density (points per 1000 square units, 0 = none)}
 void RtaDrawer::set_world_layer(bool on, const Dictionary& table) {
     world_on = on;
+    world_lava_read = false;
+    world_water_read = false;
     world_overrides.clear();
     grass_hue = 64.0f;
     for (int k = 0; k < 16; k++) world_remap[k] = -1;
@@ -249,6 +328,10 @@ void RtaDrawer::set_world_layer(bool on, const Dictionary& table) {
         if (key == "grass_hue") { grass_hue = (float)(double)value; continue; }
         if (key == "grass_ground") { world_grass_ground = (float)(double)value; continue; }
         if (key == "grass_clear") { world_grass_clear = (float)(double)value; continue; }
+        if (key == "ice_edge") { world_ice_edge = (float)(double)value; continue; }
+        if (key == "lava_hot") { world_lava_hot = (float)(double)value; continue; }
+        if (key == "lava") { world_lava_read = (double)value > 0.5; continue; }
+        if (key == "water") { world_water_read = (double)value > 0.5; continue; }
         const String v = value;
         if (key.begins_with("remap.")) {
             const int from = class_of_name(key.substr(6)), to = class_of_name(v);
@@ -299,6 +382,9 @@ Dictionary RtaDrawer::get_world_info(int64_t frames_back) const {
         d["glint"] = w.glint;
         d["cool"] = w.cool;
         d["opaque"] = w.opaque;
+        d["tint"] = Color(w.tint[0], w.tint[1], w.tint[2]);
+        d["lit_grey"] = w.lit_grey;
+        d["hot"] = w.hot;
         d["draws"] = (int64_t)w.draws;
         list.push_back(d);
     }
@@ -335,6 +421,9 @@ void RtaDrawer::world_scan(const rtag_draw& d, const rtag_scene* tap) {
     }
     if (world_grass_density <= 0.0f || (d.alpha_test && d.atst != 1)) return;     // (no grass on a cut-out card: a tree's crown)
     const bool grassy = wt != world_tex.end() && (wt->second.cls == C_GRASS || wt->second.cls_b == C_GRASS);
+    // a surface that is not grass (read, solid): what faces up on it keeps the tufts off (a path laid on the ground, a kerb)
+    const bool other = wt != world_tex.end() && !wt->second.pending && !grassy && wt->second.opaque >= 0.8f &&
+                       !(d.blend && !(d.ba == 0 && d.bb == 1 && d.bc == 0 && d.bd == 1));     // (not a glow)
     const CpuTexture* cpu = nullptr;
     if (grassy) {
         auto c = cpu_textures.find(d.texture);
@@ -347,6 +436,13 @@ void RtaDrawer::world_scan(const rtag_draw& d, const rtag_scene* tap) {
         // the piece's identity: its packet's figure and where it lies (the same packet may be placed twice)
         uint64_t id = mix64(pc.mesh ^ ((uint64_t)(int64_t)std::lround(v[0].x * 4) << 1) ^ ((uint64_t)(int64_t)std::lround(v[0].y * 4) << 23) ^
                             ((uint64_t)(int64_t)std::lround(v[0].z * 4) << 45));
+        if (grassy) {
+            // when the piece was last drawn: the game leaves pieces out by distance and brings them back (valor's grass
+            // carpets over its flagstone floor), and their tufts must go and come with them
+            uint64_t& last = grass_seen[id];
+            if (frames - last > GRASS_GONE) grass_epoch++;
+            last = frames;
+        }
         if (!grass_pieces.insert(id).second) continue;
         // a piece that is mostly not ground (a bush's mound, a rock, a tree's crown: little of its area faces up) grows no
         // grass on the little that does - the tufts stood on such tops like slabs in the air
@@ -387,6 +483,8 @@ void RtaDrawer::world_scan(const rtag_draw& d, const rtag_scene* tap) {
                     }
                 continue;
             }
+            if (other && nz >= 0.5f) { world_mark(ground_cells, a, b, c); ground_gen++; }
+            if (grassy && nz >= 0.5f) { world_mark(cover_cells, a, b, c); ground_gen++; }
             if (!grassy || !cpu || !ground_piece || nz < 0.8f) continue;     // grass on what faces up (slopes up to about 37 degrees)
             const float area = 0.5f * len;
             const float want = area * world_grass_density / 1000.0f;
@@ -417,31 +515,40 @@ void RtaDrawer::world_scan(const rtag_draw& d, const rtag_scene* tap) {
                 float m[C_COUNT];
                 member(std::min(1.0f, texel[0] / 255.0f * lr), std::min(1.0f, texel[1] / 255.0f * lg), std::min(1.0f, texel[2] / 255.0f * lb), m);
                 if (m[C_GRASS] < 0.45f) continue;
+                // room: how far (units) the nearest painted feature lies that is not grass (a flagstone, a path's edge, a flower
+                // patch: texels not grass, or far brighter than the grass here - white and yellow petals read as pale grass).
+                // Looked at on rings round the point; the tuft is made no wider than its room (er_world.gd), and none is put
+                // where the room is under `grass_clear` units
+                float room = 40.0f;
                 if (per_unit > 0.0f && world_grass_clear > 0.0f) {
-                    // a painted feature within `grass_clear` units (a flower, a stone, a path): no tuft leans over it
-                    const float rad = world_grass_clear * per_unit;
-                    int features = 0;
-                    for (int oy = -2; oy <= 2 && features < 2; oy++)
-                        for (int ox = -2; ox <= 2 && features < 2; ox++) {
-                            if (!ox && !oy) continue;
-                            int qx = (int)std::floor(fx + ox * rad * 0.5f), qy = (int)std::floor(fy + oy * rad * 0.5f);
+                    static const float RINGS[] = {4.0f, 8.0f, 13.0f, 19.0f, 26.0f, 34.0f};
+                    static const float DIRS[8][2] = {{1, 0}, {0.7071f, 0.7071f}, {0, 1}, {-0.7071f, 0.7071f}, {-1, 0}, {-0.7071f, -0.7071f}, {0, -1}, {0.7071f, -0.7071f}};
+                    const float lum_here = (0.3f * texel[0] + 0.59f * texel[1] + 0.11f * texel[2]) / 255.0f;
+                    for (float ring : RINGS) {
+                        const float rad = ring * per_unit;
+                        int features = 0;
+                        for (const auto& dir : DIRS) {
+                            int qx = (int)std::floor(fx + dir[0] * rad), qy = (int)std::floor(fy + dir[1] * rad);
                             qx = ((qx % cpu->w) + cpu->w) % cpu->w;
                             qy = ((qy % cpu->h) + cpu->h) % cpu->h;
                             const uint8_t* q = &cpu->rgba[((size_t)qy * cpu->w + qx) * 4];
                             float mq[C_COUNT];
                             member(std::min(1.0f, q[0] / 255.0f * lr), std::min(1.0f, q[1] / 255.0f * lg), std::min(1.0f, q[2] / 255.0f * lb), mq);
                             const float lum = (0.3f * q[0] + 0.59f * q[1] + 0.11f * q[2]) / 255.0f;
-                            const float lum_here = (0.3f * texel[0] + 0.59f * texel[1] + 0.11f * texel[2]) / 255.0f;
-                            // not grass, or far brighter than the grass here (white and yellow petals read as pale grass)
                             if (mq[C_GRASS] < 0.3f || lum > lum_here * 1.8f + 0.08f) features++;
                         }
-                    if (features >= 2) continue;
+                        // (a ring only counts once two of its eight points are a feature: one may be a speck)
+                        if (features >= 2) { room = ring; break; }
+                    }
+                    if (room < world_grass_clear) continue;
                 }
                 GrassPoint g;
                 g.x = px; g.y = py; g.z = pz;
                 g.r = std::min(1.0f, texel[0] / 255.0f * lr); g.g = std::min(1.0f, texel[1] / 255.0f * lg); g.b = std::min(1.0f, texel[2] / 255.0f * lb);
                 g.seed = (float)((h >> 32) & 0xffff) / 65536.0f;
                 g.nx = nx; g.ny = ny; g.nz = nz;
+                g.room = room;
+                g.piece = id;
                 const int64_t gx = (int64_t)std::floor(px / GRASS_CELL), gy = (int64_t)std::floor(py / GRASS_CELL);
                 grass_cells[(uint64_t)(gx & 0xffffffff) | ((uint64_t)gy << 32)].push_back(g);
                 grass_total++;
@@ -461,22 +568,73 @@ bool RtaDrawer::grass_near_wall(float x, float y, float z) const {
     return false;
 }
 
-// the points within `radius` of `eye` (on the ground plane), thinned out with distance: 9 floats each -
-// x, y, z, r, g, b, seed, distance share (0 near .. 1 at the radius), facing (the normal's z)
+// a triangle's cells (GROUND_CELL) with the height span it covers them at
+void RtaDrawer::world_mark(std::unordered_map<uint64_t, WallCell>& cells, const rtag_scene_full& a, const rtag_scene_full& b, const rtag_scene_full& c) {
+    const float ux = b.x - a.x, uy = b.y - a.y, wx = c.x - a.x, wy = c.y - a.y;
+    const float span = std::max(std::sqrt(ux * ux + uy * uy), std::sqrt(wx * wx + wy * wy));
+    const int steps = std::min(200, (int)(span / (GROUND_CELL * 0.5f)) + 1);
+    for (int s = 0; s <= steps; s++)
+        for (int r = 0; r <= steps - s; r++) {
+            const float fs = (float)s / steps, fr = (float)r / steps;
+            const float px = a.x + ux * fs + wx * fr, py = a.y + uy * fs + wy * fr, pz = a.z + (b.z - a.z) * fs + (c.z - a.z) * fr;
+            const int64_t cx = (int64_t)std::floor(px / GROUND_CELL), cy = (int64_t)std::floor(py / GROUND_CELL);
+            WallCell& wc = cells[(uint64_t)(cx & 0xffffffff) | ((uint64_t)cy << 32)];
+            wc.lo = std::min(wc.lo, pz); wc.hi = std::max(wc.hi, pz);
+        }
+}
+
+// units (up to 40) to the nearest surface that is not grass and lies at or over the point's height (up to 40 over it), or
+// that lies a little under it where no grass covers it: the edge of a grass carpet laid over a flagstone floor (valor)
+float RtaDrawer::grass_cell_room(float x, float y, float z) const {
+    if (ground_cells.empty()) return 40.0f;
+    static const float DIRS[8][2] = {{1, 0}, {0.7071f, 0.7071f}, {0, 1}, {-0.7071f, 0.7071f}, {-1, 0}, {-0.7071f, -0.7071f}, {0, -1}, {0.7071f, -0.7071f}};
+    auto hit = [&](float px, float py) {
+        const int64_t cx = (int64_t)std::floor(px / GROUND_CELL), cy = (int64_t)std::floor(py / GROUND_CELL);
+        const uint64_t key = (uint64_t)(cx & 0xffffffff) | ((uint64_t)cy << 32);
+        auto it = ground_cells.find(key);
+        if (it == ground_cells.end() || it->second.lo >= z + 40.0f) return false;
+        if (it->second.hi > z + 1.5f) return true;
+        if (it->second.hi < z - 8.0f) return false;
+        auto cv = cover_cells.find(key);
+        return cv == cover_cells.end() || cv->second.hi < it->second.hi - 0.5f;
+    };
+    if (hit(x, y)) return 0.0f;
+    for (float ring = 6.0f; ring <= 36.0f; ring += 6.0f)
+        for (const auto& dir : DIRS)
+            if (hit(x + dir[0] * ring, y + dir[1] * ring)) return ring - 3.0f;
+    return 40.0f;
+}
+
+// under a see-through sheet of the level (a lake's surface, ice) that lies over the point
+bool RtaDrawer::grass_under_sheet(float x, float y, float z) const {
+    if (sheet_cells.empty()) return false;
+    const int64_t cx = (int64_t)std::floor(x / GROUND_CELL), cy = (int64_t)std::floor(y / GROUND_CELL);
+    for (int64_t dy = -1; dy <= 1; dy++)
+        for (int64_t dx = -1; dx <= 1; dx++) {
+            auto it = sheet_cells.find((uint64_t)((cx + dx) & 0xffffffff) | ((uint64_t)(cy + dy) << 32));
+            if (it != sheet_cells.end() && it->second.hi > z + 3.0f && it->second.lo < z + 600.0f) return true;
+        }
+    return false;
+}
+
+// the points within `radius` of `eye` (on the ground plane), thinned out with distance: 10 floats each -
+// x, y, z, r, g, b, seed, distance share (0 near .. 1 at the radius), facing (the normal's z), room (units to the nearest
+// thing that is not grass: the tuft is made no wider)
 PackedFloat32Array RtaDrawer::get_grass(const Vector3& eye, double radius, int64_t max_points) {
+    constexpr int F = 10;
     PackedFloat32Array out;
     if (!world_on || grass_cells.empty()) return out;
     const int64_t r = (int64_t)std::ceil(radius / GRASS_CELL);
     const int64_t ex = (int64_t)std::floor(eye.x / GRASS_CELL), ey = (int64_t)std::floor(eye.y / GRASS_CELL);
     std::vector<float> v;
-    v.reserve(std::min<int64_t>(max_points, 200000) * 9);
+    v.reserve(std::min<int64_t>(max_points, 200000) * F);
     const float r2 = (float)(radius * radius);
     int64_t n = 0;
     for (int64_t dy = -r; dy <= r && n < max_points; dy++)
         for (int64_t dx = -r; dx <= r && n < max_points; dx++) {
             auto it = grass_cells.find((uint64_t)((ex + dx) & 0xffffffff) | ((uint64_t)(ey + dy) << 32));
             if (it == grass_cells.end()) continue;
-            for (const GrassPoint& g : it->second) {
+            for (GrassPoint& g : it->second) {
                 const float ddx = g.x - (float)eye.x, ddy = g.y - (float)eye.y;
                 const float d2 = ddx * ddx + ddy * ddy;
                 if (d2 > r2) continue;
@@ -485,8 +643,16 @@ PackedFloat32Array RtaDrawer::get_grass(const Vector3& eye, double radius, int64
                 const float keep = share < 0.33f ? 1.0f : 1.0f - 0.75f * smooth(0.33f, 1.0f, share);
                 if (g.seed > keep) continue;
                 if (std::fabs(g.z - (float)eye.z) > 900.0f) continue;
-                if (grass_near_wall(g.x, g.y, g.z) || grass_under_decal(g.x, g.y, g.z)) continue;
-                v.insert(v.end(), {g.x, g.y, g.z, g.r, g.g, g.b, g.seed, share, g.nz});
+                {
+                    // (its piece is not drawn now: the game has left it out)
+                    auto seen = grass_seen.find(g.piece);
+                    if (seen == grass_seen.end() || frames - seen->second > GRASS_GONE) continue;
+                }
+                if (grass_near_wall(g.x, g.y, g.z) || grass_under_decal(g.x, g.y, g.z) || grass_under_sheet(g.x, g.y, g.z)) continue;
+                if (g.cell_gen != ground_gen) { g.cell_room = grass_cell_room(g.x, g.y, g.z); g.cell_gen = ground_gen; }
+                const float room = std::min(g.room, g.cell_room);
+                if (room < world_grass_clear) continue;
+                v.insert(v.end(), {g.x, g.y, g.z, g.r, g.g, g.b, g.seed, share, g.nz, room});
                 if (++n >= max_points) break;
             }
         }
@@ -498,12 +664,18 @@ PackedFloat32Array RtaDrawer::get_grass(const Vector3& eye, double radius, int64
 // a new level: what was scattered and walled is forgotten (the textures' classes stay with the textures)
 void RtaDrawer::world_reset() {
     grass_pieces.clear();
+    grass_seen.clear();
+    grass_epoch++;
     grass_cells.clear();
     wall_cells.clear();
     grass_total = 0;
     decal_pieces.clear();
     decal_cells.clear();
     decal_textures.clear();
+    ground_cells.clear();
+    cover_cells.clear();
+    sheet_cells.clear();
+    ground_gen++;
     world_hide_cache.clear();
 }
 
@@ -521,6 +693,31 @@ void RtaDrawer::world_decal(const rtag_draw& d, const rtag_scene* tap) {
     auto c = cpu_textures.find(d.texture);
     if (c == cpu_textures.end() || c->second.w < 4 || c->second.h < 4) return;
     const CpuTexture& cpu = c->second;
+    {
+        // a see-through sheet: blended and not written into depth (a lake's, a river's surface), or one whose texture reads
+        // as water, lava or ice - nothing grows under it.  Once per piece
+        auto wt = world_tex.find(d.texture);
+        const bool liquid = wt != world_tex.end() && !wt->second.pending &&
+                            (wt->second.cls == C_WATER || wt->second.cls == C_LAVA || wt->second.cls == C_ICE);
+        if (!d.depth_write || liquid) {
+            for (uint32_t k = 0; k < d.scene_piece_count; k++) {
+                const rtag_scene_piece& pc = tap->pieces[d.scene_piece_first + k];
+                if (pc.kind != 1 || !pc.full_count || pc.full_first + pc.full_count > tap->full_count) continue;
+                const rtag_scene_full* v = tap->full + pc.full_first;
+                const uint64_t id = mix64(pc.mesh ^ 0x3C6EF372FE94F82Bull ^ ((uint64_t)(int64_t)std::lround(v[0].x * 4) << 1) ^
+                                          ((uint64_t)(int64_t)std::lround(v[0].y * 4) << 23) ^ ((uint64_t)(int64_t)std::lround(v[0].z * 4) << 45));
+                if (!decal_pieces.insert(id).second) continue;
+                for (uint32_t i = 0; i + 2 < pc.full_count; i += 3) {
+                    const rtag_scene_full &a = v[i], &b = v[i + 1], &cc = v[i + 2];
+                    const float ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z, wx = cc.x - a.x, wy = cc.y - a.y, wz = cc.z - a.z;
+                    const float nz = ux * wy - uy * wx;
+                    const float len = std::sqrt((uy * wz - uz * wy) * (uy * wz - uz * wy) + (uz * wx - ux * wz) * (uz * wx - ux * wz) + nz * nz);
+                    if (len > 1e-4f && std::fabs(nz) / len >= 0.7f) world_mark(sheet_cells, a, b, cc);
+                }
+            }
+            if (!d.depth_write) return;
+        }
+    }
     if (!d.tcc) return;                                         // its alpha is the vertices' alone: not a painted shape
     {
         // see-through somewhere (a ground texture is opaque all over): looked at once per texture

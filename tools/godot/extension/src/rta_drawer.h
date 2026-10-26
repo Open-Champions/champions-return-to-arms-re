@@ -121,6 +121,7 @@ class RtaDrawer : public RefCounted {
     void set_world_layer(bool on, const Dictionary& table);
     Dictionary get_world_info(int64_t frames_back) const;
     PackedFloat32Array get_grass(const Vector3& eye, double radius, int64_t max_points);
+    int64_t get_grass_epoch() const { return (int64_t)grass_epoch; }
     void world_reset();
     // ... the rebuild (er_world.gd): shapes of the level drawn by Elden Ring pieces fitted over them; a draw lying wholly
     // inside one of these volumes is left out (drawing only: nothing of the game's changes).  volumes: [[cx, cy, cz, hx,
@@ -299,7 +300,9 @@ private:
     float world_wood_coherence = 0.6f, world_metal_glint = 0.1f, world_metal_contrast = 0.85f;
     float world_grass_ground = 0.3f;              // the share of a piece's area that must face up for grass to grow on it
     float world_grass_clear = 10.0f;              // units around a point looked at for a painted feature (0: only under it)
-    float world_lava_hot = 0.08f;                 // share of glowing texels a lava needs
+    bool world_water_read = false;                // water likewise
+    bool world_lava_read = false;                 // lava is read only on a level whose section says it has some
+    float world_lava_hot = 0.25f;                 // share of its lava-coloured texels that glow (yellow to orange), for lava
     float world_ice_edge = 0.6f;                  // edges over which a pale blue texture is rock, not ice
     std::vector<rtag_texture_name> world_names;
     void world_classify(const rtag_texture& t, const rtag_texture_name* name);
@@ -312,6 +315,7 @@ private:
         float room = 40.0f;                         // units to the nearest painted feature that is not grass (its texture's)
         float cell_room = 40.0f;                    // ... to the nearest other surface that is not grass, at or over its height
         uint32_t cell_gen = 0;                      // (ground_gen when cell_room was found)
+        uint64_t piece = 0;                         // the level piece it grows on
     };
     struct WallCell { float lo = 1e30f, hi = -1e30f; };
     static constexpr float GRASS_CELL = 128.0f, WALL_CELL = 8.0f;
@@ -319,6 +323,9 @@ private:
     std::unordered_map<uint64_t, std::vector<GrassPoint>> grass_cells;
     std::unordered_map<uint64_t, WallCell> wall_cells;
     uint64_t grass_total = 0;
+    std::unordered_map<uint64_t, uint64_t> grass_seen;      // per grass piece: the frame it was last drawn
+    uint64_t grass_epoch = 0;                               // up by one when a grass piece comes back (the host gathers again)
+    static constexpr uint64_t GRASS_GONE = 90;              // frames a piece may go undrawn before its tufts go
     bool grass_near_wall(float x, float y, float z) const;
     // grass is not grown under the level's painted decals (flower patches, paths: blended chunks drawn over the ground)
     static constexpr float DECAL_CELL = 4.0f;
@@ -331,6 +338,7 @@ private:
     // a floor: no tuft leans over them), and its see-through sheets (a lake's, a river's surface: nothing grows under them)
     static constexpr float GROUND_CELL = 8.0f;
     std::unordered_map<uint64_t, WallCell> ground_cells;
+    std::unordered_map<uint64_t, WallCell> cover_cells;     // ... and where grass covers the ground (its upper surfaces)
     std::unordered_map<uint64_t, WallCell> sheet_cells;
     uint32_t ground_gen = 1;
     float grass_cell_room(float x, float y, float z) const;

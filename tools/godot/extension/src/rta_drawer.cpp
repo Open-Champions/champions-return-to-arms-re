@@ -1085,6 +1085,7 @@ void RtaDrawer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_world_layer", "on", "table"), &RtaDrawer::set_world_layer);
     ClassDB::bind_method(D_METHOD("get_world_info", "frames_back"), &RtaDrawer::get_world_info);
     ClassDB::bind_method(D_METHOD("get_grass", "eye", "radius", "max_points"), &RtaDrawer::get_grass);
+    ClassDB::bind_method(D_METHOD("get_grass_epoch"), &RtaDrawer::get_grass_epoch);
     ClassDB::bind_method(D_METHOD("world_reset"), &RtaDrawer::world_reset);
     ClassDB::bind_method(D_METHOD("set_world_hide", "volumes"), &RtaDrawer::set_world_hide);
     ClassDB::bind_method(D_METHOD("get_world_hide"), &RtaDrawer::get_world_hide);
