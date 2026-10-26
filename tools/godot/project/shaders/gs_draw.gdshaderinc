@@ -23,6 +23,8 @@
 //                       blend done here (rta_scene.cpp, the level's batches)        GS_REPEAT2  its texture repeats
 //   GS_SOLID            ... a batch that covers, without an alpha test: no discard (the GPU tests depth first)
 //   GS_PREPASS          ... a solid batch's depth alone, drawn before its stretch of batches (a whole shader of its own)
+//   GS_ER               ... a piece of the level whose texture reads as a material class: the Elden Ring world layer's
+//                       material over it (er_class*; shaders/er_world.gdshaderinc, rta_world.cpp, er_world.gd)
 //   GS_STORED_SPACE     Forward+ / Mobile, a surface with no 3-D scene in it: the colour is written as the stored values
 //                       themselves, so that blending - which these renderers do in linear light - works on stored values
 //                       as the GS's does (a translucent overlay, an additive glow; the shop's lists).  Godot puts its sRGB
@@ -155,6 +157,9 @@ uniform float depth_bias = 0.0;                     // toward the camera, in cli
 global uniform vec4 rta_tween;                      // x: game frames past the last one, for a picture drawn between two (RtaDrawer::redraw)
 #ifndef GS_CASTER
 #include "res://shaders/atmosphere.gdshaderinc"
+#ifdef GS_ER
+#include "res://shaders/er_world.gdshaderinc"
+#endif
 varying vec3 v_world;
 varying float v_haze;                               // 0: the surface as it is .. 1: lost in the haze
 #if defined(GS_MODEL) || defined(GS_CONTACT)
@@ -224,6 +229,13 @@ void vertex() {
 #ifndef GS_CASTER
 	v_world = VERTEX;
 #endif
+#ifdef GS_ER
+#ifdef GS_NORMALS
+	v_er_normal = CUSTOM1.xyz;
+#else
+	v_er_normal = vec3(0.0);
+#endif
+#endif
 	POSITION = PROJECTION_MATRIX * (MODELVIEW_MATRIX * vec4(VERTEX, 1.0));
 #if CURRENT_RENDERER == RENDERER_COMPATIBILITY
 	POSITION.z += depth_bias * POSITION.w;
@@ -264,7 +276,8 @@ float gs_wrap2(float c, int mode, float lo, float hi, float size) {
 
 // the first pass's colour, as fragment() makes the draw's own (texture function; no fog, no alpha test), times its
 // source factor of the blend
-vec3 gs_first_pass() {
+vec3 gs_first_pass(float dist, vec3 er_n, out float er_relief2) {
+	er_relief2 = 1.0;
 	vec4 c = v_col2;
 	if (textured2 != 0) {
 		vec2 tc = v_st2 * st_scale2;
@@ -283,6 +296,12 @@ vec3 gs_first_pass() {
 			bool black = texa2.w > 0.5 && t.r + t.g + t.b < 0.5;
 			t.a = (texa2.x > 1.5 && t.a >= 127.5) ? texa2.z : (black ? 0.0 : texa2.y);
 		}
+#ifdef GS_ER
+		if (er_class2 > 0) {
+			vec3 low = textureGrad(tex2, uv, dFdx(raw) * 6.0, dFdy(raw) * 6.0).rgb * 255.0;
+			t.rgb = er_apply(er_class2, er_class2_b, t.rgb, low, v_col2.rgb / 128.0, v_world, er_n, dist, er_relief2);
+		}
+#endif
 		if (tfx2 == 0) {
 			c.rgb = min(t.rgb * v_col2.rgb / 128.0, 255.0);
 			c.a = tcc2 != 0 ? min(t.a * v_col2.a / 128.0, 255.0) : v_col2.a;
@@ -295,7 +314,7 @@ vec3 gs_first_pass() {
 		}
 	}
 	float factor = blend_c2 == 0 ? c.a / 128.0 : (blend_c2 == 1 ? 1.0 : fix2);
-	return clamp(c.rgb / 255.0 * abs(blend2.x * factor + blend2.y), 0.0, 1.0);
+	return clamp(c.rgb / 255.0 * abs(blend2.x * factor + blend2.y) * er_relief2, 0.0, 1.0);
 }
 #endif
 
@@ -325,6 +344,15 @@ vec3 to_linear(vec3 c) {
 }
 
 void fragment() {
+#ifdef GS_ER
+	// the Elden Ring world layer: the surface's world normal (the game's, else the triangle's) and the eye's distance
+	float er_relief = 1.0;
+	vec3 er_n = v_er_normal;
+	vec3 er_flat = normalize(cross(dFdx(v_world), dFdy(v_world)));
+	if (dot(er_n, er_n) < 0.25) er_n = er_flat;
+	er_n = normalize(er_n);
+	float er_dist = length(v_world - CAMERA_POSITION_WORLD);
+#endif
 #ifndef GS_WORLD
 	vec2 px = v_pos * target_scale;
 	if (px.x < scissor.x || px.x >= scissor.z || px.y < scissor.y || px.y >= scissor.w) discard;
@@ -364,6 +392,12 @@ void fragment() {
 			bool black = texa.w > 0.5 && t.r + t.g + t.b < 0.5;
 			t.a = (texa.x > 1.5 && t.a >= 127.5) ? texa.z : (black ? 0.0 : texa.y);
 		}
+#ifdef GS_ER
+		if (er_class > 0) {
+			vec3 low = textureGrad(tex, uv, dFdx(raw) * 6.0, dFdy(raw) * 6.0).rgb * 255.0;
+			t.rgb = er_apply(er_class, er_class_b, t.rgb, low, v_col.rgb / 128.0, v_world, er_n, er_dist, er_relief);
+		}
+#endif
 		if (tfx == 0) {
 			c.rgb = min(t.rgb * v_col.rgb / 128.0, 255.0);
 			c.a = tcc != 0 ? min(t.a * v_col.a / 128.0, 255.0) : v_col.a;
@@ -424,10 +458,19 @@ void fragment() {
 	float source = abs(blend.x * factor + blend.y);     // an alpha above 0x80 makes it more than 1: the product is what is clamped
 	float destination = clamp(abs(blend.z * factor + blend.w), 0.0, 1.0);
 	vec3 rgb = clamp(c.rgb / 255.0 * source, 0.0, 1.0);
+#ifdef GS_ER
+	rgb = clamp(rgb * er_relief, 0.0, 1.0);
+#endif
 	if (mask_rgb > 0.5) { rgb = vec3(0.0); destination = 1.0; }
 	vec3 haze = vec3(0.0);
 #ifdef GS_FUSED
-	vec3 rgb2 = gs_first_pass();       // what the second pass is blended over: the result is rgb + rgb2 x destination
+#ifdef GS_ER
+	float er_relief2;
+	vec3 rgb2 = gs_first_pass(er_dist, er_n, er_relief2);
+#else
+	float er_relief2;
+	vec3 rgb2 = gs_first_pass(0.0, vec3(0.0, 0.0, 1.0), er_relief2);
+#endif       // what the second pass is blended over: the result is rgb + rgb2 x destination
 	vec3 haze2 = vec3(0.0);
 #endif
 #ifdef GS_MODEL

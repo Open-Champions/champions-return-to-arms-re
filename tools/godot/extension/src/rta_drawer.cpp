@@ -143,6 +143,7 @@ RID RtaDrawer::shader_for(uint32_t variant) {
     if (variant & V_REPEAT2) code += "#define GS_REPEAT2\n";
     if (variant & V_SOLID) code += "#define GS_SOLID\n";
     if (variant & V_PREPASS) code += "#define GS_PREPASS\n";
+    if (variant & V_ER) code += "#define GS_ER\n";
     if (stored_colours) code += "#define GS_STORED_COLOURS\n";
     code += shader_code;
     Ref<Shader> shader;
@@ -246,7 +247,7 @@ bool RtaDrawer::blend_of(const rtag_draw& d, float& sc, float& sk, float& dc, fl
 }
 
 RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inverted, RID texture, bool texture_flipped, uint32_t extra,
-                            const rtag_draw* second, RID second_texture) {
+                            const rtag_draw* second, RID second_texture, uint32_t er) {
     float sc, sk, dc, dk, fix;
     int blend_c;
     bool subtract;
@@ -268,13 +269,16 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
     float x1 = std::floor(d.scissor[2] * sx + 0.5f), y1 = std::floor(d.scissor[3] * sy + 0.5f);
     if (d.scissor_moved) { x0 = std::floor(d.scissor_x[0] * sx + 0.5f); x1 = std::floor(d.scissor_x[1] * sx + 0.5f); }
 
+    // the Elden Ring world layer's classes (rta_world.cpp): a byte each, er_class | er_class_b | er_class2 | er_class2_b
+    if (!(extra & V_WORLD) || (extra & V_CASTER)) er = 0;
+    if (er) variant |= V_ER;
     struct Key {
-        uint32_t variant; int64_t texture; uint32_t target; float scissor[4];
+        uint32_t variant; uint32_t er; int64_t texture; uint32_t target; float scissor[4];
         uint8_t textured, tfx, tcc, wrap_s, wrap_t, texa_mode, ta0, ta1, aem, atst, aref, fog, fog_colour[3], blend_c, mask_rgb, flipped;
         float st_scale[2], tex_size[2], tex_offset[2], region[4], weave_half, blend[4], fix, scale[2];
     } key;
     memset(&key, 0, sizeof key);
-    key.variant = variant; key.texture = textured ? texture.get_id() : 0; key.target = target.id;
+    key.variant = variant; key.er = er; key.texture = textured ? texture.get_id() : 0; key.target = target.id;
     key.scissor[0] = x0; key.scissor[1] = y0; key.scissor[2] = x1; key.scissor[3] = y1;
     key.textured = textured; key.atst = d.alpha_test ? d.atst : 1; key.aref = d.aref; key.fog = d.fog; memcpy(key.fog_colour, d.fog_colour, 3);
     key.blend_c = (uint8_t)blend_c; key.mask_rgb = d.mask_rgb; key.flipped = texture_flipped;
@@ -327,6 +331,12 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
     s->material_set_param(material, "flip_y", flip_y);
     s->material_set_param(material, "scissor", Quaternion(x0, y0, x1, y1));
     s->material_set_param(material, "textured", textured ? 1 : 0);
+    if (er) {
+        s->material_set_param(material, "er_class", (int)(er & 255));
+        s->material_set_param(material, "er_class_b", (int)((er >> 8) & 255));
+        s->material_set_param(material, "er_class2", (int)((er >> 16) & 255));
+        s->material_set_param(material, "er_class2_b", (int)((er >> 24) & 255));
+    }
     if (textured) {
         s->material_set_param(material, "tex", texture);
         s->material_set_param(material, "tfx", (int)d.tfx);
@@ -588,8 +598,15 @@ void RtaDrawer::submit() {
     const uint64_t meshes_before = meshes_made;
     uint64_t t_textures = 0, t_draws = 0, t_end = 0;
 
+    // the Elden Ring world layer reads every texture of the scene as it arrives (rta_world.cpp): by its name, and its texels
+    uint32_t world_named = 0;
+    if (scene_mode && f.texture_count && rta_library().rtag_texture_names) {
+        world_names.resize(f.texture_count);
+        world_named = rta_library().rtag_texture_names(world_names.data(), f.texture_count);
+    }
     for (uint32_t k = 0; k < f.texture_count; k++) {
         const rtag_texture& t = f.textures[k];
+        if (scene_mode) world_classify(t, k < world_named && world_names[k].id == t.id ? &world_names[k] : nullptr);
         PackedByteArray bytes;
         bytes.resize((int64_t)t.width * t.height * 4);
         memcpy(bytes.ptrw(), t.rgba, (size_t)t.width * t.height * 4);
@@ -841,6 +858,8 @@ void RtaDrawer::submit() {
         textures.erase(t);
         thumbs.erase(f.dead_textures[k]);
         cpu_textures.erase(f.dead_textures[k]);
+        world_tex.erase(f.dead_textures[k]);
+        world_seen_frame.erase(f.dead_textures[k]);
     }
     for (uint32_t k = 0; k < f.dead_target_count; k++) {
         auto t = targets.find(f.dead_targets[k]);
@@ -1042,6 +1061,10 @@ void RtaDrawer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_scene_mode", "on"), &RtaDrawer::set_scene_mode);
     ClassDB::bind_method(D_METHOD("set_art_pack", "folder", "mipmaps"), &RtaDrawer::set_art_pack);
     ClassDB::bind_method(D_METHOD("get_pack_info"), &RtaDrawer::get_pack_info);
+    ClassDB::bind_method(D_METHOD("set_world_layer", "on", "table"), &RtaDrawer::set_world_layer);
+    ClassDB::bind_method(D_METHOD("get_world_info", "frames_back"), &RtaDrawer::get_world_info);
+    ClassDB::bind_method(D_METHOD("get_grass", "eye", "radius", "max_points"), &RtaDrawer::get_grass);
+    ClassDB::bind_method(D_METHOD("world_reset"), &RtaDrawer::world_reset);
     ClassDB::bind_method(D_METHOD("set_scene_option", "name", "value"), &RtaDrawer::set_scene_option);
     ClassDB::bind_method(D_METHOD("get_scene_info"), &RtaDrawer::get_scene_info);
     ClassDB::bind_method(D_METHOD("get_piece_textures"), &RtaDrawer::get_piece_textures);

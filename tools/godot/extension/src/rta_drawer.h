@@ -32,6 +32,7 @@
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/classes/shader.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/packed_float32_array.hpp>
 #include <godot_cpp/variant/packed_int64_array.hpp>
 #include <godot_cpp/variant/rect2.hpp>
 #include <godot_cpp/variant/rid.hpp>
@@ -116,6 +117,11 @@ class RtaDrawer : public RefCounted {
     // number of pictures found in the folder.  Before the first frame; textures made later take it.
     int64_t set_art_pack(const String& folder, bool mipmaps);
     Dictionary get_pack_info() const;
+    // the Elden Ring world layer (rta_world.cpp; project/er_world.gd)
+    void set_world_layer(bool on, const Dictionary& table);
+    Dictionary get_world_info(int64_t frames_back) const;
+    PackedFloat32Array get_grass(const Vector3& eye, double radius, int64_t max_points);
+    void world_reset();
 
   protected:
     static void _bind_methods();
@@ -210,7 +216,7 @@ class RtaDrawer : public RefCounted {
     void size_target(Target& target);
     RID shader_for(uint32_t variant);
     RID material_for(const rtag_draw& draw, const Target& target, bool inverted, RID texture, bool texture_flipped, uint32_t extra = 0,
-                     const rtag_draw* second = nullptr, RID second_texture = RID());
+                     const rtag_draw* second = nullptr, RID second_texture = RID(), uint32_t er = 0);
     static bool blend_of(const rtag_draw& d, float& sc, float& sk, float& dc, float& dk, float& fix, int& blend_c, bool& subtract);
     void add_draw(Pass& pass, const rtag_frame& frame, const rtag_draw& draw, const Target& target, RID texture, bool texture_flipped, float order);
     void add_copy(Pass& pass, const rtag_draw& draw, const Target& target, const Target& source, RID texture, float order);
@@ -249,6 +255,40 @@ class RtaDrawer : public RefCounted {
     friend struct Scene;
 
     // ---- the fill (rta_fill.cpp) ----
+    // the Elden Ring world layer (rta_world.cpp): per texture what it reads as, and the grass scattered on the level
+    struct WorldTex {
+        std::string name;                           // figure-palette, as the art pack names it ("" not named)
+        uint8_t cls = 0, cls_b = 0;                 // what is drawn: the class, and a second one decided per pixel
+        uint8_t guess = 0, guess_b = 0;             // what its texels read as
+        uint8_t from_table = 0;                     // 1: by its name in the host's table, 2: its class remapped for the level
+        float mean[3] = {0, 0, 0};
+        float frac[9] = {0};
+        float edge = 0, aniso = 0, opaque = 0;
+        uint64_t draws = 0;
+        bool pending = false;                       // not read yet (at its first draw: world_scan)
+        float tint[3] = {1, 1, 1};                  // the mean of the game's vertex light on it (1 = 128)
+    };
+    std::unordered_map<uint32_t, WorldTex> world_tex;
+    std::unordered_map<uint32_t, uint64_t> world_seen_frame;
+    std::unordered_map<std::string, int> world_overrides;
+    int world_remap[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+    bool world_on = false;
+    float world_cobble_edge = 0.85f, world_wood_aniso = 1.7f, world_wood_edge = 0.25f, world_grass_density = 0.0f;
+    std::vector<rtag_texture_name> world_names;
+    void world_classify(const rtag_texture& t, const rtag_texture_name* name);
+    void world_read(uint32_t id, const float tint[3]);
+    void world_apply(WorldTex& w);
+    uint32_t world_code(uint32_t game_texture);
+    void world_scan(const rtag_draw& d, const rtag_scene* tap);
+    struct GrassPoint { float x, y, z, r, g, b, seed, nx, ny, nz; };
+    struct WallCell { float lo = 1e30f, hi = -1e30f; };
+    static constexpr float GRASS_CELL = 128.0f, WALL_CELL = 8.0f;
+    std::unordered_set<uint64_t> grass_pieces;
+    std::unordered_map<uint64_t, std::vector<GrassPoint>> grass_cells;
+    std::unordered_map<uint64_t, WallCell> wall_cells;
+    uint64_t grass_total = 0;
+    bool grass_near_wall(float x, float y, float z) const;
+
     struct Fill;
     Fill* fill = nullptr;
     struct CpuTexture { int w = 0, h = 0; std::vector<uint8_t> rgba; };

@@ -858,6 +858,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     // quad the CPU projects) go when Godot throws real ones
     if (sc.shadows && d.tex_is_target && d.scene_kind == RTAG_SCENE_DEPTH && d.blend) { sc.blob_shadows_dropped++; return true; }
     const bool normals = d.scene_kind == RTAG_SCENE_EXACT && sc.tap->normals != nullptr;
+    if (world_on && normals && d.depth_write) world_scan(d, sc.tap);      // the Elden Ring world layer: grass, walls (rta_world.cpp)
     if (sc.batch_on && normals && sc.packets && batch_take(pass, f, d, target, texture, order)) {
         // (test aid, RTA_BATCH_SINGLE=1: each chunk a batch of its own, at its own place - fused, but not gathered)
         static const bool single = getenv("RTA_BATCH_SINGLE") && atoi(getenv("RTA_BATCH_SINGLE")) != 0;
@@ -1124,8 +1125,11 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     uint32_t extra = V_WORLD | (sc.lit && d.depth_write ? V_LIT : 0) | (normals ? V_NORMALS : 0) | (is_dome ? V_NOFOG : 0) | (sprite ? V_NEARFADE : 0) |
                      (model ? V_MODEL : 0) | (ground ? V_CONTACT : 0);
     if (normals) sc.exact_draws++;
-    if (sc.kept_key) place_mesh(pass, mesh, material_for(d, target, false, texture, false, extra), order);
-    else place(pass, material_for(d, target, false, texture, false, extra), order);
+    // the Elden Ring world layer: a solid piece of the level (not the dome, not a cut-out card) takes its texture's class
+    const uint32_t er = (world_on && normals && d.depth_write && !is_dome && !sprite && !(d.alpha_test && d.atst != 1) && d.scene_piece_count &&
+                         sc.tap->pieces[d.scene_piece_first].kind == 1) ? world_code(d.texture) : 0;
+    if (sc.kept_key) place_mesh(pass, mesh, material_for(d, target, false, texture, false, extra, nullptr, RID(), er), order);
+    else place(pass, material_for(d, target, false, texture, false, extra, nullptr, RID(), er), order);
     // what is opaque also throws a shadow: a twin of the same mesh that Godot only draws into its shadow maps
     if (sc.shadows && d.depth_write && (!d.blend || d.alpha_test))
         scene_caster(pass, mesh, material_for(d, target, false, texture, false, V_WORLD | V_CASTER | (normals ? V_NORMALS : 0)));
@@ -1243,9 +1247,13 @@ bool RtaDrawer::batch_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         rtag_draw top = *second;
         top.ztst = d.ztst; top.depth_write = d.depth_write; top.depth_test = d.depth_test;
         const bool lit = sc.lit;
-        material = material_for(top, target, false, second_texture, false, V_WORLD | V_SOLID | (lit ? V_LIT : 0) | V_NORMALS | (ground ? V_CONTACT : 0), &d, texture);
+        // the Elden Ring world layer: the second pass's texture (drawn over) and the first's, each with its own class
+        const uint32_t er = world_on && d.depth_write ? (world_code(second->texture) | (world_code(d.texture) << 16)) : 0;
+        material = material_for(top, target, false, second_texture, false, V_WORLD | V_SOLID | (lit ? V_LIT : 0) | V_NORMALS | (ground ? V_CONTACT : 0), &d, texture, er);
     } else {
-        material = material_for(d, target, false, texture, false, V_WORLD | (solid ? V_SOLID : 0) | (sc.lit ? V_LIT : 0) | V_NORMALS | (cut_out ? V_NEARFADE : 0) | (ground ? V_CONTACT : 0));
+        const uint32_t er = world_on && d.depth_write && !cut_out && !(d.alpha_test && d.atst != 1) ? world_code(d.texture) : 0;
+        material = material_for(d, target, false, texture, false, V_WORLD | (solid ? V_SOLID : 0) | (sc.lit ? V_LIT : 0) | V_NORMALS | (cut_out ? V_NEARFADE : 0) | (ground ? V_CONTACT : 0),
+                                nullptr, RID(), er);
     }
     if (sc.shadows && (!d.blend || d.alpha_test)) caster_material = material_for(d, target, false, texture, false, V_WORLD | V_CASTER | V_NORMALS);
     if (cut_out) sc.near_faded++;

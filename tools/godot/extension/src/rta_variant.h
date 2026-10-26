@@ -25,6 +25,10 @@ enum : uint32_t {
     V_REPEAT2 = 131072, // ... its texture repeats on both axes
     V_SOLID = 262144,   // ... a batch that covers whatever is under it, with no alpha test: no discard (early depth)
     V_PREPASS = 524288, // ... its depth alone, before it is drawn: what lies behind other chunks is shaded once, not twice
+    // the Elden Ring world layer (look.er_world, rta_world.cpp): a piece of the level whose texture reads as a material
+    // class (er_class, er_class_b; for a fused pair also er_class2*): its texture's own fine detail is replaced by the
+    // owner's local Elden Ring material of that class, at world scale, over the texture's own colour (GS_ER)
+    V_ER = 1048576,
 };
 
 }  // namespace rta_variant

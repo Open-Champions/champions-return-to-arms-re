@@ -55,6 +55,10 @@ extends Node
 #             (er_layer.gd, er_creatures.cfg: which class is which model); a class with no model keeps its own figure
 #   er_style  fit (the default: the player's own figure dressed in the outfit's pieces, er_fit.gd) | replace (rounds 1-3)
 #   er_outfits per class "class:auto|original|<outfit>;..." (the portal's Settings; er_fit.cfg [auto] for auto)
+#   er_world  on (default) | off: the Elden Ring world layer (er_world.gd): the owner's own Elden Ring materials on the
+#             level's pieces by what their textures read as, grass on the grass, clouds in the sky - when their local
+#             folder is there (nothing changes otherwise); the Classic look sets it off.  er_world_strength 0..1,
+#             er_grass (points per 1000 square units; 0 = no grass)
 #   remaster_models on (default) | off: the game's own figures drawn as smooth meshes baked on this machine from their own
 #             bind-pose meshes, posed by the game's own skin matrices, with maps derived from their (art pack) textures
 #             (model_remaster.gd, RtaRemaster; model_remaster.cfg per model); the Classic look sets it off
@@ -101,6 +105,7 @@ var look := {
 	"backdrop": "auto", "models": "on", "model_smooth": 2.0, "model_crease": 0.35, "model_near": 520.0, "model_rim": 0.35, "model_form": 0.7, "model_sharp": 0.6, "contact": 0.55,
 	"er_models": "off", "er_set": "auto", "er_who": "all", "er_springs": "on", "er_metal": 0.5, "er_creatures": "off", "er_style": "fit", "er_outfits": "",
 	"remaster_models": "on",
+	"er_world": "on", "er_world_strength": 1.0, "er_grass": 2.4,
 }
 # Per level presets (tools/godot/presets.py): the look keys above, by level, picked from what the level's own colours
 # are (its clear colour, its dome, its light level, the game's light nodes, the picture the game's own camera gives) by
@@ -125,6 +130,7 @@ var scale_set := -1.0
 var frames_taken := 0                   # lists taken (er_layer.gd: which figures were drawn in the last one)
 var er: Node                            # er_layer.gd: figures posed by the game's skeletons (look.er_models)
 var remaster: Node                      # model_remaster.gd: the game's own figures remastered (look.remaster_models)
+var world_layer: Node                   # er_world.gd: the Elden Ring world layer (look.er_world)
 var torches: Array = []                 # [{light, instance, address, shadow}] Godot's lights at the game's
 var torch_clock := 0.0
 var lamp_share := 0.0                   # the carried lamp, eased: 1 where none of the game's lights reaches
@@ -185,6 +191,7 @@ var backdrop_on := false
 
 
 static var globals_added := false
+const ErWorld := preload("res://er_world.gd")
 
 static func add_globals() -> void:
 	# before any shader that names them is made (main.gd, before the drawer)
@@ -195,6 +202,7 @@ static func add_globals() -> void:
 		RenderingServer.global_shader_parameter_add(name, RenderingServer.GLOBAL_VAR_TYPE_VEC4, GLOBALS[name])
 	RenderingServer.global_shader_parameter_add("rta_sky_ring", RenderingServer.GLOBAL_VAR_TYPE_SAMPLER2D, RID())
 	RenderingServer.global_shader_parameter_add("rta_contacts", RenderingServer.GLOBAL_VAR_TYPE_SAMPLER2D, RID())
+	ErWorld.add_globals()
 
 
 func _ready() -> void:
@@ -246,6 +254,11 @@ func _ready() -> void:
 	remaster.set("view", self)
 	remaster.set("er", er)
 	add_child(remaster)
+	world_layer = Node.new()
+	world_layer.set_script(ErWorld)
+	world_layer.set("main", main)
+	world_layer.set("view", self)
+	add_child(world_layer)
 	_camera_options()
 
 
@@ -330,6 +343,8 @@ func release() -> void:
 		er.call("release")
 	if remaster != null:
 		remaster.call("release")
+	if world_layer != null:
+		world_layer.call("release")
 	_free_torches()
 	for rid in [sun_instance, lamp_instance, sky_instance, sun, lamp, backdrop_instance]:
 		if rid.is_valid():
@@ -367,6 +382,8 @@ func before_frame() -> void:
 		er.call("before_frame", String(look.er_models))
 	if remaster != null:
 		remaster.call("before_frame")
+	if world_layer != null:
+		world_layer.call("before_frame")
 	var view: Dictionary = machine.get_view()
 	var ground := bool(view.get("valid", false)) and bool(view.get("active", false)) and not bool(view.get("fallback", false)) \
 			and int(view.get("shown", 0)) >= VIEW_CHASE
@@ -431,6 +448,8 @@ func frame() -> void:
 		remaster.call("frame", scenario)
 	if er != null:
 		er.call("frame", scenario)
+	if world_layer != null:
+		world_layer.call("frame", scenario)
 
 
 # A picture between two game frames (main.gd, the display rate above 60): the drawer draws the last frame again with
@@ -898,6 +917,8 @@ func command(w: PackedStringArray) -> void:
 			if file != null:
 				file.store_string(str(drawer.call("describe_frame", w[2].to_int())))
 				file.close()
+	elif w[0] == "er" and w.size() >= 2 and w[1] == "world" and world_layer != null:
+		world_layer.call("command", w)
 	elif w[0] == "er" and er != null:
 		er.call("command", w)
 	elif w[0] == "card" and w.size() >= 2 and card != null:
