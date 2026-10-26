@@ -127,7 +127,7 @@ class RtaDrawer : public RefCounted {
     // inside one of these volumes is left out (drawing only: nothing of the game's changes).  volumes: [[cx, cy, cz, hx,
     // hy, hz, yaw degrees, cylinder 0/1, kinds (1 level chunks, 2 models, 3 both)], ...]
     void set_world_hide(const Array& volumes);
-    Array get_world_hide() const;           // per volume: [order of its first draw left out this frame (-1 none), draws, mean colour, draws in it]
+    Array get_world_hide() const;           // per volume: [order of its first draw left out this frame (-1 none), draws, mean colour, draws in it, drawn by the game this frame (a watch-only volume)]
     void world_dump(const String& path);    // the next list's pieces (every draw's packets, world space) as an OBJ file
 
   protected:
@@ -357,9 +357,16 @@ private:
         float order = -1;
         uint64_t draws = 0;
         double rgb[3] = {0, 0, 0}, weight = 0;
+        // a watch-only volume (kinds & 4): nothing is left out; the frames the game drew one of its packets are noted
+        bool watch = false;
+        std::vector<uint64_t> figures;                      // the packets watched (their figures); none: any level packet whose box middle lies inside
+        uint64_t seen = 0;                                  // the last frame one was drawn
     };
     std::vector<WorldHide> world_hide;
     std::unordered_map<uint64_t, int> world_hide_cache;     // per draw (its packets and where they lie): the volume holding it, -1 none
+    std::unordered_map<uint64_t, std::vector<int>> world_watch_cache;   // ... and the watch-only volumes it is seen in
+    bool world_watch_any = false;
+    void world_watch(uint64_t key, const rtag_draw& d, const rtag_scene* tap);
     uint64_t world_hide_frame = 0;
     int world_hidden(const rtag_draw& d, const rtag_scene* tap, float order);
     uint64_t world_hide_gen = 0;                            // changes with the volumes (kept meshes of models made again)

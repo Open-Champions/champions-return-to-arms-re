@@ -47,6 +47,18 @@ uniform float moss = 0.0;
 uniform float moss_scale = 0.035;
 uniform float edge_wear = 0.15;
 uniform float riser_dark = 0.0;
+// a step's crisp edge (a riser: COLOR.a its height, 0 at the foot .. 1 at the top edge): a worn, pale nosing along the top
+// (nosing_w of the height) and a dark line in the crease at the foot (foot_w), each edge as sharp as a pixel at any distance
+uniform float nosing = 0.0;
+uniform float nosing_w = 0.18;
+uniform float foot_ao = 0.0;
+uniform float foot_w = 0.22;
+// the carving read at play distance: the texture's dark (its cuts) darker as in a cavity, its crests lighter as worn edges
+// (round the local mean: the brightness kept); and its contrast raised with distance as the mip maps flatten it
+uniform float cavity = 0.0;
+uniform float crest = 0.0;
+uniform float far_contrast = 1.0;
+uniform vec2 far_range = vec2(250.0, 900.0);
 // metal
 uniform float metallic = 0.0;           // the whole surface (a moulding, a trim)
 uniform sampler2D metal_tex : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
@@ -65,6 +77,7 @@ uniform float metal_gain = 1.0;
 uniform float metal_diffuse = 0.85;     // the share of a metal's colour lit as the stone is (a worn, painted gold); the rest its sheen
 uniform vec3 light_ref = vec3(0.5);     // the game's mean colour over the shape (a metal's light is the game's light over it)
 uniform float metal_sheen = 0.35;       // the sky in a metal's face
+uniform float stone_sheen = 0.0;        // the sky in a polished stone's face (the game's environment-mapped pass on a shaft): its hue in shade
 uniform float glint = 0.6;              // a metal's highlight from the level's lights
 uniform float rough_along = 0.22;       // the brushed highlight: narrow along the brushing, broad across it
 uniform float rough_across = 0.55;
@@ -107,7 +120,9 @@ void fragment() {
 	// the carving: the texture round its local mean (stored values)
 	vec3 a = has_albedo ? texture(albedo_tex, UV).rgb : vec3(0.5);
 	vec3 local_mean = has_albedo ? textureLod(albedo_tex, UV, 7.0).rgb : vec3(0.5);
-	vec3 carved = max(local_mean + (a - local_mean) * contrast, vec3(0.0));
+	float eye_dist = length(v_world - CAMERA_POSITION_WORLD);
+	float k_contrast = contrast * mix(1.0, far_contrast, smoothstep(far_range.x, far_range.y, eye_dist));
+	vec3 carved = max(local_mean + (a - local_mean) * k_contrast, vec3(0.0));
 	if (recolour_amount > 0.0) {
 		float d = mix(1.0, lum(carved) / max(lum(local_mean), 0.03), recolour_detail);
 		carved = mix(carved, recolour * d, recolour_amount);
@@ -116,6 +131,14 @@ void fragment() {
 	vec3 rel = carved / max(vec3(lum(local_mean)), vec3(0.03));               // ~1: the carving's light and dark, its own colour
 	vec3 rel_grey = vec3(lum(rel));
 	vec3 rel_mix = mix(vec3(1.0), mix(rel_grey, rel, own_hue), detail);
+	if (cavity > 0.0 || crest > 0.0) {
+		// the cuts as cavities (squared: the deep ones darkest), the crests a little worn; the two balance round the mean
+		float r = rel_grey.x;
+		float cut = clamp(1.0 - r, 0.0, 1.0);
+		float top = clamp(r - 1.0, 0.0, 1.0);
+		rel_mix *= (1.0 - cavity * cut * (0.6 + 0.8 * cut)) * (1.0 + crest * top);
+		rel_mix *= 1.0 + cavity * 0.05 - crest * 0.06;
+	}
 	vec3 game = game_light ? v_game.rgb * gain : local_mean * tint * gain;
 	float relief = game_light ? v_game.a : 0.0;
 	vec3 s = game * rel_mix;
@@ -134,6 +157,13 @@ void fragment() {
 	// weathering
 	s *= 1.0 + edge_wear * (relief - 0.5) * 0.5;
 	s *= 1.0 - riser_dark * (1.0 - abs(n_geo_world.z));
+	if (nosing > 0.0 || foot_ao > 0.0) {
+		float fw = max(fwidth(relief), 0.002);
+		float nose = smoothstep(1.0 - nosing_w - fw, 1.0 - nosing_w + fw, relief);
+		float foot = 1.0 - smoothstep(foot_w - fw, foot_w + fw, relief);
+		// the cavity of the normal map deepens the crease's shadow; the nosing is worn smooth
+		s *= (1.0 + nosing * nose) * (1.0 - foot_ao * foot * (0.75 + 0.25 * (1.0 - nm_t.z)));
+	}
 	float low = 1.0 - smoothstep(0.0, grime_height, v_world.z - ground_z);
 	s *= 1.0 - grime * low * (0.6 + 0.4 * vnoise(v_world.xy * 0.2));
 	float patches = smoothstep(0.45, 0.8, vnoise(v_world.xy * moss_scale + vec2(3.1, 7.7)) * 0.7 + vnoise(v_world.xy * moss_scale * 4.0) * 0.3);
@@ -178,6 +208,14 @@ void fragment() {
 	vec3 haze = rta_haze_colour((v_world - CAMERA_POSITION_WORLD) / max(dist, 0.001)) * h;
 	ALBEDO = lin(c * (1.0 - h));
 	EMISSION = lin(clamp(c * (1.0 - h) * rta_light_ambient.rgb + haze, vec3(0.0), vec3(1.0)));
+	if (stone_sheen > 0.0) {
+		// a polished stone: the sky in its face, soft (its colour the sky's), as dark as the game's light here
+		vec3 n_s = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+		vec3 e_s = normalize(CAMERA_POSITION_WORLD - v_world);
+		vec3 sky_s = rta_sky(normalize(reflect(-e_s, n_s)));
+		float f_s = 0.35 + 0.65 * pow(1.0 - clamp(dot(n_s, e_s), 0.0, 1.0), 2.0);
+		EMISSION += lin(clamp(sky_s * lum(game) * stone_sheen * f_s * (1.0 - metal), vec3(0.0), vec3(1.0))) * (1.0 - h);
+	}
 	if (metal > 0.0) {
 		// the sky in a metal's face, blurred across the brushing (three looks), under the level's ambient and as dark as the
 		// game's light here

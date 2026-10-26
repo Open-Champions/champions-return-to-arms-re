@@ -677,6 +677,7 @@ void RtaDrawer::world_reset() {
     sheet_cells.clear();
     ground_gen++;
     world_hide_cache.clear();
+    world_watch_cache.clear();
 }
 
 // ---- decals ------------------------------------------------------------------------------------------------------------
@@ -789,6 +790,8 @@ bool RtaDrawer::grass_under_decal(float x, float y, float z) const {
 void RtaDrawer::set_world_hide(const Array& volumes) {
     world_hide.clear();
     world_hide_cache.clear();
+    world_watch_cache.clear();
+    world_watch_any = false;
     world_hide_models = false;
     world_hide_gen++;
     for (int64_t i = 0; i < volumes.size(); i++) {
@@ -800,8 +803,16 @@ void RtaDrawer::set_world_hide(const Array& volumes) {
         h.cos_yaw = (float)std::cos(yaw); h.sin_yaw = (float)std::sin(yaw);
         h.cylinder = (int64_t)v[7] != 0;
         h.kinds = (int)(int64_t)v[8];
+        // watch-only (kinds 4): the game's packets inside are noted, never left out; [9] the packets' figures (hex)
+        h.watch = (h.kinds & 4) != 0;
+        if (h.watch && v.size() >= 10 && v[9].get_type() == Variant::ARRAY) {
+            const Array figs = v[9];
+            for (int64_t k = 0; k < figs.size(); k++) h.figures.push_back(strtoull(String(figs[k]).utf8().get_data(), nullptr, 16));
+            std::sort(h.figures.begin(), h.figures.end());
+        }
         world_hide.push_back(h);
-        if (h.kinds & 2) world_hide_models = true;
+        if (h.watch) world_watch_any = true;
+        else if (h.kinds & 2) world_hide_models = true;
     }
 }
 
@@ -821,7 +832,7 @@ bool RtaDrawer::world_model_taken(const rtag_draw& d, const rtag_scene* tap) {
     }
     const float m[3] = {(lo[0] + hi[0]) * 0.5f, (lo[1] + hi[1]) * 0.5f, (lo[2] + hi[2]) * 0.5f};
     for (const WorldHide& h : world_hide) {
-        if (!(h.kinds & 2)) continue;
+        if (!(h.kinds & 2) || h.watch) continue;
         const float dx = m[0] - h.c[0], dy = m[1] - h.c[1], dz = m[2] - h.c[2];
         if (std::fabs(dz) > h.h[2]) continue;
         if (h.cylinder ? dx * dx + dy * dy <= h.h[0] * h.h[0]
@@ -835,7 +846,7 @@ bool RtaDrawer::world_model_taken(const rtag_draw& d, const rtag_scene* tap) {
 int RtaDrawer::world_tri_hidden(const rtag_scene_full* c, float order) {
     for (size_t vi = 0; vi < world_hide.size(); vi++) {
         WorldHide& h = world_hide[vi];
-        if (!(h.kinds & 2)) continue;
+        if (!(h.kinds & 2) || h.watch) continue;
         bool all = true;
         for (int i = 0; i < 3 && all; i++) {
             const float dx = c[i].x - h.c[0], dy = c[i].y - h.c[1], dz = c[i].z - h.c[2];
@@ -866,6 +877,7 @@ Array RtaDrawer::get_world_hide() const {
         a.push_back((int64_t)h.draws);
         a.push_back(h.weight > 0 ? Color((float)(h.rgb[0] / h.weight), (float)(h.rgb[1] / h.weight), (float)(h.rgb[2] / h.weight)) : Color(0, 0, 0, 0));
         a.push_back(h.weight);
+        a.push_back(h.watch && frames != 0 && h.seen == frames);
         out.push_back(a);
     }
     return out;
@@ -890,12 +902,14 @@ int RtaDrawer::world_hidden(const rtag_draw& d, const rtag_scene* tap, float ord
                         ((uint64_t)(int64_t)std::lround(v.z * 2) << 42));
         }
     }
+    if (world_watch_any) world_watch(key, d, tap);
     int found = -1;
     auto cached = world_hide_cache.find(key);
     if (cached != world_hide_cache.end()) found = cached->second;
     else {
         for (size_t vi = 0; vi < world_hide.size() && found < 0; vi++) {
             const WorldHide& h = world_hide[vi];
+            if (h.watch) continue;
             bool all = true, any = false;
             for (uint32_t k = 0; k < d.scene_piece_count && all; k++) {
                 const rtag_scene_piece& pc = pieces[k];
@@ -924,6 +938,46 @@ int RtaDrawer::world_hidden(const rtag_draw& d, const rtag_scene* tap, float ord
     h.draws++;
     world_hide_colour(found, d);
     return found;
+}
+
+// the watch-only volumes a draw is seen in: one of its level packets is a figure the volume watches (or, with none named,
+// the middle of the packet's box lies inside it); they are marked drawn this frame.  The game culls far chunks itself, so a
+// piece laid over the game's own surface (an overlay) is drawn only on the frames the game drew what it lies on.
+void RtaDrawer::world_watch(uint64_t key, const rtag_draw& d, const rtag_scene* tap) {
+    auto cached = world_watch_cache.find(key);
+    if (cached == world_watch_cache.end()) {
+        std::vector<int> in;
+        const rtag_scene_piece* pieces = tap->pieces + d.scene_piece_first;
+        for (size_t vi = 0; vi < world_hide.size(); vi++) {
+            const WorldHide& h = world_hide[vi];
+            if (!h.watch) continue;
+            bool hit = false;
+            for (uint32_t k = 0; k < d.scene_piece_count && !hit; k++) {
+                const rtag_scene_piece& pc = pieces[k];
+                if (pc.kind != 1 || !pc.full_count || pc.full_first + pc.full_count > tap->full_count) continue;
+                if (!h.figures.empty()) {
+                    hit = std::binary_search(h.figures.begin(), h.figures.end(), (uint64_t)pc.mesh);
+                    continue;
+                }
+                float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+                const rtag_scene_full* v = tap->full + pc.full_first;
+                for (uint32_t n = 0; n < pc.full_count; n++) {
+                    lo[0] = std::min(lo[0], v[n].x); lo[1] = std::min(lo[1], v[n].y); lo[2] = std::min(lo[2], v[n].z);
+                    hi[0] = std::max(hi[0], v[n].x); hi[1] = std::max(hi[1], v[n].y); hi[2] = std::max(hi[2], v[n].z);
+                }
+                const float dx = (lo[0] + hi[0]) * 0.5f - h.c[0], dy = (lo[1] + hi[1]) * 0.5f - h.c[1], dz = (lo[2] + hi[2]) * 0.5f - h.c[2];
+                if (std::fabs(dz) > h.h[2]) continue;
+                hit = h.cylinder ? dx * dx + dy * dy <= h.h[0] * h.h[0]
+                                 : std::fabs(dx * h.cos_yaw + dy * h.sin_yaw) <= h.h[0] && std::fabs(-dx * h.sin_yaw + dy * h.cos_yaw) <= h.h[1];
+            }
+            if (hit) in.push_back((int)vi);
+        }
+        cached = world_watch_cache.emplace(key, std::move(in)).first;
+    }
+    for (int vi : cached->second) {
+        world_hide[vi].seen = frames;
+        world_hide[vi].draws++;
+    }
 }
 
 // the colour a draw left out was drawn with (its texture's mean, with the game's vertex light): the piece over it takes it on

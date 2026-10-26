@@ -27,7 +27,8 @@ extends Node
 #    volumes (RtaDrawer.set_world_hide: drawing only; the game's collision is untouched) and the pieces are drawn at its
 #    place in the list (shaders/er_ruin.gdshader), in the colour the game gave the shape there and lit as the level's own
 #    pieces are, with shadows of their own.  Their meshes and pictures (made by er_mesh_bake.gd) are read on worker threads
-#    when the level is entered; until they are in, the game's own shapes are drawn.
+#    when the level is entered; until they are in, the game's own shapes are drawn.  An overlay (laid over the game's own
+#    surface, nothing left out) has watch-only volumes instead: it is drawn only on frames the game drew a packet it lies on.
 #
 #   app er world info FILE     the textures drawn in the last 2 frames with what they read as, as JSON (and a summary)
 #   app er world cost          the layer's own time per frame (mean and worst, microseconds) since the last `cost`
@@ -538,8 +539,9 @@ func _rebuild_finish(loaded: Dictionary) -> void:
 		for si in mesh.get_surface_count():
 			triangles += (mesh.surface_get_array_index_len(si) if mesh is ArrayMesh else 0) / 3
 		pieces.append({"name": p.name, "mesh": mesh, "materials": materials, "volumes": p.get("volumes", [p.volume]).map(func(x): return int(x)),
+			"watch": p.get("watch", []).map(func(x): return int(x)),
 			"tint_amount": float(p.get("tint", 0.6)),
-			"instance": RID(), "caster": RID(), "scenario": RID(), "tinted": 0.0, "aabb": aabb})
+			"instance": RID(), "caster": RID(), "scenario": RID(), "tinted": 0.0, "aabb": aabb, "shown": false, "shown_rid": RID(), "at": -2.0})
 	data["pieces"] = pieces
 	rebuild = data
 	print("rta_godot: er world: rebuild for %s, %d pieces (%d triangles) over %d volumes: read in %.0f ms on worker threads, pictures put on the card in %.1f ms (two a frame), made in %.1f ms" % [
@@ -601,10 +603,25 @@ func _rebuild_draw(scenario: RID) -> void:
 	for p in pieces:
 		if show and (p.scenario != scenario or not p.instance.is_valid()):
 			_rebuild_place(p, scenario)
-		if p.instance.is_valid():
-			RenderingServer.instance_set_visible(p.instance, show)
-			RenderingServer.instance_set_visible(p.caster, show)
-		if not show:
+		# an overlay (laid over the game's own surface, which stays drawn) is drawn only on the frames the game drew what
+		# it lies on: its watch-only volumes (the game culls far chunks; a piece drawn without them floats in the haze)
+		var seen := show
+		if show and not p.watch.is_empty():
+			seen = false
+			for vi in p.watch:
+				if vi < hide_info.size() and (hide_info[vi] as Array).size() > 4 and bool(hide_info[vi][4]):
+					seen = true
+					break
+		# (the server is told only of a change: an overlay is cut into a part per game packet, a hundred or more pieces)
+		if p.instance.is_valid() and (seen != bool(p.shown) or p.instance != p.shown_rid):
+			p.shown = seen
+			p.shown_rid = p.instance
+			RenderingServer.instance_set_visible(p.instance, seen)
+			RenderingServer.instance_set_visible(p.caster, seen)
+		if not seen or p.volumes.is_empty():
+			if seen and p.at != 1.0e6:
+				p.at = 1.0e6
+				RenderingServer.instance_set_pivot_data(p.instance, 1.0e6, false)     # (an overlay: after the game's own surface)
 			continue
 		# each piece at the place of the first draw it stands in for (or where that was last); its colour, the mean of
 		# what its volumes left out
@@ -624,7 +641,10 @@ func _rebuild_draw(scenario: RID) -> void:
 			if c.a > 0.0:
 				sum += Vector3(c.r, c.g, c.b) * float(info[3])
 				weight += float(info[3])
-		RenderingServer.instance_set_pivot_data(p.instance, at + 0.5 if at >= 0.0 else 1.0e6, false)
+		var pivot := at + 0.5 if at >= 0.0 else 1.0e6
+		if pivot != float(p.at):
+			p.at = pivot
+			RenderingServer.instance_set_pivot_data(p.instance, pivot, false)
 		if weight > 0.0:
 			var colour := Color(sum.x / weight, sum.y / weight, sum.z / weight, 1.0)
 			if weight != float(p.tinted):
@@ -650,6 +670,7 @@ func _rebuild_place(p: Dictionary, scenario: RID) -> void:
 		if p[key].is_valid():
 			RenderingServer.free_rid(p[key])
 	p.scenario = scenario
+	p.at = -2.0
 	p.instance = RenderingServer.instance_create2(p.mesh.get_rid(), scenario)
 	RenderingServer.instance_geometry_set_cast_shadows_setting(p.instance, RenderingServer.SHADOW_CASTING_SETTING_OFF)
 	# its shadow: a twin drawn only into the shadow maps, opaque (the transparent pass casts none)
@@ -715,7 +736,11 @@ func command(w: PackedStringArray) -> void:
 		var hide_info: Array = drawer.call("get_world_hide")
 		var parts := []
 		for vi in hide_info.size():
-			parts.append("volume %d: %d draws left out, place %.0f, colour %s" % [vi, int(hide_info[vi][1]), float(hide_info[vi][0]), str(hide_info[vi][2])])
+			var vol: Array = rebuild.get("volumes", [])[vi] if vi < rebuild.get("volumes", []).size() else []
+			if vol.size() > 8 and (int(vol[8]) & 4) != 0:
+				parts.append("volume %d (watch): seen in %d frames, %s this frame" % [vi, int(hide_info[vi][1]), "drawn" if bool(hide_info[vi][4]) else "not drawn"])
+			else:
+				parts.append("volume %d: %d draws left out, place %.0f, colour %s" % [vi, int(hide_info[vi][1]), float(hide_info[vi][0]), str(hide_info[vi][2])])
 		print("rta_godot: er world rebuild: %s, %d pieces for %s; %s" % ["on" if _rebuild_wanted() else "off", rebuild.get("pieces", []).size(),
 			rebuild.get("level", "-"), "; ".join(parts)])
 	elif w[2] == "dump" and w.size() >= 4:

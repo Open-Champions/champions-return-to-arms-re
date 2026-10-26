@@ -30,7 +30,9 @@ The recipe (a local file; numbers of the level's shapes and names of Elden Ring 
         "roles": ["top", "side", "plain"], "offset": units, "smooth": degrees}
         the game's own triangles in the target in an Elden Ring material (what lies flat laid in world space, what stands a
         band of the texture run along it); with "overlay": true on the target and "offset", laid in front of the game's own
-        surface, which stays drawn (no volume is left out)
+        surface, which stays drawn (no volume is left out); an overlay is cut
+        by the game packet each triangle lies on, and each part is drawn only on frames the game drew that packet (a watch-only
+        volume, kinds 4, naming the packet's figure: the game culls far packets, and an overlay drawn without them floats)
         "inlay": {"bands": [[d0, d1, "<key>"], ...], "offset", "band": {"<key>": [v0, v1]}, "above": z, "radial": bool} on a surface part - a worn inlay
         laid in the tops along their rims, each band d0..d1 units in from the rim in the material the part names by <key>
   loft: {"fit": "loft", "rings": [[z, half], ...], "spans": ["<key>", ...], "cap": "<key>", "turn": degrees, "sides": 4,
@@ -191,6 +193,63 @@ def reference(dump, vol, obj=None, means=None, with_colour=False):
     if with_colour:
         return np.concatenate(tris), np.concatenate(colours), names
     return np.concatenate(tris)
+
+
+def watch_figures(dump, vols):
+    """the level packets the game draws inside the volumes (draws lying wholly in one, as `reference`): figure (the dump's
+    m<hex>) -> the middles of its triangles"""
+    draw_of = lambda name: name.split('_k', 1)[0]
+    out = {}
+    for v in vols:
+        whole = {}
+        for name, (t, kind, o, c, tex) in dump.items():
+            if kind == 1:
+                whole[draw_of(name)] = whole.get(draw_of(name), True) and bool(inside(t, v).all())
+        for name, (t, kind, o, c, tex) in dump.items():
+            if kind == 1 and whole.get(draw_of(name)) and '_m' in name:
+                out[name.split('_m', 1)[1].split('_')[0]] = t.mean(1)
+    return out
+
+
+def sub_mesh(m, sel):
+    """the mesh's triangles `sel`, its vertices made compact"""
+    i = m['i'][sel]
+    used = np.unique(i)
+    remap = np.full(len(m['p']), -1, np.int64)
+    remap[used] = np.arange(len(used))
+    out = dict(m, i=remap[i])
+    for key, val in m.items():
+        if key != 'i' and isinstance(val, np.ndarray) and len(val) == len(m['p']):
+            out[key] = val[used]
+    return out
+
+
+def watch_groups(fitted, figs):
+    """an overlay's meshes cut by the game packet each triangle lies on (the packet with the triangle nearest its middle): the
+    game culls far packets one by one, so each part is drawn only on frames its own packet is: [(figure, [[meshes] per part])]"""
+    names = sorted(figs)
+    mids = np.concatenate([figs[k] for k in names])
+    owner = np.concatenate([np.full(len(figs[k]), i) for i, k in enumerate(names)])
+    tri_owner = []
+    keys = set()
+    for f in fitted:
+        per = []
+        for m in f:
+            mid = m['p'][m['i']].mean(1)
+            near = np.empty(len(mid), np.int64)
+            for s0 in range(0, len(mid), 256):
+                d = ((mid[s0:s0 + 256, None, :] - mids[None]) ** 2).sum(-1)
+                near[s0:s0 + 256] = owner[d.argmin(1)]
+            per.append(near)
+            keys.update(near.tolist())
+        tri_owner.append(per)
+    out = []
+    for key in sorted(keys):
+        parts = []
+        for f, per in zip(fitted, tri_owner):
+            parts.append([sub_mesh(m, near == key) for m, near in zip(f, per) if (near == key).any()])
+        out.append((names[key], parts))
+    return out
 
 
 # ---- fitting ----------------------------------------------------------------------------------------------------------
@@ -1195,87 +1254,105 @@ def main():
         overlay = bool(target.get('overlay'))
         if not overlay:
             volumes.extend(vols)
+            groups = [('', fitted, None)]
+        else:
+            # cut by the game's packets it lies on, each part watching its own (a watch-only volume naming the packet; its box
+            # the part's own, for the record)
+            figs = watch_figures(dump, vols)
+            groups = []
+            for fig, parts in watch_groups(fitted, figs):
+                pts = np.concatenate([m['p'] for ms in parts for m in ms])
+                lo, hi = pts.min(0), pts.max(0)
+                wi = len(volumes)
+                volumes.append([round(float(x), 2) for x in (lo + hi) / 2] + [round(float(x), 2) for x in (hi - lo) / 2 + 1.0] + [0, 0, 5, [fig]])
+                groups.append(('-w%d' % len(groups), parts, wi))
+            print('%-12s watched by %d packets' % (target['name'], len(groups)))
         # the light the game gave the shape (its mean): the measure a metal's brightness follows
         light_ref = (ref_col.reshape(-1, 3).mean(0) if len(ref_col) else np.array([0.5, 0.5, 0.5])).round(4).tolist()
         if target.get('colour'):
             light_ref = list(target['colour'])
-        for k, (part, f) in enumerate(zip(target['parts'], fitted)):
-            name = '%s-%d' % (target['name'], k)
-            pos, nrm, uvs, idx, surfaces, v2 = [], [], [], [], [], []
-            base = 0
-            for m in f:
-                mat = dict(m['mat'])
-                entry = index.get(mat['name'], {})
-                mat['_textures'] = [t['path'] for t in mat.get('textures', []) if t.get('path')] + entry.get('tex', [])
-                albedo, normal = texture_pair(mat, recipe['textures'])
-                surf = {'first': int(sum(len(x) for x in idx)) * 3, 'count': int(len(m['i'])) * 3}
-                # the recipe's own say over this mesh's material (see "surfaces" above): other textures, a metal or mask
-                # map, shader values, its own tint; for a "surface" part, its top, side and plain
-                if m.get('role'):
-                    over = dict(part.get(m['role'], {}))
-                    albedo = normal = None
-                else:
-                    over = dict(part.get('surfaces', {}).get('*', {}), **part.get('surfaces', {}).get(str(m['k']), {}))
-                named = lambda b: os.path.join(recipe['textures'], b + '.png') if b else None
-                if over.get('albedo'):
-                    albedo = named(over['albedo'])
-                if over.get('normal'):
-                    normal = named(over['normal'])
-                maps = [('albedo', albedo), ('normal', normal)] + [(k2, named(over[k2])) for k2 in ('metal', 'mask') if over.get(k2)]
-                params = dict(part.get('params', {}), **over.get('params', {}))
-                if params:
-                    surf['params'] = params
-                if 'tint' in over:
-                    surf['tint'] = over['tint']
-                for key, src in maps:
-                    if src:
-                        dst = os.path.join(out, 'tex', os.path.basename(src))
-                        if not os.path.exists(dst):
-                            (write_normal if key == 'normal' else write_picture)(src, dst)
-                        surf[key] = 'tex/' + os.path.basename(src)
-                        res_name = 'tex/' + os.path.splitext(os.path.basename(src))[0] + '.tex.res'
-                        surf[key + '_res'] = res_name
-                        if res_name not in baked_tex:
-                            baked_tex.add(res_name)
-                            jobs.append({'texture': os.path.abspath(dst), 'out': os.path.abspath(os.path.join(out, res_name))})
-                        if key == 'albedo':
-                            surf['albedo_mean'] = [round(float(x), 4) for x in np.asarray(Image.open(src).convert('RGB').resize((32, 32))).reshape(-1, 3).mean(0) / 255.0]
-                # what every piece takes from the game: the colour it gave the surface here (per corner), and a relief's
-                # raised parts (for a gilding); normals made smooth where asked
-                n = m['n']
-                if part.get('smooth_normals') or over.get('smooth_normals'):
-                    n = smooth_normals_welded(m['p'], m['i'], n, float(over.get('smooth_normals', part.get('smooth_normals', 50.0))))
-                col = game_colour(m['p'], n, ref, ref_col)
-                fixed = over.get('colour', part.get('colour', target.get('colour')))
-                if fixed:
-                    # a model the game draws in several passes (its colour is not one texture's): the colour given, with
-                    # the game's light and dark over the shape kept round it
-                    lum = col @ np.array([0.3, 0.59, 0.11])
-                    col = np.array(fixed, float)[None] * np.clip(lum / max(float(lum.mean()), 1e-3), 0.3, 2.0)[:, None]
-                rel = m.get('relief', np.zeros(len(m['p'])))
-                g = over.get('relief') or part.get('relief')
-                if g and g.get('mode') == 'panels':
-                    rel, depth = relief_in_panels(m['p'], m['i'], n, float(g.get('radius', 4.0)), float(g.get('lo', 0.3)), float(g.get('hi', 0.75)),
-                                           float(g.get('frame', 0.12)), g.get('what', 'figures'), tuple(g.get('z', (0.0, 1.0))))
-                    col = col * (1.0 - float(g.get('cavity', 0.3)) * depth)[:, None]
-                elif g:
-                    rel = relief_mask(m['p'], m['i'], n, int(g.get('iters', 12)), float(g.get('lo', 0.15)), float(g.get('hi', 0.85)))
-                surf['game_light'] = True
-                surfaces.append(surf)
-                pos.append(m['p']); nrm.append(n); uvs.append(m['uv']); idx.append(m['i'] + base)
-                base += len(m['p'])
-                v2.append({'p': m['p'], 'n': n, 'uv': m['uv'], 'c': np.concatenate([col, rel[:, None]], 1), 'i': m['i'],
-                           'budget': int(over.get('budget', part.get('budget', target.get('budget', recipe.get('budget', 20000)))))})
-            with open(os.path.join(out, name + '.bin'), 'wb') as fh:
-                P, N, U, I = np.concatenate(pos), np.concatenate(nrm), np.concatenate(uvs), np.concatenate(idx)
-                fh.write(np.array([len(P), len(I) * 3], np.int32).tobytes())
-                fh.write(P.astype(np.float32).tobytes()); fh.write(N.astype(np.float32).tobytes()); fh.write(U.astype(np.float32).tobytes())
-                fh.write(I.astype(np.int32).tobytes())
-            write_v2(os.path.join(out, name + '.v2'), v2)
-            jobs.append({'mesh': os.path.abspath(os.path.join(out, name + '.v2')), 'out': os.path.abspath(os.path.join(out, name + '.mesh.res'))})
-            pieces.append({'name': name, 'mesh': name + '.bin', 'mesh_res': name + '.mesh.res', 'volume': -1 if overlay else vi,
-                           'volumes': [] if overlay else list(range(vi, vi + len(vols))), 'surfaces': surfaces, 'tint': target.get('tint', 0.6),
-                           'light_ref': light_ref, 'triangles': int(len(I))})
+        for suffix, group, watch in groups:
+            for k, (part, f) in enumerate(zip(target['parts'], group)):
+                if not f:
+                    continue
+                name = '%s-%d%s' % (target['name'], k, suffix)
+                pos, nrm, uvs, idx, surfaces, v2 = [], [], [], [], [], []
+                base = 0
+                for m in f:
+                    mat = dict(m['mat'])
+                    entry = index.get(mat['name'], {})
+                    mat['_textures'] = [t['path'] for t in mat.get('textures', []) if t.get('path')] + entry.get('tex', [])
+                    albedo, normal = texture_pair(mat, recipe['textures'])
+                    surf = {'first': int(sum(len(x) for x in idx)) * 3, 'count': int(len(m['i'])) * 3}
+                    # the recipe's own say over this mesh's material (see "surfaces" above): other textures, a metal or mask
+                    # map, shader values, its own tint; for a "surface" part, its top, side and plain
+                    if m.get('role'):
+                        over = dict(part.get(m['role'], {}))
+                        albedo = normal = None
+                    else:
+                        over = dict(part.get('surfaces', {}).get('*', {}), **part.get('surfaces', {}).get(str(m['k']), {}))
+                    named = lambda b: os.path.join(recipe['textures'], b + '.png') if b else None
+                    if over.get('albedo'):
+                        albedo = named(over['albedo'])
+                    if over.get('normal'):
+                        normal = named(over['normal'])
+                    maps = [('albedo', albedo), ('normal', normal)] + [(k2, named(over[k2])) for k2 in ('metal', 'mask') if over.get(k2)]
+                    params = dict(part.get('params', {}), **over.get('params', {}))
+                    if params:
+                        surf['params'] = params
+                    if 'tint' in over:
+                        surf['tint'] = over['tint']
+                    for key, src in maps:
+                        if src:
+                            dst = os.path.join(out, 'tex', os.path.basename(src))
+                            if not os.path.exists(dst):
+                                (write_normal if key == 'normal' else write_picture)(src, dst)
+                            surf[key] = 'tex/' + os.path.basename(src)
+                            res_name = 'tex/' + os.path.splitext(os.path.basename(src))[0] + '.tex.res'
+                            surf[key + '_res'] = res_name
+                            if res_name not in baked_tex:
+                                baked_tex.add(res_name)
+                                jobs.append({'texture': os.path.abspath(dst), 'out': os.path.abspath(os.path.join(out, res_name))})
+                            if key == 'albedo':
+                                surf['albedo_mean'] = [round(float(x), 4) for x in np.asarray(Image.open(src).convert('RGB').resize((32, 32))).reshape(-1, 3).mean(0) / 255.0]
+                    # what every piece takes from the game: the colour it gave the surface here (per corner), and a relief's
+                    # raised parts (for a gilding); normals made smooth where asked
+                    n = m['n']
+                    if part.get('smooth_normals') or over.get('smooth_normals'):
+                        n = smooth_normals_welded(m['p'], m['i'], n, float(over.get('smooth_normals', part.get('smooth_normals', 50.0))))
+                    col = game_colour(m['p'], n, ref, ref_col)
+                    fixed = over.get('colour', part.get('colour', target.get('colour')))
+                    if fixed:
+                        # a model the game draws in several passes (its colour is not one texture's): the colour given, with
+                        # the game's light and dark over the shape kept round it
+                        lum = col @ np.array([0.3, 0.59, 0.11])
+                        col = np.array(fixed, float)[None] * np.clip(lum / max(float(lum.mean()), 1e-3), 0.3, 2.0)[:, None]
+                    rel = m.get('relief', np.zeros(len(m['p'])))
+                    g = over.get('relief') or part.get('relief')
+                    if g and g.get('mode') == 'panels':
+                        rel, depth = relief_in_panels(m['p'], m['i'], n, float(g.get('radius', 4.0)), float(g.get('lo', 0.3)), float(g.get('hi', 0.75)),
+                                               float(g.get('frame', 0.12)), g.get('what', 'figures'), tuple(g.get('z', (0.0, 1.0))))
+                        col = col * (1.0 - float(g.get('cavity', 0.3)) * depth)[:, None]
+                    elif g:
+                        rel = relief_mask(m['p'], m['i'], n, int(g.get('iters', 12)), float(g.get('lo', 0.15)), float(g.get('hi', 0.85)))
+                    surf['game_light'] = True
+                    surfaces.append(surf)
+                    pos.append(m['p']); nrm.append(n); uvs.append(m['uv']); idx.append(m['i'] + base)
+                    base += len(m['p'])
+                    v2.append({'p': m['p'], 'n': n, 'uv': m['uv'], 'c': np.concatenate([col, rel[:, None]], 1), 'i': m['i'],
+                               'budget': int(over.get('budget', part.get('budget', target.get('budget', recipe.get('budget', 20000)))))})
+                with open(os.path.join(out, name + '.bin'), 'wb') as fh:
+                    P, N, U, I = np.concatenate(pos), np.concatenate(nrm), np.concatenate(uvs), np.concatenate(idx)
+                    fh.write(np.array([len(P), len(I) * 3], np.int32).tobytes())
+                    fh.write(P.astype(np.float32).tobytes()); fh.write(N.astype(np.float32).tobytes()); fh.write(U.astype(np.float32).tobytes())
+                    fh.write(I.astype(np.int32).tobytes())
+                write_v2(os.path.join(out, name + '.v2'), v2)
+                jobs.append({'mesh': os.path.abspath(os.path.join(out, name + '.v2')), 'out': os.path.abspath(os.path.join(out, name + '.mesh.res'))})
+                pieces.append({'name': name, 'mesh': name + '.bin', 'mesh_res': name + '.mesh.res', 'volume': -1 if overlay else vi,
+                               'volumes': [] if overlay else list(range(vi, vi + len(vols))), 'surfaces': surfaces, 'tint': target.get('tint', 0.6),
+                               'light_ref': light_ref, 'triangles': int(len(I))})
+                if watch is not None:
+                    pieces[-1]['watch'] = [watch]
     if '--no-bake' not in sys.argv:
         bake(out, jobs)
     json.dump({'level': recipe['level'], 'tolerance': tol, 'volumes': volumes, 'pieces': pieces, 'check': report},
