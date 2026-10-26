@@ -55,6 +55,9 @@ extends Node
 #             (er_layer.gd, er_creatures.cfg: which class is which model); a class with no model keeps its own figure
 #   er_style  fit (the default: the player's own figure dressed in the outfit's pieces, er_fit.gd) | replace (rounds 1-3)
 #   er_outfits per class "class:auto|original|<outfit>;..." (the portal's Settings; er_fit.cfg [auto] for auto)
+#   remaster_models on (default) | off: the game's own figures drawn as smooth meshes baked on this machine from their own
+#             bind-pose meshes, posed by the game's own skin matrices, with maps derived from their (art pack) textures
+#             (model_remaster.gd, RtaRemaster; model_remaster.cfg per model); the Classic look sets it off
 #
 # Each of sky, fog, sun, lamp, bloom, grade, foliage, fill is  off | on | auto.  auto - the default - means: in the views that look
 # along the ground (chase, shoulder, first person: tools/recomp/app/fpview.h), not in the game's own overhead view
@@ -97,6 +100,7 @@ var look := {
 	"sun_gain": 1.0, "saturation": 1.10, "contrast": 1.06, "brightness": 1.0, "preset": "on", "balance": "0.6",
 	"backdrop": "auto", "models": "on", "model_smooth": 2.0, "model_crease": 0.35, "model_near": 520.0, "model_rim": 0.35, "model_form": 0.7, "model_sharp": 0.6, "contact": 0.55,
 	"er_models": "off", "er_set": "auto", "er_who": "all", "er_springs": "on", "er_metal": 0.5, "er_creatures": "off", "er_style": "fit", "er_outfits": "",
+	"remaster_models": "on",
 }
 # Per level presets (tools/godot/presets.py): the look keys above, by level, picked from what the level's own colours
 # are (its clear colour, its dome, its light level, the game's light nodes, the picture the game's own camera gives) by
@@ -120,6 +124,7 @@ var lamp_before_ok := false
 var scale_set := -1.0
 var frames_taken := 0                   # lists taken (er_layer.gd: which figures were drawn in the last one)
 var er: Node                            # er_layer.gd: figures posed by the game's skeletons (look.er_models)
+var remaster: Node                      # model_remaster.gd: the game's own figures remastered (look.remaster_models)
 var torches: Array = []                 # [{light, instance, address, shadow}] Godot's lights at the game's
 var torch_clock := 0.0
 var lamp_share := 0.0                   # the carried lamp, eased: 1 where none of the game's lights reaches
@@ -235,6 +240,12 @@ func _ready() -> void:
 	er.set("main", main)
 	er.set("view", self)
 	add_child(er)
+	remaster = Node.new()
+	remaster.set_script(load("res://model_remaster.gd"))
+	remaster.set("main", main)
+	remaster.set("view", self)
+	remaster.set("er", er)
+	add_child(remaster)
 	_camera_options()
 
 
@@ -317,6 +328,8 @@ func _free_torches() -> void:
 func release() -> void:
 	if er != null:
 		er.call("release")
+	if remaster != null:
+		remaster.call("release")
 	_free_torches()
 	for rid in [sun_instance, lamp_instance, sky_instance, sun, lamp, backdrop_instance]:
 		if rid.is_valid():
@@ -352,6 +365,8 @@ func before_frame() -> void:
 		card.call("before_frame")
 	if er != null:
 		er.call("before_frame", String(look.er_models))
+	if remaster != null:
+		remaster.call("before_frame")
 	var view: Dictionary = machine.get_view()
 	var ground := bool(view.get("valid", false)) and bool(view.get("active", false)) and not bool(view.get("fallback", false)) \
 			and int(view.get("shown", 0)) >= VIEW_CHASE
@@ -412,6 +427,8 @@ func frame() -> void:
 	_post()
 	if card != null:
 		card.call("frame", 1.0 / 60.0)
+	if remaster != null:
+		remaster.call("frame", scenario)
 	if er != null:
 		er.call("frame", scenario)
 
@@ -421,6 +438,8 @@ func frame() -> void:
 func tween(t: float) -> void:
 	if er != null:
 		er.call("tween", t)
+	if remaster != null:
+		remaster.call("tween", t)
 	if lamp_instance.is_valid() and lamp_before_ok:
 		RenderingServer.instance_set_transform(lamp_instance, Transform3D(Basis(), lamp_before.lerp(lamp_now, 1.0 + t)))
 

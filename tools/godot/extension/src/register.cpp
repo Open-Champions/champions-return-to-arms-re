@@ -8,6 +8,7 @@
 #include "rta_net2.h"
 #endif
 #include "rta_machine.h"
+#include "rta_remaster.h"
 
 #include <gdextension_interface.h>
 #include <godot_cpp/core/class_db.hpp>
@@ -22,6 +23,7 @@ static void initialize_rta_godot(ModuleInitializationLevel p_level) {
     GDREGISTER_CLASS(RtaAudioPlayback);
     GDREGISTER_CLASS(RtaAudioStream);
     GDREGISTER_CLASS(RtaDrawer);
+    GDREGISTER_CLASS(RtaRemaster);      // the game's own figures remastered (model_remaster.gd)
 #ifdef RTA_GODOT_HAVE_GAMESTATE
     GDREGISTER_CLASS(RtaGameState);     // the HUD agent's: the game's state for a HUD drawn by Godot
 #endif

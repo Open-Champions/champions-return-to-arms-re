@@ -80,7 +80,12 @@ class RtaDrawer : public RefCounted {
     // The scene's objects (rtag_scene_piece::object) the next frames leave out: their draws are not made at all.  For a
     // host that draws something else in their place (er_layer.gd: a figure posed by the object's skeleton).
     void set_hidden_objects(const PackedInt64Array& objects);
+    // ... only their skinned packets (model_remaster.gd: the body drawn there, what the figure holds left to the game)
+    void set_hidden_skinned(const PackedInt64Array& objects);
     Dictionary get_scene_info() const;
+    // per skinned figure packet of the frame taken last (index into its rtag_scene::pieces): [texture RID, tex_size, tex_offset,
+    // st_scale, alpha cut (-1 none), alpha from (0 texture, 1 TEXA ta0, 2 none), ta0, blended] (rta_scene.cpp)
+    Dictionary get_piece_textures() const;
     RID get_world_scenario() const;
     RID get_world_camera() const;
     RID get_world_viewport() const;

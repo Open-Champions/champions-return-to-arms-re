@@ -28,8 +28,8 @@ const REMASTERED := "remastered"
 const ROOM_BIT := 0x2000
 
 # the look keys Classic turns off (scene_view.gd); Remastered leaves them to their defaults and the level presets
-const CLASSIC_LOOK := "sky=off,fog=off,sun=off,lamp=off,bloom=off,grade=off,foliage=off,fill=off,lights=off,backdrop=off,contact=0,models=off,preset=off,er_models=off,er_creatures=off"
-const CLASSIC_KEYS := ["sky", "fog", "sun", "lamp", "bloom", "grade", "foliage", "fill", "lights", "backdrop", "contact", "models", "preset", "er_models", "er_creatures"]
+const CLASSIC_LOOK := "sky=off,fog=off,sun=off,lamp=off,bloom=off,grade=off,foliage=off,fill=off,lights=off,backdrop=off,contact=0,models=off,preset=off,er_models=off,er_creatures=off,remaster_models=off"
+const CLASSIC_KEYS := ["sky", "fog", "sun", "lamp", "bloom", "grade", "foliage", "fill", "lights", "backdrop", "contact", "models", "preset", "er_models", "er_creatures", "remaster_models"]
 
 
 static func title(kind: String) -> String:

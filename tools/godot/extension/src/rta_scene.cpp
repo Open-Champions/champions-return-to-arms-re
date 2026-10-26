@@ -120,10 +120,18 @@ struct RtaDrawer::Scene {
     Scene() { memset(ring_sum, 0, sizeof ring_sum); memset(ring_n, 0, sizeof ring_n); memset(ring, 0, sizeof ring); }
     bool packets = true;                // draw the packets' complete geometry where the tap has it (false: the list's own triangles)
     std::unordered_set<uint32_t> hidden;    // objects left out (set_hidden_objects)
+    std::unordered_set<uint32_t> hidden_skinned;    // objects whose skinned packets are left out (set_hidden_skinned)
+    bool piece_hidden(const rtag_scene_piece& p) const {
+        return hidden.count(p.object) || (p.kind == 2 && (p.flags & 4) && hidden_skinned.count(p.object));
+    }
     std::unordered_map<size_t, std::pair<PackedByteArray, PackedByteArray>> big_bytes;   // a big draw's memory, by its place in the pool
     uint64_t hidden_draws = 0;
     float hidden_order = -1;            // this frame: the place in the world's pass of the first draw left out (-1: none)
     std::unordered_map<uint32_t, float> hidden_orders;      // this frame: per object left out, the place of its first draw
+    // this frame: per skinned figure packet (rtag_scene::pieces index), the texture and its state it is drawn with
+    // (get_piece_textures: model_remaster.gd draws the remastered figure with the game's own, art-pack, texture)
+    struct PieceTex { RID texture; float size[2], offset[2], st[2]; float cut; int alpha_from; float ta0; bool blend; };
+    std::unordered_map<uint32_t, PieceTex> piece_tex;
     // Meshes kept between frames: a draw whose packets are, byte for byte, those of a mesh made before (the level's chunks
     // where nothing moved and no light changed: most of a frame) takes that mesh instead of being built and sent again.
     // Kept by the draw's identity (its packets' figures, kinds and corner counts, and how many draws of that identity came
@@ -220,6 +228,12 @@ struct RtaDrawer::Scene {
 void RtaDrawer::set_scene_mode(bool on) {
     scene_mode = on;
     if (on && !scene) scene = new Scene;
+}
+
+void RtaDrawer::set_hidden_skinned(const PackedInt64Array& objects) {
+    if (!scene) scene = new Scene;
+    scene->hidden_skinned.clear();
+    for (int64_t k = 0; k < objects.size(); k++) scene->hidden_skinned.insert((uint32_t)objects[k]);
 }
 
 void RtaDrawer::set_hidden_objects(const PackedInt64Array& objects) {
@@ -668,6 +682,25 @@ String RtaDrawer::describe_frame(int max_lines) const {
     return text;
 }
 
+Dictionary RtaDrawer::get_piece_textures() const {
+    Dictionary out;
+    if (!scene) return out;
+    for (const auto& e : scene->piece_tex) {
+        const Scene::PieceTex& t = e.second;
+        Array a;
+        a.push_back(t.texture);
+        a.push_back(Vector2(t.size[0], t.size[1]));
+        a.push_back(Vector2(t.offset[0], t.offset[1]));
+        a.push_back(Vector2(t.st[0], t.st[1]));
+        a.push_back(t.cut);
+        a.push_back(t.alpha_from);
+        a.push_back(t.ta0);
+        a.push_back(t.blend);
+        out[(int64_t)e.first] = a;
+    }
+    return out;
+}
+
 Dictionary RtaDrawer::get_scene_info() const {
     Dictionary info;
     if (!scene) return info;
@@ -721,6 +754,7 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
     sc.ground_near = 0;
     sc.hidden_order = -1;
     sc.hidden_orders.clear();
+    sc.piece_tex.clear();
     sc.builds_used = 0;
     sc.build_of.clear();
     sc.segment = 0;
@@ -788,10 +822,26 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     }
     RenderingServer* s = RenderingServer::get_singleton();
     if (fill_drops(f, d)) return true;                      // the library's plain fill: drawn here by rta_fill.cpp instead
-    if (!sc.hidden.empty() && d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count) {
-        // an object the host draws itself (set_hidden_objects): a draw all of whose packets are its goes
+    if (d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count && d.texture && !d.tex_is_target) {
+        for (uint32_t k = 0; k < d.scene_piece_count; k++) {
+            const rtag_scene_piece& pc = sc.tap->pieces[d.scene_piece_first + k];
+            if (pc.kind != 2 || !(pc.flags & 4) || (pc.flags & 2)) continue;
+            Scene::PieceTex& t = sc.piece_tex[d.scene_piece_first + k];
+            t.texture = texture;
+            t.size[0] = d.tex_size[0]; t.size[1] = d.tex_size[1];
+            t.offset[0] = d.tex_offset[0]; t.offset[1] = d.tex_offset[1];
+            t.st[0] = d.st_scale[0]; t.st[1] = d.st_scale[1];
+            t.cut = d.alpha_test && (d.atst == 5 || d.atst == 6) ? d.aref / 128.0f : -1.0f;
+            t.alpha_from = !d.tcc ? 2 : (d.texa_mode == 1 ? 1 : 0);
+            t.ta0 = d.ta0 / 128.0f;
+            t.blend = d.blend != 0;
+        }
+    }
+    if ((!sc.hidden.empty() || !sc.hidden_skinned.empty()) && d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count) {
+        // an object the host draws itself (set_hidden_objects), or its skinned body (set_hidden_skinned): a draw all of
+        // whose packets are its goes
         uint32_t hidden = 0;
-        for (uint32_t k = 0; k < d.scene_piece_count; k++) hidden += sc.hidden.count(sc.tap->pieces[d.scene_piece_first + k].object) ? 1 : 0;
+        for (uint32_t k = 0; k < d.scene_piece_count; k++) hidden += sc.piece_hidden(sc.tap->pieces[d.scene_piece_first + k]) ? 1 : 0;
         if (hidden == d.scene_piece_count) {
             sc.hidden_draws++;
             sc.segment++;

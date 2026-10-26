@@ -49,6 +49,7 @@ var machine: RtaMachine
 var drawer: Object
 var mode := "off"
 var hidden_sent := false
+var last_hide := PackedInt64Array()   # what this layer left out of the drawer's frame (model_remaster.gd adds its own to it)
 var check_path := ""
 var checks := 0
 var data := {}                  # this frame's get_skeletons()
@@ -208,6 +209,7 @@ func before_frame(wanted: String) -> void:
 			drawer.call("set_hidden_objects", PackedInt64Array())
 			hidden_sent = false
 		targets = []
+		last_hide = PackedInt64Array()
 		_hide_drawn()
 		bf_spent = Time.get_ticks_usec() - cost_start
 		return
@@ -253,6 +255,7 @@ func before_frame(wanted: String) -> void:
 			for h in t.held:
 				if h.drawn and not h.own:
 					hide.append(h.object)
+	last_hide = hide
 	if not hide.is_empty():
 		drawer.call("set_hidden_objects", hide)
 		hidden_sent = true
