@@ -2,6 +2,7 @@
 #include "rta_drawer.h"
 #include "rta_variant.h"
 
+#include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/core/class_db.hpp>
@@ -148,7 +149,84 @@ RID RtaDrawer::shader_for(uint32_t variant) {
     shader.instantiate();
     shader->set_code(String::utf8(code.c_str()));
     shaders[variant] = shader;
+    warm_note(variant);
     return shader->get_rid();
+}
+
+static std::string warm_path() {
+    return ProjectSettings::get_singleton()->globalize_path("user://rta_variants.txt").utf8().get_data();
+}
+
+static void warm_load(std::unordered_set<uint32_t>& known) {
+    FILE* file = fopen(warm_path().c_str(), "r");
+    if (!file) return;
+    char line[64];
+    while (fgets(line, sizeof line, file)) {
+        char* end = nullptr;
+        unsigned long v = strtoul(line, &end, 16);
+        if (end != line) known.insert((uint32_t)v);
+    }
+    fclose(file);
+}
+
+// a scene variant made for the first time on this machine goes into the list (one line, appended)
+void RtaDrawer::warm_note(uint32_t variant) {
+    if (!(variant & V_WORLD)) return;
+    if (!warm_loaded) { warm_loaded = true; warm_load(warm_known); }
+    if (!warm_known.insert(variant).second) return;
+    FILE* file = fopen(warm_path().c_str(), "a");
+    if (!file) return;
+    fprintf(file, "%08x\n", variant);
+    fclose(file);
+}
+
+// Each listed variant drawn once in the world's scenario, in each vertex layout the scene gives it (the game's normals,
+// and with them the corners of the frame before), as one triangle of no area that is never culled
+void RtaDrawer::warm_up(RID scenario) {
+    if (scenario == warm_scenario) return;
+    warm_free();
+    warm_scenario = scenario;
+    if (!warm_loaded) { warm_loaded = true; warm_load(warm_known); }
+    if (getenv("RTA_WARM") && atoi(getenv("RTA_WARM")) == 0) return;     // test aid: off
+    RenderingServer* s = rs();
+    const uint64_t t0 = Time::get_singleton()->get_ticks_usec();
+    int made = 0;
+    for (uint32_t variant : warm_known) {
+        RID material = s->material_create();
+        s->material_set_shader(material, shader_for(variant));
+        warm_rids.push_back(material);
+        const bool normals = variant & V_NORMALS;
+        for (int carry = 0; carry < (normals ? 2 : 1); carry++) {
+            const int stride = (normals ? 32 : 20) + (carry ? 16 : 0);
+            PackedByteArray positions, attributes;
+            positions.resize(3 * 12);
+            attributes.resize(3 * stride);
+            memset(positions.ptrw(), 0, positions.size());
+            memset(attributes.ptrw(), 0, attributes.size());
+            RID mesh = s->mesh_create();
+            const AABB box(Vector3(-1, -1, -1), Vector3(2, 2, 2));
+            add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, 3, normals, &box, carry != 0);
+            s->mesh_surface_set_material(mesh, 0, material);
+            RID instance = s->instance_create();
+            s->instance_set_scenario(instance, scenario);
+            s->instance_set_base(instance, mesh);
+            s->instance_set_ignore_culling(instance, true);
+            s->instance_geometry_set_cast_shadows_setting(instance, (variant & V_CASTER) ? RenderingServer::SHADOW_CASTING_SETTING_SHADOWS_ONLY
+                                                                                         : RenderingServer::SHADOW_CASTING_SETTING_OFF);
+            warm_rids.push_back(instance);
+            warm_rids.push_back(mesh);
+            made++;
+        }
+    }
+    warm_frame = frames;
+    if (made) UtilityFunctions::print(vformat("rta_godot: drawer: %d scene variants from earlier sessions drawn once ahead (%d meshes), %.1f ms",
+                                              (int64_t)warm_known.size(), (int64_t)made, (Time::get_singleton()->get_ticks_usec() - t0) / 1000.0));
+}
+
+void RtaDrawer::warm_free() {
+    if (!RenderingServer::get_singleton()) return;
+    for (auto it = warm_rids.rbegin(); it != warm_rids.rend(); ++it) rs()->free_rid(*it);
+    warm_rids.clear();
 }
 
 // the blend: colour = (A - B) * C + D, as tools/recomp/render/backend_gl.cpp sets it up; returns false where it is drawn as
@@ -325,6 +403,36 @@ RID RtaDrawer::mesh_for_flat(Pass& pass, int primitive, const PackedByteArray& p
     RID mesh = mesh_for(pass);
     add_surface_bytes(mesh, primitive, positions, attributes, count);
     pass.shapes[pass.used] = shape;
+    return mesh;
+}
+
+// A big draw (see rta_drawer.h): the room the pool's mesh at pass.used has, when it fits `count` without more than twice
+// as much; else room for 15 % more, in steps of 12,288 corners.  A surface made anew each frame cost Godot a buffer of
+// tens of megabytes made and freed a frame.
+static const uint64_t BIG_TAG = 0x40 | RenderingServer::PRIMITIVE_TRIANGLES;
+int RtaDrawer::big_capacity(Pass& pass, int count) const {
+    if (pass.used < pass.shapes.size() && pass.used < pass.meshes.size() && (pass.shapes[pass.used] & 0xff) == BIG_TAG) {
+        const int have = (int)(pass.shapes[pass.used] >> 8);
+        if (have >= count && have <= count * 2) return have;
+    }
+    return ((int)((int64_t)count * 115 / 100) / 12288 + 1) * 12288;
+}
+
+RID RtaDrawer::mesh_for_big(Pass& pass, const PackedByteArray& positions, const PackedByteArray& attributes, int capacity, const AABB& box) {
+    const uint64_t shape = ((uint64_t)capacity << 8) | BIG_TAG;
+    if (pass.shapes.size() < pass.meshes.size()) pass.shapes.resize(pass.meshes.size(), 0);
+    if (pass.used < pass.meshes.size() && pass.shapes[pass.used] == shape) {
+        RID mesh = pass.meshes[pass.used];
+        rs()->mesh_surface_update_vertex_region(mesh, 0, 0, positions);
+        rs()->mesh_surface_update_attribute_region(mesh, 0, 0, attributes);
+        rs()->mesh_set_custom_aabb(mesh, box);
+        big_reused++;
+        return mesh;
+    }
+    RID mesh = mesh_for(pass);
+    add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, capacity, false, &box);
+    pass.shapes[pass.used] = shape;
+    big_made++;
     return mesh;
 }
 
@@ -817,6 +925,7 @@ String RtaDrawer::figures() const {
                    "approximated (a blend this route cannot do, a surface reading itself, a circle of surfaces): %d; draws skipped (depth test never): %d; pictures drawn again between game frames: %d; runs not rendered (surfaces only the left-out ground shadows read): %.2f a list",
                    (int64_t)frames, draws_submitted / n, vertices_submitted / n, passes_rendered / n, submit_usec / 1000.0 / n, (int64_t)materials_made, (int64_t)materials.size(),
                    (int64_t)meshes_made, (int64_t)textures_made, (int64_t)depth_always_writes, (int64_t)stale_reads, (int64_t)approximated, (int64_t)skipped, (int64_t)redraws, passes_skipped / n) +
+           vformat("; big draws written in place %d, made %d", (int64_t)big_reused, (int64_t)big_made) +
            (pack ? vformat("; art pack: %d pictures in the folder, textures named %d, found %d, replaced %d (%d from files, %d with mip maps of their own), %d files unreadable, %d of them two-field interface pictures (sampled by the woven line), %d waiting",
                            (int64_t)pack->size(), (int64_t)pack_named, (int64_t)pack_found, (int64_t)pack_replaced, (int64_t)pack_replaced_files,
                            (int64_t)(pack_replaced - pack_replaced_files), (int64_t)pack->failed_files.load(), (int64_t)pack->two_field.load(), (int64_t)pack->waiting()) : String());
@@ -899,6 +1008,8 @@ void RtaDrawer::pack_frame(const rtag_frame& f) {
 void RtaDrawer::release() {
     if (!RenderingServer::get_singleton()) return;
     RenderingServer* s = rs();
+    warm_free();
+    warm_scenario = RID();
     if (pack) { delete pack; pack = nullptr; }
     texture_serial.clear();
     scene_release();

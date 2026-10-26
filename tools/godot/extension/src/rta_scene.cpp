@@ -38,6 +38,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -58,6 +59,7 @@ using namespace rta_variant;
 // the dome's draws are not hazed.
 struct SkyTexture { int w = 0, h = 0; std::vector<uint8_t> rgba; };
 enum { RING = 256 };
+enum { BIG_DRAW = 98304 };   // corners: a draw this big is written in place in a pool mesh with room to spare (mesh_for_big)
 
 // quantised position -> sum of normals: open addressing (a node-based map's allocations were most of scene_begin's time)
 struct WeldMap {
@@ -118,6 +120,7 @@ struct RtaDrawer::Scene {
     Scene() { memset(ring_sum, 0, sizeof ring_sum); memset(ring_n, 0, sizeof ring_n); memset(ring, 0, sizeof ring); }
     bool packets = true;                // draw the packets' complete geometry where the tap has it (false: the list's own triangles)
     std::unordered_set<uint32_t> hidden;    // objects left out (set_hidden_objects)
+    std::unordered_map<size_t, std::pair<PackedByteArray, PackedByteArray>> big_bytes;   // a big draw's memory, by its place in the pool
     uint64_t hidden_draws = 0;
     float hidden_order = -1;            // this frame: the place in the world's pass of the first draw left out (-1: none)
     std::unordered_map<uint32_t, float> hidden_orders;      // this frame: per object left out, the place of its first draw
@@ -731,6 +734,8 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
                                                                                                    sc.model_near + 300.0, sc.hidden);
     else { sc.weld.clear(); sc.contacts.clear(); }
     Pass* pass = world->passes[0];
+    warm_up(pass->scenario);                            // the variants of earlier sessions, built before they are needed
+    if (!warm_rids.empty() && frames > warm_frame + 3) warm_free();
     // The game's camera space is x right, y down, z forward; Godot's is x right, y up, z back.  world_to_view's
     // rows are the camera's axes in the world.
     const float* m = f.scene->world_to_view;
@@ -817,7 +822,10 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     sc.kept_key = 0;
     sc.kept_mesh = RID();
     PackedByteArray positions, attributes;
-    int corners = 0;
+    int corners = 0, room = 0;
+    // the mesh's real box: Godot pairs its lights with what they reach, and culls the shadow casters by it
+    AABB box;
+    bool box_known = false;
     if (normals && sc.packets && d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count) {
         // The packets' own geometry: every triangle of every strip drawn with this state - the list's triangles and the
         // ones the game's vertex programs dropped whole near the eye (Godot clips them as triangles should be clipped).
@@ -910,25 +918,65 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         else card_take(sc.tap, d, pieces, d.scene_piece_count);   // the character card (rta_card.cpp)
     } else {
         corners = (int)d.count;
-        positions.resize((int64_t)d.count * 12);
-        attributes.resize((int64_t)d.count * stride);
+        // a big one is written into the pool mesh's room in place (mesh_for_big): the rest of the room, triangles of no area
+        room = !normals && corners >= BIG_DRAW ? big_capacity(pass, corners) : corners;
+        if (room > corners) {
+            // ... into the same memory each frame (40 MB taken anew a frame was mostly the system zeroing new pages)
+            auto& kept_bytes = sc.big_bytes[pass.used];
+            positions = kept_bytes.first; attributes = kept_bytes.second;
+            kept_bytes.first = PackedByteArray(); kept_bytes.second = PackedByteArray();
+        }
+        positions.resize((int64_t)room * 12);
+        attributes.resize((int64_t)room * stride);
+        if (room > corners) {
+            const float first[3] = {sc.tap->vertices[d.scene_first].x, sc.tap->vertices[d.scene_first].y, sc.tap->vertices[d.scene_first].z};
+            uint8_t* tail = positions.ptrw() + (size_t)corners * 12;
+            for (int k = corners; k < room; k++, tail += 12) memcpy(tail, first, 12);
+            memset(attributes.ptrw() + (size_t)corners * stride, 0, (size_t)(room - corners) * stride);
+        }
         uint8_t* p = positions.ptrw();
         uint8_t* a = attributes.ptrw();
         const rtag_vertex* v = f.vertices + d.first;
         const rtag_scene_vertex* w = sc.tap->vertices + d.scene_first;
         const float* n = normals ? sc.tap->normals + (size_t)d.scene_first * 3 : nullptr;
-        for (uint32_t k = 0; k < d.count; k++, v++, w++, p += 12, a += stride) {
-            memcpy(p, &w->x, 12);
-            memcpy(a, &v->r, 4);
-            float st[4] = {v->s, v->t, v->q, (float)v->fog / 255.0f};
-            memcpy(a + 4, st, 16);
-            if (normals) memcpy(a + 20, n + (size_t)k * 3, 12);
-        }
+        auto fill = [&](uint32_t from, uint32_t to, float* lo, float* hi) {
+            uint8_t* pp = p + (size_t)from * 12;
+            uint8_t* aa = a + (size_t)from * stride;
+            for (uint32_t k = from; k < to; k++, pp += 12, aa += stride) {
+                const rtag_vertex& vk = v[k];
+                const rtag_scene_vertex& wk = w[k];
+                memcpy(pp, &wk.x, 12);
+                memcpy(aa, &vk.r, 4);
+                float st[4] = {vk.s, vk.t, vk.q, (float)vk.fog * (1.0f / 255.0f)};
+                memcpy(aa + 4, st, 16);
+                if (n) memcpy(aa + 20, n + (size_t)k * 3, 12);
+                if (lo) {
+                    lo[0] = std::min(lo[0], wk.x); lo[1] = std::min(lo[1], wk.y); lo[2] = std::min(lo[2], wk.z);
+                    hi[0] = std::max(hi[0], wk.x); hi[1] = std::max(hi[1], wk.y); hi[2] = std::max(hi[2], wk.z);
+                }
+            }
+        };
+        if (room > corners) {
+            // a big one (islsm1's sea, 1.26 million corners a frame): in eight parts at once, its box with it
+            enum { PARTS = 8 };
+            float lo[PARTS][3], hi[PARTS][3];
+            std::thread workers[PARTS - 1];
+            const uint32_t per = (d.count + PARTS - 1) / PARTS;
+            for (int t = 0; t < PARTS; t++) {
+                for (int c = 0; c < 3; c++) { lo[t][c] = 1e30f; hi[t][c] = -1e30f; }
+                const uint32_t from = std::min(d.count, per * t), to = std::min(d.count, per * (t + 1));
+                if (t < PARTS - 1) workers[t] = std::thread(fill, from, to, lo[t], hi[t]);
+                else fill(from, to, lo[t], hi[t]);
+            }
+            for (auto& worker : workers) worker.join();
+            for (int t = 1; t < PARTS; t++)
+                for (int c = 0; c < 3; c++) { lo[0][c] = std::min(lo[0][c], lo[t][c]); hi[0][c] = std::max(hi[0][c], hi[t][c]); }
+            box_known = true;
+            box = AABB(Vector3(lo[0][0], lo[0][1], lo[0][2]), Vector3(hi[0][0] - lo[0][0] + 0.01f, hi[0][1] - lo[0][1] + 0.01f, hi[0][2] - lo[0][2] + 0.01f));
+        } else fill(0, d.count, nullptr, nullptr);
     }
     if (!corners) return true;
     if (d.depth_write) fill_note_level(order);              // the level begins: the fill is drawn right before it
-    // the mesh's real box: Godot pairs its lights with what they reach, and culls the shadow casters by it
-    AABB box;
     RID mesh;
     if (sc.kept_mesh.is_valid()) {
         box = sc.kept_box;
@@ -950,9 +998,9 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     } else {
         const float* q = (const float*)positions.ptr();
         float lo[3] = {q[0], q[1], q[2]}, hi[3] = {q[0], q[1], q[2]};
-        for (int k = 1; k < corners; k++)
+        for (int k = 1; k < corners && !box_known; k++)
             for (int a = 0; a < 3; a++) { float v = q[k * 3 + a]; lo[a] = std::min(lo[a], v); hi[a] = std::max(hi[a], v); }
-        box = AABB(Vector3(lo[0], lo[1], lo[2]), Vector3(hi[0] - lo[0] + 0.01f, hi[1] - lo[1] + 0.01f, hi[2] - lo[2] + 0.01f));
+        if (!box_known) box = AABB(Vector3(lo[0], lo[1], lo[2]), Vector3(hi[0] - lo[0] + 0.01f, hi[1] - lo[1] + 0.01f, hi[2] - lo[2] + 0.01f));
         if (sc.kept_key) {
             auto slot = sc.kept.find(sc.kept_ident);
             bool moving = false;
@@ -999,6 +1047,9 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
                 if (carry) { made.carry = true; made.positions = positions; made.attributes = attributes; made.moving = moving; }
                 sc.kept_misses++;
             }
+        } else if (room > corners || (!normals && corners >= BIG_DRAW)) {
+            mesh = mesh_for_big(pass, positions, attributes, room, box);
+            if (room > corners) { auto& kept_bytes = sc.big_bytes[pass.used]; kept_bytes.first = positions; kept_bytes.second = attributes; positions = PackedByteArray(); attributes = PackedByteArray(); }
         } else {
             mesh = mesh_for(pass);
             add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, corners, normals, &box);

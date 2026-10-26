@@ -389,6 +389,32 @@ void fragment() {
 		else pass = a != aref;
 		if (!pass) discard;
 	}
+#if defined(GS_WORLD) && defined(GS_DEPTH_WRITE) && !defined(GS_NOFOG) && !defined(GS_CASTER)
+	// What stands between the eye and the locked-on target is thinned out, pixel by pixel, inside a cone from the eye to
+	// the target that stops short of it (hud/souls.gd sets rta_lock): the level's cut-out cards (a tree's crown, a bush)
+	// and the game's models (a tree, a rock, a prop) but the player's own figure and the target's; the level's solid ground is
+	// left alone
+	if (rta_lock.w > 0.0) {
+		bool thinned = atst != 1;
+#ifdef GS_MODEL
+		// (nor the target's own, however big it is, nor what stands right beside it)
+		vec3 from_feet = v_world - rta_lock_player.xyz;
+		vec2 from_target = v_world.xy - rta_lock.xy;
+		thinned = (dot(from_feet.xy, from_feet.xy) > 44.0 * 44.0 || from_feet.z < -12.0 || from_feet.z > 120.0) && dot(from_target, from_target) > 110.0 * 110.0;
+#endif
+		if (thinned) {
+			vec3 to_target = rta_lock.xyz - CAMERA_POSITION_WORLD;
+			float target_dist = length(to_target);
+			vec3 along_dir = to_target / max(target_dist, 1.0);
+			vec3 to_here = v_world - CAMERA_POSITION_WORLD;
+			float along = dot(to_here, along_dir);
+			float off = length(to_here - along_dir * along);
+			float reach = mix(16.0, 52.0, clamp(along / max(target_dist, 1.0), 0.0, 1.0));
+			float thin = rta_lock.w * step(0.0, along) * (1.0 - smoothstep(target_dist - 48.0, target_dist - 22.0, along)) * (1.0 - smoothstep(reach * 0.65, reach, off));
+			if (rta_hash(floor(FRAGCOORD.xy)) < thin * 0.88) discard;
+		}
+	}
+#endif
 #endif
 #ifdef GS_CASTER
 	ALBEDO = vec3(0.0);
@@ -441,7 +467,17 @@ void fragment() {
 	destination = mix(1.0, destination, keep);
 #endif
 #endif
-#ifndef GS_NOFOG
+#ifdef GS_NOFOG
+	// The game's dome: its colour goes over into the sky sphere's (shaders/sky.gdshader) along its upper edge, so that
+	// where the dome ends there is no line across the sky (the sphere continues the edge's colour to the zenith)
+	if (rta_sky_zenith.a > 0.0) {
+		vec3 sky_dir = to_surface / max(dist, 0.001);
+		float e = asin(clamp(sky_dir.z, -1.0, 1.0));
+		float into_sky = smoothstep(rta_sky_zenith.a - 0.16, rta_sky_zenith.a - 0.01, e);
+		rgb = mix(rgb, rta_sky(sky_dir), into_sky);
+		destination *= 1.0 - into_sky;
+	}
+#else
 	// The haze: what is drawn fades, and the haze's own colour comes in its place as far as this draw covers
 	// what is behind it (an additive glow only fades; an opaque wall becomes haze).
 	float f = rta_haze(dist, v_world.z);

@@ -162,6 +162,18 @@ class RtaDrawer : public RefCounted {
     std::unordered_map<uint32_t, Thumb> thumbs;
     std::unordered_map<uint32_t, Target> targets;
     std::unordered_map<uint32_t, Ref<Shader>> shaders;      // by variant bits (a Shader resource: its set_code runs the preprocessor)
+    // Godot builds a render pipeline the first time a shader variant is drawn with a vertex layout: 150 to 350 ms each on
+    // Metal, on the main thread - level entries stopped for up to two seconds (islsm1).  The scene's variants seen in
+    // earlier sessions are kept in user://rta_variants.txt and drawn once, as triangles of no area, when a world first
+    // appears (warm_up), so that a level entry finds them built.
+    std::unordered_set<uint32_t> warm_known;    // variants listed in the file (and added this session)
+    bool warm_loaded = false;
+    RID warm_scenario;
+    std::vector<RID> warm_rids;                 // the warm-up's meshes, materials and instances, freed some frames later
+    uint64_t warm_frame = 0;
+    void warm_note(uint32_t variant);
+    void warm_up(RID scenario);
+    void warm_free();
     struct Material { RID rid; uint64_t last_used = 0; };
     std::unordered_map<std::string, Material> materials;
     std::vector<Pass*> all_passes;
@@ -203,6 +215,11 @@ class RtaDrawer : public RefCounted {
     RID mesh_for(Pass& pass);
     RID mesh_for_flat(Pass& pass, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count);
     uint64_t flat_reused = 0;
+    // a big draw the CPU makes anew each frame (islsm1's sea: 1.26 million corners): the pool's mesh holds room for a little
+    // more than it needs and is written again in place; the rest of the room holds triangles of no area
+    int big_capacity(Pass& pass, int count) const;
+    RID mesh_for_big(Pass& pass, const PackedByteArray& positions, const PackedByteArray& attributes, int capacity, const AABB& box);
+    uint64_t big_reused = 0, big_made = 0;
 
     // ---- scene mode ----
     struct Scene;

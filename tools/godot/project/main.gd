@@ -973,9 +973,18 @@ func _take_frame() -> void:
 		var t0 := Time.get_ticks_usec()
 		if scene_view != null:
 			scene_view.call("before_frame")
+		var t1 := Time.get_ticks_usec()
 		drawer.call("submit")
+		var t2 := Time.get_ticks_usec()
 		if scene_view != null:
 			scene_view.call("frame")
+		if OS.get_environment("RTA_LOG_PARTS") == "1":
+			# test aid: where a game frame's hand-over goes (before_frame, the drawer, scene_view.frame), every 300 blanks
+			parts_usec[0] += t1 - t0; parts_usec[1] += t2 - t1; parts_usec[2] += Time.get_ticks_usec() - t2; parts_usec[3] += 1
+			if parts_usec[3] >= 300:
+				print("[blank %d] rta_godot: hand-over a game frame: before %.2f ms, drawer %.2f ms, scene %.2f ms" % [blanks,
+					parts_usec[0] / 300000.0, parts_usec[1] / 300000.0, parts_usec[2] / 300000.0])
+				parts_usec = [0, 0, 0, 0]
 		draw_usec += Time.get_ticks_usec() - t0
 		frame_draw_usec += Time.get_ticks_usec() - t0
 		for path in machine.get_shots():
@@ -1216,8 +1225,18 @@ func _lower_lead() -> void:
 		lead_down_at = now
 
 
+var pipelines_said := [0, 0, 0, 0, 0]
+var parts_usec := [0, 0, 0, 0]
 func _frame_row(t0: int, took: bool, shown_new := false) -> void:
 	var now := Time.get_ticks_usec()
+	if OS.get_environment("RTA_LOG_PIPELINES") == "1":
+		# test aid: Godot's pipeline compilations (canvas, mesh, surface, draw, specialisation) where they happen
+		var got := []
+		for k in 5:
+			got.append(RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_PIPELINE_COMPILATIONS_CANVAS + k))
+		if got != pipelines_said:
+			print("[blank %d] rta_godot: pipelines compiled %s (%d us in this _process)" % [blanks, str(got), now - t0])
+			pipelines_said = got
 	var gpu := 0.0
 	var cpu := 0.0
 	if drawer != null and opt.mode == "scene" and OS.get_environment("RTA_MEASURE_VIEWPORTS") == "1":

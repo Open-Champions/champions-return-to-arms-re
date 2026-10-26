@@ -29,6 +29,8 @@ global uniform vec4 rta_fog_range;      // distance where it starts, where it is
 global uniform vec4 rta_fog_amount;     // x: 0..1 how much there is at all; y: how much of it follows the height; z: the share the sky's own colour has in it
 global uniform vec4 rta_fog_colour;     // rgb: the haze's own colour (mixed with the sky's at the horizon by rta_fog_amount.z)
 global uniform vec4 rta_light_ambient;  // rgb: what arrives of a surface's colour where the sun does not (the game's colour x this)
+global uniform vec4 rta_lock_player;    // xyz: the player's feet (scene_view.gd), left out of rta_lock's thinning
+global uniform vec4 rta_lock;           // xyz: the locked-on target (world, its middle); w: 0..1 how far what hides it is thinned out
 
 float rta_hash(vec2 p) {
 	vec3 q = fract(vec3(p.xyx) * 0.1031);

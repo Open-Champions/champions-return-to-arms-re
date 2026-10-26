@@ -42,6 +42,7 @@ var lock := false
 var lock_at := Vector3.ZERO
 var lock_hp := 0.0
 var lock_max := 0.0
+var lock_thin := 0.0                # 0..1: how far the level's cut-out cards between the eye and the target are thinned out
 var flasks := 0
 var flask_max := 4                  # soulscombat::Tuning::flask_count (the most seen: the count is full at a level's start)
 var drop := false
@@ -64,7 +65,18 @@ func _peek(offset: int) -> int:
 	return v - 0x100000000 if v >= 0x80000000 else v
 
 
+# While a target is held, the scene thins out the foliage between the eye and it (gs_draw.gdshaderinc, rta_lock): eased
+# in and out, so that a tree does not blink away
+func _occlude(delta: float) -> void:
+	var before := lock_thin
+	var wanted := on and lock and OS.get_environment("RTA_LOCK_THIN") != "0"     # (=0: off, a test aid)
+	lock_thin = move_toward(lock_thin, 1.0 if wanted else 0.0, delta * 4.0)
+	if (lock_thin > 0.0 or before > 0.0) and ClassDB.class_exists("RtaDrawer") and load("res://scene_view.gd").globals_added:
+		RenderingServer.global_shader_parameter_set("rta_lock", Vector4(lock_at.x, lock_at.y, lock_at.z, lock_thin))
+
+
 func _process(_delta: float) -> void:
+	_occlude(_delta)
 	var was := on
 	on = false
 	if hud == null or hud.machine == null or not hud.ok or not hud.machine.has_method("peek_u32"):

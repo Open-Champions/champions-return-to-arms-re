@@ -83,7 +83,7 @@ const SUN_CLEAR := 0.004                # how clearly a level's textures must sa
 
 const GLOBALS := {
 	"rta_sky_zenith": Vector4(0, 0, 0, 0), "rta_sky_ground": Vector4(0, 0, 0, 0), "rta_sky_sun": Vector4(0, 0, 1, 0),
-	"rta_sky_sun_colour": Vector4(1, 1, 1, 0), "rta_fog_range": Vector4(400, 1350, 0, 200), "rta_fog_amount": Vector4(0, 0.5, 1, 0),
+	"rta_sky_sun_colour": Vector4(1, 1, 1, 0), "rta_lock": Vector4(0, 0, 0, 0), "rta_lock_player": Vector4(0, 0, 0, 0), "rta_fog_range": Vector4(400, 1350, 0, 200), "rta_fog_amount": Vector4(0, 0.5, 1, 0),
 	"rta_fog_colour": Vector4(0, 0, 0, 0), "rta_light_ambient": Vector4(1, 1, 1, 0),
 	"rta_model": Vector4(0, 0, 1, 0), "rta_model_rim": Vector4(0, 0, 0, 0),
 	"rta_tween": Vector4(0, 0, 0, 0),       # x: game frames past the last one (a picture between game frames: RtaDrawer.redraw)
@@ -382,6 +382,7 @@ func before_frame() -> void:
 			model_sent[key] = model_options[key]
 			drawer.call("set_scene_option", key, model_options[key])
 	var feet_now: Vector3 = view.get("player", Vector3.ZERO)
+	RenderingServer.global_shader_parameter_set("rta_lock_player", Vector4(feet_now.x, feet_now.y, feet_now.z, 0.0))
 	drawer.call("set_scene_option", "feet_x", feet_now.x)
 	drawer.call("set_scene_option", "feet_y", feet_now.y)
 	drawer.call("set_scene_option", "feet_z", feet_now.z)
