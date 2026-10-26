@@ -114,6 +114,12 @@ void State::room_checks() {
                      (m.fix_words & 0x4000) ? "on" : "off", m.name, (first->fix_words & 0x4000) ? "on" : "off", first->name);
             room.mismatch = 1;
             put(room.warning, text);
+        } else if ((m.fix_words & 0x2000) != (first->fix_words & 0x2000)) {
+            // Remastered (hold to skip a cut scene, tools/recomp/app/cinematic.h, and the portal's type)
+            snprintf(text, sizeof text, "%s plays %s and %s plays %s: every copy must play the same. Do not start.",
+                     m.name, (m.fix_words & 0x2000) ? "Remastered" : "Classic", first->name, (first->fix_words & 0x2000) ? "Remastered" : "Classic");
+            room.mismatch = 1;
+            put(room.warning, text);
         } else if (m.fix_set != first->fix_set || m.fix_words != first->fix_words) {
             snprintf(text, sizeof text, "%s has a different fix set (%08x, %u words) from %s (%08x, %u words): the game would fall out of step. Do not start.",
                      m.name, m.fix_set, m.fix_words, first->name, first->fix_set, first->fix_words);
@@ -407,6 +413,10 @@ int net2_start(net2* n) {
     for (int i = 1; i < room.count; i++)
         if ((room.members[i].fix_words & 0x4000) != (room.members[0].fix_words & 0x4000))
             return n->body->s.error(NET2_ERR_REFUSED, "Not every copy in the room aims by looking.");
+    // hold to skip a cut scene (tools/recomp/app/cinematic.h; bit 0x2000 is Remastered's): the same
+    for (int i = 1; i < room.count; i++)
+        if ((room.members[i].fix_words & 0x2000) != (room.members[0].fix_words & 0x2000))
+            return n->body->s.error(NET2_ERR_REFUSED, "Not every copy in the room plays Remastered (hold to skip a cut scene).");
     return n->body->start();
 }
 int net2_leave(net2* n) { LOCKED; return n ? n->body->leave() : NET2_ERR_ARGUMENT; }

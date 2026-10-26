@@ -87,6 +87,10 @@ def main():
     parser.add_argument('--no-translation', action='store_true')
     parser.add_argument('--as', dest='as_name', default='')
     parser.add_argument('--extra-pnach', action='append', default=[], help='more word patches for the translation: a proposal under test (app/fp-proposed.pnach)')
+    parser.add_argument('--party8-check', action='store_true', help='with --party8: the game compiled with RECOMP_RELOC_CHECK '
+                        '(every load and store checked against the old places of moved tables; a test build)')
+    parser.add_argument('--party8', action='store_true', help='the fix-set translation with the tables of app/party8-ranges.txt relocatable '
+                        '(recomp.py --reloc; docs/issues/native-8-players.md A.9), in gen-app-p8; use with --as')
     args = parser.parse_args()
     rt = os.path.join(RECOMP, 'rt')
     render = os.path.join(RECOMP, 'render')
@@ -108,6 +112,16 @@ def main():
         for extra in args.extra_pnach:
             translate += ['--extra-pnach', extra]
         game = ['run', '--gen', args.gen, '--name', 'rta_native_fix']
+        if args.party8:
+            # a translation of its own (the shared gen-app is left as it is) with the relocations of party8.h
+            args.gen, args.game_objects = os.path.join(OUT, 'gen-app-p8'), os.path.join(OUT, 'obj-rta_native_p8')
+            translate[translate.index('--out') + 1] = args.gen
+            translate += ['--reloc', os.path.join(HERE, 'party8-ranges.txt')]
+            # every load and store at an old place goes to the new one (rt/recomp.h RECOMP_RELOC_DYN)
+            game = ['run', '--gen', args.gen, '--name', 'rta_native_p8', '--define', 'RECOMP_RELOC_DYN']
+            if args.party8_check:
+                args.game_objects = os.path.join(OUT, 'obj-rta_native_p8chk')
+                game = ['run', '--gen', args.gen, '--name', 'rta_native_p8chk', '--define', 'RECOMP_RELOC_CHECK']
     if not args.no_game:
         result = subprocess.run([sys.executable, os.path.join(RECOMP, 'recomp.py')] + translate, capture_output=True, text=True)
         if result.returncode != 0:
@@ -153,8 +167,14 @@ def main():
     jobs.append((os.path.join(HERE, 'fpcontrols.cpp'), ['-std=c++17', args.opt, '-Wall', '-I', HERE, '-I', rt], 'a_'))
     # the souls-style combat mode (soulscombat.h; docs/issues/native-souls-combat.md): reaches the game's memory and its overlay the frame list
     jobs.append((os.path.join(HERE, 'soulscombat.cpp'), rt_flags + ['-I', HERE, '-I', render], 'a_'))
+    # Hardcore mode's party scaling (partyscale.h; docs/issues/native-8-players.md): its game entry is partyscale_hle.cpp
+    jobs.append((os.path.join(HERE, 'partyscale.cpp'), rt_flags + ['-I', HERE], 'a_'))
+    # the tables sized for four moved at run time (party8.h): does something only with a --party8 translation
+    jobs.append((os.path.join(HERE, 'party8.cpp'), rt_flags + ['-I', HERE], 'a_'))
     # aiming by looking (fpaim.h; docs/issues/native-first-person-aim.md): the same kind of module
     jobs.append((os.path.join(HERE, 'fpaim.cpp'), rt_flags + ['-I', HERE], 'a_'))
+    # hold to skip a cut scene (cinematic.h; docs/issues/native-cutscenes.md): the mode; its one game entry is cinematic_hle.cpp
+    jobs.append((os.path.join(HERE, 'cinematic.cpp'), rt_flags + ['-I', HERE], 'a_'))
     # the tester's kit (testerkit.h): the bug report (F8), the crash report, the build line (F9); the build id is buildid.py's
     jobs.append((os.path.join(HERE, 'testerkit.cpp'), rt_flags + ['-I', HERE, '-I', render, buildid.define()], 'a_'))
     # the player's own boss music (bossmusic.h; docs/issues/native-hud.md): the state reader and the decoders, plain C++
@@ -164,6 +184,10 @@ def main():
     if not args.original:
         # the films: the library entry points of hle-app.txt, which only this translation leaves open
         jobs.append((os.path.join(HERE, 'film.cpp'), rt_flags + ['-I', HERE], 'a_'))
+        # ... and cut_runFrame for hold to skip (cinematic.h): the same list leaves it open
+        jobs.append((os.path.join(HERE, 'cinematic_hle.cpp'), rt_flags + ['-I', HERE], 'a_'))
+        # ... and Creature_setStats for Hardcore mode's party scaling (partyscale.h): the same list leaves it open
+        jobs.append((os.path.join(HERE, 'partyscale_hle.cpp'), rt_flags + ['-I', HERE], 'a_'))
         # the network: the driver, the one-step online (the emulator build's own file, linked
         # as it is) and its questions on the window
         net = os.path.join(RECOMP, 'net')

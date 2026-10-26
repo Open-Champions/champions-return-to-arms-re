@@ -39,6 +39,12 @@ inline int (*aim_wanted)() = nullptr;
 inline void (*aim_want)(bool on) = nullptr;
 inline uint32_t (*aim_figure)() = nullptr;
 inline void (*aim_room)(int on) = nullptr;
+// Hold to skip a cut scene (tools/recomp/app/cinematic.h), a room option the same way: fix_words bit 0x2000 (the bit the
+// portal says Remastered with: a Remastered copy wants it).  No joiner follows the host's choice here: the portal
+// offers the switch of the whole type.
+inline int (*cine_wanted)() = nullptr;
+inline uint32_t (*cine_figure)() = nullptr;
+inline void (*cine_room)(int on) = nullptr;
 // The bug report (tools/recomp/app/testerkit.h): the room's code and every member's copy as "key = value" lines
 // into out (empty when the lock is busy or there is no session).  Set by launch.cpp; null in a program without it.
 inline void (*room_describe)(char* out, size_t size) = nullptr;

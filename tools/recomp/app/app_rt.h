@@ -46,6 +46,10 @@ bool set_music_volume(double volume);
 
 bool films_linked();            // app/film.cpp is part of this program (the films play)
 void films_report();
+// The film playing now (app/film.cpp): false when none.  key: the hash of the first 64 KB of its stream since the
+// player's last create or reset (0 while fewer were fed); picture: the one handed out last since then (-1 none yet),
+// display order; width x height of that picture.  Any thread; presentation only (an enlarged copy shown in its place).
+bool film_now(uint64_t& key, int& picture, int& width, int& height);
 std::string sound_figures();    // key=value figures of the sound side (empty without tools/recomp/sound)
 uint64_t fields();              // vertical blanks since power-on
 double machine_seconds();       // the virtual clock

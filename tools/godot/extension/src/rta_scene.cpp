@@ -153,6 +153,7 @@ struct RtaDrawer::Scene {
     RID kept_mesh;                      // ... and the kept mesh it found
     AABB kept_box;
     double ambient = 1.0, pull_back = 1.0, orbit = 0.0, raise = 0.0, focus = 390.0;
+    double aim = 0.0, aim_x = 0.0, aim_y = 0.0, aim_z = 0.0, aim_dx = 0.0, aim_dy = 0.0;      // (tests) the camera on a point: aim = its distance, orbit / raise round it
     // Cleaner models (the owner: "cleaner models"): what Godot does to the game's models without changing a thing the
     // game computes.  model_look: solid model draws take the variant GS_MODEL (per-pixel form light by the game's own
     // normals, a rim light, a sharper texture: shaders/gs_draw.gdshaderinc); model_smooth N: every triangle of a
@@ -243,6 +244,7 @@ void RtaDrawer::set_hidden_objects(const PackedInt64Array& objects) {
 }
 
 void RtaDrawer::set_scene_option(const String& name, double value) {
+    if (name == "letterbox_off") { letterbox_off = value != 0; return; }     // the drawer's own (no scene needed)
     if (!scene) scene = new Scene;
     if (name.begins_with("fill")) { fill_option(name, value); return; }
     if (name == "lit") scene->lit = value != 0;
@@ -252,6 +254,12 @@ void RtaDrawer::set_scene_option(const String& name, double value) {
     else if (name == "orbit") scene->orbit = value;
     else if (name == "raise") scene->raise = value;
     else if (name == "focus") scene->focus = value;
+    else if (name == "aim") scene->aim = value;
+    else if (name == "aim_x") scene->aim_x = value;
+    else if (name == "aim_y") scene->aim_y = value;
+    else if (name == "aim_z") scene->aim_z = value;
+    else if (name == "aim_dx") scene->aim_dx = value;
+    else if (name == "aim_dy") scene->aim_dy = value;
     else if (name == "packets") scene->packets = value != 0;
     else if (name == "sky") scene->sky = value != 0;
     else if (name == "near_fade") scene->near_fade = value != 0;
@@ -789,6 +797,19 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
         Vector3 eye = focus + offset;
         camera = Transform3D(Basis(), eye).looking_at(focus, up);
     }
+    if (sc.aim > 0.0) {
+        // (tests: app remaster aim) looking at a point from `aim` units, from the game camera's side turned by orbit, raised by raise
+        Vector3 focus((real_t)sc.aim_x, (real_t)sc.aim_y, (real_t)sc.aim_z);
+        Vector3 up(0, 0, 1);
+        Vector3 offset = sc.aim_dx != 0.0 || sc.aim_dy != 0.0 ? Vector3((real_t)sc.aim_dx, (real_t)sc.aim_dy, 0) : position - focus;
+        offset.z = 0;
+        if (offset.length() < 1.0f) offset = Vector3(-forward.x, -forward.y, 0);
+        if (offset.length() < 1e-3f) offset = Vector3(0, -1, 0);
+        offset = offset.normalized().rotated(up, (real_t)Math::deg_to_rad(sc.orbit));
+        Vector3 side = up.cross(offset).normalized();
+        offset = offset.rotated(side, (real_t)Math::deg_to_rad(-sc.raise)) * (real_t)sc.aim;
+        camera = Transform3D(Basis(), focus + offset).looking_at(focus, up);
+    }
     if (sc.tween_on) {
         // a camera that jumped (a cut, a level) is not carried on
         sc.camera_before_ok = sc.frames_with_camera > 0 && sc.camera.origin.distance_to(camera.origin) < (real_t)(sc.tween_jump * 4) &&
@@ -800,6 +821,7 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
     sc.fov_y_shown = sc.fov_y;
     sc.camera = camera;
     s->camera_set_transform(pass->camera, camera);
+    camera_shown = camera;
     double far_plane = f.scene->far_plane * std::max(1.0, sc.pull_back) * 1.5;
     sc.near_now = f.scene->near_plane;
     sc.far_now = far_plane;
@@ -807,7 +829,7 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
     fill_frame(f, camera.origin, pass->scenario);           // the level's generated ceilings and skirts (rta_fill.cpp)
     if (sc.lit) s->environment_set_ambient_light(pass->environment, Color(1, 1, 1), RenderingServer::ENV_AMBIENT_SOURCE_COLOR, (float)sc.ambient);
     // a camera that is not the game's sees past what the game drew: black there, not last frame's picture
-    s->environment_set_background(pass->environment, sc.pull_back != 1.0 || sc.orbit != 0.0 || sc.raise != 0.0 ? RenderingServer::ENV_BG_CLEAR_COLOR : RenderingServer::ENV_BG_KEEP);
+    s->environment_set_background(pass->environment, sc.pull_back != 1.0 || sc.orbit != 0.0 || sc.raise != 0.0 || sc.aim > 0.0 ? RenderingServer::ENV_BG_CLEAR_COLOR : RenderingServer::ENV_BG_KEEP);
 }
 
 bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, const Target& target, RID texture, float order) {
@@ -1470,6 +1492,7 @@ void RtaDrawer::scene_tween(double t) {
         fov = sc.fov_before + (sc.fov_y_shown - sc.fov_before) * (1.0 + t);
     }
     s->camera_set_transform(pass->camera, camera);
+    camera_shown = camera;
     s->camera_set_perspective(pass->camera, (float)fov, (float)sc.near_now, (float)sc.far_now);
 }
 

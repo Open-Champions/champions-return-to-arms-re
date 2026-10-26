@@ -41,8 +41,8 @@ struct Ctx;
 namespace fpaim {
 
 // ---- the block in guest memory (first megabyte: tools/recomp/soak 0xE0000-0xE004F, Hardcore mode
-// 0xE0800-0xE0DFF: soulscombat.h) ----
-const uint32_t AIM_BASE = 0xE0E00;
+// 0xE0800-0xE147F: soulscombat.h BLOCK_SIZE; aiming 0xE1800-0xE193F; cutscenes 0xE1C00: cinematic.h; party scaling 0xE2000: partyscale.h) ----
+const uint32_t AIM_BASE = 0xE1800;
 const uint32_t AIM_MAGIC = 0x314d4941;      // "AIM1"
 // header: +0 magic, +4 version (1), +8 mode (1 on), +0xc aim messages applied, +0x10 projectiles aimed
 // per player at +0x40 + slot x 0x20 (s32 each; written in the tick by every machine alike):

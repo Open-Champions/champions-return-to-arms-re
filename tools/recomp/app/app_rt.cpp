@@ -14,6 +14,7 @@ extern "C" void rta_sound_set_music_gain(float gain) __attribute__((weak));    /
 // tools/recomp/app/film.cpp defines these two when it is part of the program
 __attribute__((weak)) bool rta_films_linked() { return false; }
 __attribute__((weak)) void rta_films_report() {}
+__attribute__((weak)) bool rta_film_now(uint64_t*, int*, int*, int*) { return false; }
 
 namespace apprt {
 
@@ -30,6 +31,7 @@ void call_game(Ctx* c, uint32_t address, uint32_t a0) {
 void interactive_threads() { host::interactive_threads(true); }
 bool films_linked() { return rta_films_linked(); }
 void films_report() { rta_films_report(); }
+bool film_now(uint64_t& key, int& picture, int& width, int& height) { return rta_film_now(&key, &picture, &width, &height); }
 bool set_music_volume(double volume) {
     if (!rta_sound_set_music_gain) return false;
     rta_sound_set_music_gain((float)volume);

@@ -68,6 +68,17 @@ var self_skeleton: RID
 var self_mesh: ArrayMesh
 var self_material: StandardMaterial3D
 # the Elden Ring figures
+# A figure's identity (docs/issues/native-cutscenes.md): the object whose animation state poses it is a Player (its
+# vtable) of a slot (Player +0x3c8) - the player itself or this machine's prediction copy of it.  A cut scene's story
+# figures are other objects (an NPC's, a creature's): never taken for a player, however near or alike they are.
+const O_ANIM := 0x114
+const O_VTABLE := 0x48
+const VT_PLAYER := 0x511308
+const P_SLOT := 0x3c8
+var _slot_cache := {}                   # state -> slot (-1: not a player's), this frame
+var _slot_cache_frame := -1
+var cut_scene := false                  # this frame: the game's cut scene runs (g_cutsceneActive)
+var identity_figures := {"by_identity": 0, "by_controls": 0, "refused": 0}
 const CLASS_SETS := ["barbarian", "cleric", "necromancer", "ranger", "wizard", "berserker", "shaman"]   # record +0x50
 const WEAPON_NAMES := ["", "dagger", "sword", "axe", "mace", "great", "spear", "staff", "bow"]      # soulscombat WC_*
 const DT := 1.0 / 60.0
@@ -186,6 +197,12 @@ func info_text() -> String:
 			per.append("FAR: " + ",".join(far))
 		per.append("%s: set %s, bones within %.0f units, skeleton %d (%d joints), weapon class %s, holds [%s], light change %s" % [t.key, t.set, spread, t.skeleton,
 			int(data.skeletons[t.skeleton].joint_count), WEAPON_NAMES[t.wclass] if t.wclass > 0 and t.wclass < WEAPON_NAMES.size() else str(t.wclass), ", ".join(held), str(_game_light(int(data.skeletons[t.skeleton].state), root_at_now(data.skeletons[t.skeleton].joints)))])
+	var who := PackedStringArray()
+	for sk in data.get("skeletons", []):
+		if int(sk.joint_count) >= 30:
+			who.append("%d joints: %s" % [int(sk.joint_count), ("player %d" % _player_slot_of(int(sk.state))) if _player_slot_of(int(sk.state)) >= 0 else "not a player"])
+	per.append("cut scene %s; persons [%s]; found by identity %d, by the controls %d, refused %d" % ["yes" if cut_scene else "no", ", ".join(who),
+		identity_figures.by_identity, identity_figures.by_controls, identity_figures.refused])
 	return "mode %s, %s, players %d, figures drawn %d [%s], local skeleton %d (state %x at +0x%x of the player, %d joints), %d objects hidden, %d checks" % [mode,
 		"models " + ",".join(PackedStringArray(models.keys())) if er_failed == "" else er_failed, data.get("players", []).size(), targets.size(), "; ".join(per),
 		player_skeleton, player_state, player_offset, int(_player().get("joint_count", 0)), hidden.size(), checks]
@@ -307,14 +324,21 @@ func _find_player() -> void:
 	var feet: Vector3 = v.get("player", Vector3.ZERO)
 	var have := bool(v.get("have_player", false))
 	var best := 1e9
+	var local_slot := int(hud.get("slot", -1))
+	cut_scene = (int(machine.peek_u32(0x44FCD0)) & 0xff) != 0
 	for k in skeletons.size():
 		var s: Dictionary = skeletons[k]
 		if int(s.joint_count) < 30:          # a person (the players' skeletons have 37 to 64 joints)
 			continue
 		var offset := int(s.state) - me
 		var d: float
+		var owner_slot := _player_slot_of(int(s.state))
 		if me != 0 and offset >= 0 and offset < 0x800:
 			d = -1e6 + offset
+		elif local_slot >= 0 and owner_slot == local_slot:
+			d = -5e5                        # the local player's own Player object (or copy) by identity
+		elif owner_slot < 0 and (cut_scene or local_slot >= 0):
+			continue                        # not a player's: in a cut scene a story figure, never the player
 		else:
 			var root: Vector3 = (s.joints[0] as Transform3D).origin
 			d = root.distance_to(feet) if have else float(k) + 1e5
@@ -332,6 +356,24 @@ func _find_player() -> void:
 	for h in _held(skeletons[player_skeleton], hidden):
 		if not h.own:
 			held_objects.append(h.object)
+
+
+# the player slot whose Player object (or its prediction copy) owns this animation state; -1: not a player's
+func _player_slot_of(state: int) -> int:
+	var frame := int(main.get("blanks")) if main != null else 0
+	if frame != _slot_cache_frame:
+		_slot_cache.clear()
+		_slot_cache_frame = frame
+	if _slot_cache.has(state):
+		return int(_slot_cache[state])
+	var slot := -1
+	var owner := state - O_ANIM
+	if state != 0 and owner >= 0x100000 and owner < 0x2000000 and int(machine.peek_u32(owner + O_VTABLE)) == VT_PLAYER:
+		var k := int(machine.peek_u32(owner + P_SLOT))
+		if k >= 0 and k < 4:
+			slot = k
+	_slot_cache[state] = slot
+	return slot
 
 
 # every object posed by one animation state: one figure (body, head, what it wears)
@@ -419,11 +461,23 @@ func _find_targets() -> void:
 		# figure of the scene's was taken for the player and drawn in its outfit)
 		if int(pl.slot) == local_slot and player_skeleton >= 0 and player_offset >= 0 and player_offset < 0x800:
 			found = player_skeleton
+			identity_figures.by_controls += 1
 		else:
 			for k in skeletons.size():
 				if int(skeletons[k].state) == int(pl.state) and int(skeletons[k].joint_count) >= 30:
 					found = k
 					break
+			if found < 0:
+				# by identity: a figure posed by a Player object of this slot (the prediction copy in a net game, or the
+				# player's figure in a cut scene when the controls name nobody); a story figure has no Player object
+				for k in skeletons.size():
+					if int(skeletons[k].joint_count) >= 30 and _player_slot_of(int(skeletons[k].state)) == int(pl.slot):
+						found = k
+						identity_figures.by_identity += 1
+						break
+			elif _player_slot_of(int(skeletons[found].state)) != int(pl.slot):
+				identity_figures.refused += 1
+				found = -1
 		if found >= 0:
 			list.append({"key": "slot%d" % int(pl.slot), "skeleton": found, "slot": int(pl.slot), "cls": int(pl.character_class),
 				"wclass": int(pl.weapon_class), "item": int(pl.weapon_item), "local": found == player_skeleton})
@@ -435,7 +489,7 @@ func _find_targets() -> void:
 	# the eye than its cut is left out).  Our pieces and weapon are not cut: drawn, the Elden Ring weapon's head floated
 	# where its handle and the arms had been cut away, and a chest piece would stand round the eye
 	var v_now: Dictionary = machine.get_view()
-	var first_person := String(v_now.get("mode_name", "")) == "first" and bool(v_now.get("active", false))
+	var first_person := String(v_now.get("mode_name", "")) == "first" and bool(v_now.get("active", false)) and not bool(v_now.get("fallback", false))
 	for t in list:
 		if who == "me" and not t.local:
 			continue

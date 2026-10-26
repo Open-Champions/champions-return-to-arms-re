@@ -48,6 +48,7 @@
 #include "session_impl.h"
 
 #include "rt.h"
+#include "moved.h"
 #include "funcs.h"
 #include "../net/netdrv.h"
 
@@ -76,12 +77,14 @@ const u32 A_NUM_PLAYERS = 0x4d8ae0, A_DIFFICULTY = 0x4f719c, A_SAVED_CONFIG = 0x
 const u32 A_SEL_TASK_NAME = 0x53ce38;       // "playerSelection"
 const u32 A_SEL_PAGE = 0x8e2c02;
 
-u8 rd8(u32 a) { return g_ram && a < RAM_SIZE ? g_ram[a] : 0; }
-u32 rd32(u32 a) { u32 v = 0; if (g_ram && a <= RAM_SIZE - 4) memcpy(&v, g_ram + a, 4); return v; }
-float rdf(u32 a) { float v = 0; if (g_ram && a <= RAM_SIZE - 4) memcpy(&v, g_ram + a, 4); return v; }
-void wr8(u32 a, u8 v) { if (g_ram && a < RAM_SIZE) g_ram[a] = v; }
-void wr32(u32 a, u32 v) { if (g_ram && a <= RAM_SIZE - 4) memcpy(g_ram + a, &v, 4); }
+// a table moved for eight players is where it is (rt/moved.h); the same address otherwise
+u8 rd8(u32 a) { a = party8_at(a); return g_ram && a < RAM_SIZE ? g_ram[a] : 0; }
+u32 rd32(u32 a) { a = party8_at(a); u32 v = 0; if (g_ram && a <= RAM_SIZE - 4) memcpy(&v, g_ram + a, 4); return v; }
+float rdf(u32 a) { a = party8_at(a); float v = 0; if (g_ram && a <= RAM_SIZE - 4) memcpy(&v, g_ram + a, 4); return v; }
+void wr8(u32 a, u8 v) { a = party8_at(a); if (g_ram && a < RAM_SIZE) g_ram[a] = v; }
+void wr32(u32 a, u32 v) { a = party8_at(a); if (g_ram && a <= RAM_SIZE - 4) memcpy(g_ram + a, &v, 4); }
 std::string rdstr(u32 a, u32 limit) {
+    a = party8_at(a);
     std::string text;
     for (u32 i = 0; g_ram && i < limit && a + i < RAM_SIZE && g_ram[a + i]; i++) text += (char)g_ram[a + i];
     return text;
@@ -199,7 +202,7 @@ void do_choose(Ctx* c, bool host) {
     // the way into a second game).  As at power-on: one player, the first difficulty.
     wr32(A_NUM_PLAYERS, 1);
     wr32(A_DIFFICULTY, 1);
-    memset(g_ram + A_SETTINGS, 0, SETTINGS_SIZE);
+    for (u32 k = 0; k < SETTINGS_SIZE; k++) wr8(A_SETTINGS + k, 0);   // byte by byte: the address and port tables in it may be moved (moved.h)
     wr32(A_FE_NET, 1);
     wr8(A_SETTINGS + 2, 1);
     wr8(A_SETTINGS + 3, 0);
@@ -243,8 +246,8 @@ void do_launch(Ctx* c) {
     for (int k = 0; k < NET2_PLAYERS; k++) {
         u32 ip = n2::GAME_NET + (u32)k;
         const u8 bytes[4] = {(u8)(ip >> 24), (u8)(ip >> 16), (u8)(ip >> 8), (u8)ip};
-        memcpy(g_ram + A_ADDR1 + k * 4, bytes, 4);
-        memcpy(g_ram + A_ADDR2 + k * 4, bytes, 4);
+        memcpy(g_ram + party8_at(A_ADDR1 + k * 4), bytes, 4);
+        memcpy(g_ram + party8_at(A_ADDR2 + k * 4), bytes, 4);
         wr32(A_PORT1 + k * 4, n2::GAME_PORT);
         wr32(A_PORT2 + k * 4, n2::GAME_PORT);
     }
@@ -300,6 +303,7 @@ void on_tasks(Ctx* c, bool from_tick) {
 void launch_ended(bool failed, const std::string& text) {
     if (net2hook::souls_room) net2hook::souls_room(-1);     // the room's game is over: the souls mode is this copy's setting again
     if (net2hook::aim_room) net2hook::aim_room(-1);         // ... and so is aiming by looking
+    if (net2hook::cine_room) net2hook::cine_room(-1);       // ... and hold to skip
     G.carrying = false;
     if (G.carrier == &G.own_carrier) G.own_carrier.end();
     G.failed = failed;
@@ -344,6 +348,8 @@ void souls_describe(uint32_t& set, uint16_t& words) {
     if (net2hook::souls_wanted && net2hook::souls_wanted() == 1) { words |= 0x8000; if (net2hook::souls_figure) set ^= net2hook::souls_figure(); }
     // aiming by looking (app/fpaim.h), the same way: bit 0x4000
     if (net2hook::aim_wanted && net2hook::aim_wanted() == 1) { words |= 0x4000; if (net2hook::aim_figure) set ^= net2hook::aim_figure(); }
+    // hold to skip a cut scene (app/cinematic.h): bit 0x2000, Remastered's
+    if (net2hook::cine_wanted && net2hook::cine_wanted() == 1) { words |= 0x2000; if (net2hook::cine_figure) set ^= net2hook::cine_figure(); }
 }
 void follow_souls() {
     if (!G.session) return;
@@ -436,6 +442,20 @@ void follow_room(int64_t now) {
         }
         net2hook::aim_room(all ? 1 : 0);
         say("aiming by looking: %s for this game", all ? "on" : "off");
+    }
+    // hold to skip a cut scene (app/cinematic.h) likewise
+    if (net2hook::cine_room) {
+        bool all = room.count > 0, any = false;
+        for (int k = 0; k < room.count; k++) { bool on = (room.members[k].fix_words & 0x2000) != 0; all = all && on; any = any || on; }
+        if (any && !all) {
+            G.launched_session = start.session;
+            G.start_seen_ms = 0;
+            say("the room started, but its copies do not all hold to skip (Remastered and Classic mixed): not launching");
+            tell_room(nullptr);
+            return;
+        }
+        net2hook::cine_room(all ? 1 : 0);
+        say("hold to skip: %s for this game", all ? "on" : "off");
     }
     G.direct = d;
     G.carrier = carrier;

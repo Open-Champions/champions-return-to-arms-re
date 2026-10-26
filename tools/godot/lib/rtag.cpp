@@ -49,6 +49,15 @@
 #else
 #undef RTAG_HAVE_AIM
 #endif
+// hold to skip a cut scene (tools/recomp/app/cinematic.h): build.py defines RTAG_HAVE_CINE when the snapshot has
+// app/cinematic.cpp and the translation leaves cut_runFrame open (funcs.h declares orig_00199944)
+#ifdef RTAG_HAVE_CINE
+#include "cinematic.h"
+#ifdef RTAG_HAVE_NET2
+#include "../net/netdrv.h"
+#include "../net2/hooks.h"
+#endif
+#endif
 // the world for a camera inside it (tools/recomp/app/fpworld.h): build.py defines RTAG_HAVE_WORLD when the snapshot has
 // app/fpworld.cpp and the translation wraps its three functions
 #ifdef RTAG_HAVE_WORLD
@@ -199,6 +208,9 @@ struct Pads : rta::PadSource {
         if (quit) apprt::finish(0);                     // rtag_stop(): end from the game's thread
         state = apprt::script_pad(port);
         if (port > 1) return;
+#ifdef RTAG_HAVE_CINE
+        if (port == 0) cinematic::blank(blank);         // hold to skip a cut scene (cinematic.h): off unless asked for; as app_main.cpp
+#endif
         rtag_pad p;
         { std::lock_guard<std::mutex> hold(lock); p = held[port]; }
         state.buttons |= p.buttons;
@@ -414,6 +426,11 @@ void app_command(const std::string& text, uint64_t frame) {
         rtag_set_option("game_hud", w[1].c_str());
     } else if (w[0] == "gamehudtext" && w.size() >= 2) {
         if (!rtag_set_option("game_hud_text", w[1].c_str())) say("this library cannot leave the game's boss meter, message and prompt out");
+#ifdef RTAG_HAVE_CINE
+    } else if (w[0] == "cine") {                        // app cine info | on | off (cinematic.h), as the native application's
+        printf("[frame %llu] %s\n", (unsigned long long)frame, cinematic::command(w.size() >= 2 ? text.substr(text.find(w[1])) : std::string()).c_str());
+        fflush(stdout);
+#endif
     } else if (w[0] == "option" && w.size() >= 3) {     // app option KEY VALUE: rtag_set_option from a script
         if (!rtag_set_option(w[1].c_str(), w[2].c_str())) say("option refused: " + w[1] + " " + w[2]);
 #ifdef RTAG_HAVE_CONTROLS
@@ -691,6 +708,8 @@ void fill_view(Machine& m) {
 
 }  // namespace
 
+bool rta_film_now(uint64_t* key, int* picture, int* width, int* height) __attribute__((weak));     // tools/recomp/app/film.cpp
+
 extern "C" {
 
 int rtag_api_version(void) { return RTAG_API_VERSION; }
@@ -797,6 +816,13 @@ int rtag_has(const char* feature) {
     }
     if (f == "aim") {                                   // aiming by looking (combat.aim, app aim ...)
 #ifdef RTAG_HAVE_AIM
+        return 1;
+#else
+        return 0;
+#endif
+    }
+    if (f == "cinematic") {                             // hold to skip a cut scene (cinematic.skip)
+#ifdef RTAG_HAVE_CINE
         return 1;
 #else
         return 0;
@@ -1043,6 +1069,13 @@ int rtag_set_option(const char* key, const char* value) {
 #ifdef RTAG_HAVE_CONTROLS
     if (k.compare(0, 9, "controls.") == 0) return fpcontrols::setting(key, value) ? 1 : 0;
 #endif
+    if (k == "cinematic.skip") {                        // "cinematic.skip" = hold | tap (cinematic.h)
+#ifdef RTAG_HAVE_CINE
+        return cinematic::setting(key, value) ? 1 : 0;
+#else
+        return 0;
+#endif
+    }
     if (k == "combat.aim") {                            // "combat.aim" = look | off (fpaim.h)
 #ifdef RTAG_HAVE_AIM
         return fpaim::setting(key, value) ? 1 : 0;
@@ -1104,6 +1137,17 @@ void rtag_audio_pull(int16_t* stereo, int frames) {
     if (frames <= 0) return;
     if (!g_m || g_m->sound == RTAG_SOUND_NONE || g_m->ended) { memset(stereo, 0, (size_t)frames * 4); return; }
     rta::snd::host_audio_pull(stereo, (size_t)frames, (float)g_m->gain);
+}
+
+int rtag_film_now(rtag_film* out) {
+    if (!out) return 0;
+    memset(out, 0, sizeof *out);
+    uint64_t key = 0;
+    int picture = -1, width = 0, height = 0;
+    // app/film.cpp's (a weak reference: a snapshot from before it, or the original game's library, has none)
+    if (!g_m || !rta_film_now || !rta_film_now(&key, &picture, &width, &height)) return 0;
+    out->key = key; out->picture = picture; out->width = width; out->height = height;
+    return 1;
 }
 
 int rtag_controls_hud(rtag_controls* out) {
@@ -1186,7 +1230,11 @@ const char* rtag_info(void) {
     snprintf(said, sizeof said, " aim_want=%d aim_on=%d", fpaim::wanted() ? 1 : 0, fpaim::active() ? 1 : 0);
     m.info += said;
 #endif
-#if (defined(RTAG_HAVE_SOULS) || defined(RTAG_HAVE_AIM)) && defined(RTAG_HAVE_NET2)
+#ifdef RTAG_HAVE_CINE
+    snprintf(said, sizeof said, " cine_want=%d cine_on=%d", cinematic::wanted() ? 1 : 0, cinematic::active() ? 1 : 0);
+    m.info += said;
+#endif
+#if (defined(RTAG_HAVE_SOULS) || defined(RTAG_HAVE_AIM) || defined(RTAG_HAVE_CINE)) && defined(RTAG_HAVE_NET2)
     // what this copy says of itself in a room (net2_set "copy"), as tools/recomp/net2/launch.cpp souls_describe makes it
     // (souls bit 0x8000, aim bit 0x4000, each folding its figure in): the portal says it again when it changes
     {
@@ -1198,6 +1246,9 @@ const char* rtag_info(void) {
 #endif
 #ifdef RTAG_HAVE_AIM
         if (fpaim::wanted()) { words |= 0x4000; if (net2hook::aim_figure) set ^= net2hook::aim_figure(); }
+#endif
+#ifdef RTAG_HAVE_CINE
+        if (cinematic::wanted()) { words |= 0x2000; if (net2hook::cine_figure) set ^= net2hook::cine_figure(); }
 #endif
         if (net.patch_set != 0 || net.patch_words != 0) {
             snprintf(said, sizeof said, " copy=fix=%08x,words=%u", set, words);

@@ -452,6 +452,17 @@ typedef struct rtag_skeletons {
  * Same thread as rtag_poll. */
 int rtag_skeletons_get(rtag_skeletons* out);
 
+/* ---- the film playing now (optional: added after version 6 without changing it) ---------------
+ * tools/recomp/app/film.cpp: while the game's film player has a film open, its key (the FNV-1a hash of the first
+ * 65,536 bytes of the stream since the player's last reset - tools/install/films.py names its enlarged copies so;
+ * 0 while fewer were fed) and the picture handed out last (display order since that reset, -1 none yet).  For a host
+ * that shows an enlarged copy in its place: presentation only.  1: a film is open; 0: none (or no films linked). */
+typedef struct rtag_film {
+    uint64_t key;
+    int32_t picture, width, height, pad;
+} rtag_film;
+int rtag_film_now(rtag_film* out);
+
 /* ---- sound --------------------------------------------------------------------------- */
 /* Exactly `frames` frames of interleaved 16-bit stereo at 48 kHz (silence where there is nothing).  With
  * RTAG_SOUND_PULL this call is the sound side's clock: call it from the device's thread, at the device's rate. */

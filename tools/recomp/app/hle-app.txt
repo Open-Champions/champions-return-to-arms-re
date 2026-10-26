@@ -9,3 +9,7 @@
 3735e8   # sceMpegGetPicture(mp, picture as 16 x 16 RGBA macroblocks, count)
 373688   # sceMpegReset(mp)
 373708   # sceMpegIsEnd(mp)
+# The game's cut-scene frame, for hold to skip (app/cinematic.h; the original runs inside it, emitted as orig_00199944)
+199944   # cut_runFrame(arg)
+# Creature_setStats, for Hardcore mode's party scaling (app/partyscale.h; the original runs inside it, emitted as orig_0010a620)
+10a620   # Creature_setStats(hp%, armour%, damage%, attack%, exp%, this, rollHp)

@@ -57,6 +57,7 @@ class RtaMachine : public RefCounted {
     // behind, swings, hits_dealt, hits_taken, deaths, respawns, last_hit_bearing, last_hit_amount, wants_pointer.
     // Empty when the library has no controls.
     Dictionary get_controls_hud() const;
+    Dictionary get_film() const;       // the film playing now (rtag_film_now): {key (16 hex digits), picture, width, height}; {} none
     // The pointer as the look: motion since the last call (right and down positive), wheel steps; a button (0 left,
     // 1 right, 2 middle, 3 and 4 the side buttons).  wants_pointer(): a look view is active and the player is playing -
     // the host hides and holds the pointer while this is true and it has the keyboard.

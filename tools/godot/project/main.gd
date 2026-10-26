@@ -129,6 +129,8 @@ var opt := {
 	"combat": "", "aim": "", "look_presets": "", "frame_log": "", "display_rate": "", "display_upscale": "", "no_vsync": false,
 	# set by the portal's Classic / Remastered choice (portal/edition.gd, handover.gd); "" / false: as before it existed
 	"edition": "", "views_locked": false, "hud_mode": "", "boss_music": "", "boss_music_er": "",
+	# cut scenes and films (cinematic.gd, docs/issues/native-cutscenes.md): "" = as the edition says (Remastered on), on | off
+	"cinematic": "",
 }
 var speed := {"usec": 0, "cpu": 0.0, "blanks": 0, "last": 0, "late": 0, "worst": 0}
 signal session_over(why: String)
@@ -149,6 +151,8 @@ var view: Control                       # shows the picture (view.gd)
 var picture_texture: ImageTexture
 var drawer: Object                      # RtaDrawer, in the draw and scene modes
 var scene_view: Node                    # scene_view.gd, in the scene mode
+var cine: Control                       # cinematic.gd: enlarged films, wide framing of cut scenes, hold to skip
+var tween_back := 0.0                   # 1: the pictures between game frames interpolated a frame behind (a cut scene)
 var tester: Node                        # testerkit.gd: the bug report (F8, L3 + R3), the build line (F9)
 var player: AudioStreamPlayer
 var started := false
@@ -306,6 +310,7 @@ func _parse_arguments() -> void:
 			"--no-game-hud": opt.game_hud = false
 			"--combat": opt.combat = value; k += 1
 			"--aim": opt.aim = value; k += 1
+			"--cinematic": opt.cinematic = value; k += 1
 			"--light": opt.light = true
 			"--shadow": opt.shadow = true
 			"--pull-back": opt.pull_back = value.to_float(); k += 1
@@ -546,6 +551,13 @@ func _start() -> void:
 			scene_view.set_script(load("res://scene_view.gd"))
 			scene_view.set("main", self)
 			add_child(scene_view)
+	if drawer != null:
+		cine = Control.new()
+		cine.set_script(load("res://cinematic.gd"))
+		cine.set("machine", machine)
+		cine.set("main", self)
+		add_child(cine)
+		move_child(cine, view.get_index() + 1)     # over the game's picture, under the HUD
 	if not opt.no_sound:
 		player = AudioStreamPlayer.new()
 		player.stream = ClassDB.instantiate("RtaAudioStream")
@@ -564,6 +576,7 @@ func _start() -> void:
 	_display_rate(refresh)
 	started = true
 	started_usec = Time.get_ticks_usec()
+	_apply_cinematic()
 	if opt.net2_flow != "":
 		var flow := Node.new()
 		flow.set_script(load("res://dev/net2_flow.gd"))
@@ -641,6 +654,17 @@ func _edition_hud(e: Dictionary) -> void:
 		director.call("scan")
 
 
+# Cut scenes and films (cinematic.gd; the library's hold to skip, tools/recomp/app/cinematic.h): Remastered's, or as
+# --cinematic on | off says.  The skip is a room option: in a room the library holds what the room agreed on.
+func _apply_cinematic() -> void:
+	var on := String(opt.cinematic) == "on" or (String(opt.cinematic) == "" and String(opt.edition) == "remastered")
+	if machine != null and started and machine.has("cinematic"):
+		machine.set_option("cinematic.skip", "hold" if on else "tap")
+	if cine != null:
+		cine.set("films_on", on)
+		cine.set("framing_on", on)
+
+
 func _apply_edition(e: Dictionary) -> void:
 	opt.edition = String(e.get("edition", ""))
 	opt.views_locked = bool(e.get("views_locked", false))
@@ -672,6 +696,7 @@ func _apply_edition(e: Dictionary) -> void:
 			drawer.call("set_scene_option", "tween", 0.0)
 		clock = 0.0
 		game_clock = 0.0
+	_apply_cinematic()
 	print("rta_godot: the game is now %s" % opt.edition)
 
 
@@ -683,7 +708,7 @@ func effective_settings() -> Dictionary:
 		"art_pack": _art_pack_folder() != "", "art_pictures": art_pictures}
 	if machine != null and started:
 		var info := String(machine.info())
-		for key in ["souls_want", "souls_on", "aim_want", "aim_on"]:
+		for key in ["souls_want", "souls_on", "aim_want", "aim_on", "cine_want", "cine_on"]:
 			var at := info.find(" " + key + "=")
 			d[key] = info.substr(at + key.length() + 2).get_slice(" ", 0).to_int() if at >= 0 else -1
 		d["copy"] = info.substr(info.find(" copy=") + 6).get_slice(" ", 0) if info.find(" copy=") >= 0 else ""
@@ -881,8 +906,12 @@ func _host_command(text: String) -> void:
 		print("[blank %d] rta_godot: controller %s; port 1 holds buttons %04x, sticks %d %d %d %d; %d key events" % [blanks,
 			"made by the script" if test_pad else (Input.get_joy_name(Input.get_connected_joypads()[0]) if Input.get_connected_joypads().size() > 0 else "none"),
 			last_buttons, last_sticks[0], last_sticks[1], last_sticks[2], last_sticks[3], key_events])
-	elif w.size() >= 1 and (w[0] == "light" or w[0] == "camera" or w[0] == "scene" or w[0] == "look" or w[0] == "card" or w[0] == "er") and scene_view != null:
+	elif w.size() >= 1 and (w[0] == "light" or w[0] == "camera" or w[0] == "scene" or w[0] == "look" or w[0] == "card" or w[0] == "er" or w[0] == "remaster") and scene_view != null:
 		scene_view.call("command", w)
+	elif w.size() >= 1 and w[0] == "cinematic" and cine != null:
+		print("[blank %d] rta_godot: %s" % [blanks, cine.call("info_text")])
+	elif w.size() >= 1 and w[0] == "cinematic":
+		pass
 	elif w.size() >= 2 and w[0] == "mark":
 		frame_rows.append("M,%d,%s" % [blanks, " ".join(w.slice(1))])   # test aid: a named part of the route in the frame log
 	elif w.size() >= 2 and w[0] == "hold":
@@ -1142,6 +1171,13 @@ func _paced_between(delta: float) -> bool:
 				game_clock = 0.0
 			tween_t = 0.0
 			_take_frame()
+			# in a cut scene the pictures are drawn a frame behind, between the two frames before (cinematic.gd): the
+			# game frame's own picture is its predecessor's place, the ones after it the way from there to it
+			tween_back = 1.0 if cine != null and bool(cine.get("between")) else 0.0
+			if tween_back > 0.0 and drawer != null:
+				drawer.call("redraw", -1.0)
+				if scene_view != null:
+					scene_view.call("tween", -1.0)
 			if stale_ticks >= 30 and machine.poll(0) == 1:
 				# (every list is handed to the drawer - a list names the textures the ones before it made - the stale
 				# one's picture is simply drawn over by the newer one's in this same refresh)
@@ -1171,9 +1207,9 @@ func _paced_between(delta: float) -> bool:
 			between_off = false
 	if not took and blanks > 0 and not between_off:
 		tween_t = clampf(game_clock / period_s, 0.0, 1.0)
-		drawer.call("redraw", tween_t)
+		drawer.call("redraw", tween_t - tween_back)
 		if scene_view != null:
-			scene_view.call("tween", tween_t)
+			scene_view.call("tween", tween_t - tween_back)
 		tween_figs.between += 1
 	tween_figs.pictures += 1
 	tween_figs.lead_sum += lead

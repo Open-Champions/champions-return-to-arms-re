@@ -13,7 +13,8 @@
 
 // added after version 6 without changing it: null when the library is older
 #define RTAG_OPTIONAL_FUNCTIONS(F) F(rtag_controls_hud) F(rtag_mouse) F(rtag_mouse_button) F(rtag_fill_get) F(rtag_texture_names) \
-    F(rtag_report_begin) F(rtag_report_finish) F(rtag_build_line) F(rtag_report_told) F(rtag_skeletons_get) F(rtag_frame_age_ms) F(rtag_frame_since_release_ms) F(rtag_release)
+    F(rtag_report_begin) F(rtag_report_finish) F(rtag_build_line) F(rtag_report_told) F(rtag_skeletons_get) F(rtag_frame_age_ms) F(rtag_frame_since_release_ms) F(rtag_release) \
+    F(rtag_film_now)
 
 struct RtaLibrary {
 #define RTAG_MEMBER(name) decltype(&::name) name = nullptr;

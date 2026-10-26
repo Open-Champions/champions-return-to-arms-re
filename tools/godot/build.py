@@ -81,7 +81,7 @@ EXPORTS = ['rtag_api_version', 'rtag_has', 'rtag_start', 'rtag_set_pad', 'rtag_s
            'rtag_memory', 'rtag_fields', 'rtag_info', 'rtag_ended', 'rtag_exit_code', 'rtag_stop', 'rtag_set_option',
            'rtag_controls_hud', 'rtag_mouse', 'rtag_mouse_button', 'rtag_fill_get', 'rtag_texture_names',
            'rtag_report_begin', 'rtag_report_finish', 'rtag_build_line', 'rtag_report_told', 'rtag_skeletons_get',
-           'rtag_frame_age_ms', 'rtag_frame_since_release_ms', 'rtag_release']
+           'rtag_frame_age_ms', 'rtag_frame_since_release_ms', 'rtag_release', 'rtag_film_now']
 # A room of our own (tools/recomp/net2/session.h, game.h): the fix-set library carries the one copy of net2 in the
 # process - the session client, the carrier of the game's datagrams and the direct launch - and hands out its plain-C
 # functions under their own names, for the portal (docs/issues/native-rendezvous.md 5.1).
@@ -294,6 +294,9 @@ def build_lib(args):
         if os.path.exists(os.path.join(app, 'soulscombat.cpp')):
             jobs.append((os.path.join(app, 'soulscombat.cpp'), rt_flags + ['-I', app, '-I', render], 'a_'))
             lib_flags.append('-DRTAG_HAVE_SOULS')
+            # its party scaling (app/partyscale.h): the scaling's numbers, the factory wrapper; Creature_setStats below
+            if os.path.exists(os.path.join(app, 'partyscale.cpp')):
+                jobs.append((os.path.join(app, 'partyscale.cpp'), rt_flags + ['-I', app], 'a_'))
         # aiming by looking (fpaim.h, docs/issues/native-first-person-aim.md): it needs the controls (set_aim)
         if os.path.exists(os.path.join(app, 'fpaim.cpp')):
             jobs.append((os.path.join(app, 'fpaim.cpp'), rt_flags + ['-I', app], 'a_'))
@@ -306,6 +309,16 @@ def build_lib(args):
         lib_flags.append('-DRTAG_NO_CONTROLS')
     if not args.original:
         jobs.append((os.path.join(app, 'film.cpp'), rt_flags + ['-I', app], 'a_'))     # the films: only this translation leaves their entries open
+        # hold to skip a cut scene (app/cinematic.h): the mode, and cut_runFrame when the translation leaves it open
+        if os.path.exists(os.path.join(app, 'cinematic_hle.cpp')) and has(os.path.join(game_dir, 'funcs.h'), 'orig_00199944'):
+            jobs.append((os.path.join(app, 'cinematic.cpp'), rt_flags + ['-I', app], 'a_'))
+            jobs.append((os.path.join(app, 'cinematic_hle.cpp'), rt_flags + ['-I', app], 'a_'))
+            lib_flags.append('-DRTAG_HAVE_CINE')
+        # Hardcore mode's party scaling (app/partyscale.h): Creature_setStats when the translation leaves it open
+        if os.path.exists(os.path.join(app, 'partyscale_hle.cpp')) and os.path.exists(os.path.join(app, 'partyscale.cpp')) \
+                and os.path.exists(os.path.join(app, 'soulscombat.cpp')) and os.path.exists(os.path.join(app, 'fpcontrols.cpp')) \
+                and has(os.path.join(game_dir, 'funcs.h'), 'orig_0010a620'):
+            jobs.append((os.path.join(app, 'partyscale_hle.cpp'), rt_flags + ['-I', app], 'a_'))
     # the network and a room of our own, as rta_app has them (app/build.py): the fix-set translation leaves the network
     # library's entries of net/hle-online.txt to net/netdrv.cpp; net2/launch.cpp starts the game's own lockstep session
     # from a room.  Nothing opens a socket until a host asks for a room (rtag_start "--opt net2=..." or net2_open).

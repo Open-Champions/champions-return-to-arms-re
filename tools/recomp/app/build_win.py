@@ -425,6 +425,8 @@ def build_mac(args):
         (os.path.join(HERE, 'fpcontrols.cpp'), ['-std=c++17', opt, '-Wall', '-I', HERE, '-I', RT], 'a_'),
         (os.path.join(HERE, 'look_mac.mm'), objc + ['-I', HERE, '-I', RT], 'a_'),
         (FILM, rt_flags + ['-I', HERE], 'a_'),
+        (os.path.join(HERE, 'cinematic.cpp'), rt_flags + ['-I', HERE], 'a_'),       # hold to skip a cut scene: app_main.cpp calls it
+        (os.path.join(HERE, 'cinematic_hle.cpp'), rt_flags + ['-I', HERE], 'a_'),   # ... and its one game entry (hle-app.txt)
         (os.path.join(NET, 'netdrv.cpp'), rt_flags, 'n_'),
         (os.path.join(NET, 'online.cpp'), rt_flags, 'n_'),
         (ONLINE, rt_flags, 'n_'),

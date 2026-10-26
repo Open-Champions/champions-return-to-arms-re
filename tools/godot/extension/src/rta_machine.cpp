@@ -1,5 +1,6 @@
 // rta_machine.cpp - see rta_machine.h.
 #include "rta_machine.h"
+#include <cstdio>
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
@@ -343,6 +344,20 @@ Dictionary RtaMachine::get_fill_info() const {
     return d;
 }
 
+Dictionary RtaMachine::get_film() const {
+    Dictionary d;
+    if (!started || !rta_library().rtag_film_now) return d;
+    rtag_film f;
+    if (!rta_library().rtag_film_now(&f)) return d;
+    char key[20];
+    snprintf(key, sizeof key, "%016llx", (unsigned long long)f.key);
+    d["key"] = f.key ? String(key) : String();
+    d["picture"] = f.picture;
+    d["width"] = f.width;
+    d["height"] = f.height;
+    return d;
+}
+
 Dictionary RtaMachine::get_controls_hud() const {
     Dictionary d;
     if (!started || !rta_library().rtag_controls_hud) return d;
@@ -515,6 +530,7 @@ void RtaMachine::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_view"), &RtaMachine::get_view);
     ClassDB::bind_method(D_METHOD("set_option", "key", "value"), &RtaMachine::set_option);
     ClassDB::bind_method(D_METHOD("get_controls_hud"), &RtaMachine::get_controls_hud);
+    ClassDB::bind_method(D_METHOD("get_film"), &RtaMachine::get_film);
     ClassDB::bind_method(D_METHOD("get_fill_info"), &RtaMachine::get_fill_info);
     ClassDB::bind_method(D_METHOD("get_skeletons", "with_mesh"), &RtaMachine::get_skeletons);
     ClassDB::bind_method(D_METHOD("report_begin", "host_lines"), &RtaMachine::report_begin);

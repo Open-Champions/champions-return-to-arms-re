@@ -537,6 +537,26 @@ void RtaDrawer::add_draw(Pass& pass, const rtag_frame& frame, const rtag_draw& d
     vertices_submitted += d.count;
 }
 
+bool RtaDrawer::is_letterbox(const rtag_frame& f, const rtag_draw& d, const Target& target) const {
+    // the game's cut-scene letterbox: one draw of sprites (two rectangles, 6 corners each as triangles), every one of
+    // them opaque black, across the whole width, a band at the top or the bottom edge
+    if (d.kind != RTAG_DRAW || d.texture != 0 || d.made_by == 0 || d.prim != RTAG_TRIANGLES || d.count < 6 || d.count % 6 ||
+        d.count > 24 || d.first + d.count > f.vertex_count || target.lw <= 0) return false;
+    const float w = (float)target.lw, h = (float)target.lh;
+    for (uint32_t q = 0; q < d.count; q += 6) {
+        float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+        for (uint32_t k = q; k < q + 6; k++) {
+            const rtag_vertex& v = f.vertices[d.first + k];
+            if (v.r > 6 || v.g > 6 || v.b > 6) return false;            // black
+            if (d.blend && v.a < 0x78) return false;                     // opaque
+            x0 = std::min(x0, v.x); x1 = std::max(x1, v.x); y0 = std::min(y0, v.y); y1 = std::max(y1, v.y);
+        }
+        if (x1 - x0 < w * 0.95f || y1 - y0 > h * 0.3f || y1 - y0 < 2.0f) return false;     // across the whole width, a band
+        if (!(y0 <= h * 0.02f || y1 >= h * 0.98f)) return false;                              // at the top or the bottom edge
+    }
+    return true;
+}
+
 void RtaDrawer::redraw(double t) {
     if (last_order.empty()) return;
     RenderingServer* s = rs();
@@ -807,6 +827,7 @@ void RtaDrawer::submit() {
         }
         if (scene_mode && node.target == world) {
             if (scene_take(*node.pass, f, d, *node.target, texture_of[i], order_in_pass)) continue;
+            if (letterbox_off && is_letterbox(f, d, *node.target)) { letterbox_left_out++; continue; }
             // the 2-D layer over (or behind) the world: in the list's order, without the GS's depth, which is not the world's
             rtag_draw flat = d;
             flat.ztst = 1; flat.depth_write = 0; flat.depth_test = 0;
@@ -1077,6 +1098,8 @@ void RtaDrawer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_world_camera"), &RtaDrawer::get_world_camera);
     ClassDB::bind_method(D_METHOD("get_world_viewport"), &RtaDrawer::get_world_viewport);
     ClassDB::bind_method(D_METHOD("redraw", "t"), &RtaDrawer::redraw);
+    ClassDB::bind_method(D_METHOD("get_letterbox_left_out"), &RtaDrawer::get_letterbox_left_out);
+    ClassDB::bind_method(D_METHOD("get_scene_camera"), &RtaDrawer::get_scene_camera);
     ClassDB::bind_method(D_METHOD("get_world_environment"), &RtaDrawer::get_world_environment);
     ClassDB::bind_method(D_METHOD("describe_frame", "max_lines"), &RtaDrawer::describe_frame);
     ClassDB::bind_method(D_METHOD("get_sky_info"), &RtaDrawer::get_sky_info);
