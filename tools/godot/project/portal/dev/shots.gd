@@ -68,8 +68,8 @@ func _ready() -> void:
 	add_child(view)
 	DirAccess.make_dir_recursive_absolute(out_dir)
 	await get_tree().process_frame
-	for name in ["smoke", "walk", "states", "friends", "room", "join", "settings", "ratios", "modes", "real", "duo", "noservice", "duo2", "room5"]:
-		if only.is_empty() and (name in ["smoke", "real", "duo", "noservice", "duo2", "room5"]):
+	for name in ["smoke", "walk", "states", "friends", "room", "join", "settings", "ratios", "modes", "real", "duo", "noservice", "duo2", "room5", "solo"]:
+		if only.is_empty() and (name in ["smoke", "real", "duo", "noservice", "duo2", "room5", "solo"]):
 			continue
 		if only.is_empty() or only.has(name):
 			print("shots: ", name)
@@ -1321,3 +1321,26 @@ func scenario_modes() -> void:
 		portal.call("host_game")
 		await wait(2.0)
 		await shot("modes/09-room-remastered")
+
+# solo: the real game alone from the first screen's card, as a player starts it (RTA_SHOTS_EDITION_A = remastered (default)
+# | classic): the name, the card's Play, the game scene with the command line's game options (--script ...); the walk
+# ends when the game has ended (its script's quit) and the game scene ends the program (its figures written)
+func scenario_solo() -> void:
+	await open_portal(Vector2i(1920, 1080), {}, {"mock": true, "stub_game": false})
+	var kind := OS.get_environment("RTA_SHOTS_EDITION_A")
+	if kind == "":
+		kind = "remastered"
+	await type("Tester One")
+	await key(KEY_ENTER)
+	await until(func() -> bool: return portal.current_name() == "modes", 10.0)
+	await wait(0.6)
+	await shot("solo-00-choose-your-game")
+	await focus_key(kind + "_play")
+	await key(KEY_ENTER)
+	await until(func() -> bool: return portal.handover.game != null and bool(portal.handover.running), 30.0)
+	print("shots: solo: %s played alone from its card; the portal says %s" % [kind, String(portal.call("edition"))])
+	await wait(8.0)
+	dump_effective("solo-01")
+	while bool(portal.handover.running):
+		await wait(2.0)
+	print("shots: solo: the game has ended")

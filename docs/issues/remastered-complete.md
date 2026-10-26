@@ -1,0 +1,126 @@
+# Remastered: done?
+
+The goal: **Remastered** at 100 % - the portal's Remastered choice in Godot with every feature on (Hardcore with
+attributes, spellbook, weapons, flasks and the death drop; the five views and aiming where you look; the fitted Elden
+Ring armour, the remastered models, the Elden Ring world layer and boss music from the owner's own Elden Ring files;
+cut scenes in wide framing with hold-to-skip; 60 frames a second or more, 120 where the display allows), through the
+whole campaign to an ending, and online with two to four copies (`DIRECTION.md`).
+
+Every statement says **Ran** (with what was seen) or **Read**. Started and run 2026-10-26 on one Apple-silicon Mac
+(3024 x 1964, 120 Hz) that other agents' Godot and native runs shared all day: the load average was 11-19 at its
+quietest and 40-450 for most of the runs; frame-rate figures below are given with the load they were taken at.
+Evidence under `local/godot-remaster-check/` (not tracked): the build, routes, logs, pictures, sheets, tick logs.
+
+## The checklist
+
+| | Item | State |
+|---|---|---|
+| [x] | Remastered from the portal's first screen | **Ran**: the Remastered card's **Play** (alone) pressed as a player presses it (the portal in the test window, `shots.gd` scenario `solo`, new); effective settings: edition remastered, Hardcore on, aim look, hold-to-skip on, HUD new, boss music with 82 Elden Ring tracks, `er_models` / `er_creatures` on, cleaner and remastered models on, art pack 122,205 pictures, display rate auto at 2 pictures a game frame (`campaign/*/portal/solo-01-effective.json`). The portal's own note said "Not run: Play (alone) from a card into a level" - now run |
+| [x] | Every story level loads, in order, to an ending | **Ran**: 54 levels of the good path from `blood1` to `fearboss` and `endgood` (the order of the executable's level and mission tables; runs `c1`, `c2-1`, `c3`), each by the game's own level request; then the evil branch and the bonus and medal levels - drundar boar1 blomedal innpit innmedal wate2a wate2b wate2c watmedal watbonus tormedal torbonus swamp2 dismedal disbonus valmedal honor2 firmedal firbonus stomedal stobonus fay1 faybonus nitmedal nitbonus nitbon2 bossevil endbad (`c4`, `c5`): all 28 load; with the good path every level of the Classic check's list (`classic-complete.md`) plus `fearboss`. Three requests in the long runs brought back a level instead (`honor` -> `fire1`, `nitdung1` -> `nitdung2`, `nitbon2` -> `bossevil`); all three levels loaded and were checked in runs of their own (`c3`, `c5`). `endgood` plays its closing scene and ends on the game's own save screen, as the original does (native program the same, below); two crosses later the portal is back in front ("the session is over (frontend)", `c2-2`); `endbad` the same (`c4-2`) |
+| [x] | Hardcore combat in every level | **Ran**: in each level ten rounds of the mode's test aid (the player beside the nearest living creature), lock-on, light, heavy, dodge, block; over the long run 254 hits on creatures, 1,582 hits taken (155 dodged), 7 staggers, 3 backstabs, 6 guard counters, 392 swings cancelled by a dodge, 3 heavies interrupted, 37 flasks drunk and 23 refills at save points, 9 death drops, 4 picked up again (4,763 gold), 5,747 gold lost by dying again, 5 upgrade materials dropped |
+| [x] | Stats, spellbook, level-ups, weapons, the save point | **Ran** (`s1`, `valor`): 20,000 experience through the game's own `player_giveExp` (level 1 -> 9), the character screen opened at the save point, 5 points spent, 3 spell-slot changes, the weapon upgraded +1 with gold and materials (damage 120 -> 135 %), the save point used and a save written to the card through the game's own card screens. In the long run (`c2-1`) the same screen was refused: the player had walked away from the save point by then (by design: the mode's screen opens at save points) |
+| [~] | Spells and aimed projectiles | **Ran**, not shown: aiming by looking on all through (711 look messages sent and applied in the long run), but the character's skill presses cast no spell in the levels (spells cast 0 there; 4 in the hub), so no projectile was aimed by the look in this check. Aimed projectiles were shown before (`native-first-person-aim.md`) |
+| [x] | All five views | **Ran**: overhead, action, chase, shoulder, first person pictured in every level (`campaign/*/pictures/LEVEL-view-*.png`) |
+| [x] | Fitted armour, remastered models, the world layer | **Ran**: the Elden Ring outfit fitted on the player and creatures drawn as Elden Ring enemies in every level (`er info`: demi-humans, trolls, nobles, skeletons, boars, soldiers); 204 of the game's figures baked as remastered models over the long run; the world layer on in all 53 levels it was asked in |
+| [x] | Boss music | **Ran**: the director took the fight over (state playing / leaving, an Elden Ring track, the game's music at 0) in `islsm1`, `islsm3b`, `fire5`, `storm4`, `storm5`, `bossgood` (the last boss's bar up), `fearboss`, `blomedal`, `valmedal`, `honor2`, `nitbon2` and `bossevil`; back to the game's music after |
+| [x] | Cut scenes: wide framing, hold to skip | **Ran**: `blood1`'s, `dis2`'s and `bossevil`'s opening scenes: a 75-tick hold of START skipped them (scenes skipped 1, 2; taps held back); the game's letterbox left out and the scene framed by the host's bars (`blood1-cut-wide.png`); the endings' closing scenes framed the same. Sharp films: not reached in this route (the power-on films are tapped through by the boot script) |
+| [x] | Shops | **Ran**: the hub's shop through the dialogue, the Buy list, a tab, out (`c1/pictures/hub-shop-*.png`) |
+| [~] | Bosses | **Ran**: every boss level loaded with its boss (boss bar in `bossgood`, boss music above) and fought by the route; killing each boss by script was not attempted |
+| [ ] | 60 fps paced, 120 where possible, per level | **Not met**. At load 11-19 (`c3`, paced, 120 Hz display): game frames a second `drunare` 59.1, `valor` 57.2, `fearboss` 56.6 (walking at 119.7 pictures a second), `blood1` 55.8, `nitdung2` 53.4, `storm5` 51.8, `fire1` 37.7, `bossgood` 37.9. At load 40-450 (the long runs) 18-45 in most levels. See bug 2 |
+| [x] | No script or shader errors | **Ran**: no SCRIPT ERROR, SHADER ERROR or Parse Error in any run's output (campaign, rooms); the only warnings are the test window's own arguments (bug 8) |
+| [x] | Pictures per level | **Ran**: about 12 per level (arrival, HUD window picture, five views, end), sheets in `local/godot-remaster-check/` |
+| [x] | Remastered online, 2 copies through the portal | **Ran** (`online/r2a`): two portals, both Remastered by their cards, friends, room, Start; hub -> `drunare` -> `valor` -> `arachna1`, deaths and the reload; **6,467 ticks, no shared column differs** (the cut-scene clock column `cutf` left out: the front end's title fly-over clock, as `native-cutscenes.md` notes); copy A crashed at quit (bug 4) |
+| [x] | Remastered online, 3 and 4 copies | **Ran** (`online/r3a`, `r4a`: Godot copies with the Remastered options on the command line, launched by `n2party.py` through a service on this Mac): 3 copies 6,131 / 6,131 / 6,143 ticks every pair in step, 4 copies 6,038-6,045 ticks every pair in step; hub -> `drunare` -> `valor` -> `arachna1`, 6 and 8 deaths, 2 reloads after everybody died; Hardcore, aiming and hold-to-skip "ON (a room's game)" on every copy |
+| [ ] | Long sessions draw cleanly | **No**: bug 1 (4 of 4 long sessions) |
+| [ ] | A person playing it through | never done |
+
+## 1. How it was run
+
+- **Build.** The last commit at the start (`8490744`) in a clean worktree (other agents' uncommitted Godot work left
+  out), `RTA_GODOT_OUT=local/godot-remaster-check`, `build.py all` (library, extension, project), `run.py import`.
+  Godot 4.5.2. The level presets made by `presets.py` (round 7's) copied into it - see bug 3.
+- **Route** (`campaign/mkroute.py`): power-on -> the game's own front end and character screens -> the hub and its
+  shop, then per level: the level asked for by name (`g_pendingLevel`, as every sweep does), the arrival, the opening
+  scene (pictured; held to skip where one was known), the HUD, the five views, aiming in first person, the Hardcore
+  round, a flask, a walk, per-level marks in the frame log and `--speed-log 60`. `valor`: level-ups, the character
+  screen, the upgrade, the save point and the card. Driven through the portal: `campaign/solo.sh` starts the project's
+  `portal/dev/shots.tscn -- --only solo` (the portal in the test window; the name; the Remastered card's Play) with
+  the route as the game's `--script`; `campaign/resume.sh` starts again from the level a killed run was in (one run
+  was killed by another agent's `pkill -x Godot`).
+- **Runs:** `s1` (smoke: blood1, valor, endgood), `c1` (hub to islc1; killed), `c2-1` (islc1 to endgood), `c2-2`
+  (endgood again, with the presses to the title), `c3` (8 levels again at the day's lowest load: the frame-rate
+  figures), `c4-1` (the evil branch, bonus and medal levels), `c4-2` (endbad), `c5` (bossevil), `t1` / `t2` and
+  `endgood/*` (bug 1 and the ending).
+- **Order of the good path:** blood1 strife drunarm drunare - innovat1 inmine1 inmine2 innovat2 - islc1 islc2 islsm1
+  islsm2a islsm2b islsm3a islsm3b islgnome islgoth - wat1 watg2a watg2b watg2c - tormenta tormentb torment2 torment3 -
+  swamp1 dis2 arachna1 - valor valor2 honor - fire1..fire5 - storm1 storm1a storm1b storm1c storm2 storm3 storm4
+  storm5 - fay2 fay3 - nit1 nitdung1 nitdung2 nit2 nitdung4 - bossgood fearboss - endgood.
+
+## 2. The ending (Ran)
+
+`endgood` plays its closing scene (wide framing, `endgood-b.png`) and stops on the game's own "Create New Save Game"
+screen; the game's frame count stops there (2,059) until a button is pressed. The native program (`rta_app_next`) does
+exactly the same (`endgood/n-*.png`), and two crosses take it to the title (`m.out`). In the portal two crosses end the
+session and the portal comes back ("the session is over (frontend)", `c2-2`). Not a fault.
+
+## 3. Bugs, by severity
+
+| # | Severity | What | Where / cause | State |
+|---|---|---|---|---|
+| 1 | **Blocker** | In every long Remastered session (4 of 4) black geometry - a slab with jagged spikes and thin black streaks - appears and then stays fixed to the player through every later level, view and the ending, growing until the 3-D picture is wholly black: from `drunarm`'s Hardcore round in `c1` (levels 3-9 covered), from `watg2a` in `c2-1` (the next 34 levels and `endgood`'s closing scene), from `watg2a` in `t2` (nearly the whole picture black), from `disbonus` in `c4-1` (every later level's 3-D picture mean 0.0 of 255 while the game ran on with 300-700 draws a picture; only the HUD showed). A player cannot finish the campaign in one sitting | Godot side: the native program with the same route and modes draws cleanly (`endgood/w1`); seen also without the portal, paced (`w2`: the streaks); not seen in two short runs. Not removed by switching off any of `remaster_models`, `er_models`, `er_creatures`, `models`, `fill`, `er_world`, `lights`, `contact`, `backdrop`, `sky`, `batch`, `prepass`, nor by the display rate 60 (`t1`, `t2`). Left: the scene's kept meshes and the between-frames carry (`tools/godot/extension/src/rta_scene.cpp` `keep` / `carry`, `rta_drawer.cpp`), which no look key turns off. Other agents work in those files | **open** |
+| 2 | **Major** | 60 a second not held: game frames 37.7 a second in `fire1` and 37.9 in `bossgood`, 51.8-59.1 elsewhere, at load 11-19; the 120 Hz picture rate reached only walking in light levels (`fearboss` 119.7, `valor` 92) | the machine was never quiet (other agents' Godot runs); `native-godot.md` measured 58.5-60 in fire1 alone. Needs a measurement on a quiet machine before a cause is named | **open** |
+| 3 | Medium | Remastered's per-level look presets reach no player: `levels.cfg` is game output made by `presets.py walk/make`; `build.py project` stages it only when `OUT/presets/levels.cfg` exists, and no setup or installer runs `presets.py`. No build since round 7 (`godot-r7`) has had it, including the exports and the release of 2026-10-25 - the PROGRESS claim "a lighting preset for every one of the 111 levels" is true only on the machine that made them | `tools/godot/build.py` (staging), `tools/install/setup/*` (no step makes it); fix: make the presets on the player's machine at setup (from the player's disc, like the films) or derive them at level load | **open** (a setup step, not a small fix) |
+| 4 | Medium | Crash at quit of a room copy: signal 11 in `RendererRD::MaterialStorage::free` from `BaseMaterial3D::~BaseMaterial3D` of `ArrayMesh`es held in nested GDScript dictionaries, freed in `SceneTree::finalize` after the rendering server's materials (`online/r2a/a.txt`; the crash report in the copy's `reports/`). 1 of about 12 Godot exits | a script-held mesh cache (`er_layer.gd`, `model_remaster.gd` or `er_world.gd` keep such dictionaries) not cleared before shutdown; clearing it in `_exit_tree` would avoid it | **open** |
+| 5 | Minor | Remastered plays at 4:3 between black bars in a 16:9 window by default: the profile's `wide` is off and `edition.gd` does not set it | `portal/edition.gd` / profile default | open (a design choice for the owner) |
+| 6 | Minor | The game's 2-D screens in the Godot window are much darker than the game's own picture (the ending's save screen: mean 3-4 against 19-22) | already found in `native-cutscenes.md` ("the sRGB curve applied once too often" in the 2-D path) | open |
+| 7 | Minor | The library's room status keeps the text "the game runs: level hub" after level changes (the level field itself is current) | `tools/recomp/net2/launch.cpp:557` (set once at the start); net2 is other agents' area | open |
+| 8 | Cosmetic | Every run of the portal test window prints "unknown option" for the test window's own arguments | `main.gd` argument parser | open |
+| 9 | - | Three level requests in the long runs brought back a level (`honor` -> `fire1`, `nitdung1` -> `nitdung2`, `nitbon2` -> `nitbonus` four times instead of `bossevil`); each level loads when asked for in a run of its own | not found; the route's request may meet the game's own restart or a bonus level's return | noted |
+
+Fixed here: none of the above was both small and clearly correct within the files open to this work.
+
+## 4. Online (Ran)
+
+| Run | Copies | How | Levels | Ticks in step |
+|---|---|---|---|---|
+| `online/r2a` | 2 | two portals, Remastered cards, friends, room, Start (`online/room2.py`, from `room29.py`) | hub, drunare, valor, arachna1 | 6,467, no shared column differs (`cutf` left out) |
+| `online/r3a` | 3 | Godot copies, Remastered options on the command line, `n2party.py --program as-godot.py` | the same, 6 deaths, 2 reloads | 6,131 / 6,131 / 6,143 |
+| `online/r4a` | 4 | the same | the same, 8 deaths, 2 reloads | 6,038 to 6,045, every pair |
+
+Routes direct on this computer (no relay). In `arachna1` the players fought the level's spiders and died; the Spider
+Queen herself was not engaged in a room.
+
+## 5. Frame rate (Ran; `campaign/fps.py`, `speed.py`)
+
+`c3`, paced, through the portal, 120 Hz display, load 11-19:
+
+| level | game frames / s | slowest second | pictures / s | walking |
+|---|---|---|---|---|
+| blood1 | 55.8 | 31 | 68.2 | 53.7 |
+| drunare | 59.1 | 31 | 61.8 | 55.7 |
+| valor | 57.2 | 40 | 88.8 | 92.1 |
+| fire1 | 37.7 | 11 | 38.9 | 46.4 |
+| nitdung2 | 53.4 | 23 | 69.7 | 52.0 |
+| storm5 | 51.8 | 26 | 54.5 | 50.3 |
+| bossgood | 37.9 | 10 | 41.6 | 37.7 |
+| fearboss | 56.6 | 21 | 86.0 | 119.7 |
+
+The long runs (load 40-450) averaged 18-45 pictures a second per level (`speed.py c1/out.txt c2-1/out.txt`); `c4-1`
+(load about 10-16) 48-64 a second in most medal and bonus levels, `wate2c` 37.7 - but from `disbonus` on its pictures
+were black (bug 1), so its later figures do not count.
+
+## 6. Open items
+
+- Bug 1 (the black geometry) and bug 2 (60 / 120 on a quiet machine).
+- Bugs 3 and 4.
+- Spells cast and aimed by the look inside the campaign; weapon arts and two-handing in the campaign; a boss killed.
+- The sharp films seen in this route.
+- Remastered online through the public service with three and four copies, and from two networks.
+- Windows and Linux: hold-to-skip is not in their programs or Godot libraries (`native-cutscenes.md`, "Not done").
+- A person playing it.
+
+## 7. Changed (tracked)
+
+- `tools/godot/project/portal/dev/shots.gd`: scenario `solo` (the Remastered or Classic card's Play pressed, the game
+  run with the command line's script to its end).
+- `docs/issues/remastered-complete.md` (this file), `docs/PROGRESS.md` (the Remastered row).
