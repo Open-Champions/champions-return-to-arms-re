@@ -17,11 +17,12 @@ struct Block { uint32_t lo, hi; const char* what; };    // [lo, hi)
 constexpr Block BLOCKS[] = {
     {0x30000, 0x74000, "party8.h: moved tables, lower area (g_savedPlayers and the small ones)"},
     {0x88000, 0xE0000, "party8.h: moved tables, upper area (each table with room for eight players)"},
-    {0xE0000, 0xE0050, "tools/recomp/soak/soakhooks.cpp: pool figures and control"},
+    {0xE0000, 0xE0058, "tools/recomp/soak/soakhooks.cpp: pool figures and control"},
     {0xE0800, 0xE1480, "soulscombat.h: Hardcore mode (SOULS_BASE, BLOCK_SIZE 0xC80)"},
     {0xE1800, 0xE1940, "fpaim.h: aiming by looking (AIM_BASE)"},
     {0xE1C00, 0xE1C40, "cinematic.h: hold to skip (CINE_BASE; +0x20 + slot x 4)"},
     {0xE2000, 0xE2080, "partyscale.h: Hardcore's party scaling (PARTY_BASE)"},
+    {0xFF000, 0x100000, "tools/recomp/rt/iop.cpp: RPC packets (PACKETS)"},
 };
 constexpr int COUNT = (int)(sizeof BLOCKS / sizeof BLOCKS[0]);
 

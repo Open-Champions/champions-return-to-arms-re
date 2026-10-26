@@ -123,6 +123,7 @@ struct PlainLink : TlsLink {
 };
 
 struct WsLink : TlsLink {
+    static constexpr size_t RECEIVE_BYTES = (1u << 20) + 14, OUTPUT_BYTES = 262144;
     std::unique_ptr<TlsLink> under;
     std::string name, path, why, out, in, data;
     int phase = 0;                      // 0 the link below is being made, 1 the upgrade was asked, 2 open, -1 failed
@@ -134,7 +135,12 @@ struct WsLink : TlsLink {
         under->start(ip, port, host, trust);
     }
     void fail(const std::string& text) { if (phase >= 0) { phase = -1; why = text; } }
-    void frame(uint8_t opcode, const char* payload, size_t size) {
+    bool frame(uint8_t opcode, const char* payload, size_t size) {
+        size_t overhead = size < 126 ? 6 : size < 65536 ? 8 : 14;
+        if (size > OUTPUT_BYTES - overhead || out.size() > OUTPUT_BYTES - overhead - size) {
+            fail("The WebSocket output queue is full.");
+            return false;
+        }
         out += (char)(0x80 | opcode);
         if (size < 126) out += (char)(0x80 | size);
         else if (size < 65536) { out += (char)(0x80 | 126); out += (char)(size >> 8); out += (char)(size & 255); }
@@ -143,6 +149,7 @@ struct WsLink : TlsLink {
         char mask[4] = {(char)m, (char)(m >> 8), (char)(m >> 16), (char)(m >> 24)};
         out.append(mask, 4);
         for (size_t i = 0; i < size; i++) out += (char)(payload[i] ^ mask[i & 3]);
+        return true;
     }
     void pump() {
         if (phase < 0) return;
@@ -161,8 +168,10 @@ struct WsLink : TlsLink {
                 k64 += i + 1 < 16 ? B64[(v >> 6) & 63] : '=';
                 k64 += i + 2 < 16 ? B64[v & 63] : '=';
             }
-            out = "GET " + path + " HTTP/1.1\r\nHost: " + name + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + k64 +
-                  "\r\nSec-WebSocket-Version: 13\r\nUser-Agent: rta-net2\r\n\r\n" + out;
+            std::string request = "GET " + path + " HTTP/1.1\r\nHost: " + name + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + k64 +
+                                  "\r\nSec-WebSocket-Version: 13\r\nUser-Agent: rta-net2\r\n\r\n";
+            if (request.size() > OUTPUT_BYTES || out.size() > OUTPUT_BYTES - request.size()) { fail("The WebSocket request is too large."); return; }
+            out.insert(0, request);
             phase = 1;
         }
         while (!out.empty()) {
@@ -171,9 +180,12 @@ struct WsLink : TlsLink {
             if (n <= 0) break;
             out.erase(0, (size_t)n);
         }
+        if (!data.empty()) return;          // let the caller consume decoded bytes before reading more
         char buffer[8192];
         for (int rounds = 0; rounds < 16 && !closed; rounds++) {
-            int got = under->recv(buffer, sizeof buffer);
+            size_t room = RECEIVE_BYTES - in.size();
+            if (!room) break;
+            int got = under->recv(buffer, room < sizeof buffer ? room : sizeof buffer);
             if (got == AGAIN) break;
             if (got == 0) { closed = true; break; }
             if (got < 0) { fail(under->problem().empty() ? "The link was lost." : under->problem()); return; }
@@ -210,7 +222,7 @@ struct WsLink : TlsLink {
             uint8_t opcode = b0 & 15;
             if (opcode <= 2) data += payload;
             else if (opcode == 8) closed = true;
-            else if (opcode == 9) frame(10, payload.data(), payload.size() < 125 ? payload.size() : 125);
+            else if (opcode == 9 && !frame(10, payload.data(), payload.size() < 125 ? payload.size() : 125)) return;
         }
     }
     int state() override {
@@ -221,11 +233,12 @@ struct WsLink : TlsLink {
         pump();
         if (phase < 0) return LOST;
         if (phase != 2) return AGAIN;
-        if (out.size() > 262144) return AGAIN;
         size_t take = size < 16384 ? size : 16384;
-        frame(2, bytes, take);
+        size_t overhead = take < 126 ? 6 : 8;
+        if (out.size() > OUTPUT_BYTES - overhead - take) return AGAIN;
+        if (!frame(2, bytes, take)) return LOST;
         pump();
-        return (int)take;
+        return phase < 0 ? LOST : (int)take;
     }
     int recv(char* into, size_t size) override {
         pump();
@@ -630,6 +643,7 @@ struct WinTls : TlsLink {
     }
 
     void read_in() {
+        if (!plain.empty()) return;
         char buffer[16384];
         while (fd != sock::NONE && in.size() < (1u << 20)) {
             int n = sock::recv(fd, buffer, sizeof buffer);

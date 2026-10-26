@@ -31,6 +31,10 @@ On the Mac: the repository checkout as the working directory.
      cp -p /etc/systemd/system/champions-net2.service champions-net2.service.before-tls'
 
 4. The unit, with the placeholders filled, checked before use
+   First create the system group champions-net2-proxy and add only nginx's worker account
+   to it (groupadd --system champions-net2-proxy; usermod -a -G champions-net2-proxy
+   <nginx-worker-user>). Restart nginx to pick up that membership. The service's
+   DynamicUser uses this group; no other local account may join it.
    ssh root@<server-address> 'cd /opt/champions-net2 &&
      sed -e "s/<server-host>/HOSTNAME/g" -e "s/<server-address>/ADDRESS/g" champions-net2.service > /etc/systemd/system/champions-net2.service &&
      systemd-analyze verify /etc/systemd/system/champions-net2.service'
@@ -75,8 +79,8 @@ On the Mac: the repository checkout as the working directory.
      cp -p champions-net2.service.before-tls /etc/systemd/system/champions-net2.service &&
      rm -f /etc/letsencrypt/renewal-hooks/deploy/champions-net2 && systemctl daemon-reload && systemctl restart champions-net2'
 
-Nothing else changes: the firewall already has 41900/tcp and 41900/udp open; the lobby,
-the browser page and its relay, nginx and the certificate itself are not touched.
+The firewall already has 41900/tcp and 41900/udp open; the lobby, the browser page and its
+relay, and the certificate itself are not touched.
 
 ----------------------------------------------------------------------------------------------
 The fallback on port 443 (2026-10-25): the conversation as a WebSocket behind nginx.  RUN on
@@ -88,11 +92,13 @@ the project's server 2026-10-25 (docs/issues/native-rendezvous.md, "The fallback
      cp -p /opt/champions-net2/rendezvous.py /etc/systemd/system/champions-net2.service /etc/nginx/sites-available/<site> $B/'
 
 11. The service with --ws-unix (the unit of this folder, placeholders filled as in step 4)
+   Set up the proxy group as in step 4 before installing the unit.
    scp tools/rendezvous/rendezvous.py root@<server-address>:/opt/champions-net2/rendezvous.py
    scp tools/rendezvous/deploy/champions-net2.service root@<server-address>:/opt/champions-net2/
    then step 4 and: systemctl daemon-reload && systemctl restart champions-net2
    Expect in the journal also "WebSocket on the Unix socket /run/champions-net2/ws.sock"; ls -l
-   /run/champions-net2/ws.sock shows srw-rw-rw-.
+   /run/champions-net2/ws.sock shows srw-rw----, group champions-net2-proxy; its directory
+   shows drwxr-x--- with the same group. Verify both before enabling the proxy location.
 
 12. nginx: nginx-net2.conf's location inside the 443 server block of <site>, then
    ssh root@<server-address> 'nginx -t && systemctl reload nginx'

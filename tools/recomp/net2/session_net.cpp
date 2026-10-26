@@ -54,6 +54,7 @@ namespace net2impl {
 namespace {
 
 const char* SAFE = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~-,:";
+const size_t OUTPUT_BYTES = 262144;     // conversation bytes waiting for the link (including hex and newlines)
 
 std::string hex(const uint8_t* data, size_t size) {
     static const char* digits = "0123456789abcdef";
@@ -332,6 +333,8 @@ struct Net : Backend {
         int64_t wait = tries < 1 ? 1000 : tries < 3 ? 3000 : tries < 6 ? 10000 : 30000;
         tries++;
         udp_since = 0;
+        last_hello = 0;
+        carrier_.reset_seen();
         carrier_.tunnel_out.clear();
         if (retry && before_up && transport == WAY_AUTO && ws_possible()) {
             // the link did not come up this way: the other way next (the WebSocket at once)
@@ -399,10 +402,19 @@ struct Net : Backend {
         if (r == sock::FAILED) { drop_link("The service at " + service_text + " cannot be reached: " + sock::error_text(sock::error())); return; }
         stage = CONNECTING;
     }
-    void send_line(const std::string& text) {
-        if (!linked()) return;
+    bool send_line(const std::string& text) {
+        if (!linked()) return false;
+        if (text.size() >= OUTPUT_BYTES || outbuf.size() >= OUTPUT_BYTES - text.size()) {
+            flush();
+            if (!linked()) return false;
+            if (text.size() >= OUTPUT_BYTES || outbuf.size() >= OUTPUT_BYTES - text.size()) {
+                drop_link("The link to the service is not accepting output.");
+                return false;
+            }
+        }
         outbuf += text;
         outbuf += '\n';
+        return true;
     }
     void flush() {
         while (linked() && !outbuf.empty()) {
@@ -416,8 +428,7 @@ struct Net : Backend {
         if (stage != ONLINE) return s.error(NET2_ERR_OFFLINE, "There is no link to the service.");
         n++;
         pending[n] = Pending{verb, note};
-        send_line(verb + " n=" + std::to_string(n) + (fields.empty() ? "" : " " + fields));
-        return NET2_OK;
+        return send_line(verb + " n=" + std::to_string(n) + (fields.empty() ? "" : " " + fields)) ? NET2_OK : NET2_ERR_OFFLINE;
     }
 
     // ---- what the service says -------------------------------------------------------------
@@ -451,13 +462,13 @@ struct Net : Backend {
             if (!unhex(l.get("nonce"), nonce, 16)) { drop_link("The service answered something else."); return; }
             if (l.num("v") != 1) { stop_for_good("The service speaks another version: this program is too old or too new for it."); return; }
             if (tried_register || (s.me.new_identity && !registered_once)) {
-                send_line("register v=1 verifier=" + hex(verifier, 32) + " name=" + enc(first_name));
+                if (!send_line("register v=1 verifier=" + hex(verifier, 32) + " name=" + enc(first_name))) return;
             } else {
                 uint8_t message[21], proof[32];
                 memcpy(message, nonce, 16);
                 memcpy(message + 16, "login", 5);
                 n2::hmac_sha256(verifier, 32, message, 21, proof);
-                send_line("login id=" + std::string(s.me.id) + " proof=" + hex(proof, 32));
+                if (!send_line("login id=" + std::string(s.me.id) + " proof=" + hex(proof, 32))) return;
             }
             stage = PROVING;
         } else if (v == "welcome") {
@@ -809,7 +820,7 @@ struct Net : Backend {
                 // no answer to any hello for 8 s: this network lets no UDP through to the service, and
                 // the datagrams go in the conversation (the tunnel)
                 if (udp_since == 0) udp_since = now;
-                bool tunnel = udp_mode == UDP_TUNNEL || (udp_mode == UDP_AUTO && !carrier_.answered() && now - udp_since > 8000);
+                bool tunnel = udp_mode == UDP_TUNNEL || (udp_mode == UDP_AUTO && !carrier_.answered(now) && now - udp_since > 8000);
                 if (tunnel && !carrier_.tunnelled()) {
                     carrier_.tunnel(true);
                     last_hello = 0;
@@ -844,7 +855,7 @@ struct Net : Backend {
                     send_line("local n=" + std::to_string(n) + " eps=" + enc(list));
                 }
             }
-        }
+        } else udp_since = 0;
         if (carrier_.is_open()) {
             carrier_.poll(now);
             update_routes(true);
@@ -860,8 +871,11 @@ struct Net : Backend {
     // the tunnel's datagrams, as lines of the conversation (also called by the game's sends: tunnel_send)
     void send_tunnel() {
         if (carrier_.tunnel_out.empty()) return;
-        if (stage == ONLINE)
-            for (const std::vector<uint8_t>& d : carrier_.tunnel_out) send_line("dg d=" + hex(d.data(), d.size()));
+        while (stage == ONLINE && !carrier_.tunnel_out.empty()) {
+            std::vector<uint8_t> d = std::move(carrier_.tunnel_out.front());
+            carrier_.tunnel_out.pop_front();
+            if (!send_line("dg d=" + hex(d.data(), d.size()))) return;
+        }
         carrier_.tunnel_out.clear();
         flush();
     }
@@ -887,14 +901,12 @@ struct Net : Backend {
         want_character = true;
         if (stage != ONLINE) return NET2_OK;            // sent when the link is up
         n++;
-        send_line("char n=" + std::to_string(n) + " name=" + enc(s.me.character.name) + " cls=" + enc(s.me.character.cls) + " level=" + std::to_string(s.me.character.level));
-        return NET2_OK;
+        return send_line("char n=" + std::to_string(n) + " name=" + enc(s.me.character.name) + " cls=" + enc(s.me.character.cls) + " level=" + std::to_string(s.me.character.level)) ? NET2_OK : NET2_ERR_OFFLINE;
     }
     int set_game(const std::string& level) override {
         if (stage != ONLINE) return NET2_OK;
         n++;
-        send_line("game n=" + std::to_string(n) + " level=" + enc(level));
-        return NET2_OK;
+        return send_line("game n=" + std::to_string(n) + " level=" + enc(level)) ? NET2_OK : NET2_ERR_OFFLINE;
     }
     int delete_everything() override { return request("delete"); }
     int friend_add(const std::string& code) override { return request("fadd", "code=" + code); }
@@ -948,14 +960,14 @@ struct Net : Backend {
                 s.event(NET2_EV_ROOM, 0, "", "", "", s.room.code);
             }
             if (was) s.event(NET2_EV_GAME_OVER, 0, "", "", "", s.room.code);
-            if (stage == ONLINE && was) { n++; send_line("gstate n=" + std::to_string(n) + " v=0"); }
+            if (stage == ONLINE && was) { n++; if (!send_line("gstate n=" + std::to_string(n) + " v=0")) return NET2_ERR_OFFLINE; }
             return NET2_OK;
         }
         if (my_phase == 0) return NET2_ERR_STATE;
         my_phase = 2;
         s.room.state = NET2_ROOM_IN_GAME;
         s.event(NET2_EV_ROOM, 0, "", "", "", s.room.code);
-        if (stage == ONLINE) { n++; send_line("gstate n=" + std::to_string(n) + " v=1 level=" + enc(level)); }
+        if (stage == ONLINE) { n++; if (!send_line("gstate n=" + std::to_string(n) + " v=1 level=" + enc(level))) return NET2_ERR_OFFLINE; }
         return NET2_OK;
     }
     n2::Carrier* carrier() override { return &carrier_; }
@@ -1039,7 +1051,7 @@ struct Net : Backend {
                 char copy[96];
                 snprintf(copy, sizeof copy, "fix=%08x words=%u can=%u does=%u", fix_set, fix_words, arith_can, arith_does);
                 n++;
-                send_line("copy n=" + std::to_string(n) + " " + copy);
+                if (!send_line("copy n=" + std::to_string(n) + " " + copy)) return NET2_ERR_OFFLINE;
             }
             return NET2_OK;
         }

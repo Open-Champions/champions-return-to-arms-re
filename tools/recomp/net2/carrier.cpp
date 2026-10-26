@@ -85,6 +85,7 @@ bool Carrier::open(const std::string& bind_to, std::string& problem) {
 void Carrier::close() {
     if (fd_ != -1) sock::close((sock::Handle)fd_);
     fd_ = -1;
+    reset_seen();
     end();
 }
 bool Carrier::is_open() const { return fd_ != -1; }
@@ -169,6 +170,8 @@ void Carrier::inject(const uint8_t* data, size_t size, int64_t now) {
 }
 
 void Carrier::hello(const Endpoint& service, const uint8_t key[8]) {
+    if (!(service_ == service)) reset_seen();
+    service_ = service;
     raw(service, KIND_HELLO, 0, 0, key, 8);
 }
 
@@ -209,8 +212,8 @@ void Carrier::take(const Endpoint& from, bool from_service, const uint8_t* in, s
     const uint8_t* body = in + HEAD;
     size_t size = got - HEAD;
     if (kind == KIND_SEEN) {
-        if (from_service || !service_.set()) {
-            answered_ = true;
+        if (from_service && size == 6 && slot == 0 && session == 0) {
+            answered_at_ = now;
             // in the tunnel the port is 0: the service saw no UDP socket, only the address
             if (size >= 6 && (body[4] | body[5])) { seen_.ip = ((uint32_t)body[0] << 24) | (body[1] << 16) | (body[2] << 8) | body[3]; seen_.port = (uint16_t)(body[4] | (body[5] << 8)); }
         } else strays++;

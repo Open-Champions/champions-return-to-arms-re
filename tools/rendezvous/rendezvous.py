@@ -118,6 +118,8 @@ LIMITS = {
     # WebSocket (--ws-unix, --ws-bind)
     'ws_request_bytes': 8192,       # the HTTP upgrade request
     'ws_frame_bytes': 65536,        # one frame from a client
+    'ws_control_per_second': 20,   # ping, pong and close frames, per connection
+    'ws_control_burst': 60,
     # what is kept on disk
     'player_days': 400,             # a player not seen for so long is deleted with everything about it
     'request_days': 30,             # a friend request nobody answered
@@ -428,6 +430,7 @@ class Conn:
         self.ws = 0                 # WebSocket: 0 not one, 1 the HTTP upgrade is awaited, 2 open
         self.ws_proxy = False       # behind the web server: the address comes from X-Real-IP
         self.ws_in = bytearray()    # WebSocket: bytes not yet a whole request or frame
+        self.ws_control = Bucket(LIMITS['ws_control_per_second'], LIMITS['ws_control_burst'])
         self.tunnel = Bucket(LIMITS['tunnel_per_second'], LIMITS['tunnel_burst'])
 
 
@@ -504,14 +507,18 @@ class Service:
         return tcp.getsockname()[1]
 
     def listen_ws_unix(self, path):
-        """The conversation as a WebSocket on a Unix socket, for the web server in front (it may connect: mode 0666)."""
+        """The conversation as a WebSocket on a Unix socket, shared only with the web server's group."""
         try:
             os.unlink(path)
         except FileNotFoundError:
             pass
         unix = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        unix.bind(path)
-        os.chmod(path, 0o666)
+        mask = os.umask(0o177)
+        try:
+            unix.bind(path)
+        finally:
+            os.umask(mask)
+        os.chmod(path, 0o660)
         unix.listen(64)
         unix.setblocking(False)
         self.sel.register(unix, selectors.EVENT_READ, ('listen', 'wsunix'))
@@ -619,14 +626,21 @@ class Service:
             self.read(conn)                                 # what came with the handshake's last flight
 
     def send(self, conn, text):
-        if conn.closing:
-            return
         data = text.encode('utf-8') + b'\n'
-        conn.outbuf += ws_frame(data) if conn.ws else data
-        if len(conn.outbuf) > LIMITS['output_bytes']:
+        self.enqueue(conn, ws_frame(data) if conn.ws else data)
+
+    def enqueue(self, conn, data, first=False):
+        if conn.closing:
+            return False
+        if len(conn.outbuf) + len(data) > LIMITS['output_bytes']:
             self.drop(conn)
-            return
+            return False
+        if first:
+            conn.outbuf[:0] = data
+        else:
+            conn.outbuf += data
         self.flush(conn)
+        return conn.sock in self.conns
 
     def flush(self, conn):
         if conn.handshaking or conn.ws == 1:
@@ -797,14 +811,18 @@ class Service:
                 break
             opcode, payload, used = frame
             del conn.ws_in[:used]
+            if opcode >= 8 and not conn.ws_control.take():
+                self.counts['limited'] += 1
+                self.drop(conn)
+                return None
             if opcode in (0, 1, 2):
                 out += payload
             elif opcode == 8:                               # close
                 self.drop(conn)
                 return None
             elif opcode == 9:                               # ping: pong
-                conn.outbuf += ws_frame(payload[:125], 10)
-                self.flush(conn)
+                if not self.enqueue(conn, ws_frame(payload[:125], 10)):
+                    return None
         return bytes(out)
 
     def ws_upgrade(self, conn, request):
@@ -844,11 +862,9 @@ class Service:
                 return False
         accept = base64.b64encode(hashlib.sha1(key.encode('latin-1') + WS_GUID).digest())
         reply = b'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + accept + b'\r\n\r\n'
-        conn.outbuf[:0] = reply                             # before the greeting that waits
         conn.ws = 2
         self.counts['ws'] += 1
-        self.flush(conn)
-        return conn.sock in self.conns
+        return self.enqueue(conn, reply, first=True)         # before the greeting that waits
 
     # ---- the conversation ----------------------------------------------------------------
     def answer(self, conn, fields, err=0, text='', **more):

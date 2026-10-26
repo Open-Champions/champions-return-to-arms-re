@@ -79,7 +79,8 @@ struct Carrier {
     // to the service from the same socket (so that it sees the address players must send to)
     void hello(const Endpoint& service, const uint8_t key[8]);
     Endpoint seen_as() const { return seen_; }      // what the service answered; unset until then
-    bool answered() const { return answered_; }     // the service answered a hello (by UDP or in the tunnel)
+    bool answered(int64_t now_ms) const { return answered_at_ && now_ms - answered_at_ <= 8000; }
+    void reset_seen() { answered_at_ = 0; seen_ = Endpoint{}; }
 
     // the tunnel: hello and relay in the session's conversation instead of UDP
     void tunnel(bool on) { tunnel_ = on; if (!on) tunnel_out.clear(); }
@@ -112,7 +113,8 @@ struct Carrier {
     Peer peers_[NET2_PLAYERS];
     Endpoint service_, seen_;
     uint8_t key_[8] = {0};
-    bool relay_ok_ = false, tunnel_ = false, answered_ = false, no_udp_ = false;
+    bool relay_ok_ = false, tunnel_ = false, no_udp_ = false;
+    int64_t answered_at_ = 0;           // the last valid reply in this service connection
     std::deque<Datagram> queue_;
     void take(const Endpoint& from, bool from_service, const uint8_t* in, size_t got, int64_t now);
     void raw(const Endpoint& to, uint8_t kind, uint8_t slot, uint32_t session, const uint8_t* a, size_t an, const uint8_t* b = nullptr, size_t bn = 0);

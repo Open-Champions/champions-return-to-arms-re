@@ -31,12 +31,13 @@ RestartSec=2
 
 # who it is, and what it may touch
 DynamicUser=yes
+Group=champions-net2-proxy
 StateDirectory=champions-net2
 StateDirectoryMode=0700
 # the WebSocket for nginx in front (the fallback on 443: nginx-net2.conf beside this file); the
-# directory must be enterable by nginx's user, the socket is made 0666 by the service
+# only the service and nginx's worker account belong to the proxy group (STEPS.txt)
 RuntimeDirectory=champions-net2
-RuntimeDirectoryMode=0755
+RuntimeDirectoryMode=0750
 UMask=0077
 ProtectSystem=strict
 ProtectHome=yes
