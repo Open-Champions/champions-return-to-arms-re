@@ -763,9 +763,12 @@ def ws_run(check, binary, work):
         c.send('host')
         found = c.wait(r'EVENT ROOM code=0 who= room=([A-Z2-9]{5})')
         room = found.group(1) if found else 'NONE'
-        a.send('join ' + room)
         b.send('join ' + room)
-        check('the room by its code, over both kinds of link', c.until('room', r'count=3', 10) is not None, c.ask('room'))
+        # The route and datagram checks below use Wynn in slot 1 and Wren in slot 2.
+        # Different links can deliver joins in either order: wait for the first assignment.
+        joined = c.until('room', r'slot 1 Wynn', 10) is not None
+        a.send('join ' + room)
+        check('the room by its code, over both kinds of link', joined and c.until('room', r'count=3', 10) is not None, c.ask('room'))
         check('UDP blocked: after 8 s without an answer to a hello the datagrams go in the conversation, and the player is told',
               b.wait(r'EVENT NOTICE .*UDP is blocked on this network', 20, since=0) is not None and 'tunnel' in b.until('debug udp', r'tunnel', 5).string,
               b.ask('debug udp'))

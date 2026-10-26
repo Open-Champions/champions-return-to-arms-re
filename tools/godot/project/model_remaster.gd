@@ -22,6 +22,7 @@ extends Node
 # simulation (two copies in a room stay in step with it on or off).
 
 const OWN_LAYER := 1 << 19
+const ResourceBudget := preload("res://resource_budget.gd")
 const CLASS_NAMES := ["barbarian", "cleric", "shadowknight", "ranger", "wizard", "berserker", "shaman"]
 const CACHE := "user://model-remaster"
 const MESH_VERSION := 6         # 3: welded within a tolerance, T-junctions split; 4: covered layers drawn inside; 5: decals; 6: welded only where skinned alike
@@ -379,7 +380,7 @@ func _load_cached(key: String, name: String) -> bool:
 	var path := _cache_path(key, name)
 	if not FileAccess.file_exists(path):
 		return false
-	var job := {"path": path, "out": null}
+	var job := {"path": path, "out": null, "task": -1}
 	job["task"] = WorkerThreadPool.add_task(func():
 		var file := FileAccess.open(job.path, FileAccess.READ)
 		if file != null:
@@ -653,9 +654,9 @@ func _figure_material(g: Dictionary, sig: String) -> RID:
 
 # the model's levels with its packets gathered by signature (one surface each), made once per grouping
 func _merged(b: Dictionary, name: String) -> Dictionary:
-	# The model's packets gathered by material signature into surfaces, per level, as meshes.  Building them (the merge
-	# and Godot's own conversion of the arrays) is done on a worker thread: on the main thread a dense model held up a
-	# frame by tens of milliseconds.  Until the grouping of the current materials is ready the last one stays in use;
+	# The model's packets gathered by material signature into surfaces, per level.  The worker merges only arrays;
+	# their render meshes are made here, a surface at a time within the frame's resource budget.
+	# Until the grouping of the current materials is ready the last one stays in use;
 	# {} when there has been none yet (the figure stays the game's).
 	var mine: Dictionary = (b.get("by_name", {}) as Dictionary).get(name, {})
 	if mine.is_empty():
@@ -681,42 +682,60 @@ func _merged(b: Dictionary, name: String) -> Dictionary:
 		mine["last"] = merged[gkey]
 		return merged[gkey]
 	var job: Dictionary = b.get("merge_job", {})
-	if job.is_empty() or String(job.gkey) != gkey:
-		if not job.is_empty():
-			return mine.last                        # one at a time per model: the one running finishes first
+	if job.is_empty():
 		if merges_running >= 2:
 			return mine.last
-		job = {"gkey": gkey, "sigs": sigs, "groups": groups, "levels": b.levels, "out": []}
+		job = {"gkey": gkey, "sigs": sigs, "groups": groups, "levels": b.levels, "out": [], "task": -1}
 		job["task"] = WorkerThreadPool.add_task(_merge_task.bind(job), false, "remaster merge")
 		merges_running += 1
 		b["merge_job"] = job
 		return mine.last
-	if not WorkerThreadPool.is_task_completed(int(job.task)):
-		return mine.last
-	WorkerThreadPool.wait_for_task_completion(int(job.task))
-	merges_running -= 1
+	if job.has("task"):
+		if not WorkerThreadPool.is_task_completed(int(job.task)):
+			return mine.last
+		WorkerThreadPool.wait_for_task_completion(int(job.task))
+		job.erase("task")
+		merges_running -= 1
+		job["meshes"] = []
+		job["surface"] = 0
+		job["mesh"] = null
+		job["groups_made"] = PackedInt32Array()
+	while (job.meshes as Array).size() < (job.out as Array).size():
+		var started := ResourceBudget.begin()
+		if started < 0:
+			return mine.last
+		if job.mesh == null:
+			job["mesh"] = ArrayMesh.new()
+		var surfaces: Array = job.out[(job.meshes as Array).size()]
+		var gi := int(job.surface)
+		if gi < surfaces.size():
+			var arrays: Array = surfaces[gi]
+			if arrays[Mesh.ARRAY_VERTEX] != null:
+				(job.mesh as ArrayMesh).add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+				job.groups_made.append(gi)
+			job["surface"] = gi + 1
+		if int(job.surface) == surfaces.size():
+			(job.mesh as ArrayMesh).set_meta("surface_group", job.groups_made)
+			job.meshes.append(job.mesh)
+			job["mesh"] = null
+			job["surface"] = 0
+			job["groups_made"] = PackedInt32Array()
+		ResourceBudget.end(started)
 	b.erase("merge_job")
-	var m := {"gkey": gkey, "meshes": job.out, "sigs": sigs}
-	merged[gkey] = m
+	var m := {"gkey": job.gkey, "meshes": job.meshes, "sigs": job.sigs}
+	merged[job.gkey] = m
+	if String(job.gkey) != gkey:
+		return mine.last                # materials changed during the upload: finish this job, then ask for the new one
 	mine["version"] = packets_version
 	mine["last"] = m
 	return m
 
 
 func _merge_task(job: Dictionary) -> void:
-	var meshes: Array = []
+	var levels: Array = []
 	for surfaces in job.levels:
-		var out: Array = rm.call("merge", surfaces, job.groups, (job.sigs as Array).size())
-		var mesh := ArrayMesh.new()
-		var sg := PackedInt32Array()
-		for gi in out.size():
-			var arrays: Array = out[gi]
-			if arrays[Mesh.ARRAY_VERTEX] != null:
-				mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-				sg.append(gi)
-		mesh.set_meta("surface_group", sg)
-		meshes.append(mesh)
-	job["out"] = meshes
+		levels.append(rm.call("merge", surfaces, job.groups, (job.sigs as Array).size()))
+	job["out"] = levels
 
 
 func _draw(f: Dictionary, cam: Transform3D, orders: Dictionary) -> void:
@@ -807,23 +826,34 @@ func _maps_tick() -> void:
 		if String(mp.state) == "running":
 			if WorkerThreadPool.is_task_completed(int(mp.task)):
 				WorkerThreadPool.wait_for_task_completion(int(mp.task))
+				mp.erase("task")
 				maps_running -= 1
 				var out: Dictionary = mp.job.out
 				if out.has("normal"):
-					var made: Dictionary = out.get("textures", {})
-					for k in ["normal", "orm", "aux"]:
-						mp[k] = made[k] if made.has(k) else (ImageTexture.create_from_image(out[k]) if out.get(k) != null else null)
+					mp["state"] = "uploading"
+					mp["next_map"] = 0
+				else:
+					mp["state"] = "failed"
+					mp.erase("job")
+			continue
+		if String(mp.state) == "uploading":
+			var started := ResourceBudget.begin()
+			if started >= 0:
+				var out: Dictionary = mp.job.out
+				var k: String = ["normal", "orm", "aux"][int(mp.next_map)]
+				mp[k] = ImageTexture.create_from_image(out[k]) if out.get(k) != null else null
+				mp["next_map"] = int(mp.next_map) + 1
+				ResourceBudget.end(started)
+				if int(mp.next_map) == 3:
+					mp["state"] = "done"
 					for sig in templates:
 						if String(templates[sig].maps_key) == String(mk):
 							_template_maps(templates[sig])
-					mp["state"] = "done"
 					mp["md5"] = String(mp.job.get("md5", ""))
 					if debug:
 						print("rta_godot: remaster: maps %dx%d %s%s" % [(out.normal as Image).get_width(), (out.normal as Image).get_height(), str(out.get("classes", "")),
 							" (from the cache)" if out.get("cached", false) else ""])
-				else:
-					mp["state"] = "failed"
-				mp.erase("job")
+					mp.erase("job")
 			continue
 		if String(mp.state) != "wait" or frame_no - int(mp.since) < 45 or maps_running >= 2:
 			continue
@@ -845,8 +875,8 @@ func _maps_tick() -> void:
 		maps_running += 1
 
 
-# on a worker thread: the maps, then their textures made there as well (a 4096 picture's three textures with their mip
-# maps were a stall of a tenth of a second on the main thread); ORM and AUX at half size past 2048 (they are smooth)
+# On a worker thread: CPU images and mipmaps only.  Their textures are uploaded by _maps_tick, over several frames.
+# ORM and AUX stay at half size past 2048 (they are smooth).
 func _derive(job: Dictionary) -> void:
 	_derive_images(job)
 	var out: Dictionary = job.out
@@ -860,11 +890,6 @@ func _derive(job: Dictionary) -> void:
 			im.resize(im.get_width() / 2, im.get_height() / 2, Image.INTERPOLATE_BILINEAR)
 			im.generate_mipmaps()
 			out[k] = im
-	var tex := {}
-	for k in ["normal", "orm", "aux"]:
-		if out.get(k) != null:
-			tex[k] = ImageTexture.create_from_image(out[k])
-	out["textures"] = tex
 
 
 func _derive_images(job: Dictionary) -> void:
@@ -968,7 +993,7 @@ func _exit_tree() -> void:
 	for key in bakes:
 		if bakes[key].has("job"):
 			WorkerThreadPool.wait_for_task_completion(int(bakes[key].job.task))
-		if bakes[key].has("merge_job"):
+		if bakes[key].has("merge_job") and bakes[key].merge_job.has("task"):
 			WorkerThreadPool.wait_for_task_completion(int(bakes[key].merge_job.task))
 	for t in io_tasks:
 		WorkerThreadPool.wait_for_task_completion(int(t))

@@ -85,6 +85,7 @@ const DT := 1.0 / 60.0
 var models := {}                # outfit -> model (below), or {"failed": why}
 var weapon_models := {}         # weapon class name -> {mesh, materials, axis, side, length} or {} (none)
 const ErFit := preload("res://er_fit.gd")
+const ResourceBudget := preload("res://resource_budget.gd")
 var fits := {}                  # outfit|build|class -> {"task", "out"} while fitting, then the fitted figure (er_fit.gd) or {"failed"}
 var fit_cfg: ConfigFile         # er_fit.cfg
 var armour_shader: Shader
@@ -684,25 +685,67 @@ func _weapon_model(cls: String) -> Dictionary:
 	return weapon_models[cls]
 
 
-# A glTF file read and made into nodes on a worker thread (it took 50 to 100 ms each on the main thread: the outfit, the
-# weapon and the creatures' figures at the moment the layer was turned on or a new kind came into view, one stop of 0.2 s
-# in a picture).  Returns the scene's root when it is there, null while it is being read, false when it could not be.
-var loads := {}                     # path -> {"task": WorkerThreadPool task, "out": {"root": Node}}
+# A glTF file read into its own state on a worker; no scene nodes or render meshes are made there.  Once joined, its
+# meshes are uploaded and its scene generated on the main thread, sharing a frame budget with the model remaster.
+# Returns the scene's root when it is there, null while loading, false when it could not be read.  The game's figure
+# stays visible until the whole replacement is ready.  Each engine call is indivisible; do not drain a batch at once.
+var loads := {}                     # path -> {task, out: {doc, state, ok}, mesh: next mesh to upload, materials}
+var ordered_materials := {}         # mesh -> armour materials, prepared a surface at a time before its scene is returned
 func _gltf(path: String) -> Variant:
 	if loads.has(path):
 		var l: Dictionary = loads[path]
-		if not WorkerThreadPool.is_task_completed(int(l.task)):
+		if l.has("task"):
+			if not WorkerThreadPool.is_task_completed(int(l.task)):
+				return null
+			WorkerThreadPool.wait_for_task_completion(int(l.task))
+			l.erase("task")
+		if not l.out.ok:
+			loads.erase(path)
+			return false
+		var state: GLTFState = l.out.state
+		var meshes := state.get_meshes()
+		while int(l.mesh) < meshes.size():
+			if not l.has("render_mesh"):
+				var started := ResourceBudget.begin()
+				if started < 0:
+					return null
+				var mesh: ImporterMesh = (meshes[int(l.mesh)] as GLTFMesh).mesh
+				l["render_mesh"] = mesh.get_mesh() if mesh != null else null    # generate_scene reuses this cache
+				ResourceBudget.end(started)
+				return null
+			var mesh: Mesh = l.render_mesh
+			if mesh != null:
+				var materials: Array = l.materials
+				while materials.size() < mesh.get_surface_count():
+					var started := ResourceBudget.begin()
+					if started < 0:
+						return null
+					var i := materials.size()
+					var m := mesh.surface_get_material(i)
+					materials.append(_armour_material(m, String(m.resource_name) if m != null else "", _surface_turned(mesh, i)))
+					ResourceBudget.end(started)
+				ordered_materials[mesh] = materials
+			l.erase("render_mesh")
+			l["materials"] = []
+			l["mesh"] = int(l.mesh) + 1
+			return null                  # the node tree gets its own frame after the last mesh
+		var started := ResourceBudget.begin()
+		if started < 0:
 			return null
-		WorkerThreadPool.wait_for_task_completion(int(l.task))
+		var root: Node = (l.out.doc as GLTFDocument).generate_scene(state)
+		ResourceBudget.end(started)
 		loads.erase(path)
-		return (l.out as Dictionary).get("root", false)
-	var out := {}
+		return root if root != null else false
+	# Resource loading is supported on a worker when the resources are private to it.  Only the completed task's
+	# state is handed to the main thread; generate_scene (including skeletons/nodes) must never run on the worker.
+	var out := {"doc": null, "state": null, "ok": false}
 	var task := WorkerThreadPool.add_task(func() -> void:
 		var doc := GLTFDocument.new()
 		var state := GLTFState.new()
-		if doc.append_from_file(path, state) == OK:
-			out["root"] = doc.generate_scene(state))
-	loads[path] = {"task": task, "out": out}
+		out["ok"] = doc.append_from_file(path, state) == OK
+		out["doc"] = doc
+		out["state"] = state)
+	loads[path] = {"task": task, "out": out, "mesh": 0, "materials": []}
 	return null
 
 
@@ -716,11 +759,10 @@ func _exit_tree() -> void:
 	fits.clear()
 	for path in loads:
 		var l: Dictionary = loads[path]
-		WorkerThreadPool.wait_for_task_completion(int(l.task))
-		var root: Variant = (l.out as Dictionary).get("root", null)
-		if root is Node:
-			(root as Node).free()
+		if l.has("task"):
+			WorkerThreadPool.wait_for_task_completion(int(l.task))
 	loads.clear()
+	ordered_materials.clear()
 
 
 func _loading(set_name: String) -> bool:
@@ -1479,6 +1521,8 @@ const LEG_RADIUS := 0.11            # metres (times the figure's units a metre):
 func _in_order(mesh: Mesh) -> Array:
 	# (round 4: er_armour.gdshader - cards cut, not blended; the light the level's own; a surface wound the other way
 	# shaded from its outside)
+	if ordered_materials.has(mesh):
+		return ordered_materials[mesh]
 	var out: Array = []
 	for i in mesh.get_surface_count():
 		var m := mesh.surface_get_material(i)
