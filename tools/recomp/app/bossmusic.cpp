@@ -4,6 +4,7 @@
 #include "gamestate.h"
 #include "iface.h"          // rta::memory(): main memory, read only here
 #include "soulscombat.h"    // the lock-on of the souls-style mode (its local block in guest memory)
+#include "fpaim.h"          // music.boss = auto: on when a Remastered mode (Hardcore, aiming) is wanted
 #include "app_rt.h"         // apprt::set_music_volume: the stream driver's music stream alone
 
 #include <algorithm>
@@ -176,7 +177,7 @@ struct Load {                                   // one file on the loader's thre
 };
 
 struct Director {
-    bool enabled = true;
+    int mode = -1;                              // music.boss: 1 on, 0 off, -1 auto (on only with a Remastered mode: enabled())
     double volume = 0.8;
     std::string dir_setting, data;
     std::string folder;                         // what was scanned
@@ -197,6 +198,11 @@ struct Director {
     rta_gs_reader* reader = nullptr;
     const rta_gamestate* st = nullptr;
 } D;
+
+// music.boss = auto (the default): a Remastered feature, so on only when the program plays a Remastered game - Hardcore
+// (combat.mode) or aiming by looking (combat.aim) wanted - and off in Classic, the original with the art pack and 60
+// a second, as the portal maps it (tools/godot/project/portal/edition.gd: boss music is Remastered's).
+bool enabled() { return D.mode == 1 || (D.mode < 0 && (soulscombat::wanted() || fpaim::wanted())); }
 
 void say(const std::string& text) {
     if (D.log_lines >= 200) return;
@@ -304,7 +310,7 @@ void set_data_folder(const std::string& data) { D.data = data; }
 
 bool setting(const char* key, const char* value) {
     std::string k = key, v = value ? value : "";
-    if (k == "music.boss") D.enabled = !(v == "off" || v == "no" || v == "0" || v == "false");
+    if (k == "music.boss") D.mode = v == "auto" || v.empty() ? -1 : (v == "off" || v == "no" || v == "0" || v == "false") ? 0 : 1;
     else if (k == "music.boss_dir") { D.dir_setting = v; D.scanned_for.clear(); D.scanned = false; }
     else if (k == "music.boss_volume") D.volume = std::clamp(atof(v.c_str()), 0.0, 1.0);
     else if (k == "music.boss_engage") D.forced = v == "on" ? 1 : v == "off" ? 0 : -1;    // test aid: engaged by hand, never, or by the game (auto)
@@ -315,10 +321,10 @@ bool setting(const char* key, const char* value) {
 std::string settings_text() {
     char text[512];
     snprintf(text, sizeof text,
-             "music.boss = %s             # the player's own music for boss fights: on | off (files in music.boss_dir; none: nothing changes)\n"
+             "music.boss = %s             # the player's own music for boss fights: auto (on in Hardcore or aiming, off in Classic) | on | off (files in music.boss_dir; none: nothing changes)\n"
              "music.boss_dir = %s         # the folder of tracks (.ogg .mp3 .wav); empty: <data>/music/boss/\n"
              "music.boss_volume = %.2f    # 0 to 1: the player's tracks\n",
-             D.enabled ? "on" : "off", D.dir_setting.c_str(), D.volume);
+             D.mode < 0 ? "auto" : D.mode ? "on" : "off", D.dir_setting.c_str(), D.volume);
     return text;
 }
 
@@ -336,7 +342,7 @@ void blank(uint64_t frame) {
     D.last_frame = frame;
     // Nothing to play and nothing playing: the game's state is not even read (costs nothing).
     if (!D.scanned) scan();
-    bool want_state = (D.enabled && !D.tracks.empty()) || D.state != IDLE;
+    bool want_state = (enabled() && !D.tracks.empty()) || D.state != IDLE;
     if (want_state) {
         if (!D.reader) D.reader = rta_gs_create();
         D.st = rta_gs_update(D.reader, rta::memory());
@@ -346,7 +352,7 @@ void blank(uint64_t frame) {
         std::string here(s->level, strnlen(s->level, sizeof s->level));
         if (here != D.scanned_for) { D.scanned_for = here; scan(); }      // once per level: files put there while playing are found at the next level
     }
-    bool engaged = D.enabled && !D.tracks.empty() && s && (D.forced >= 0 ? D.forced == 1 : boss_engaged(*s));
+    bool engaged = enabled() && !D.tracks.empty() && s && (D.forced >= 0 ? D.forced == 1 : boss_engaged(*s));
     if (engaged) D.engaged_frames++;
     uint32_t tick = s ? s->sim_tick : 0;
     char line[512];
@@ -382,7 +388,7 @@ void blank(uint64_t frame) {
                 D.played++;
                 snprintf(line, sizeof line, "playing %s (%.1f s, looped) from tick %u", file_name(job->path).c_str(), seconds, tick);
                 say(line);
-            } else if (!D.enabled) {
+            } else if (!enabled()) {
                 D.load.reset();                 // the thread finishes by itself; what it made is dropped
                 D.state = IDLE;
             }
@@ -394,7 +400,7 @@ void blank(uint64_t frame) {
                 say(line);
             }
             D.calm_for = engaged ? 0.0 : D.calm_for + dt;
-            if (D.calm_for > HOLD_AFTER || !D.enabled) {
+            if (D.calm_for > HOLD_AFTER || !enabled()) {
                 D.state = LEAVING;
                 snprintf(line, sizeof line, "the fight is over (tick %u): back to the game's music over %.1f s", tick, FADE_OUT);
                 say(line);
@@ -402,7 +408,7 @@ void blank(uint64_t frame) {
             break;
         case LEAVING:
             D.level = std::max(0.0, D.level - dt / FADE_OUT);
-            if (engaged && D.enabled) {         // it was not over
+            if (engaged && enabled()) {         // it was not over
                 D.state = PLAYING;
                 D.calm_for = 0;
                 snprintf(line, sizeof line, "a boss engaged again at tick %u: %s comes back up", tick, file_name(D.last_track).c_str());
@@ -424,7 +430,7 @@ std::string figures() {
     float peak = g_peak.exchange(0.0f);
     snprintf(text, sizeof text, "boss music: %s, %zu track(s) in %s; state %s, level %.2f, track %s, own peak since the last report %.1f dB, game music %.2f "
              "(set %.2f); %llu frames mixed, %llu blanks engaged, %llu played",
-             D.enabled ? "on" : "off", D.tracks.size(), D.folder.empty() ? folder_now().c_str() : D.folder.c_str(), STATE_NAMES[D.state], D.level,
+             enabled() ? (D.mode < 0 ? "auto, on" : "on") : (D.mode < 0 ? "auto, off" : "off"), D.tracks.size(), D.folder.empty() ? folder_now().c_str() : D.folder.c_str(), STATE_NAMES[D.state], D.level,
              D.last_track.empty() ? "-" : file_name(D.last_track).c_str(), peak > 0 ? 20.0 * std::log10(peak) : -200.0,
              D.game_applied < 0 ? D.game_base : D.game_applied, D.game_base, (unsigned long long)g_mixed_frames.load(),
              (unsigned long long)D.engaged_frames, (unsigned long long)D.played);

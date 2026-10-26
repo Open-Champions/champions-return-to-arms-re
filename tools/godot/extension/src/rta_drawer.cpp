@@ -253,8 +253,9 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
     bool subtract;
     if (!blend_of(d, sc, sk, dc, dk, fix, blend_c, subtract)) approximated++;
     uint32_t variant = extra;
-    // stored-space blending (submit): a draw of the 3-D world reads such a surface too (V_DECODE), it is never drawn so (V_STORED)
-    variant |= (extra & V_WORLD) ? (draw_space & V_DECODE) : draw_space;
+    // stored-space blending (submit): a draw of the 3-D world reads such a surface too (V_DECODE); it is drawn so (V_STORED) only
+    // in a Classic world (stored_world: no light of Godot's in it), never a shadow caster's twin
+    variant |= (extra & V_WORLD) ? (draw_space & ((extra & V_CASTER) ? V_DECODE : (V_DECODE | V_STORED))) : draw_space;
     if (!(extra & V_CASTER)) {
         if (subtract) variant |= V_BLEND_SUB;
         if (d.ztst == 1) { if (d.depth_write) { if (inverted) variant |= V_DEPTH_INVERTED; } else variant |= V_DEPTH_ALWAYS; }
@@ -686,7 +687,9 @@ void RtaDrawer::submit() {
     if (world_now)
         for (uint32_t i = 0; i < f.draw_count && !world_has_scene; i++) if (f.draws[i].target == world_now->id && f.draws[i].scene_first >= 0) world_has_scene = true;
     static const bool stored_on = !getenv("RTA_GODOT_LINEAR_BLEND");     // (a test aid: blending in linear light, as before)
-    auto stored_for = [&](const Target* t) { return stored_on && rd && !(t == world_now && world_has_scene); };
+    // ... and the world's too in Classic (stored_world), where nothing of Godot's own light is in it: the GS's blending exactly
+    const bool world_stored = stored_world && !scene_lit();
+    auto stored_for = [&](const Target* t) { return stored_on && rd && (!(t == world_now && world_has_scene) || world_stored); };
     std::vector<Pass*> used_this_frame;
     std::unordered_set<uint32_t> blob_read, other_read;     // surfaces read this frame by left-out ground shadows / by anything else
     std::unordered_set<int> read_in_frame;                  // runs read by a draw of this frame that is drawn

@@ -559,6 +559,9 @@ void fragment() {
 #else
 #ifdef GS_STORED_SPACE
 	ALBEDO = clamp(rgb + haze, 0.0, 1.0);              // the stored values as they are: blended as the GS blends them
+#ifdef GS_FUSED
+	ALBEDO = clamp(ALBEDO + clamp(rgb2 + haze2, 0.0, 1.0) * destination, 0.0, 1.0);    // (a Classic world: rta_drawer.h stored_world)
+#endif
 #else
 	ALBEDO = to_linear(clamp(rgb + haze, 0.0, 1.0));
 #ifdef GS_FUSED

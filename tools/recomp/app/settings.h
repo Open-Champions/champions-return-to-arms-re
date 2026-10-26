@@ -12,7 +12,9 @@
 //   anisotropy   = 16         anisotropic filtering of the 3-D scene's textures: 1 (off) to 16
 //   mipmaps      = yes        mip maps for the game's own textures in the 3-D scene
 //   art_pack     =            a folder of replacement pictures (tools/play-net/README.md,
-//                             "Upscaled art"); empty = the game's own art
+//                             "Upscaled art"); empty = found as the Godot scene finds it
+//                             (find_art_pack: $RTA_ART_PACK, else the Play-RTA folder's
+//                             textures/ when it is there); none = the game's own art
 //   art_memory   = 3072       megabytes of video memory the pack may take
 //   view         = overhead   the camera: overhead (the game's own), action, chase, shoulder,
 //                             first; and view.<mode>.<name> = value for each view's own
@@ -26,7 +28,8 @@
 //   game_hud_text = yes       its second group: the boss meter, the one-line message and the
 //                             prompt box (hide_text)
 //   music_volume = 1          0..1: the game's music alone; speech and effects stay as they are
-//   music.boss   = on         the player's own music for boss fights (bossmusic.h): on | off;
+//   music.boss   = auto       the player's own music for boss fights (bossmusic.h): auto (on with
+//                             Hardcore or aiming, off in Classic) | on | off;
 //                             music.boss_dir = the folder (empty: <data>/music/boss/),
 //                             music.boss_volume = 0..1
 //   frame_cap    = 60         pictures a second: 60, 30 (every other picture is shown), or
@@ -38,6 +41,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <sys/stat.h>
 #include <utility>
 #include <vector>
 
@@ -99,6 +103,34 @@ struct Settings {
     // Everything switched off: the picture as the console makes it, only larger.
     void plain() { aspect = 4.0 / 3.0; samples = 0; anisotropy = 1; mipmaps = false; art_pack.clear(); }
 
+    // The art pack when the command line names none, found the way the Godot scene finds it (tools/godot/project/main.gd
+    // _art_pack_folder): --art-pack DIR, else $RTA_ART_PACK, else the settings file's art_pack, else the Play-RTA folder's
+    // textures/ when it is there (macOS ~/Library/Application Support/Play-RTA/textures, Windows %APPDATA%\Play-RTA\textures,
+    // Linux ~/.local/share/Play-RTA/textures) - the folder the Mac application and the Godot scene read.  "none" or "off"
+    // (on the command line, in $RTA_ART_PACK or in the file): the game's own art.  `named`: --art-pack was given (its value
+    // is in art_pack already).  `no_default`: --plain or a measuring run (--offscreen: the tick-keyed pictures of
+    // native-app.md 12 and 13 are the game's own art unless a pack is named) - nothing is looked for.
+    void find_art_pack(bool named, bool no_default) {
+        auto off = [](const std::string& v) { return v == "none" || v == "off" || v == "no"; };
+        if (named || no_default) { if (off(art_pack)) art_pack.clear(); return; }
+        const char* env = getenv("RTA_ART_PACK");
+        if (env && *env) { art_pack = off(env) ? std::string() : std::string(env); return; }
+        if (off(art_pack)) { art_pack.clear(); return; }
+        if (!art_pack.empty()) return;
+#if defined(_WIN32)
+        const char* base = getenv("APPDATA");
+        std::string place = base && *base ? std::string(base) + "\\Play-RTA\\textures" : std::string();
+#elif defined(__APPLE__)
+        const char* base = getenv("HOME");
+        std::string place = base && *base ? std::string(base) + "/Library/Application Support/Play-RTA/textures" : std::string();
+#else
+        const char* base = getenv("HOME");
+        std::string place = base && *base ? std::string(base) + "/.local/share/Play-RTA/textures" : std::string();
+#endif
+        struct stat st;
+        if (!place.empty() && stat(place.c_str(), &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR) art_pack = place;
+    }
+
     // Reads `path`; lines that are not "key = value" with a known key are reported through `note`.
     bool load(const std::string& path, void (*note)(const std::string&) = nullptr) {
         FILE* f = fopen(path.c_str(), "r");
@@ -140,7 +172,7 @@ struct Settings {
         fprintf(f, "antialiasing = %d         # samples per pixel of the 3-D scene: off, 2, 4, 8\n", samples);
         fprintf(f, "anisotropy = %d          # anisotropic filtering: 1 (off) to 16\n", anisotropy);
         fprintf(f, "mipmaps = %s             # mip maps for the game's own textures in the 3-D scene\n", yes(mipmaps));
-        fprintf(f, "art_pack = %s            # a folder of replacement pictures; empty: the game's own art\n", art_pack.c_str());
+        fprintf(f, "art_pack = %s            # a folder of replacement pictures; empty: the Play-RTA folder's textures/ when there; none: the game's own art\n", art_pack.c_str());
         fprintf(f, "art_memory = %d         # megabytes of video memory the art pack may take\n", art_memory);
         fprintf(f, "frame_cap = %d           # pictures a second: 60, 30, or 0 for no cap (the game then runs fast: for measuring only)\n", frame_cap);
         fprintf(f, "game_hud = %s            # the game's own HUD layer (status, gold, compass, minimap, spell selector); no: left out of the picture\n", yes(game_hud));

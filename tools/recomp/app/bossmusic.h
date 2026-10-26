@@ -26,7 +26,9 @@
 //
 // Settings (lines of <data>/settings.txt, or --boss-music on|off, --boss-music-dir DIR,
 // --boss-music-volume V; "app music ..." while it runs):
-//   music.boss = on               on | off
+//   music.boss = auto             auto (the default): on when a Remastered mode is wanted (Hardcore,
+//                                 combat.mode; aiming, combat.aim), off in Classic - boss music is a
+//                                 Remastered feature (portal/edition.gd) | on | off
 //   music.boss_dir =              the folder of tracks; empty: <data>/music/boss/
 //   music.boss_volume = 0.8       0..1, the player's tracks
 //   music.boss_engage = auto      a test aid: on (engaged whatever the game says), off (never), auto

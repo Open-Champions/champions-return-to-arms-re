@@ -137,6 +137,7 @@
 #include <atomic>
 #include <cmath>
 #include <condition_variable>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1681,6 +1682,9 @@ int main(int argc, char** argv) {
         if (!file.empty() && !opt.set.load(file, log_line) && file == opt.settings_file) log_line("cannot read the settings file " + file);
         if (plain) opt.set.plain();
         for (auto& kv : overrides) opt.set.set(kv.first, kv.second);
+        // no pack named: the one the Godot scene would draw with (settings.h find_art_pack; not in a measuring run)
+        opt.set.find_art_pack(std::any_of(overrides.begin(), overrides.end(), [](const std::pair<std::string, std::string>& kv) { return kv.first == "art_pack"; }),
+                              plain || opt.offscreen);
         opt.window_w = opt.set.window_w; opt.window_h = opt.set.window_h;
         opt.fullscreen = opt.set.fullscreen;
         opt.size_w = opt.set.size_w; opt.size_h = opt.set.size_h; opt.scale = opt.set.scale;

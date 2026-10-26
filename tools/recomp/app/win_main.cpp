@@ -1321,6 +1321,9 @@ int main(int argc, char** argv) {
         if (!file.empty() && !opt.set.load(file, log_line) && file == opt.settings_file) log_line("cannot read the settings file " + file);
         if (plain) opt.set.plain();
         for (auto& kv : overrides) opt.set.set(kv.first, kv.second);
+        // no pack named: the one the Godot scene would draw with (settings.h find_art_pack; not in a measuring run)
+        opt.set.find_art_pack(std::any_of(overrides.begin(), overrides.end(), [](const std::pair<std::string, std::string>& kv) { return kv.first == "art_pack"; }),
+                              plain || opt.offscreen);
         // a folder given with a slash at its end is the same folder
         while (opt.set.art_pack.size() > 3 && (opt.set.art_pack.back() == '\\' || opt.set.art_pack.back() == '/')) opt.set.art_pack.pop_back();
         opt.window_w = opt.set.window_w; opt.window_h = opt.set.window_h;

@@ -189,6 +189,7 @@ var backdrop_instance: RID
 var backdrop_bare := 0                  # frames in a row without the level's own draws
 var backdrop_z := 0.0
 var backdrop_on := false
+var classic_look := {}                 # portal/edition.gd CLASSIC_LOOK as key -> value (_classic_look_in_force)
 
 
 static var globals_added := false
@@ -255,12 +256,40 @@ func _ready() -> void:
 	remaster.set("view", self)
 	remaster.set("er", er)
 	add_child(remaster)
+	_world_layer_if_wanted()
+	_camera_options()
+
+
+# The Elden Ring world layer (er_world.gd) is made - and its materials read, about half a second - only when look.er_world
+# is on: never in Classic (the portal's Classic look sets it off), and at the first frame after a switch to Remastered
+# (clear_look puts the key back on).  Once made it stays and follows the key itself (er_world.gd before_frame).
+func _world_layer_if_wanted() -> void:
+	if world_layer != null or String(look.get("er_world", "on")) != "on":
+		return
 	world_layer = Node.new()
 	world_layer.set_script(ErWorld)
 	world_layer.set("main", main)
 	world_layer.set("view", self)
 	add_child(world_layer)
-	_camera_options()
+
+
+# every key the portal's Classic look sets is at that value now (portal/edition.gd CLASSIC_LOOK)
+func _classic_look_in_force() -> bool:
+	if classic_look.is_empty():
+		for part in String(load("res://portal/edition.gd").CLASSIC_LOOK).split(",", false):
+			var kv := part.split("=")
+			if kv.size() == 2:
+				classic_look[kv[0].strip_edges()] = kv[1].strip_edges()
+	for key in classic_look:
+		var now = look.get(key, null)
+		if now == null:
+			return false
+		if now is float or now is int:
+			if not is_equal_approx(float(now), String(classic_look[key]).to_float()):
+				return false
+		elif String(now) != String(classic_look[key]):
+			return false
+	return true
 
 
 func set_look(text: String) -> void:
@@ -383,6 +412,7 @@ func before_frame() -> void:
 		er.call("before_frame", String(look.er_models))
 	if remaster != null:
 		remaster.call("before_frame")
+	_world_layer_if_wanted()
 	if world_layer != null:
 		world_layer.call("before_frame")
 	var view: Dictionary = machine.get_view()
@@ -420,6 +450,9 @@ func before_frame() -> void:
 	drawer.call("set_scene_option", "feet_y", feet_now.y)
 	drawer.call("set_scene_option", "feet_z", feet_now.z)
 	drawer.call("set_scene_option", "lit", 1.0 if (in_force.sun or in_force.lamp or in_force.lights) else 0.0)
+	# Classic: the world blended in stored values as the GS blends (rta_drawer.h stored_world: an additive light shaft over
+	# dark water as bright as the native program's), while every key the portal's Classic look turns off is off
+	drawer.call("set_scene_option", "stored_world", 1.0 if _classic_look_in_force() else 0.0)
 	drawer.call("set_scene_option", "shadows", 1.0 if (in_force.sun or (in_force.lights and float(look.light_shadows) > 0.0)) else 0.0)
 
 

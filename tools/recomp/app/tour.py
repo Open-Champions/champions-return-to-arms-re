@@ -9,8 +9,8 @@ laid side by side stop for stop.
   tour.py sheet OUT.png DIR_A DIR_B [--width W] [--cols N] [--only PREFIX]
   tour.py native fpwalk NAME [NAME ...] --out DIR [--points N] [--size WxH]
   tour.py fpreport DIR [DIR ...]
-  tour.py native|emu campaign [NAME ...] --out DIR [--paced] [--hold N]
-  tour.py rigscript campaign NAME [NAME ...] --out FILE.rig --shots DIR [--screens]
+  tour.py native|emu campaign [NAME ...] --out DIR [--paced] [--hold N] [--moments] [--no-levels]
+  tour.py rigscript campaign NAME [NAME ...] --out FILE.rig --shots DIR [--screens] [--moments]
 
 `campaign`: every level of the campaign in story order - the 13 act lists of the executable
 (g_actLevelTables 0x4f8e48, read at run time), then the mission table's story, medal and bonus levels
@@ -23,6 +23,14 @@ the overhead view), and the build's own complaints (lines of its output with err
 fault / not found).  One line per level in <out>/campaign.tsv, the level order in <out>/order.txt.
 `rigscript campaign`: the same route as a script in the rig's language for the Godot scene
 (main.gd --script; its `app shot` and `app effective` lines write pictures and what is in force).
+`--moments` (both): before the levels, what a player meets between them (MOMENTS): the first level's shop
+(talk, the menu, the buy and sell lists), its save point (the card check and the save), a level-up (the
+game's own player_giveExp 0x1d3150 asked for the experience to the next level - `call`, which the
+emulator's socket lacks: left out there - then the level-up screen's two pages with points spent), and
+a death in the first fighting level (hit points low and the game's own pending damage, then the death
+screen and the restart); pictures m00-... at each.  The same steps, at the same game ticks, in both builds:
+the native program can run the rig script itself (rta_app --script), so that its pictures and the Godot
+scene's are of one moment.  `--no-levels`: the moments alone.
 
 `levels`: from power-on to the first level, then every named level is asked for the way
 the game's own level changes ask (the name written to g_pendingLevel 0x41b6d0); a picture
@@ -692,6 +700,134 @@ def new_output(m, since):
     return text.splitlines(), since + len(text.encode('latin-1'))
 
 
+# ---- the moments between the levels (--moments) -------------------------------------------------------------------
+# The places are the first level's own (the proof's town session, tools/recomp/proof/play.py `town`: the shop keeper
+# on the platform and the save point, read from a memory image with objs.py); the presses are the menus' (found with
+# the rig's screen text, docs/issues/native-proof.md R2.4).  Steps: ('put', x, y, z), ('tap', button, hold, after),
+# ('hold', button, frames, after), ('wait', n), ('shot', name), ('poke', expr, type, value), ('call', addr, a0, a1),
+# ('until_tap', button, (expr, type, op, value), times, gap), ('enter', level), ('free',).
+G_HP = G_PLAYERS + 0xAC            # the first player's hit points (f32)
+G_GOLD = G_PLAYERS + 0xE4          # ... gold (s32)
+G_EXP_TABLE = 0x41B558             # g_expTable: the experience at which level n ends
+PLAYER_GIVE_EXP = 0x1D3150         # player_giveExp(slot, amount): the game's own level-up (docs/ui.md, Character sheet)
+NOT_PAUSED = ('0x%x' % G_PAUSED, 'u32', '==', 0)
+SHOP_SPOT, SAVE_SPOT = (121.90, -34.61, -48.00), (482.64, 90.41, -49.00)
+DEATH_LEVEL = 'blood1'
+
+
+def moment_steps():
+    st = [('poke', '0x%x' % G_GOLD, 's32', 200000)]
+    # the shop: in front of the keeper, talk, her lines, the second entry of the choice (the shop), buy, sell
+    st += [('put',) + SHOP_SPOT, ('hold', 'square', 12, 90), ('shot', 'm00-shop-talk')]
+    for k in range(7):
+        st.append(('tap', 'cross', 8, 70))
+        if k == 1:
+            st.append(('shot', 'm01-shop-talk-2'))
+    st += [('tap', 'down', 8, 30), ('shot', 'm02-shop-choice'), ('tap', 'cross', 8, 150), ('shot', 'm03-shop-menu'),
+           ('tap', 'cross', 8, 60), ('shot', 'm04-shop-buy'), ('tap', 'square', 8, 60), ('shot', 'm05-shop-bought'),
+           ('tap', 'circle', 8, 40), ('tap', 'down', 8, 30), ('tap', 'cross', 8, 60), ('shot', 'm06-shop-sell'),
+           ('tap', 'circle', 8, 40), ('tap', 'circle', 8, 80), ('until_tap', 'circle', NOT_PAUSED, 20, 30), ('wait', 30),
+           ('shot', 'm07-shop-left')]
+    # the save point: the card check, a new save, "Save Successful"
+    st += [('put',) + SAVE_SPOT, ('hold', 'square', 12, 90), ('shot', 'm08-save-1')]
+    for k in range(4):
+        st += [('tap', 'cross', 8, 120), ('shot', 'm%02d-save-%d' % (9 + k, k + 2))]
+    st += [('until_tap', 'circle', NOT_PAUSED, 20, 40), ('wait', 60)]
+    # a level-up: the experience to the end of level 1 and 50 more, given the game's own way; the message; the screen
+    # (select while a gained level is not acknowledged): three ability points, then the skill page; back out
+    st += [('call', '0x%x' % PLAYER_GIVE_EXP, '0', '[0x%x]+50' % (G_EXP_TABLE + 4)), ('wait', 40), ('shot', 'm13-levelup-message'),
+           ('tap', 'select', 8, 60), ('shot', 'm14-levelup-abilities')]
+    for _ in range(3):
+        st.append(('tap', 'cross', 8, 30))
+    st += [('wait', 30), ('shot', 'm15-levelup-skills'), ('tap', 'circle', 8, 40), ('tap', 'circle', 8, 40), ('tap', 'circle', 8, 40),
+           ('until_tap', 'circle', NOT_PAUSED, 20, 30), ('wait', 30), ('shot', 'm16-levelup-after')]
+    # a death: the first fighting level, invulnerability off, hit points low and a large pending damage on the player
+    # object (+0xc8: Player_processDamage takes it off the record's hit points; docs/combat-runtime.md 6.4)
+    st += [('enter', DEATH_LEVEL), ('free',), ('wait', 60), ('poke', '0x%x' % G_INVULNERABLE, 'u32', 0),
+           ('poke', '0x%x' % G_HP, 'f32', 1), ('poke', PLAYER + '+0xc8', 'f32', 9999), ('wait', 30), ('shot', 'm17-death-1'),
+           ('wait', 90), ('shot', 'm18-death-2'), ('wait', 120), ('shot', 'm19-death-3')]
+    for k in range(4):
+        st += [('tap', 'cross', 8, 90), ('shot', 'm%02d-death-after-%d' % (20 + k, k + 1))]
+    st += [('wait', 240), ('shot', 'm24-restarted'), ('poke', '0x%x' % G_INVULNERABLE, 'u32', 1), ('wait', 30)]   # (the last picture written)
+    return st
+
+
+def rig_moments(shots):
+    """moment_steps() as rig-script lines."""
+    out = ['# the moments between the levels (tools/recomp/app/tour.py --moments): shop, save point, level-up, death']
+    for step in moment_steps():
+        kind = step[0]
+        if kind == 'put':
+            for _ in range(4):
+                out += ['poke [0x%x]+0x16d:u8 5' % G_CAMERA] + ['poke %s+0x%x:f32 %.2f' % (PLAYER, off, v) for off, v in zip((0x10, 0x14, 0x18), step[1:4])]
+                out.append('wait 5')
+            out.append('wait 12')
+        elif kind == 'tap':
+            out += ['tap %s %d' % (step[1], step[2]), 'wait %d' % step[3]]
+        elif kind == 'hold':
+            out += ['press %s' % step[1], 'wait %d' % step[2], 'release %s' % step[1], 'wait %d' % step[3]]
+        elif kind == 'wait':
+            out.append('wait %d' % step[1])
+        elif kind == 'shot':
+            out += ['app shot %s/%s.png' % (shots, step[1]),
+                    'show level=0x%x:str16 paused=0x%x:u32 hp=0x%x:f32 lvl=0x%x:s8 exp=0x%x:s32' % (G_LEVEL_NAME, G_PAUSED, G_HP, G_PLAYERS + 0x59, G_PLAYERS + 0x5C)]
+        elif kind == 'poke':
+            out.append('poke %s:%s %s' % (step[1], step[2], step[3]))
+        elif kind == 'call':
+            out.append('call %s %s %s' % step[1:4])
+        elif kind == 'until_tap':
+            expr, typ, op, value = step[2]
+            out += taps_until(step[1], '%s:%s %s %s' % (expr, typ, op, value), step[3], step[4])
+        elif kind == 'enter':
+            out += rig_enter(step[1])
+        elif kind == 'free':
+            out += free_camera_lines()
+    return out
+
+
+def run_moments(m, say):
+    """moment_steps() over the control socket (tour.py native|emu campaign --moments)."""
+    for step in moment_steps():
+        kind = step[0]
+        if kind == 'put':
+            for _ in range(4):
+                m.place(*step[1:4])
+                m.wait(5)
+            m.wait(12)
+        elif kind == 'tap':
+            m.tap(step[1], step[2], step[3])
+        elif kind == 'hold':
+            m.ok('press %s' % step[1]); m.wait(step[2]); m.ok('release %s' % step[1]); m.wait(step[3])
+        elif kind == 'wait':
+            m.wait(step[1])
+        elif kind == 'shot':
+            m.shot(step[1])
+            say('%s: level %s, paused %s, hit points %s, level %s, experience %s' % (step[1], m.level(), m.peek(G_PAUSED), m.peek(G_HP, 'f32'),
+                                                                                      m.peek(G_PLAYERS + 0x59, 'u8'), m.peek(G_PLAYERS + 0x5C, 's32')))
+        elif kind == 'poke':
+            if step[2] == 'f32':
+                m.pokef(step[1], float(step[3]))
+            else:
+                m.poke(step[1], step[2], step[3])
+        elif kind == 'call':
+            if m.kind != 'native':
+                say('call %s: not on the emulator\'s socket - the level-up is left out' % step[1])
+                continue
+            m.ok('call %s %s %s' % step[1:4])
+        elif kind == 'until_tap':
+            expr, typ, op, value = step[2]
+            for _ in range(step[3]):
+                now = m.peek(expr, typ)
+                if (now == str(value)) == (op == '=='):
+                    break
+                m.tap(step[1], 4, step[4])
+        elif kind == 'enter':
+            if not m.enter(step[1]):
+                say('moments: %s not entered' % step[1])
+        elif kind == 'free':
+            m.free_camera()
+
+
 def run_campaign(args):
     m = Instance(args.build, args.out, args.disc, paced=args.paced, size=args.size, label='classic campaign', extra=args.app_arg)
     log = open(os.path.join(m.out, args.build + '-campaign.log'), 'a')
@@ -717,6 +853,11 @@ def run_campaign(args):
             names = [n for n in names if n in args.only.split(',')]
         if args.skip:
             names = [n for n in names if n not in args.skip.split(',')]
+        if args.no_levels:
+            names = []
+        if args.moments:
+            say('moments: shop, save point, level-up, death')
+            run_moments(m, say)
         say('%d levels: %s' % (len(names), ' '.join(names)))
         lines, mark = new_output(m, 0)
         for k, name in enumerate(names):
@@ -822,6 +963,18 @@ def rig_screens(shots):
     return out + free
 
 
+def rig_enter(name, enter_timeout=3600):
+    """`enter` as rig-script lines: the level asked for as the game's own level changes ask, until it runs."""
+    return ['echo campaign: asking for %s' % name,
+            'poke 0x%x:str16 %s' % (G_PENDING, name),
+            'until 0x%x:str16 == %s timeout %d continue' % (G_LEVEL_NAME, name, enter_timeout),
+            'until 0x%x:u8 == 0 timeout %d continue' % (G_PENDING, enter_timeout),
+            'until 0x%x:u32 != 0 timeout %d continue' % (G_PLAYERS + 0x43D8, enter_timeout),
+           ] + taps_until('cross', '0x%x:u32 > 20' % G_SIM_FRAME, 20, 60) + [      # a notice box holds the game: "OK"
+            'wait 90',
+            'poke 0x%x:u32 1' % G_INVULNERABLE]
+
+
 def rig_campaign(names, shots, hold=300, enter_timeout=3600):
     """The campaign route as rig-script lines for a build without a control socket (the Godot scene):
     from the first level, every named level asked for as `enter` does it, its pictures and what is in force."""
@@ -829,14 +982,7 @@ def rig_campaign(names, shots, hold=300, enter_timeout=3600):
            'poke 0x%x:u32 1' % G_INVULNERABLE]
     for k, name in enumerate(names):
         tag = '%03d-%s' % (k, name)
-        out += ['echo campaign: asking for %s' % name,
-                'poke 0x%x:str16 %s' % (G_PENDING, name),
-                'until 0x%x:str16 == %s timeout %d continue' % (G_LEVEL_NAME, name, enter_timeout),
-                'until 0x%x:u8 == 0 timeout %d continue' % (G_PENDING, enter_timeout),
-                'until 0x%x:u32 != 0 timeout %d continue' % (G_PLAYERS + 0x43D8, enter_timeout),
-               ] + taps_until('cross', '0x%x:u32 > 20' % G_SIM_FRAME, 20, 60) + [      # a notice box holds the game: "OK"
-                'wait 90',
-                'poke 0x%x:u32 1' % G_INVULNERABLE,
+        out += rig_enter(name, enter_timeout) + [
                 'echo campaign: in %s' % name,
                 'show level=0x%x:str16 camera=[0x%x]+0x34:u32 sim=0x%x:u32' % (G_LEVEL_NAME, G_CAMERA, G_SIM_FRAME),
                 'app shot %s/%s-a.png' % (shots, tag),
@@ -846,7 +992,7 @@ def rig_campaign(names, shots, hold=300, enter_timeout=3600):
                 'app shot %s/%s-b.png' % (shots, tag),
                 'app effective %s/%s.json' % (shots, tag),
                 'show level=0x%x:str16 camera=[0x%x]+0x34:u32' % (G_LEVEL_NAME, G_CAMERA)]
-    out += ['echo campaign: done', 'quit']
+    out += ['echo campaign: done', 'wait 30', 'quit']        # (the last picture written before the program ends)
     return out
 
 
@@ -886,6 +1032,8 @@ def main():
     parser.add_argument('--skip', help='campaign: levels left out (comma-separated), e.g. an act-list row no exit or mission leads to')
     parser.add_argument('--screens', action='store_true', help='rigscript: the first level\'s screens (as `screens`) before the route')
     parser.add_argument('--shots', help='rigscript: where the script writes its pictures')
+    parser.add_argument('--moments', action='store_true', help='campaign, rigscript: the shop, a save point, a level-up and a death (MOMENTS) before the levels')
+    parser.add_argument('--no-levels', action='store_true', help='campaign: the moments alone')
     parser.add_argument('--app-arg', action='append', default=[], help='one more argument for rta_app (repeatable; --app-arg=--opt ...)')
     args = parser.parse_args()
     if args.build == 'fpreport':
@@ -896,6 +1044,8 @@ def main():
         with open(args.out, 'w') as handle:
             if args.screens:
                 handle.write('\n'.join(rig_screens(os.path.abspath(args.shots))) + '\n')
+            if args.moments:
+                handle.write('\n'.join(rig_moments(os.path.abspath(args.shots))) + '\n')
             handle.write('\n'.join(rig_campaign(args.names, os.path.abspath(args.shots), args.hold, args.enter_timeout)) + '\n')
         return 0
     if args.build == 'sheet':

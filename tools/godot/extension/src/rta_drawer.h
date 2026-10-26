@@ -247,6 +247,11 @@ class RtaDrawer : public RefCounted {
     // untextured rectangles of the 2-D layer across the picture's whole width at its top or bottom edge - left out,
     // so that the scene is seen to the window's edges (the host frames it itself)
     bool letterbox_off = false;
+    // Classic (scene_view.gd, the portal's Classic look: nothing of Godot's light, sky or models in the scene): the 3-D world
+    // is blended in stored values as the GS blends - an additive glow, a light shaft over dark water - not in linear light
+    // (Forward+ / Mobile, V_STORED; set_scene_option "stored_world")
+    bool stored_world = false;
+    bool scene_lit() const;                         // Godot's sun or lamps are on in the scene (rta_scene.cpp)
     Transform3D camera_shown;
     uint64_t letterbox_left_out = 0;
     bool is_letterbox(const rtag_frame& f, const rtag_draw& d, const Target& target) const;

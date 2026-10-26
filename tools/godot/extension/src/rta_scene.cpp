@@ -243,8 +243,11 @@ void RtaDrawer::set_hidden_objects(const PackedInt64Array& objects) {
     for (int64_t k = 0; k < objects.size(); k++) scene->hidden.insert((uint32_t)objects[k]);
 }
 
+bool RtaDrawer::scene_lit() const { return scene && scene->lit; }
+
 void RtaDrawer::set_scene_option(const String& name, double value) {
     if (name == "letterbox_off") { letterbox_off = value != 0; return; }     // the drawer's own (no scene needed)
+    if (name == "stored_world") { stored_world = value != 0; return; }       // ... and this (rta_drawer.h)
     if (!scene) scene = new Scene;
     if (name.begins_with("fill")) { fill_option(name, value); return; }
     if (name == "lit") scene->lit = value != 0;

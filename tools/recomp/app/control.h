@@ -12,6 +12,8 @@
 //                               when the file is written); `shot` is the same here
 //   info                        whatever the application's info callback says (key=value ...)
 //   app <text>                  an "app ..." script line (app_main.cpp)
+//   call <address> [a0 [a1]]    a function of the game at this vertical blank, as the script's `call`
+//                               (rt/script.cpp: a test aid; tour.py's level-up)
 //   quit
 //
 // Commands are carried out on the game's thread at a vertical blank (where the controller
@@ -33,6 +35,8 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
+
+void rt_call_handler(uint32_t address, uint32_t a0, uint32_t a1);     // rt/rt.h
 
 namespace app {
 
@@ -238,6 +242,16 @@ struct Control {
                 else for (uint32_t k = 0; k < size; k++) { snprintf(text, sizeof text, "%02x", m[k]); out += text; }
                 answer(out);
             } else answer("error: type " + type);
+        }
+        else if (c == "call" && w.size() >= 2) {
+            uint32_t v[3] = {0, 0, 0};
+            for (size_t k = 1; k < w.size() && k < 4; k++) {
+                Parser p(w[k]);
+                v[k - 1] = p.sum();
+                if (p.bad) { answer("error: expression " + w[k]); return; }
+            }
+            rt_call_handler(v[0], v[1], v[2]);
+            answer("ok");
         }
         else if (c == "poke" && w.size() >= 4) {
             const std::string& value = w.back();

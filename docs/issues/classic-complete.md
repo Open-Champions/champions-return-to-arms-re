@@ -17,11 +17,12 @@ Started 2026-10-26. Evidence under `local/classic/` (not tracked): pictures, log
 | [x] | Pictures match the original (emulator, no fix set) level by level | **Ran**: native against the emulator at 82 levels; Godot against native at 81 |
 | [x] | No Remastered feature in force, level by level | **Ran**: native 95 of 95 level visits; Godot 81 of 81 dumps (section 2) |
 | [x] | The game's own HUD, pause menu, options, bag pages, map, dialogue | **Ran** (Godot, hub); native **Read** (`tour.py screens`, `native-app.md`) |
-| [~] | Shops | Godot: the route did not reach the shop this round; **Read**: shop screens drawn correctly in Godot (`PROGRESS.md`), shop compared tick for tick natively (`native-proof.md` R3.2) |
-| [~] | Save points, level-ups, deaths and restarts | Deaths: **Ran** online (4 deaths in the 4-copy room, in step). Save point, level-up, restart: **Read** (`native-proof.md` R3.2, 15 sessions identical to the original); not pictured in Classic this round |
+| [x] | Shops | **Ran** (section 6): the first level's shop - the keeper's lines, Enter Shop, the Buy / Sell menu, the buy list, a purchase, the sell list - in both programs, the same picture at the same tick |
+| [x] | Save points, level-ups, deaths and restarts | **Ran** (section 6): the save point (Check Point Saved, Save Game, Save Successful), a level-up given the game's own way (the message, the screen's ability and skill pages), a death and the restart, pictured in both programs and the same; deaths also online (section 4) |
 | [x] | Cut scenes at level entry, boss introductions, the endings | **Ran**: 17 levels open on a scene, skipped with the game's own buttons in both programs; both bosses' introductions and both endings' closing scenes (with their text) the same as the emulator's; both endings end on the game's own save screen, as in the emulator |
 | [x] | Bosses | **Ran**: `bossgood` and `bossevil` load with the boss and its bar; `bossgood` in an online room of three (section 4) |
 | [x] | Classic online, 2 to 4 copies, Godot Classic + native + the Mac application | **Ran**: three rooms, through 2-3 level changes each, a boss level, forced relay, every pair in step (section 4) |
+| [x] | The art pack and Classic defaults in the native program | **Ran** (section 7): found by itself where Godot finds it; boss music off in Classic; Godot Classic no longer reads the Elden Ring materials |
 | [~] | 60 fps paced | Native **Ran**: 60.0 a second, 0 of ~300 pictures off the 60 grid in 11 of 13 levels measured cleanly; Godot **not settled**: measured at a load average of 200-500 from other work (section 5) |
 | [ ] | Windows and Linux in Classic | **Read** only: the native program runs and plays online on both (`native-windows.md`, `native-linux.md`); no Classic campaign there this round |
 | [ ] | A person playing it through | never done |
@@ -50,8 +51,8 @@ script for the Godot scene (it has no control socket); `--screens` adds the hub'
   get there.
 - Pictures: native and emulator agree level for level (`local/classic/sheet-c1.png`, `-c2`, `-c3`:
   the same geometry, light, HUD, level-name banner, prompts and objective counters); Godot and native
-  agree likewise (`sheet-g2.png`, `sheet-g3.png`). One difference seen and not chased: the light shafts
-  of some water levels (`islsm3b`, `watg2a`) look fainter in Godot.
+  agree likewise (`sheet-g2.png`, `sheet-g3.png`). The light shafts of some water levels (`islsm3b`,
+  `watg2a`) were fainter in Godot: found and fixed (section 7).
 - No complaint in the native program's output at any level; render counters: `tex_missing` rose in 4
   levels (1 to 938 lookups), nothing else.
 
@@ -72,14 +73,12 @@ script for the Godot scene (it has no control socket); `--screens` adds the hub'
 Fixed (small): the campaign driver's pacing read (it counted a 120 Hz display's normal two refreshes
 as late, and its picture write fell inside the measured blanks); `effective_settings()`'s missing keys.
 
-Not fixed - for the owner:
-1. **The native program does not find the art pack by itself**; Godot does (the Play-RTA folder). A
-   player who never sets `art_pack` plays the native Classic with the game's own textures.
-2. **The native boss-music director is on by default.** Inert without files; a Remastered feature by
-   the portal's own mapping. Whether the native program should default to off is a decision.
-3. **Godot Classic still loads the Elden Ring world materials** at start (about 0.5 s) though
-   `er_world` is off; nothing of it is drawn.
-4. **After an ending** the game stands in its save screen; a level asked for from there does not load
+Fixed since (section 7): the native program finds the art pack by itself; its boss music is off in
+Classic; Godot Classic no longer reads the Elden Ring world materials at start; Godot's water-level
+light shafts are as bright as the native program's.
+
+Not a fault:
+1. **After an ending** the game stands in its save screen; a level asked for from there does not load
    (as in the emulator). Not a fault of the port; the route asked for `endgood` from there.
 
 ## 4. Online (Ran)
@@ -108,6 +107,76 @@ exit 0. The Godot copy described itself as `set=9ac29719 words=189`. Load averag
   online rooms and other work held the load average at 200-500. Not a verdict; to be measured again
   on a quiet machine.
 
+## 6. Shop, save point, level-up, death (Ran, 2026-10-26)
+
+`tour.py ... campaign --moments` (both the socket route and `rigscript`) visits, before the levels,
+what a player meets between them (`MOMENTS` in `tour.py`): the first level's shop (the proof's town
+session's place and presses: the keeper's lines, Enter Shop, Buy, a purchase, Sell), its save point
+(the card check, a new save), a level-up (the game's own `player_giveExp` 0x1d3150 asked at a
+vertical blank for the experience to the end of level 1 - the script's `call`, now also a command of
+the native control socket - then select: the screen's ability page, three points, the skill page)
+and a death in `blood1` (invulnerability off, hit points 1, a large pending damage on the player
+object, which `Player_processDamage` takes off: the fall, the fade, the restart at full hit points).
+
+The same rig script (`tools/recomp/examples/boot-to-hub-ticks.rig` + the moments) run by the
+native program (`rta_app --script`, the art pack, 640x448) and by the Godot scene (`--edition
+classic`, the project with this round's changes): **25 pictures each, the same moment in both**
+(`local/classic/moments/sheet-native-godot.png`): every menu, its text and figures (200,000 gold,
+198,268 after the purchase; "Save Successful"; "Press the SELECT button to Level Up"; 3 ability
+points, then 1 skill point), the HUD, the fall and the restart. Both printed the same state at every
+picture (level, pause flag, hit points, level 1 -> 2, experience 0 -> 1,150; the death at frame
+6,242 in both).
+
+## 7. This round's fixes (Ran, 2026-10-26)
+
+- **Native art pack** (`app/settings.h` `find_art_pack`, the three programs' settings step): with no
+  `--art-pack`, the pack is found as `main.gd _art_pack_folder` finds it - `$RTA_ART_PACK`, else the
+  settings file's `art_pack`, else the Play-RTA folder's `textures/` (macOS `~/Library/Application
+  Support/Play-RTA/textures`, Windows `%APPDATA%\Play-RTA\textures`, Linux
+  `~/.local/share/Play-RTA/textures`) when it is there. `none` / `off` (command line, variable or
+  file) keeps the game's own art; `--plain` and the measuring runs (`--offscreen`) look for nothing,
+  so the tick-keyed pictures of `native-app.md` 12 and 13 stay the game's own art. Ran, a fresh data
+  folder: no option -> the Play-RTA pack (122,205 pictures); `--art-pack none` and
+  `RTA_ART_PACK=none` -> none.
+- **Native boss music** (`bossmusic.cpp`): `music.boss = auto` is the new default: on when a
+  Remastered mode is wanted (Hardcore `combat.mode`, aiming `combat.aim`), off in Classic; `on` /
+  `off` as before. Ran: `app music info` says `auto, off` without options, `auto, on` with
+  `--combat hardcore`. The launchers in the game folder need no change: the Classic ones start
+  without Hardcore (off), the Hardcore one with it (on); they start `bin/rta_app`, which takes this
+  when it is next rebuilt.
+- **Godot Classic start** (`scene_view.gd`): the Elden Ring world layer (`er_world.gd`) is made only
+  while `look.er_world` is on - never in Classic, and at the first frame after a switch to
+  Remastered (`clear_look` puts the key back on). Ran: the Classic runs print no `er world` line
+  (before: "8 materials ... in 456 ms" at every start); `app look er_world on` in a Classic run reads
+  them then ("11 materials ... in 483 ms") and the layer goes on for the level.
+- **Light shafts** (`rta_drawer.cpp`, `rta_scene.cpp`, `gs_draw.gdshaderinc`, `scene_view.gd`): a
+  Godot draw difference. Forward+ blends in linear light; the 3-D world was the one surface still
+  blended so, and an additive draw over a dark one (a shaft over dark water, the mist) comes out
+  fainter than the GS's sum of stored values. While the portal's Classic look is in force (every key
+  it turns off is off, so nothing of Godot's light, sky or models is in the scene) the world is now
+  drawn and blended in stored values as the other surfaces are (`stored_world`; a fused level batch's
+  two passes added in stored values too). Ran, the same script in three runs at 960x720: the shaft
+  corner of `watg2a` averages 44/68/72 natively, 40/57/60 blended in linear light
+  (`RTA_GODOT_LINEAR_BLEND=1`), 44/68/72 now; the whole picture's mean difference from the native
+  one falls from 2.9 to 0.6 (`watg2a`) and from 1.8 to 0.8 (`islsm3b`)
+  (`local/classic/shafts/sheet-shafts.png`).
+
+Checks of this round:
+- `native-app.md` 12/13's standing checks on the new program against one built from the same tree
+  without this round's changes: the rig comparison (`s12/rig.sh`, the unpatched translation, default
+  picture and `--plain`) **the same as `merge/rig-final-compare.txt`, line for line**, both; the 11
+  tick-keyed pictures with `--plain` **11 of 11 identical**; the default pictures differ in a few
+  pixels (1-13 per picture) between my program and the baseline - and as much between two runs of
+  the baseline itself (7 of 11 differ), so that is the machine (multisampled pictures under a load
+  average of 100+), not the change.
+- An online room (`roomparty.py`, `local/classic/mine/room-cc`): Godot Classic (this round's project)
+  as host, this round's native program, the Mac application; hub > blood1 > boar1: **every pair in
+  step** (5,358 - 5,363 ticks), all three launched and finished. The Mac application, after the other
+  two had left, ended with `recursive_mutex lock failed` in its teardown (exit -6) - the application is
+  not changed by this round, and its game had finished in step; noted, not chased.
+- Not built here: the Windows and Linux programs carry the same settings step (`win_main.cpp`,
+  `linux_main.cpp`); `settings.h` picks the place per system.
+
 ## How to repeat
 
 ```
@@ -118,6 +187,8 @@ python3 tools/recomp/app/tour.py emu campaign --out local/classic/emu --skip dis
 python3 tools/recomp/app/tour.py rigscript campaign LEVELS... --out local/classic/g.rig --shots DIR --screens
 #   (after tools/recomp/examples/boot-to-hub-ticks.rig), then the Godot scene:
 #   main.gd -- --mode scene --edition classic --script FILE --frame-log FILE
+python3 tools/recomp/app/tour.py rigscript campaign --moments --out local/classic/moments/tail.rig --shots DIR
+#   after boot-to-hub-ticks.rig: rta_app --script FILE --art-pack PACK, and the Godot scene with the same FILE
 RTA_GODOT_OUT=local/godot-classic python3 -B tools/play-net/roomparty.py local/classic/room \
     --copies app,godot,native,godot --native-window local/recomp-out/bin/rta_app_classic \
     --play 900 --level fire1,storm1,nit1 --play2 1200 --level-every 2400
