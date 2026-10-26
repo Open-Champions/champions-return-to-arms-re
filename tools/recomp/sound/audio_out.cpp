@@ -38,19 +38,29 @@ namespace {
 
 class WavSink : public AudioSink {
 public:
-    WavSink(FILE* f, unsigned rate) : file_(f), rate_(rate) { header(); }
+    // The file is written by a thread of its own: write() is called on the device's real-time thread when the sound
+    // side runs on its own clock (sound-clock=real), and a write or a flush that waits for the disk there holds the
+    // device up - a gap in what is heard that the file itself does not show (docs/issues/audio-quality.md).  write()
+    // only appends to a buffer; the thread takes it every 50 ms.
+    WavSink(FILE* f, unsigned rate) : file_(f), rate_(rate) {
+        header();
+        pending_.reserve((size_t)rate * 2);
+        writer_ = std::thread([this] { run(); });
+    }
     ~WavSink() override { close(); }
     void write(const int16_t* stereo, size_t frames) override {
-        if (!file_) return;
-        fwrite(stereo, 4, frames, file_);
-        frames_ += frames;
-        since_header_ += frames;
-        // keep the header true about once a second, so that a run that is killed leaves
-        // a file that opens
-        if (since_header_ >= rate_) { header(); since_header_ = 0; }
+        std::lock_guard<std::mutex> hold(lock_);
+        if (closed_) return;
+        pending_.insert(pending_.end(), stereo, stereo + frames * 2);
     }
     void close() override {
-        if (!file_) return;
+        {
+            std::lock_guard<std::mutex> hold(lock_);
+            if (closed_) return;
+            closed_ = true;
+        }
+        writer_.join();
+        flush();
         header();
         fclose(file_);
         file_ = nullptr;
@@ -58,6 +68,30 @@ public:
     void report(FILE* out) override { fprintf(out, "sound: %.2f s written as WAV\n", (double)frames_ / rate_); }
 
 private:
+    void run() {
+        for (;;) {
+            {
+                std::lock_guard<std::mutex> hold(lock_);
+                if (closed_) return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            flush();
+            // keep the header true about once a second, so that a run that is killed leaves a file that opens
+            if (since_header_ >= rate_) { header(); since_header_ = 0; }
+        }
+    }
+    void flush() {
+        {
+            std::lock_guard<std::mutex> hold(lock_);
+            writing_.swap(pending_);
+        }
+        if (!writing_.empty()) {
+            fwrite(writing_.data(), 2, writing_.size(), file_);
+            frames_ += writing_.size() / 2;
+            since_header_ += writing_.size() / 2;
+            writing_.clear();
+        }
+    }
     void header() {
         uint32_t data = (uint32_t)(frames_ * 4);
         uint8_t h[44] = {'R', 'I', 'F', 'F', 0, 0, 0, 0, 'W', 'A', 'V', 'E', 'f', 'm', 't', ' ', 16, 0, 0, 0, 1, 0, 2, 0};
@@ -74,6 +108,10 @@ private:
     FILE* file_;
     uint32_t rate_;
     uint64_t frames_ = 0, since_header_ = 0;
+    std::mutex lock_;
+    std::vector<int16_t> pending_, writing_;
+    bool closed_ = false;
+    std::thread writer_;
 };
 
 // ---- the ring between the renderer and a device ---------------------------------------------

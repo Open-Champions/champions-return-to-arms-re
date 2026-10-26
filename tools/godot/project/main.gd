@@ -139,6 +139,7 @@ var opt := {
 	"edition": "", "views_locked": false, "hud_mode": "", "boss_music": "", "boss_music_er": "",
 	# cut scenes and films (cinematic.gd, docs/issues/native-cutscenes.md): "" = as the edition says (Remastered on), on | off
 	"cinematic": "",
+	"audio_tap": "",                    # test aid: the master bus into a WAV file (dev/audio_tap.gd)
 }
 var speed := {"usec": 0, "cpu": 0.0, "blanks": 0, "last": 0, "late": 0, "worst": 0}
 signal session_over(why: String)
@@ -163,6 +164,7 @@ var cine: Control                       # cinematic.gd: enlarged films, wide fra
 var tween_back := 0.0                   # 1: the pictures between game frames interpolated a frame behind (a cut scene)
 var tester: Node                        # testerkit.gd: the bug report (F8, L3 + R3), the build line (F9)
 var player: AudioStreamPlayer
+var audio_tap: Node                     # dev/audio_tap.gd (--audio-tap)
 var started := false
 var message := ""
 var clock := 0.0                        # time owed to the machine
@@ -306,6 +308,7 @@ func _parse_arguments() -> void:
 			"--godot-shots": opt.godot_shots = value; k += 1
 			"--unpaced": opt.unpaced = true
 			"--mute": opt.mute = true
+			"--audio-tap": opt.audio_tap = value; k += 1
 			"--no-sound": opt.no_sound = true
 			"--test": opt.test = value; k += 1
 			"--stop-after": opt.stop_after = value.to_int(); k += 1
@@ -580,8 +583,15 @@ func _start() -> void:
 		player.stream = ClassDB.instantiate("RtaAudioStream")
 		add_child(player)
 		if opt.mute or opt.test != "":
-			player.volume_db = -80.0
-			AudioServer.set_bus_mute(0, true)       # a test makes no sound, whatever was asked
+			# a test makes no sound, whatever was asked (a tap records at full level before the muted master bus)
+			player.volume_db = 0.0 if opt.audio_tap != "" else -80.0
+			AudioServer.set_bus_mute(0, true)
+		if opt.audio_tap != "":
+			audio_tap = Node.new()
+			audio_tap.set_script(load("res://dev/audio_tap.gd"))
+			audio_tap.set("main", self)
+			add_child(audio_tap)
+			audio_tap.call("start", opt.audio_tap)
 		player.play()
 	var refresh := DisplayServer.screen_get_refresh_rate()
 	if refresh < 20.0 or refresh > 1000.0:
@@ -956,6 +966,8 @@ func _host_command(text: String) -> void:
 			var d := effective_settings()
 			d["blank"] = blanks
 			f.store_string(JSON.stringify(d, "  "))
+	elif w.size() >= 2 and w[0] == "audio" and audio_tap != null:
+		audio_tap.call("command", w)        # test aid: app audio mark NAME | engage on|off|auto
 	elif w.size() >= 2 and w[0] == "mark":
 		frame_rows.append("M,%d,%s" % [blanks, " ".join(w.slice(1))])   # test aid: a named part of the route in the frame log
 	elif w.size() >= 2 and w[0] == "hold":
@@ -1428,6 +1440,8 @@ func _finish(code: int) -> void:
 				log.close()
 	if player != null:
 		player.stop()
+	if audio_tap != null:
+		audio_tap.call("finish")
 	if scene_view != null:
 		scene_view.call("release")
 	if drawer != null:

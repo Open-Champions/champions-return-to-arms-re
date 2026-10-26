@@ -57,12 +57,19 @@ namespace bossmusic {
 namespace {
 
 const unsigned RATE = 48000;                    // the sound side's output rate
+// Loudness (docs/issues/audio-quality.md).  A track is brought to this RMS level at music.boss_volume 1, so that the
+// default 0.8 puts it where the game's own music is (stream 2 alone: -24 to -33 dBFS RMS by level, median -28).  The
+// tracks players put here are mastered far louder (the Elden Ring ones: median -13 dBFS RMS, peaks at and over full
+// scale), and played as they were they came in 13 dB over the game's music and clipped with the game's effects on top.
+const double TARGET_RMS_DB = -24.0;
+const double PEAK_CEILING = 0.70;               // -3.1 dBFS: the loudest sample of a track after its gain, at volume 1
 const double FADE_IN = 1.6, FADE_OUT = 3.0, HOLD_AFTER = 4.0;      // seconds (music.gd)
 const double LONGEST = 20 * 60;                 // seconds of a track that are kept (a longer one is cut there)
 
 struct Track {
     std::string path;
-    std::vector<int16_t> pcm;                   // 48 kHz, stereo
+    std::vector<int16_t> pcm;                   // 48 kHz, stereo, with the track's loudness gain applied
+    double rms_db = -200, peak_db = -200, gain_db = 0;      // as decoded, and the gain that was applied
     size_t frames() const { return pcm.size() / 2; }
 };
 
@@ -73,28 +80,43 @@ std::string lower_ext(const std::string& path) {
 }
 std::string file_name(const std::string& path) { return std::filesystem::path(path).filename().string(); }
 
-// A whole file to 48 kHz stereo 16 bit.  On the loader's thread.
+// A whole file to 48 kHz stereo 16 bit, at the loudness of the game's music.  On the loader's thread.  Decoded as
+// floating point: a lossy file of a loud master holds samples over full scale (up to +0.8 dB in the Elden Ring
+// tracks), which a 16-bit decode clips flat before any gain could take them back down.
 std::shared_ptr<Track> decode(const std::string& path, std::string& why) {
-    int16_t* data = nullptr;
+    float* data = nullptr;
     uint64_t frames = 0;
     unsigned channels = 0, rate = 0;
     std::string ext = lower_ext(path);
     void (*release)(void*) = free;
     if (ext == ".ogg") {
-        int ch = 0, r = 0;
-        short* out = nullptr;
-        int n = stb_vorbis_decode_filename(path.c_str(), &ch, &r, &out);
-        if (n > 0 && out) { data = out; frames = (uint64_t)n; channels = (unsigned)ch; rate = (unsigned)r; }
+        int error = 0;
+        stb_vorbis* v = stb_vorbis_open_filename(path.c_str(), &error, nullptr);
+        if (v) {
+            stb_vorbis_info info = stb_vorbis_get_info(v);
+            channels = (unsigned)info.channels; rate = info.sample_rate;
+            uint64_t length = stb_vorbis_stream_length_in_samples(v);
+            if (channels && length) {
+                data = (float*)malloc((size_t)length * channels * sizeof(float));
+                while (data && frames < length) {
+                    int got = stb_vorbis_get_samples_float_interleaved(v, (int)channels, data + frames * channels,
+                                                                       (int)std::min<uint64_t>((length - frames) * channels, 1 << 20));
+                    if (got <= 0) break;
+                    frames += (uint64_t)got;
+                }
+            }
+            stb_vorbis_close(v);
+        }
     } else if (ext == ".mp3") {
         drmp3_config config{};
         drmp3_uint64 n = 0;
-        data = drmp3_open_file_and_read_pcm_frames_s16(path.c_str(), &config, &n, nullptr);
+        data = drmp3_open_file_and_read_pcm_frames_f32(path.c_str(), &config, &n, nullptr);
         frames = n; channels = config.channels; rate = config.sampleRate;
         release = [](void* p) { drmp3_free(p, nullptr); };
     } else if (ext == ".wav") {
         drwav_uint64 n = 0;
         unsigned ch = 0, r = 0;
-        data = drwav_open_file_and_read_pcm_frames_s16(path.c_str(), &ch, &r, &n, nullptr);
+        data = drwav_open_file_and_read_pcm_frames_f32(path.c_str(), &ch, &r, &n, nullptr);
         frames = n; channels = ch; rate = r;
         release = [](void* p) { drwav_free(p, nullptr); };
     }
@@ -107,22 +129,35 @@ std::shared_ptr<Track> decode(const std::string& path, std::string& why) {
     auto t = std::make_shared<Track>();
     t->path = path;
     uint64_t out_frames = (uint64_t)((double)frames * RATE / rate);
-    t->pcm.resize((size_t)out_frames * 2);
+    std::vector<float> out((size_t)out_frames * 2);
     auto at = [&](uint64_t k, unsigned c) -> float {       // channel c of frame k (mono to both; more than two: the first two)
         if (k >= frames) k = frames - 1;
-        return (float)data[k * channels + (channels >= 2 ? c : 0)];
+        return data[k * channels + (channels >= 2 ? c : 0)];
     };
-    double step = (double)rate / RATE;
+    double step = (double)rate / RATE, sum = 0;
+    float peak = 0;
     for (uint64_t i = 0; i < out_frames; i++) {
         double x = i * step;
         uint64_t k = (uint64_t)x;
         float f = (float)(x - (double)k);
         for (unsigned c = 0; c < 2; c++) {
             float v = rate == RATE ? at(i, c) : at(k, c) + (at(k + 1, c) - at(k, c)) * f;
-            t->pcm[i * 2 + c] = (int16_t)std::lround(std::clamp(v, -32768.0f, 32767.0f));
+            out[i * 2 + c] = v;
+            sum += (double)v * v;
+            peak = std::max(peak, std::fabs(v));
         }
     }
     release(data);
+    // the gain: the track's RMS to TARGET_RMS_DB, never so much that its loudest sample passes PEAK_CEILING
+    double rms = std::sqrt(sum / std::max<double>(1.0, (double)out.size()));
+    t->rms_db = rms > 0 ? 20 * std::log10(rms) : -200;
+    t->peak_db = peak > 0 ? 20 * std::log10(peak) : -200;
+    double gain = rms > 0 ? std::pow(10.0, TARGET_RMS_DB / 20) / rms : 1.0;
+    if (peak > 0) gain = std::min(gain, PEAK_CEILING / peak);
+    t->gain_db = 20 * std::log10(gain);
+    t->pcm.resize(out.size());
+    for (size_t i = 0; i < out.size(); i++)
+        t->pcm[i] = (int16_t)std::lround(std::clamp(out[i] * (float)gain * 32768.0f, -32768.0f, 32767.0f));
     return t;
 }
 
@@ -135,6 +170,20 @@ std::atomic<float> g_target{0.0f};              // what the director asks for: e
 std::atomic<uint64_t> g_mixed_frames{0};
 std::atomic<float> g_peak{0.0f};                // the largest sample the player's track added since the last report (0..1)
 std::atomic<bool> g_hooked{false};
+
+// The game's sound and the player's track together: as they are up to KNEE of full scale, and above it bent smoothly
+// towards full scale instead of cut flat there (a cut is a burst of harmonics: crackle).  Only while a track is mixed;
+// the game's sound alone never passes through here.
+const float KNEE = 0.80f * 32768.0f;
+inline int16_t knee(float v) {
+    float a = std::fabs(v);
+    if (a > KNEE) {
+        const float room = 32767.0f - KNEE;
+        a = KNEE + room * std::tanh((a - KNEE) / room);
+        v = v < 0 ? -a : a;
+    }
+    return (int16_t)std::lround(std::clamp(v, -32768.0f, 32767.0f));
+}
 
 void mix(int16_t* stereo, size_t n) {
     std::lock_guard<std::mutex> hold(g_mix_lock);
@@ -153,8 +202,7 @@ void mix(int16_t* stereo, size_t n) {
             float add = p[pos * 2 + c] * gain;
             float a = std::fabs(add);
             if (a > peak) peak = a;
-            int v = stereo[i * 2 + c] + (int)std::lround(add);
-            stereo[i * 2 + c] = (int16_t)(v < -32768 ? -32768 : v > 32767 ? 32767 : v);
+            stereo[i * 2 + c] = knee(stereo[i * 2 + c] + add);
         }
         if (++pos >= frames) pos = 0;           // looped
     }
@@ -386,7 +434,8 @@ void blank(uint64_t frame) {
                 D.calm_for = 0;
                 D.state = PLAYING;
                 D.played++;
-                snprintf(line, sizeof line, "playing %s (%.1f s, looped) from tick %u", file_name(job->path).c_str(), seconds, tick);
+                snprintf(line, sizeof line, "playing %s (%.1f s, looped; RMS %.1f dBFS, peak %+.1f dBFS as decoded, played %+.1f dB) from tick %u",
+                         file_name(job->path).c_str(), seconds, job->track->rms_db, job->track->peak_db, job->track->gain_db, tick);
                 say(line);
             } else if (!enabled()) {
                 D.load.reset();                 // the thread finishes by itself; what it made is dropped

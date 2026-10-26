@@ -29,6 +29,12 @@ const FADE_OUT := 3.0
 const HOLD_AFTER := 4.0                 # the fight is over: this long before the game's music comes back
 const DUCK_DB := -14.0                  # the whole mix, when the music cannot be turned down by itself
 const BUS := "HudMusic"
+# Loudness (docs/issues/audio-quality.md): a track is played at this RMS level at music volume 1, so that the default
+# 0.8 puts it where the game's own music is (its music stream alone: -24 to -33 dBFS RMS by level, median -28).  The
+# tracks players put in are mastered far louder (the Elden Ring ones: median -13 dBFS RMS, peaks at and over full
+# scale): as they were they came in 13 dB over the game's music, and the game's effects on top went past full scale.
+const TARGET_RMS_DB := -24.0
+const PEAK_CEILING := 0.70              # -3.1 dBFS: the loudest sample of a track after its gain, at volume 1
 
 enum { IDLE, LOADING, PLAYING, LEAVING }
 
@@ -46,6 +52,7 @@ var player: AudioStreamPlayer
 var loader: Thread
 var loaded: AudioStream
 var loading_path := ""
+var trim_db := 0.0                      # the playing track's loudness gain (_loudness_db)
 var calm_for := 0.0
 var has_music_volume := -1              # -1 not tried, 0 the library has no such option, 1 it has
 var duck_applied := 0.0
@@ -53,6 +60,7 @@ var game_base_db := 0.0
 var game_base_known := false
 var log_lines := 0
 var rng := RandomNumberGenerator.new()
+var forced := -1                       # test aid ("app audio engage on|off|auto", dev/audio_tap.gd): engaged by hand, never, or by the game
 var tap_bus := -1                       # test aid: the game's own sound on a bus of its own, to measure it (music.gd tap())
 var tap_peak := -200.0
 var tap_sum := 0.0
@@ -173,7 +181,7 @@ func tick() -> void:
 		if here != scanned_for:
 			scanned_for = here
 			scan()                      # once per level: files put there while playing are found at the next level
-	var engaged: bool = enabled and not tracks.is_empty() and _boss_engaged()
+	var engaged: bool = enabled and not tracks.is_empty() and (forced == 1 if forced >= 0 else _boss_engaged())
 	var dt: float = hud.dt
 	match state:
 		IDLE:
@@ -185,7 +193,8 @@ func tick() -> void:
 				loader = Thread.new()
 				loader.start(func():
 					var stream := _load(loading_path)
-					call_deferred("_loaded", loading_path, stream))
+					var loudness := _loudness_db(stream) if stream != null else Vector3(0.0, -200.0, -200.0)
+					call_deferred("_loaded", loading_path, stream, loudness))
 				state = LOADING
 				say("boss engaged at tick %d: loading %s" % [hud.frame.get("tick", 0), loading_path.get_file()])
 		LOADING:
@@ -209,7 +218,36 @@ func tick() -> void:
 	_apply()
 
 
-func _loaded(path: String, stream: AudioStream) -> void:
+# On the loader's thread: the whole track mixed once (AudioStreamPlayback.mix_audio, nothing is heard), its RMS and
+# peak, and the gain that brings it to TARGET_RMS_DB without its peak passing PEAK_CEILING: (gain dB, RMS dB, peak dB).
+static func _loudness_db(stream: AudioStream) -> Vector3:
+	var playback := stream.instantiate_playback()
+	var seconds := minf(stream.get_length(), 20.0 * 60.0)
+	if playback == null or seconds <= 0.0 or not playback.has_method("mix_audio"):
+		return Vector3(0.0, -200.0, -200.0)
+	playback.start(0.0)
+	var left := int(seconds * AudioServer.get_mix_rate())
+	var sum := 0.0
+	var peak := 0.0
+	var n := 0
+	while left > 0:
+		var block: PackedVector2Array = playback.mix_audio(1.0, mini(left, 8192))
+		if block.is_empty():
+			break
+		for v in block:
+			sum += v.x * v.x + v.y * v.y
+			peak = maxf(peak, maxf(absf(v.x), absf(v.y)))
+		n += block.size() * 2
+		left -= block.size()
+	playback.stop()
+	if n == 0 or sum <= 0.0:
+		return Vector3(0.0, -200.0, -200.0)
+	var rms := sqrt(sum / n)
+	var gain := minf(db_to_linear(TARGET_RMS_DB) / rms, PEAK_CEILING / maxf(peak, 1e-6))
+	return Vector3(linear_to_db(gain), linear_to_db(rms), linear_to_db(peak))
+
+
+func _loaded(path: String, stream: AudioStream, loudness := Vector3.ZERO) -> void:
 	if loader != null and loader.is_started():
 		loader.wait_to_finish()
 	if state != LOADING or path != loading_path:
@@ -221,18 +259,20 @@ func _loaded(path: String, stream: AudioStream) -> void:
 		return
 	player.stream = stream
 	player.volume_db = -80.0
+	trim_db = loudness.x
 	player.play()
 	level = 0.0
 	calm_for = 0.0
 	state = PLAYING
-	say("playing %s (%.1f s, looped)" % [path.get_file(), stream.get_length()])
+	say("playing %s (%.1f s, looped; RMS %.1f dBFS, peak %+.1f dBFS as decoded, played %+.1f dB)" % [path.get_file(), stream.get_length(),
+		loudness.y, loudness.z, trim_db])
 
 
 func _apply() -> void:
 	var eased: float = level * level * (3.0 - 2.0 * level)
 	var volume: float = clampf(float(hud.setting.get("music_volume", 0.8)), 0.0, 1.0)
 	if player.playing:
-		player.volume_db = linear_to_db(maxf(0.0001, eased * volume))
+		player.volume_db = linear_to_db(maxf(0.0001, eased * volume)) + trim_db
 	# the game's own music down by the same curve
 	var machine: Object = hud.machine
 	if machine == null:

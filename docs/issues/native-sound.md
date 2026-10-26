@@ -12,6 +12,11 @@ all audio stay under `local/sound/`.
 
 ## Notes for whoever continues (kept current)
 
+- 2026-10-26: **measured for damage** (`audio-quality.md`): no gaps, dropouts or clipping in the
+  game's sound in the native program or Godot (Remastered, Classic; 60 / 120 Hz; idle and overloaded),
+  title music 0.998 against the emulator's waveform. The Remastered boss music was 11 to 13 dB too
+  loud and clipped; fixed there. `sound-wav` now writes from a thread of its own.
+
 - 2026-10-12, later still: **the sound side runs by itself** (section 8). In the window
   program, paced, the device asks for its sound and the chip, the stream driver and its
   6 ms timer run on the device's real-time thread (`sound-clock=real`); the game's calls
