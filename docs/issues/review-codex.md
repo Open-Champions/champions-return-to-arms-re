@@ -14,6 +14,8 @@ Validation used public source and repository documentation, in-memory Python pro
 
    Suggested fix: delegate warm-up calls without touching hold state or pad edges; advance online hold state only from synchronized simulation calls. Use explicit initialization/scene-epoch state so frame zero can be counted exactly once, and reset scene state through a deterministic lifecycle event.
 
+   **Fixed** in `0cabb23` (2026-10-26): `run_frame` hands a warm-up call (`cut_runFrame(1)`, a0 != 0) and a front-end scene (`g_inFrontend`) to the original untouched - no hold counted, no pressed word changed; only the scene's tick call counts. The block's +0x18 is the frame counted last plus one (0: none in this scene; cleared when a scene ends in a tick), so frame 0 counts exactly once. Ran: two native copies, START held through bossevil's load into its opening scene, 3,212 ticks in step with the cut-scene block compared (hold 1 at the first tick on both, skipped on the same tick); synthetic probe with 10 / 20 and 3 / 40 warm-up passes gives identical holds.
+
 2. **[P1 / High] WebSocket pongs bypass the service's output and request limits.**
 
    Location: `tools/rendezvous/rendezvous.py:805` (lines 805–807; compare `send` at line 621).
@@ -34,6 +36,8 @@ Validation used public source and repository documentation, in-memory Python pro
 
    Suggested fix: latch the release requirement only when the original actually accepts the skip or ends the scene. Keep a completed hold ready and retry on subsequent eligible simulation ticks while preserving the original skip restrictions.
 
+   **Fixed** in `0cabb23` (2026-10-26): the release (-1) is latched only when `g_cutSkip` was set or the scene ended; a refused skip keeps the completed hold and the press is offered again each tick. Note: the online 301-frame minimum applies only to the ending scenes `endgood` / `endbad` (scene name at 0x44fe18, 0x199da0-0x199dd4), not to every scene; docs corrected. Ran: synthetic probe (refused until frame 301, skipped there, one skip, latched after) and a two-copy room holding from the scene's start, 2,955 ticks in step.
+
 4. **[P2 / Medium] Spell damage is classified by the caster's current animation instead of the damaging spell.**
 
    Location: `tools/recomp/app/soulscombat.cpp:1335` (also lines 981–994 and 1314–1338).
@@ -41,6 +45,8 @@ Validation used public source and repository documentation, in-memory Python pro
    Failure scenario: a player casts a projectile, then starts a melee swing before it hits. At impact, `state == 1` makes `spell_hit` false, so the projectile uses weapon scaling and can also receive the swing's heavy/critical modifiers. A delayed spell impact after `spell_hit_ticks` similarly becomes weapon damage. This is reachable with independent projectiles: `docs/spec/player-spell-pipeline.md:45` describes a projectile with a 300-tick lifetime, longer than the default 240-tick classification window. Identical spell casts therefore have damage determined by unrelated later weapon actions.
 
    Suggested fix: carry a deterministic damage-source classification from spell creation through the damage call. Apply spell modifiers to that source and melee modifiers only to actual melee hits; do not infer the source from a caster-wide timer or current animation.
+
+   **Fixed** in `0cabb23` (2026-10-26): the hit's source is read from the game's own stack at the call - `damage_apply`'s saved return address (frame +0x218) names the damaging code (`Player_meleeHit` 0x1b6a98 = swing, `MissileWeapon_onTouch` 0x152a18 = shot, a skill's own object = spell), fixed when the damaging object was made and identical on every machine. Spell scaling uses that source instead of the caster's state and the 240-tick window; heavy, guard-counter and critical modifiers apply only to the swing's own hits; poise kind and the bolt art likewise. Last source at attributes +0x78; "SRC1" folded into the room figure; Hardcore off unchanged (wrappers not installed; rig byte for byte). Ran: two-copy Hardcore room, casts each followed by swings, 3,953 ticks in step; the poison bolt's hits that landed mid-swing (state 1) stayed the spell's on both copies.
 
 5. **[P2 / Medium] Relocating an `ori` changes the expression's grouping and produces an invalid address.**
 
@@ -95,6 +101,8 @@ Validation used public source and repository documentation, in-memory Python pro
     Evidence: static inspection of the complete `build_mac` source and link manifests; the game application was not built.
 
     Suggested fix: include the required implementation in this build route, or explicitly compile a compatible disabled implementation and guard unavailable commands. Keep common required application modules in a shared build manifest.
+
+    **Fixed** in `0cabb23` (2026-10-26): `tools/recomp/app/appmodules.py` lists the app_main.cpp modules once (with the fix-set entries film / cinematic_hle / partyscale_hle); `app/build.py` and `build_win.py --mac` both take their sources from it (the --mac route now also gets party8.cpp and partyscale.cpp, whose numbers are part of Hardcore's room figure). Ran: `build_win.py --standin` then `--mac` links `win/mac/rta_app` and `rta_app_pngread`, which boot.
 
 Guest-memory review: the seven current `guestmap.h` reservations are pairwise disjoint. The check also included the runtime kernel/stack region, the RPC packet scratch block, actual soak writes, relocation arenas, and the current four-player combat/aim/cutscene sublayouts. No additional live-block overlap was confirmed. The map is incomplete: soak writes extend through `0xE0057` although its reservation ends at `0xE0050`, and RPC packets occupy `[0xFF000, 0x100000)` outside the list. Neither currently collides with another reviewed allocation; both should be included before treating the map's assertion as complete coverage.
 
