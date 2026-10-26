@@ -7,23 +7,23 @@ nothing changes.
 
 Everything below says **Ran** (with what was seen) or **Read**.
 
-## STATE (2026-10-26, fourth session: gate 4)
+## STATE (2026-10-26, fifth session: gate 5)
 
-Phase 1 steps 1-3 are **working, Ran**. Step 4, the hub's fitted rebuild: the richer pieces (carved podium, relief
-monument, engraved round floor) were fetched, textured and given full materials (gold, marble, metal maps); they **pass
-the check** but are **refused on review again** (Gate 4: richer close up, not clearly better at play distance or in back
-light, and the daises cost 4-8 s to load). The arch was not tried (its step waits on the hub pieces passing). The hub
-draws the game's own shapes.
+Phase 1 steps 1-3 are **working, Ran**. Step 4, the hub's rebuild: the owner's three asks of gate 4 are **done, Ran** - the
+gilding is clean (no faceted shards), the pieces are lit as the level's own surfaces are (they darken in side and back light
+with it, measured), and the trefoil platform, its stairs and both daises are rebuilt in the same set (carved friezes on every
+riser), the whole area about 20k triangles read on worker threads. The gate **refused it on review again** (Gate 5: matches
+and is richer close up, but not clearly better as a whole at play distance). The hub draws the game's own shapes.
 
 | Step | State |
 |---|---|
 | 1. Materials by class, ER albedo + normal, world scale, triplanar, blended | **done, Ran**: 8 classes; reader + our own table (`er_world.cfg`); wood now read on its own (a mine's beams), metal only by a strict rule (none read on the four levels tried) |
 | 2. Grass (MultiMesh, swaying, density by distance, no collision, not on paths / against walls) | **done, Ran**: clears painted flower patches and stones; no tufts in the air; valor 3,509 points |
 | 3. Skies: ER cloud layer tinted by the level's own sky | **done, Ran** |
-| 4. Hub fitted rebuild (ruin pieces fitted to the Champions shapes, a hand's-width check) | **refused on review** (gate 4, see Gate 4; gate 3 before it); arch **refused** by the check (max 13.4 units off), not retried |
-| Gate: before/after pictures, 60+ fps, room in step | **Ran**: pictures in `local/er-world/gate4/final/`; room in step (1,792 ticks, A drawing the gate-4 pieces); fps see Gate 4 |
+| 4. Hub fitted rebuild (ruin pieces fitted to the Champions shapes, a hand's-width check) | **refused on review** (gate 5, see Gate 5; gates 3 and 4 before it); arch **refused** by the check (max 13.4 units off), not retried |
+| Gate: before/after pictures, 60+ fps, room in step | **Ran**: pictures in `local/er-world/gate5/final/`; room in step (1,858 ticks, A drawing the gate-5 pieces); fps see Gate 5 (the machine was too loaded for a clean number) |
 
-Built into `local/godot-r30/` (extension and project). Not committed.
+Built into `local/godot-r34/` (extension and project). Not committed.
 
 ## How it works
 
@@ -337,7 +337,10 @@ Pictures in `local/er-world/gate/`; 106.8 / 107.3 fps; room in step over 1,854 t
 - The same fitting on other levels' landmarks: a recipe per level, a dump of the level (`app er world dump`).
 - The rebuild's loading (about 210 ms at the hub's start): read the pieces ahead, or on a worker.
 - Metal: try the strict rule on a level that has real metal (the gnome levels).
-- The hub rebuild back on only with pieces that beat the game's (Gates 3, 4). What is still missing (Gate 4):
+- The hub rebuild back on only with pieces that beat the game's (Gates 3-5). After gate 5 (gold, light, surroundings done):
+  a slimmer, tapered base under the monument in place of the podium box, in the game's colours; the stairs' frieze as light
+  as the game's steps; something at play distance on the platforms (a carved border inlaid in the tops along the rims, kept
+  to the game's own engraving); an fps run on a quiet machine. Gate 4's list, for the record:
   - the daises: a stepped round piece whose risers stand (the engraved floor's rim is a low band; fitted to a 7-unit step it
     reads flat), drawn with the trefoil platform and the stairs beside it in the same stone, or not at all;
   - the obelisk: one large gold panel per face (the game's focal point) rather than gilt relief; a gold mask made per
@@ -506,3 +509,103 @@ column differs.** Both copies ran about 50 fps there (the machine's load).
 - Local: `local/er-world/gate4/` (fetch lists, fits, runs, `final/` pictures, `fps4.sh`, `run4.sh`, `pair.py`,
   `texview.py`), `local/er-world/ruins/` (the new pieces and textures), `local/er-world/hubfit/hub-gate4.json`,
   `local/godot-r30/`.
+
+## Gate 5 (Ran, fifth session)
+
+The owner's review of gate 4 (`gate4/final/obelisk-chase-o0.jpg`, `west-chase-o0.jpg`): fix the gold and the brightness, and
+match the stairs. Recipe `local/er-world/gate5/work/recipe5.py`, fits `gate5/fit/`, runs `gate5/g1..g4`, route
+`gate5/route5.py` + `run5.sh` (modes off | game = the layer on, rebuild off | on), pairs `pair5.py` (game | on), luma
+`measure5.py`.
+
+**1. Gold (Ran).** The shards came from the old gild: metal where the screen-space bend of the geometry's normal was convex,
+which on a relief of a few thousand flat triangles is one value per triangle. Now:
+
+- `er_world_fit.py` makes the mask **per vertex from the mesh** (`relief`: `mode: panels` finds each face's sunk panels from
+  the piece's own outer extent per height and facing, eight directions, so a tapering shaft works; `what`: the panels with
+  their figures, their frames, or the figures alone; a height band; or the older smoothed-height measure), and bakes a
+  cavity (deeper = darker) into the vertex colour. Normals are made smooth across split corners (`smooth_normals`).
+- `er_ruin.gdshader` reads it from `COLOR.a`, interpolated across the triangles, through a threshold whose soft edge widens
+  with the screen footprint (`fwidth`: far away it averages instead of flickering).
+- A metal is a worn, painted gold lit like the stone round it (its brightness the game's light there over the shape's
+  mean), with fine streaks along the brushing, the sky in its face blurred across the brushing, and a soft anisotropic GGX
+  highlight from the scene's lights (none in its own shadow).
+
+Seen (`final/obelisk-chase-o0.jpg`): the monument's five relief panels are clean, continuous gold with the figures standing
+in them, the mouldings gilt; no shard anywhere, near or far.
+
+**2. Brightness (Ran).** Gate 4's pieces had a light model of their own: the colour times the ambient in linear light (more
+than twice the level's in shade), a fill and floor light. Now a piece is lit **as the level's pieces are**
+(`gs_draw.gdshaderinc`, `GS_LIT` + `GS_NORMALS`): a colour in the game's stored values times the ambient and plus the haze in
+stored values before it turns linear, the sun by the same wrap, a face turned from the sun in its own shadow. The colour is
+**the game's own, per vertex**: the fitter takes, for every corner, the nearest triangle the game draws there (a normal
+that disagrees costs 6 units) and its colour - the texture's mean (`app er world info`) times the game's vertex light from
+the dump (`v x y z r g b`) - and carries it in `COLOR.rgb`. For a model the game draws in several passes, a colour is given
+and the game's vertex light over the shape (0.3-2x) is kept round it. One gain (1.32, stairs 1.85) was measured: the mean
+of a texture comes out darker than the level draws it.
+
+A fault found on the way: a `Color` handed to a `vec3` uniform is made linear by Godot; the loader now passes `Vector3`.
+
+Luma where the rebuild differs from the game (`final/measure.txt`, `on` over `game`, the same pixels):
+
+| Light | Views | game / on |
+|---|---|---|
+| front (orbit 0) | start, west, east, north | 1.08 - 1.18 (ours a little darker) |
+| side (90, 270) | start, west, east, north | 0.91 - 1.23 |
+| back (180) | start, west, east, north | 0.90 - 1.05 |
+| the obelisk close | 0, 90, 180, 270 | 0.78 / 0.87 / 1.15 / 0.85 (its stone and gold are not the game's dark purple paint) |
+
+Gate 4 in back light: dais 105 against the game's 71 (0.68). In every view now the rebuilt surfaces sit within about 20% of
+the game's own, and darken with the level in side and back light (`final/west-chase-o180.jpg`, `obelisk-chase-o270.jpg`).
+
+**3. The surroundings (Ran).** No Elden Ring piece fits a trefoil or a flight of stairs, so these are **the game's own
+surface in the set's material** (`fit: surface`): the triangles the game draws in the target, welded, smooth-shaded by
+angle; what stands (a riser, a rim) gets a band of the set's carved frieze, run along the riser (unrolled over its faces)
+and as tall as it; what lies flat a world-scaled material; a ground tuft drawn in the same piece in the game's colour alone.
+Tried both ways:
+
+- **replacing the whole surface** (r1, r2): the engraved rings and painted cracks of the game's tops are lost, the steps
+  read flat - worse; dropped.
+- **an overlay on the risers** (`overlay`: drawn 0.5 units in front of the game's riser, which stays; no volume left out):
+  the trefoil's three rims, both daises' steps and the stairs' risers carry the braid frieze; the tops stay the game's (with
+  the layer's material). The check measures them 0.5 units off.
+
+Obelisk: the engraved podium (gilt mouldings) and the relief monument (gilt panels) in a dark lavender stone near the game's.
+
+**Weight and loading (Ran).** `tools/godot/er_mesh_bake.gd` (run by the fitter through Godot, headless): each surface's
+tangents, made lighter by meshoptimizer (`ImporterMesh.generate_lods`) until it fits its budget, lower levels of detail under
+it, saved as Godot resources; pictures as Images with their mip maps. The loader asks for them on worker threads
+(`ResourceLoader.load_threaded_request`); until they are in, the game's own shapes are drawn; the pictures go on the card two
+a frame. The whole area: **19,989 triangles** (gate 4's daises alone: 552k). Read in 225-285 ms on the worker threads on a
+quiet machine (1.3-2.2 s on the loaded one); on the main thread 13-22 ms (one spike of 163 ms before the pictures were
+spread; then 22 + 24 ms over several frames).
+
+**Frame rate (Ran, the machine shared: load average 400-500 during these runs, other agents' Godot copies running).**
+Paced, 3024x1964, hub + valor (`gate5/fps5.sh`, `fpsstat.py`): rebuild on 54.5 fps mean (median gap 12.2 ms, p99 50.9 ms);
+the layer on without the rebuild 65.1 (11.3 ms, 41.1 ms); the layer off 66.8 (9.1 ms, 43.1 ms). Median draw time 7.8 / 7.5 /
+7.3 ms. A hub-only pair came out the wrong way round (rebuild on 49.4, without it 37.5): at this load the means are noise; the
+medians say the rebuild costs well under a millisecond. 60+ fps not shown on this machine today; to repeat on a quiet one.
+
+**Room (Ran).** `local/godot-r34/test/room34.py g5 --level valor` (port 41995), both copies Remastered, A drawing the gate-5
+pieces (`RTA_ER_WORLD_DIR` = `gate5/world`), B with `RTA_ER_WORLD=off`: **1,858 ticks compared, no shared column differs.** A
+read the pieces in the room (`rebuild for hub, 6 pieces (19989 triangles)`).
+
+**Review** (`final/`: game | rebuild; front, side and back light, several orbits, close and play distance):
+
+| Target | Check | Seen | Verdict |
+|---|---|---|---|
+| obelisk | passed, max 10.4 | close up richer than the game's (gold relief panels, gilt mouldings, clean metal); darkens with the level; at play distance about level with the game's gold panel on dark stone, and its podium is a bulky, bluish box beside the game's tapered gold-trimmed base | **refused on review** |
+| trefoil, daises | passed, 0.5 | the rims carry the frieze and match the set and the light; at play distance the platforms read as the game's own | **refused on review** (with the obelisk: the area is not clearly better) |
+| stairs | passed, 0.5 | the frieze risers read as darker stripes than the game's pale steps in front light (0.85) | **refused on review** |
+
+The reasons are in `local/er-world/hubfit/hub-gate5.json` and the live `rebuild/hub/rebuild.json` (0 pieces). The gate-5
+pieces stay in `local/er-world/gate5/world/` (`RTA_ER_WORLD_DIR` to see them).
+
+**Fifth session changed:**
+
+- New (tracked): `tools/godot/er_mesh_bake.gd`.
+- Modified (tracked): `tools/godot/er_world_fit.py` (dump colours, several dumps, texture means, the game's colour per
+  vertex, `fit: surface`, overlays, relief masks, smooth normals, the v2 mesh and the bake), `tools/godot/project/er_world.gd`
+  (the rebuild loader only: worker threads, baked meshes, `Vector3` values, no tint over the game's colour),
+  `tools/godot/project/shaders/er_ruin.gdshader` (rewritten: the level's light, the game's colour, the gold), this file.
+- Local: `local/er-world/gate5/` (dumps `d1/`, fits, runs, `final/`, fps, `world/`), `local/er-world/hubfit/hub-gate5.json`,
+  `local/godot-r34/` (build, `test/room34.py`).

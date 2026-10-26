@@ -25,7 +25,9 @@ extends Node
 #    (tools/godot/er_world_fit.py, which refuses a piece that strays more than a hand's width from the shape it stands in
 #    for): rebuild/<level>/rebuild.json in the folder.  The drawer leaves out what the game draws inside the pieces'
 #    volumes (RtaDrawer.set_world_hide: drawing only; the game's collision is untouched) and the pieces are drawn at its
-#    place in the list (shaders/er_ruin.gdshader), coloured towards the shape's own colour, with shadows of their own.
+#    place in the list (shaders/er_ruin.gdshader), in the colour the game gave the shape there and lit as the level's own
+#    pieces are, with shadows of their own.  Their meshes and pictures (made by er_mesh_bake.gd) are read on worker threads
+#    when the level is entered; until they are in, the game's own shapes are drawn.
 #
 #   app er world info FILE     the textures drawn in the last 2 frames with what they read as, as JSON (and a summary)
 #   app er world cost          the layer's own time per frame (mean and worst, microseconds) since the last `cost`
@@ -33,8 +35,11 @@ extends Node
 #   app er world dump FILE     the next list's packets (every draw, world space) as an OBJ file (er_world_fit.py's input)
 #   app er world rebuild       what the rebuild drew and left out
 
-const CLASSES := ["grass", "dirt", "stone", "cobble", "wood", "metal", "sand", "snow"]
+const CLASSES := ["grass", "dirt", "stone", "cobble", "wood", "metal", "sand", "snow", "water", "lava", "ice"]
 const TEXTURE_SIZE := 1024
+# scale, keep, amount of the classes the table (er_world.cfg) does not name: the liquids and ice keep most of the game's own
+# picture (its painted ripples, its glowing flows) and take a broad, soft relief of their own
+const CLASS_DEFAULTS := {"water": [240.0, 0.9, 0.45], "lava": [170.0, 0.75, 0.6], "ice": [150.0, 0.65, 0.55]}
 
 var main: Node
 var view: Node                  # scene_view.gd
@@ -63,6 +68,7 @@ var grass_eye := Vector3(1e9, 0, 0)
 var grass_frame := 0
 var grass_count := 0
 var grass_on := false
+var grass_epoch := -1
 var blades_texture: Texture2D
 # sky
 var clouds_texture: Texture2D
@@ -71,6 +77,7 @@ var rebuild := {}               # the level's rebuild.json, with its loaded piec
 var rebuild_tried := {}         # levels that have none
 var rebuild_sent := ""
 var rebuild_orders := {}        # per volume: its place in the list last seen
+var rebuild_pending := {}       # a level's pieces being read on worker threads: level, data, paths, started
 # cost
 var cost_sum := 0
 var cost_worst := 0
@@ -90,7 +97,8 @@ static func found() -> bool:
 
 # before any shader that names them is made (scene_view.add_globals)
 static func add_globals() -> void:
-	for name in ["rta_er", "rta_er_scale_a", "rta_er_scale_b", "rta_er_keep_a", "rta_er_keep_b", "rta_er_amount_a", "rta_er_amount_b", "rta_er_reader", "rta_er_sky"]:
+	for name in ["rta_er", "rta_er_scale_a", "rta_er_scale_b", "rta_er_scale_c", "rta_er_keep_a", "rta_er_keep_b", "rta_er_keep_c", "rta_er_amount_a",
+			"rta_er_amount_b", "rta_er_amount_c", "rta_er_reader", "rta_er_sky"]:
 		RenderingServer.global_shader_parameter_add(name, RenderingServer.GLOBAL_VAR_TYPE_VEC4, Vector4(0, 1, 1, 0))
 	RenderingServer.global_shader_parameter_add("rta_er_albedo", RenderingServer.GLOBAL_VAR_TYPE_SAMPLER2DARRAY, RID())
 	RenderingServer.global_shader_parameter_add("rta_er_normal", RenderingServer.GLOBAL_VAR_TYPE_SAMPLER2DARRAY, RID())
@@ -171,8 +179,9 @@ func _look_num(key: String, section: String, cfg_key: String, fallback: float) -
 func before_frame() -> void:
 	var started := Time.get_ticks_usec()
 	frame_no += 1
-	on = have and not forced_off and String(view.look.get("er_world", "on")) == "on"
 	var name: String = machine.peek_string(0x41B721, 16)        # g_levelName (scene_view.gd G_LEVEL_NAME)
+	# (er_world.cfg: a level's section may turn the layer off for that level - `layer = "off"`, with the reason beside it)
+	on = have and not forced_off and String(view.look.get("er_world", "on")) == "on" and String(cfg.get_value("level." + name, "layer", "on")) != "off"
 	if name != level:
 		level = name
 		drawer.call("world_reset")
@@ -196,26 +205,23 @@ func before_frame() -> void:
 	_rebuild_volumes()
 	var strength := _look_num("er_world_strength", "world", "strength", 1.0) if on else 0.0
 	RenderingServer.global_shader_parameter_set("rta_er", Vector4(strength, _num("world", "relief", 1.0), _num("world", "far", 2600.0), _num("world", "big", 0.35)))
-	var sa := Vector4.ZERO
-	var sb := Vector4.ZERO
-	var ka := Vector4.ZERO
-	var kb := Vector4.ZERO
-	for i in 4:
-		sa[i] = _num("scale", CLASSES[i], 110.0)
-		sb[i] = _num("scale", CLASSES[i + 4], 110.0)
-		ka[i] = _num("keep", CLASSES[i], 0.6)
-		kb[i] = _num("keep", CLASSES[i + 4], 0.6)
-	RenderingServer.global_shader_parameter_set("rta_er_scale_a", sa)
-	RenderingServer.global_shader_parameter_set("rta_er_scale_b", sb)
-	RenderingServer.global_shader_parameter_set("rta_er_keep_a", ka)
-	RenderingServer.global_shader_parameter_set("rta_er_keep_b", kb)
-	var ma := Vector4.ZERO
-	var mb := Vector4.ZERO
-	for i in 4:
-		ma[i] = _num("amount", CLASSES[i], 0.8)
-		mb[i] = _num("amount", CLASSES[i + 4], 0.8)
-	RenderingServer.global_shader_parameter_set("rta_er_amount_a", ma)
-	RenderingServer.global_shader_parameter_set("rta_er_amount_b", mb)
+	# per class, four to a vector: scale (units per repeat), keep (the game's own detail kept), amount (the material's)
+	for part in 3:
+		var sv := Vector4.ZERO
+		var kv := Vector4.ZERO
+		var mv := Vector4.ZERO
+		for i in 4:
+			var c := part * 4 + i
+			if c >= CLASSES.size():
+				break
+			var d: Array = CLASS_DEFAULTS.get(CLASSES[c], [110.0, 0.6, 0.8])
+			sv[i] = _num("scale", CLASSES[c], d[0])
+			kv[i] = _num("keep", CLASSES[c], d[1])
+			mv[i] = _num("amount", CLASSES[c], d[2])
+		var suffix: String = ["a", "b", "c"][part]
+		RenderingServer.global_shader_parameter_set("rta_er_scale_" + suffix, sv)
+		RenderingServer.global_shader_parameter_set("rta_er_keep_" + suffix, kv)
+		RenderingServer.global_shader_parameter_set("rta_er_amount_" + suffix, mv)
 	RenderingServer.global_shader_parameter_set("rta_er_reader", Vector4(_num("reader", "grass_hue", 64.0), 0, 0, 0))
 	_spend(started)
 
@@ -244,9 +250,11 @@ func _table() -> Dictionary:
 			elif section == "remap":
 				t["remap." + k] = String(cfg.get_value(section, k))
 	var reader := {"cobble_edge": 0.85, "wood_aniso": 1.45, "wood_edge": 0.25, "grass_hue": 64.0, "wood_coherence": 0.6, "metal_glint": 0.1,
-		"metal_contrast": 0.85}
+		"metal_contrast": 0.85, "ice_edge": 0.6, "lava_hot": 0.25}
 	for k in reader:
 		t[k] = _num("reader", k, float(reader[k]))
+	t["lava"] = _num("reader", "lava", 0.0)
+	t["water"] = _num("reader", "water", 0.0)
 	t["grass_ground"] = _num("grass", "ground", 0.3)
 	t["grass_clear"] = _num("grass", "clear", 10.0)
 	var density := _look_num("er_grass", "grass", "density", 1.2) if blades_texture != null else 0.0
@@ -258,7 +266,8 @@ func _table() -> Dictionary:
 # Once per list, after the drawer has taken it: the grass near the eye; the sky's cloud layer
 func frame(scenario: RID) -> void:
 	var started := Time.get_ticks_usec()
-	var sky_amount := _num("sky", "amount", 1.0) if on and clouds_texture != null else 0.0
+	# (a level's own section names it sky_amount: an underwater or a cave level has no clouds)
+	var sky_amount := _num("sky", "sky_amount", _num("sky", "amount", 1.0)) if on and clouds_texture != null else 0.0
 	var tint := _num("sky", "tint", 0.75)
 	RenderingServer.global_shader_parameter_set("rta_er_sky", Vector4(sky_amount, tint, _num("sky", "speed", 0.004), _num("sky", "scale", 1.0)))
 	_grass(scenario)
@@ -287,23 +296,28 @@ func _grass(scenario: RID) -> void:
 	var eye: Vector3 = info.get("eye", Vector3.ZERO)
 	grass_frame += 1
 	# the points again when the eye has moved a little, or now and then (new pieces of the level came into view)
-	if eye.distance_to(grass_eye) < _num("grass", "move", 40.0) and grass_frame < 45:
+	# (and when a piece of grass ground the game had left out is drawn again: RtaDrawer.get_grass_epoch)
+	var epoch: int = drawer.call("get_grass_epoch")
+	if eye.distance_to(grass_eye) < _num("grass", "move", 40.0) and grass_frame < 45 and epoch == grass_epoch:
 		return
+	grass_epoch = epoch
 	grass_frame = 0
 	grass_eye = eye
 	var radius := _num("grass", "radius", 1400.0)
 	var points: PackedFloat32Array = drawer.call("get_grass", eye, radius, int(_num("grass", "max", 60000.0)))
-	var n := points.size() / 9
+	var n := points.size() / 10
 	grass_count = n
 	var height := _num("grass", "height", 34.0)
 	var buffer := PackedFloat32Array()
 	buffer.resize(n * 20)          # transform (12), colour (4), custom (4)
 	var o := 0
 	for i in n:
-		var b := i * 9
+		var b := i * 10
 		var seed := points[b + 6]
 		var yaw := seed * 917.0
-		var s := height * (0.7 + 0.6 * fmod(seed * 37.0, 1.0))
+		# no wider than its room: a tuft's cards reach 0.8 of its height out from its foot, and must not lean over a flagstone,
+		# a path or a kerb that lies that near (rta_world.cpp: room)
+		var s := minf(height * (0.7 + 0.6 * fmod(seed * 37.0, 1.0)), points[b + 9] * 1.25)
 		var c := cos(yaw) * s
 		var si := sin(yaw) * s
 		# rows of the basis (x, y, z axes scaled) and the origin: the game's z is up
@@ -369,10 +383,14 @@ func _rebuild_wanted() -> bool:
 	return on and String(view.look.get("er_rebuild", "on")) == "on"
 
 
-# Before the drawer takes the frame: the volumes it leaves out (none when the rebuild is off or the level has none)
+# Before the drawer takes the frame: the volumes it leaves out (none when the rebuild is off, the level has none, or its
+# pieces are still being read)
 func _rebuild_volumes() -> void:
 	if _rebuild_wanted() and rebuild.get("level", "") != level and not rebuild_tried.has(level):
-		_rebuild_load(level)        # (when the level is entered: its pieces read and made, a few hundred milliseconds)
+		if rebuild_pending.get("level", "") != level:
+			_rebuild_load(level)        # (when the level is entered: the pieces asked of worker threads)
+		else:
+			_rebuild_poll()
 	var want: bool = _rebuild_wanted() and rebuild.get("level", "") == level and not rebuild.get("pieces", []).is_empty()
 	var key := "%s|%s" % [want, level]
 	if key == rebuild_sent:
@@ -387,98 +405,191 @@ func _rebuild_load(name: String) -> void:
 	if not have or not FileAccess.file_exists(path):
 		rebuild_tried[name] = true          # (none for this level: not looked for again)
 		return
-	var t0 := Time.get_ticks_usec()
 	var data = JSON.parse_string(FileAccess.get_file_as_string(path))
 	if typeof(data) != TYPE_DICTIONARY:
+		rebuild_tried[name] = true
 		return
-	_rebuild_free()
 	var base := path.get_base_dir()
-	var textures := {}
-	var pieces := []
+	# the baked meshes and pictures, read by worker threads (ResourceLoader); a folder made before them: the old way, here
+	var paths := {}
 	for p in data.get("pieces", []):
-		var bytes := FileAccess.get_file_as_bytes(base.path_join(String(p.mesh)))
-		if bytes.size() < 8:
-			continue
-		var head := bytes.slice(0, 8).to_int32_array()
-		var nv := head[0]
-		var ni := head[1]
-		var at := 8
-		var pos := bytes.slice(at, at + nv * 12).to_float32_array(); at += nv * 12
-		var nrm := bytes.slice(at, at + nv * 12).to_float32_array(); at += nv * 12
-		var uvs := bytes.slice(at, at + nv * 8).to_float32_array(); at += nv * 8
-		var idx := bytes.slice(at, at + ni * 4).to_int32_array()
-		var verts := PackedVector3Array()
-		var norms := PackedVector3Array()
-		var uv := PackedVector2Array()
-		verts.resize(nv)
-		norms.resize(nv)
-		uv.resize(nv)
-		for i in nv:
-			verts[i] = Vector3(pos[i * 3], pos[i * 3 + 1], pos[i * 3 + 2])
-			norms[i] = Vector3(nrm[i * 3], nrm[i * 3 + 1], nrm[i * 3 + 2])
-			uv[i] = Vector2(uvs[i * 2], uvs[i * 2 + 1])
-		var mesh := ArrayMesh.new()
-		var materials := []
-		var aabb := AABB()
+		if not p.has("mesh_res"):
+			paths.clear()
+			break
+		paths[base.path_join(String(p.mesh_res))] = true
 		for s in p.get("surfaces", []):
-			var first := int(s.first)
-			var count := int(s.count)
-			if count <= 0:
-				continue
-			# the surface's own corners, re-indexed
-			var remap := {}
-			var sv := PackedVector3Array()
-			var sn := PackedVector3Array()
-			var su := PackedVector2Array()
-			var si := PackedInt32Array()
-			si.resize(count)
-			for k in count:
-				var o := idx[first + k]
-				if not remap.has(o):
-					remap[o] = sv.size()
-					sv.append(verts[o])
-					sn.append(norms[o])
-					su.append(uv[o])
-				si[k] = remap[o]
-			var arrays := []
-			arrays.resize(Mesh.ARRAY_MAX)
-			arrays[Mesh.ARRAY_VERTEX] = sv
-			arrays[Mesh.ARRAY_NORMAL] = sn
-			arrays[Mesh.ARRAY_TEX_UV] = su
-			arrays[Mesh.ARRAY_INDEX] = si
-			var st := SurfaceTool.new()
-			st.create_from_arrays(arrays)
-			st.generate_tangents()
-			mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, st.commit_to_arrays())
+			for key in ["albedo", "normal", "metal", "mask"]:
+				if s.has(key + "_res"):
+					paths[base.path_join(String(s[key + "_res"]))] = true
+	rebuild_pending = {"level": name, "data": data, "base": base, "paths": paths.keys(), "started": Time.get_ticks_usec()}
+	if paths.is_empty():
+		_rebuild_finish({})
+		return
+	for f in paths:
+		ResourceLoader.load_threaded_request(f, "", false, ResourceLoader.CACHE_MODE_REUSE)
+
+
+func _rebuild_poll() -> void:
+	if not rebuild_pending.has("loaded"):
+		for f in rebuild_pending.paths:
+			if ResourceLoader.load_threaded_get_status(f) == ResourceLoader.THREAD_LOAD_IN_PROGRESS:
+				return
+		var loaded := {}
+		for f in rebuild_pending.paths:
+			if ResourceLoader.load_threaded_get_status(f) == ResourceLoader.THREAD_LOAD_LOADED:
+				loaded[f] = ResourceLoader.load_threaded_get(f)
+			else:
+				print("rta_godot: er world: rebuild: could not read %s" % f)
+		rebuild_pending["loaded"] = loaded
+		rebuild_pending["textures"] = {}
+		rebuild_pending["made_usec"] = 0
+	# the pictures put on the card two a frame (each a few milliseconds: all at once was a stall of 70-160 ms on a busy
+	# machine)
+	var t0 := Time.get_ticks_usec()
+	var made := 0
+	for f in rebuild_pending.loaded:
+		var img = rebuild_pending.loaded[f]
+		if img is Image and not rebuild_pending.textures.has(f):
+			rebuild_pending.textures[f] = ImageTexture.create_from_image(img)
+			made += 1
+			if made >= 2:
+				break
+	rebuild_pending.made_usec += Time.get_ticks_usec() - t0
+	if made > 0:
+		return
+	_rebuild_finish(rebuild_pending.loaded)
+
+
+# The pieces made from what was read (on this thread: the materials, the pictures put on the card - a few milliseconds)
+func _rebuild_finish(loaded: Dictionary) -> void:
+	var t0 := Time.get_ticks_usec()
+	var name: String = rebuild_pending.level
+	var data: Dictionary = rebuild_pending.data
+	var base: String = rebuild_pending.base
+	var waited := (t0 - int(rebuild_pending.started)) / 1000.0
+	var textures: Dictionary = rebuild_pending.get("textures", {})
+	var spread := int(rebuild_pending.get("made_usec", 0)) / 1000.0
+	rebuild_pending = {}
+	_rebuild_free()
+	var pieces := []
+	var triangles := 0
+	for p in data.get("pieces", []):
+		var mesh: Mesh = null
+		if p.has("mesh_res"):
+			mesh = loaded.get(base.path_join(String(p.mesh_res)), null) as Mesh      # (one file per piece: its own)
+		else:
+			mesh = _rebuild_read_bin(base.path_join(String(p.mesh)), p.get("surfaces", []))
+		if mesh == null or mesh.get_surface_count() == 0:
+			continue
+		var materials := []
+		var surfaces: Array = p.get("surfaces", [])
+		for si in mini(surfaces.size(), mesh.get_surface_count()):
+			var s: Dictionary = surfaces[si]
 			var m := ShaderMaterial.new()
 			m.shader = load("res://shaders/er_ruin.gdshader")
-			for key in ["albedo", "normal"]:
+			m.set_shader_parameter("has_albedo", s.has("albedo"))
+			for key in ["albedo", "normal", "metal", "mask"]:
 				if not s.has(key):
 					continue
-				var file := base.path_join(String(s[key]))
-				if not textures.has(file):
-					var img := Image.load_from_file(file)
-					if img != null:
-						img.generate_mipmaps()
-						textures[file] = ImageTexture.create_from_image(img)
-				if textures.has(file):
-					m.set_shader_parameter(key + "_tex", textures[file])
-					if key == "normal":
-						m.set_shader_parameter("has_normal", true)
-			materials.append({"material": m, "mean": s.get("albedo_mean", [0.5, 0.5, 0.5])})
-			mesh.surface_set_material(mesh.get_surface_count() - 1, m)
-		if mesh.get_surface_count() == 0:
-			continue
-		aabb = mesh.get_aabb()
+				var tex: Texture2D = null
+				var res_path := base.path_join(String(s.get(key + "_res", "")))
+				if s.has(key + "_res") and textures.has(res_path):
+					tex = textures[res_path]
+				else:
+					var file := base.path_join(String(s[key]))
+					if not textures.has(file):
+						var img := Image.load_from_file(file)
+						if img != null:
+							img.generate_mipmaps()
+							textures[file] = ImageTexture.create_from_image(img)
+					tex = textures.get(file, null)
+				if tex != null:
+					m.set_shader_parameter(key + "_tex", tex)
+					if key != "albedo":
+						m.set_shader_parameter("has_" + key, true)
+			var game_light := bool(s.get("game_light", false))
+			m.set_shader_parameter("game_light", game_light)
+			var lr: Array = p.get("light_ref", [0.5, 0.5, 0.5])
+			m.set_shader_parameter("light_ref", Vector3(float(lr[0]), float(lr[1]), float(lr[2])))
+			# the recipe's own material for this surface (er_world_fit.py "surfaces": a gold moulding, a marble)
+			var params: Dictionary = s.get("params", {})
+			for key in params:
+				var v = params[key]
+				if typeof(v) == TYPE_ARRAY and v.size() == 3:
+					# (a Vector3: a Color would be made linear on its way in, and the shader works in stored values)
+					v = Vector3(float(v[0]), float(v[1]), float(v[2]))
+				elif typeof(v) == TYPE_ARRAY and v.size() == 2:
+					v = Vector2(float(v[0]), float(v[1]))
+				elif String(key).ends_with("_channel"):
+					v = int(v)
+				m.set_shader_parameter(String(key), v)
+			# (without the game's colour per corner: drawn towards the colour of what it stands in for, from the piece's
+			# own mean - a surface laid in another colour has that colour as its mean, as far as it is laid)
+			var mean: Array = s.get("albedo_mean", [0.5, 0.5, 0.5])
+			var rc = params.get("recolour", null)
+			if typeof(rc) == TYPE_ARRAY and rc.size() == 3:
+				var k := float(params.get("recolour_amount", 0.0))
+				mean = [lerpf(float(mean[0]), float(rc[0]), k), lerpf(float(mean[1]), float(rc[1]), k), lerpf(float(mean[2]), float(rc[2]), k)]
+			materials.append({"material": m, "mean": mean, "tint": float(s.get("tint", -1.0)), "game_light": game_light})
+			mesh.surface_set_material(si, m)
+		var aabb := mesh.get_aabb()
 		for m in materials:
 			(m.material as ShaderMaterial).set_shader_parameter("ground_z", aabb.position.z)   # (the grime near its foot)
+		for si in mesh.get_surface_count():
+			triangles += (mesh.surface_get_array_index_len(si) if mesh is ArrayMesh else 0) / 3
 		pieces.append({"name": p.name, "mesh": mesh, "materials": materials, "volumes": p.get("volumes", [p.volume]).map(func(x): return int(x)),
 			"tint_amount": float(p.get("tint", 0.6)),
 			"instance": RID(), "caster": RID(), "scenario": RID(), "tinted": 0.0, "aabb": aabb})
 	data["pieces"] = pieces
 	rebuild = data
-	print("rta_godot: er world: rebuild for %s, %d pieces over %d volumes in %.0f ms" % [name, pieces.size(), data.get("volumes", []).size(),
-		(Time.get_ticks_usec() - t0) / 1000.0])
+	print("rta_godot: er world: rebuild for %s, %d pieces (%d triangles) over %d volumes: read in %.0f ms on worker threads, pictures put on the card in %.1f ms (two a frame), made in %.1f ms" % [
+		name, pieces.size(), triangles, data.get("volumes", []).size(), waited, spread, (Time.get_ticks_usec() - t0) / 1000.0])
+
+
+# a piece written before the baked meshes (er_world_fit.py's .bin: positions, normals, uvs, indices), read here
+func _rebuild_read_bin(file: String, surfaces: Array) -> ArrayMesh:
+	var bytes := FileAccess.get_file_as_bytes(file)
+	if bytes.size() < 8:
+		return null
+	var head := bytes.slice(0, 8).to_int32_array()
+	var nv := head[0]
+	var ni := head[1]
+	var at := 8
+	var pos := bytes.slice(at, at + nv * 12).to_float32_array(); at += nv * 12
+	var nrm := bytes.slice(at, at + nv * 12).to_float32_array(); at += nv * 12
+	var uvs := bytes.slice(at, at + nv * 8).to_float32_array(); at += nv * 8
+	var idx := bytes.slice(at, at + ni * 4).to_int32_array()
+	var mesh := ArrayMesh.new()
+	for s in surfaces:
+		var first := int(s.first)
+		var count := int(s.count)
+		if count <= 0:
+			continue
+		var remap := {}
+		var sv := PackedVector3Array()
+		var sn := PackedVector3Array()
+		var su := PackedVector2Array()
+		var si := PackedInt32Array()
+		si.resize(count)
+		for k in count:
+			var o := idx[first + k]
+			if not remap.has(o):
+				remap[o] = sv.size()
+				sv.append(Vector3(pos[o * 3], pos[o * 3 + 1], pos[o * 3 + 2]))
+				sn.append(Vector3(nrm[o * 3], nrm[o * 3 + 1], nrm[o * 3 + 2]))
+				su.append(Vector2(uvs[o * 2], uvs[o * 2 + 1]))
+			si[k] = remap[o]
+		var arrays := []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = sv
+		arrays[Mesh.ARRAY_NORMAL] = sn
+		arrays[Mesh.ARRAY_TEX_UV] = su
+		arrays[Mesh.ARRAY_INDEX] = si
+		var st := SurfaceTool.new()
+		st.create_from_arrays(arrays)
+		st.generate_tangents()
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, st.commit_to_arrays())
+	return mesh
 
 
 func _rebuild_draw(scenario: RID) -> void:
@@ -519,6 +630,8 @@ func _rebuild_draw(scenario: RID) -> void:
 			if weight != float(p.tinted):
 				p.tinted = weight
 				for m in p.materials:
+					if m.game_light:
+						continue            # (its colour is the game's own, per corner)
 					var mean: Array = m.mean
 					var own := Vector3(maxf(float(mean[0]), 0.05), maxf(float(mean[1]), 0.05), maxf(float(mean[2]), 0.05))
 					var want := Vector3(colour.r, colour.g, colour.b)
@@ -526,7 +639,8 @@ func _rebuild_draw(scenario: RID) -> void:
 					# pieces are), the hue and saturation drawn towards it by tint_amount
 					var lum_own := own.dot(Vector3(0.3, 0.59, 0.11))
 					var lum_want := want.dot(Vector3(0.3, 0.59, 0.11))
-					var hue := Vector3.ONE.lerp(want / maxf(lum_want, 0.02) / (own / lum_own), p.tint_amount)
+					var amount: float = m.tint if m.tint >= 0.0 else p.tint_amount
+					var hue := Vector3.ONE.lerp(want / maxf(lum_want, 0.02) / (own / lum_own), amount)
 					var t := (hue * clampf(lum_want / lum_own, 0.25, 2.5)).clamp(Vector3(0.1, 0.1, 0.1), Vector3(3.0, 3.0, 3.0))
 					(m.material as ShaderMaterial).set_shader_parameter("tint", t)
 
@@ -588,7 +702,8 @@ func command(w: PackedStringArray) -> void:
 					rows.append({"id": d.id, "name": d.name, "class": d["class"], "class_b": d.class_b, "guess": d.guess, "table": d.table,
 						"mean": [snappedf(m.r, 0.001), snappedf(m.g, 0.001), snappedf(m.b, 0.001)], "frac": Array(d.frac), "edge": d.edge,
 						"aniso": d.aniso, "opaque": d.opaque, "draws": d.draws, "coherence": d.coherence, "sat": d.sat, "contrast": d.contrast,
-						"glint": d.glint, "cool": d.cool})
+						"glint": d.glint, "cool": d.cool, "tint": [snappedf(d.tint.r, 0.001), snappedf(d.tint.g, 0.001), snappedf(d.tint.b, 0.001)],
+						"lit_grey": d.lit_grey, "hot": snappedf(d.hot, 0.001)})
 				f.store_string(JSON.stringify({"level": level, "on": on, "per_class": info.get("per_class", {}), "textures": rows}, " "))
 				f.close()
 	elif w[2] == "cost":
@@ -611,8 +726,9 @@ func command(w: PackedStringArray) -> void:
 			var pts: PackedFloat32Array = drawer.call("get_grass", machine.get_view().get("eye", Vector3.ZERO), 6000.0, 200000)
 			var f := FileAccess.open(w[3], FileAccess.WRITE)
 			if f != null:
-				for i in pts.size() / 9:
-					f.store_line("%.1f %.1f %.1f %.3f %.3f %.3f" % [pts[i * 9], pts[i * 9 + 1], pts[i * 9 + 2], pts[i * 9 + 3], pts[i * 9 + 4], pts[i * 9 + 5]])
+				for i in pts.size() / 10:
+					var k := i * 10
+					f.store_line("%.1f %.1f %.1f %.3f %.3f %.3f %.1f" % [pts[k], pts[k + 1], pts[k + 2], pts[k + 3], pts[k + 4], pts[k + 5], pts[k + 9]])
 				f.close()
 		var info: Dictionary = drawer.call("get_world_info", 0)
 		print("rta_godot: er world grass: %d pieces scanned, %d points, %d drawn near the eye" % [int(info.get("grass_pieces", 0)), int(info.get("grass_points", 0)), grass_count])

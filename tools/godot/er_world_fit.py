@@ -26,6 +26,18 @@ The recipe (a local file; numbers of the level's shapes and names of Elden Ring 
         "mask": "<a mask map>", "params": {<er_ruin.gdshader uniform>: value}, "tint": <this surface's own tint 0..1>}}
         a mesh's material made other than the model's own: a carved stone's moulding made gold, a pale stone made marble
 
+  surface: {"fit": "surface", "top": {...}, "side": {"band": [v0, v1], ...}, "plain": {...}, "plain_textures": [...],
+        "roles": ["top", "side", "plain"], "offset": units, "smooth": degrees}
+        the game's own triangles in the target in an Elden Ring material (what lies flat laid in world space, what stands a
+        band of the texture run along it); with "overlay": true on the target and "offset", laid in front of the game's own
+        surface, which stays drawn (no volume is left out)
+  any surface entry or part: "relief": {"mode": "panels", "what": "panels" | "frames" | "figures", "z": [lo, hi], "cavity"}
+        (or the smoothed-height measure) - a relief mask per vertex for the shader's gilding; "smooth_normals": degrees;
+        "colour": [r, g, b] - the colour of a model the game draws in several passes, its vertex light kept round it
+  "dump" may be a list (merged); "texture_means": `app er world info` reports - every corner of a piece carries the colour
+        the game gave the surface nearest it (texture mean x vertex light), which the shader lights as the level's own
+  "budget": triangles per surface; the meshes and pictures are baked by er_mesh_bake.gd (Godot, headless; --no-bake: not)
+
 What it stands in for is what the game draws inside the target's volume (the drawer leaves exactly that out at run time:
 RtaDrawer.set_world_hide - a level draw lying wholly inside, a model's triangles lying wholly inside), taken from the dump.
 
@@ -40,7 +52,7 @@ the player stands on).  A model's collision is its own circle, so for a model on
 any sample over the line is REFUSED: nothing of it is written, and the game's own shape stays.
 
 Writes OUT/rebuild.json (pieces, volumes, the check), OUT/<name>.bin (float32: positions, normals, uvs per vertex; int32
-indices), OUT/tex/*.png, and with --pictures a top and a side view of each target's samples (green within, red over).
+indices), OUT/<name>.v2 and .mesh.res (the baked mesh), OUT/tex/*.png and .tex.res, and with --pictures a top and a side view of each target's samples (green within, red over).
 Needs numpy and Pillow.
 """
 import json
@@ -58,17 +70,26 @@ import world_info  # noqa: E402  (tools/world_info.py: the level file's terrain)
 
 # ---- input ------------------------------------------------------------------------------------------------------------
 def load_dump(path):
-    """the dump's groups: name -> (triangles (n, 3, 3), kind, object)"""
-    verts, groups, cur = [], {}, None
+    """the dump's groups: name -> (triangles (n, 3, 3), kind, object, the game's vertex light per corner (n, 3, 3), 128 = 1,
+    the texture's name); several dumps (a list) are merged"""
+    if isinstance(path, list):
+        out = {}
+        for k, one in enumerate(path):
+            out.update({'%d:%s' % (k, n): v for n, v in load_dump(one).items()})
+        return out
+    verts, cols, groups, cur = [], [], {}, None
     for line in open(path):
         if line.startswith('v '):
-            verts.append([float(x) for x in line.split()[1:4]])
+            a = line.split()
+            verts.append([float(x) for x in a[1:4]])
+            cols.append([float(x) for x in a[4:7]] if len(a) >= 7 else [128.0, 128.0, 128.0])
         elif line.startswith('g '):
             cur = line.split()[1]
             groups.setdefault(cur, [])
         elif line.startswith('f '):
             groups[cur].append([int(x) - 1 for x in line.split()[1:4]])
     v = np.array(verts, float)
+    c = np.array(cols, float)
     out = {}
     for name, faces in groups.items():
         if not faces:
@@ -76,7 +97,9 @@ def load_dump(path):
         parts = name.split('_')
         kind = int(parts[1][1:])
         obj = int(parts[2][1:])
-        out[name] = (v[np.array(faces)], kind, obj)
+        tex = name.split('_t', 1)[1].rsplit('_z', 1)[0] if '_t' in name else ''
+        f = np.array(faces)
+        out[name] = (v[f], kind, obj, c[f], tex)
     return out
 
 
@@ -123,23 +146,45 @@ def load_level_obj(path):
         elif line.startswith('f '):
             groups[cur].append([int(x.split('/')[0]) - 1 for x in line.split()[1:4]])
     v = np.array(verts, float)
-    return {'level_' + name: (v[np.array(f)], 1, 0) for name, f in groups.items() if f and '_cell0_' not in name}
+    return {'level_' + name: (v[np.array(f)], 1, 0, None, '') for name, f in groups.items() if f and '_cell0_' not in name}
 
 
-def reference(dump, vol, obj=None):
-    """what the game draws inside the volume: level draws lying wholly in it, models' triangles lying wholly in it"""
-    tris = []
-    for name, (t, kind, o) in dump.items():
+def reference(dump, vol, obj=None, means=None, with_colour=False):
+    """what the game draws inside the volume: level draws lying wholly in it, models' triangles lying wholly in it; with
+    with_colour also the colour the game gave each corner (its texture's mean times its vertex light, stored values 0..1:
+    what the level's own shader multiplies its light by; `means`: texture name -> mean) and each triangle's texture"""
+    tris, colours, names = [], [], []
+    # a level draw is left out whole or not at all: every packet of it (the dump's groups d<draw>_..._m<packet>) inside
+    draw_of = lambda name: name.split('_k', 1)[0]
+    whole = {}
+    for name, (t, kind, o, c, tex) in dump.items():
+        if kind == 1:
+            d = draw_of(name)
+            whole[d] = whole.get(d, True) and bool(inside(t, vol).all())
+    for name, (t, kind, o, c, tex) in dump.items():
         if not (vol[8] & kind) or (obj is not None and o != obj):
             continue
         ins = inside(t, vol).all(axis=1)
-        if kind == 1:
-            if ins.all():
-                tris.append(t)
+        if kind != 1:
+            sel = ins
+        elif whole.get(draw_of(name), False):
+            sel = np.ones(len(t), bool)
         else:
-            tris.append(t[ins])
-    tris = [t for t in tris if len(t)]
-    return np.concatenate(tris) if tris else np.zeros((0, 3, 3))
+            continue
+        if not sel.any():
+            continue
+        tris.append(t[sel])
+        if with_colour:
+            m = np.array((means or {}).get(tex, [0.5, 0.5, 0.5]), float)
+            vc = c[sel] if c is not None else np.full((int(sel.sum()), 3, 3), 128.0)
+            colours.append(np.clip(m * vc / 128.0, 0.0, 1.0))
+            names += [tex] * int(sel.sum())
+    if not tris:
+        z = np.zeros((0, 3, 3))
+        return (z, z, []) if with_colour else z
+    if with_colour:
+        return np.concatenate(tris), np.concatenate(colours), names
+    return np.concatenate(tris)
 
 
 # ---- fitting ----------------------------------------------------------------------------------------------------------
@@ -399,6 +444,320 @@ def picture(path, ref, p, vis, over, title):
     im.save(path)
 
 
+# ---- the game's own surface in an Elden Ring material, and what every piece takes from the game -----------------------------
+def weld(points, eps=0.05):
+    """one index per distinct position (within eps)"""
+    key = np.round(points / eps).astype(np.int64)
+    _, first, inverse = np.unique(key, axis=0, return_index=True, return_inverse=True)
+    return inverse.reshape(-1), points[first]
+
+
+def face_normals(t):
+    n = np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0])
+    a = np.linalg.norm(n, axis=1)
+    return n / np.maximum(a, 1e-12)[:, None], a / 2.0
+
+
+def smooth_corner_normals(t, fn, area, angle=40.0):
+    """per corner: the area-weighted mean of the normals of the faces that share its position and turn from this corner's face
+    by less than `angle` (a curved rim shades round, a step's edge stays sharp)"""
+    corners = t.reshape(-1, 3)
+    wid, _ = weld(corners)
+    cf = np.repeat(np.arange(len(t)), 3)
+    order = np.argsort(wid, kind='stable')
+    out = np.zeros((len(corners), 3))
+    cos_a = math.cos(math.radians(angle))
+    bounds = np.flatnonzero(np.diff(np.r_[-1, wid[order], -2]))
+    for s, e in zip(bounds[:-1], bounds[1:]):
+        group = order[s:e]
+        faces = cf[group]
+        n = fn[faces]
+        w = area[faces][:, None] * n
+        close = (n @ n.T) >= cos_a
+        out[group] = close.astype(float) @ w
+    return out / np.maximum(np.linalg.norm(out, axis=1, keepdims=True), 1e-12)
+
+
+def ray_up_hits(p, t, fn):
+    """per point: does a ray straight up from it meet one of the triangles that face up or down (a step's top over it)?"""
+    sel = np.abs(fn[:, 2]) > 0.3
+    tt = t[sel]
+    hit = np.zeros(len(p), bool)
+    if not len(tt):
+        return hit
+    a, b, c = tt[:, 0], tt[:, 1], tt[:, 2]
+    for s in range(0, len(p), 512):
+        q = p[s:s + 512][:, None, :]
+        d = (b[:, 1] - c[:, 1]) * (a[:, 0] - c[:, 0]) + (c[:, 0] - b[:, 0]) * (a[:, 1] - c[:, 1])
+        d = np.where(np.abs(d) < 1e-9, 1e-9, d)
+        l0 = ((b[:, 1] - c[:, 1]) * (q[..., 0] - c[:, 0]) + (c[:, 0] - b[:, 0]) * (q[..., 1] - c[:, 1])) / d
+        l1 = ((c[:, 1] - a[:, 1]) * (q[..., 0] - c[:, 0]) + (a[:, 0] - c[:, 0]) * (q[..., 1] - c[:, 1])) / d
+        l2 = 1 - l0 - l1
+        z = l0 * a[:, 2] + l1 * b[:, 2] + l2 * c[:, 2]
+        hit[s:s + 512] = ((l0 >= 0) & (l1 >= 0) & (l2 >= 0) & (z > q[..., 2] + 0.2)).any(1)
+    return hit
+
+
+def surface_meshes(part, ref, ref_tex, centre):
+    """fit "surface": the game's own triangles inside the target, in an Elden Ring material - what faces up (a floor, a step's
+    tread) in `top` (laid flat in world space, `scale` units a repeat), what stands (a step's riser, a rim) in `side` (a band of
+    the texture, `band` [v0, v1], run along the riser and as tall as it), the textures named in `plain` (a tuft of the ground
+    the game draws in the same piece) in the game's own colour alone.  The check then measures the game's surface against
+    itself: 0."""
+    t = ref.copy()
+    fn, area = face_normals(t)
+    keep = area > 1e-6
+    t, fn, area = t[keep], fn[keep], area[keep]
+    tex = [n for n, k in zip(ref_tex, keep) if k]
+    # which side is out: up for what lies flat; for what stands, the side under no step's top (a riser's front looks over
+    # the step below it; its back lies under the step above)
+    flat = np.abs(fn[:, 2]) > 0.6
+    fn[flat] *= np.sign(fn[flat, 2])[:, None]
+    mid = t.mean(1)
+    stand = np.flatnonzero(~flat)
+    if len(stand):
+        probe = mid[stand] + fn[stand] * 1.5
+        inward = ray_up_hits(probe, t, fn)
+        fn[stand[inward]] *= -1.0
+        # (one under nothing either way: the side away from the target's centre)
+        probe_b = mid[stand] - fn[stand] * 1.5
+        both = ~inward & ~ray_up_hits(probe_b, t, fn)
+        away = ((mid[stand] - centre)[:, :2] * fn[stand][:, :2]).sum(1) < 0
+        fn[stand[both & away]] *= -1.0
+    # winding to match
+    raw = np.cross(t[:, 1] - t[:, 0], t[:, 2] - t[:, 0])
+    flip = (raw * fn).sum(1) < 0
+    t[flip] = t[flip][:, [0, 2, 1]]
+    plain = set(part.get('plain_textures', []))
+    groups = {'top': flat & ~np.array([n in plain for n in tex], bool), 'side': ~flat & ~np.array([n in plain for n in tex], bool),
+              'plain': np.array([n in plain for n in tex], bool)}
+    meshes = []
+    roles = part.get('roles', ['top', 'side', 'plain'])
+    for k, (role, sel) in enumerate(groups.items()):
+        if not sel.any() or role not in roles:
+            continue
+        tt, nf, ar = t[sel], fn[sel], area[sel]
+        cn = smooth_corner_normals(tt, nf, ar, part.get('smooth', 40.0)).reshape(-1, 3, 3)
+        mat = part.get(role, {})
+        p = tt.reshape(-1, 3)
+        relief = np.zeros(len(p))
+        if role == 'side':
+            band = mat.get('band', [0.0, 1.0])
+            uv = band_uv(tt, nf, band, mat.get('repeat', 1.0))
+            # (a riser's height, 0 at its foot .. 1 at its top edge: the shader's wear lightens the edge, darkens the foot)
+            relief = 1.0 - (uv[:, 1] - band[0]) / max(band[1] - band[0], 1e-6)
+        else:
+            sc = float(mat.get('scale', 64.0))
+            ang = math.radians(float(mat.get('turn', 0.0)))
+            x = p[:, 0] * math.cos(ang) + p[:, 1] * math.sin(ang)
+            y = -p[:, 0] * math.sin(ang) + p[:, 1] * math.cos(ang)
+            uv = np.stack([x / sc, -y / sc], 1)
+        n = cn.reshape(-1, 3)
+        # an overlay (a frieze laid over the game's own riser, which stays drawn): a little in front of it
+        p = p + n * float(part.get('offset', 0.0))
+        meshes.append({'p': p, 'n': n, 'uv': uv, 'i': np.arange(len(p)).reshape(-1, 3), 'k': role,
+                       'mat': {'name': role, 'textures': []}, 'role': role, 'relief': relief})
+    return meshes
+
+
+def band_uv(tt, nf, band, repeat):
+    """a riser's texture: v from its foot to its top across the band, u along it (unrolled over the riser's connected faces,
+    so a frieze runs on round a curved rim), the texture's aspect kept"""
+    corners = tt.reshape(-1, 3)
+    wid, wp = weld(corners, 0.1)
+    nw = len(wp)
+    # connected parts (faces sharing a welded corner)
+    parent = np.arange(nw)
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+    tri_w = wid.reshape(-1, 3)
+    for a, b, c in tri_w:
+        ra, rb, rc = find(a), find(b), find(c)
+        parent[rb] = ra
+        parent[find(rc)] = ra
+    comp = np.array([find(i) for i in range(nw)])
+    v0, v1 = band
+    u_w = np.zeros(nw)
+    zlo, zhi = {}, {}
+    for cid in np.unique(comp):
+        ids = np.flatnonzero(comp == cid)
+        zlo[cid], zhi[cid] = wp[ids, 2].min(), wp[ids, 2].max()
+    # the horizontal tangent of each welded corner (from its faces' outward normals)
+    tan = np.zeros((nw, 2))
+    for f, (a, b, c) in enumerate(tri_w):
+        h = np.array([-nf[f, 1], nf[f, 0]])
+        for x in (a, b, c):
+            tan[x] += h
+    tan /= np.maximum(np.linalg.norm(tan, axis=1, keepdims=True), 1e-9)
+    # unroll: breadth first over the edges
+    adj = [[] for _ in range(nw)]
+    for a, b, c in tri_w:
+        adj[a] += [b, c]; adj[b] += [a, c]; adj[c] += [a, b]
+    seen = np.zeros(nw, bool)
+    for start in range(nw):
+        if seen[start]:
+            continue
+        seen[start] = True
+        queue = [start]
+        while queue:
+            i = queue.pop(0)
+            for j in adj[i]:
+                if seen[j]:
+                    continue
+                seen[j] = True
+                d = wp[j, :2] - wp[i, :2]
+                tt2 = tan[i] + tan[j]
+                tt2 /= max(np.linalg.norm(tt2), 1e-9)
+                u_w[j] = u_w[i] + float(d @ tt2)
+                queue.append(j)
+    top_z = np.array([zhi[c] for c in comp])
+    h = np.array([max(zhi[c] - zlo[c], 0.5) for c in comp])
+    v = v0 + (v1 - v0) * (top_z - wp[:, 2]) / h
+    u = u_w / h * (v1 - v0) * repeat
+    return np.stack([u, v], 1)[wid]
+
+
+def closest_on_triangles(p, tris, pn=None, chunk=1024):
+    """per point: the nearest triangle (a normal that disagrees costs as much as 6 units) and the barycentric weights of the
+    nearest point on it"""
+    a, b, c = tris[:, 0], tris[:, 1], tris[:, 2]
+    fn, _ = face_normals(tris)
+    best_k = np.zeros(len(p), int)
+    best_w = np.zeros((len(p), 3))
+    for s in range(0, len(p), chunk):
+        q = p[s:s + chunk]
+        # nearest point by clamped barycentric projection (good enough for weights; distance by the exact routine below)
+        ab, ac, aq = b - a, c - a, q[:, None, :] - a
+        d00, d01, d11 = (ab * ab).sum(-1), (ab * ac).sum(-1), (ac * ac).sum(-1)
+        d20, d21 = (aq * ab).sum(-1), (aq * ac).sum(-1)
+        den = np.maximum(d00 * d11 - d01 * d01, 1e-12)
+        v = (d11 * d20 - d01 * d21) / den
+        w = (d00 * d21 - d01 * d20) / den
+        v, w = np.clip(v, 0, 1), np.clip(w, 0, 1)
+        over = v + w > 1
+        tot = np.where(over, v + w, 1.0)
+        v, w = v / tot, w / tot
+        u = 1 - v - w
+        cp = a * u[..., None] + b * v[..., None] + c * w[..., None]
+        dist = np.linalg.norm(q[:, None, :] - cp, axis=-1)
+        if pn is not None:
+            dist = dist + 6.0 * (1.0 - np.abs((pn[s:s + chunk][:, None, :] * fn).sum(-1)))
+        k = dist.argmin(1)
+        r = np.arange(len(q))
+        best_k[s:s + chunk] = k
+        best_w[s:s + chunk] = np.stack([u[r, k], v[r, k], w[r, k]], 1)
+    return best_k, best_w
+
+
+def game_colour(points, normals, ref, ref_col):
+    """the colour the game gave the surface nearest each point (stored values: texture mean x vertex light)"""
+    if not len(ref):
+        return np.full((len(points), 3), 0.5)
+    k, w = closest_on_triangles(points, ref, normals)
+    return (ref_col[k] * w[..., None]).sum(1)
+
+
+def relief_mask(p, i, n, iters=12, lo=0.15, hi=0.85):
+    """per vertex: how far it stands out of its smoothed surroundings (a relief's raised figures, a moulding's crest), 0..1 -
+    smooth across the triangles (no facet of the mesh shows in it); lo/hi: the share of the range taken as none and as all"""
+    wid, wp = weld(p, 0.02)
+    tri = wid[i]
+    nw = len(wp)
+    acc = np.zeros((nw, 3))
+    cnt = np.zeros(nw)
+    sm = wp.copy()
+    for _ in range(iters):
+        acc[:] = 0
+        cnt[:] = 0
+        for a, b in ((0, 1), (1, 2), (2, 0)):
+            np.add.at(acc, tri[:, a], sm[tri[:, b]]); np.add.at(cnt, tri[:, a], 1)
+            np.add.at(acc, tri[:, b], sm[tri[:, a]]); np.add.at(cnt, tri[:, b], 1)
+        sm = 0.5 * sm + 0.5 * acc / np.maximum(cnt, 1)[:, None]
+    wn = np.zeros((nw, 3))
+    np.add.at(wn, wid, n)
+    wn /= np.maximum(np.linalg.norm(wn, axis=1, keepdims=True), 1e-9)
+    h = ((wp - sm) * wn).sum(1)
+    q0, q1 = np.percentile(h, [100 * lo, 100 * hi])
+    m = np.clip((h - q0) / max(q1 - q0, 1e-6), 0, 1)
+    # one pass of smoothing of the mask itself
+    acc1 = np.zeros(nw); cnt[:] = 0
+    for a, b in ((0, 1), (1, 2), (2, 0)):
+        np.add.at(acc1, tri[:, a], m[tri[:, b]]); np.add.at(cnt, tri[:, a], 1)
+    m = 0.5 * m + 0.5 * acc1 / np.maximum(cnt, 1)
+    return m[wid]
+
+
+def relief_in_panels(p, i, n, radius=4.0, lo=0.3, hi=0.75, frame=0.12, what='figures', zband=(0.0, 1.0)):
+    """per vertex: how far it stands up out of the sunk panel it lies in (a relief's figures: 1 at their crests, 0 on the
+    panel's ground and on the frame round it, which is the piece's outer face) - from the piece's own outer extent at that
+    height and facing (eight directions), so a tapering shaft's panels are found as well; smooth across the triangles"""
+    wid, wp = weld(p, 0.02)
+    wn = np.zeros((len(wp), 3))
+    np.add.at(wn, wid, n)
+    wn /= np.maximum(np.linalg.norm(wn, axis=1, keepdims=True), 1e-9)
+    dirs = np.array([[math.cos(a), math.sin(a), 0.0] for a in np.arange(8) * math.pi / 4])
+    side = np.argmax(wn @ dirs.T, axis=1)
+    facing = (wn @ dirs.T).max(1) > 0.5
+    recess = np.zeros(len(wp))
+    z = wp[:, 2]
+    for k, d in enumerate(dirs):
+        sel = np.flatnonzero(side == k)
+        if not len(sel):
+            continue
+        proj = wp[sel] @ d
+        # the outer extent: the furthest a vertex of this face reaches this way within 3 units of height
+        near_z = np.abs(z[sel][:, None] - z[sel][None, :]) < 3.0
+        ext = np.where(near_z, proj[None, :], -1e9).max(1)
+        recess[sel] = ext - proj
+    recess[~facing] = 0.0
+    # the panel's ground: the deepest point within `radius` of the vertex on the same face
+    ground = np.zeros(len(wp))
+    for k in range(8):
+        sel = np.flatnonzero((side == k) & facing)
+        if not len(sel):
+            continue
+        q = wp[sel]
+        dd = np.linalg.norm(q[:, None, :] - q[None, :, :], axis=-1) < radius
+        ground[sel] = np.where(dd, recess[sel][None, :], 0.0).max(1)
+    height = ground - recess
+    if what == 'panels':
+        # the sunk panels whole, their carving with them: one field of metal per panel, its figures standing in it
+        m = ((ground > 0.3) & (recess >= frame * np.maximum(ground, 1e-6))).astype(float)
+    elif what == 'frames':
+        # the frames round the sunk panels (the outer face where a panel lies within `radius`): mouldings, clean bands
+        m = ((ground > 0.3) & (recess < frame * np.maximum(ground, 1e-6))).astype(float)
+    else:
+        m = np.where(ground > 0.15, np.clip((height / np.maximum(ground, 1e-6) - lo) / max(hi - lo, 1e-6), 0, 1), 0.0)
+        m[recess < frame * np.maximum(ground, 1e-6)] = 0.0     # (the frame: the outer face itself)
+    # (only within zband: the share of the piece's height its panels take - not its cap, not its plain foot)
+    zf = (z - z.min()) / max(float(z.max() - z.min()), 1e-6)
+    m[(zf < zband[0]) | (zf > zband[1])] = 0.0
+    m = m * m * (3 - 2 * m)
+    # and how deep each vertex lies (0 on the outer face .. 1 at the deepest ground): the cavity the light reaches less
+    depth = np.clip(recess / max(float(np.percentile(recess[recess > 0.05], 90)) if (recess > 0.05).any() else 1.0, 1e-6), 0, 1)
+    return m[wid], depth[wid]
+
+
+def smooth_normals_welded(p, i, n, angle):
+    """a model's normals made smooth across its split corners (a relief carved in few triangles shades round), keeping edges
+    sharper than `angle`"""
+    t = p[i]
+    fn, area = face_normals(t)
+    vn = n[i].mean(1)
+    fn *= np.where((fn * vn).sum(1) < 0, -1.0, 1.0)[:, None]
+    cn = smooth_corner_normals(t, fn, area, angle)
+    out = np.zeros_like(n)
+    cnt = np.zeros(len(n))
+    np.add.at(out, i.reshape(-1), cn)
+    np.add.at(cnt, i.reshape(-1), 1)
+    out /= np.maximum(np.linalg.norm(out, axis=1, keepdims=True), 1e-12)
+    return np.where(cnt[:, None] > 0, out, n)
+
+
 # ---- output -----------------------------------------------------------------------------------------------------------
 def texture_pair(mat, texdir):
     """the material's first albedo and normal map, by name, from the PNG folder (an index of material names may give them)"""
@@ -437,6 +796,63 @@ def write_normal(src, dst):
     Image.fromarray((out * 255).round().astype(np.uint8)).save(dst)
 
 
+def dedupe(tris, *more):
+    """triangles that two volumes both hold, once"""
+    if not len(tris):
+        return (tris,) + more
+    key = np.round(np.sort(tris.reshape(len(tris), 3, 3), axis=1).reshape(len(tris), 9) * 4).astype(np.int64)
+    _, first = np.unique(key, axis=0, return_index=True)
+    first = np.sort(first)
+    return (tris[first],) + tuple(m[first] if isinstance(m, np.ndarray) else [m[k] for k in first] for m in more)
+
+
+def texture_means(paths):
+    """texture name -> its mean colour (stored values), from `app er world info FILE` reports"""
+    means = {}
+    for path in ([paths] if isinstance(paths, str) else paths or []):
+        for t in json.load(open(path)).get('textures', []):
+            means[t['name']] = t['mean']
+    return means
+
+
+def write_v2(path, surfaces):
+    """the mesh for er_mesh_bake.gd: per surface its own corners (position, normal, uv, colour) and triangles"""
+    with open(path, 'wb') as fh:
+        fh.write(np.array([0x32425245, len(surfaces)], np.int32).tobytes())
+        for m in surfaces:
+            P, N, U, C, I = m['p'], m['n'], m['uv'], m['c'], m['i']
+            fh.write(np.array([len(P), I.size, int(m.get('budget', 0))], np.int32).tobytes())
+            fh.write(P.astype(np.float32).tobytes()); fh.write(N.astype(np.float32).tobytes())
+            fh.write(U.astype(np.float32).tobytes()); fh.write(C.astype(np.float32).tobytes())
+            fh.write(I.astype(np.int32).tobytes())
+
+
+def godot_binary():
+    return os.environ.get('RTA_GODOT', os.path.join(HERE, '..', '..', 'local', 'godot-spike', 'deps', 'godot-editor', 'Godot.app',
+                                                    'Contents', 'MacOS', 'Godot'))
+
+
+def bake(out, jobs):
+    """er_mesh_bake.gd: the meshes made lighter (a budget of triangles each, and lower levels of detail under it, with
+    tangents) and the pictures with their mip maps, as Godot's own resources: the game reads them on a worker thread"""
+    if not jobs:
+        return
+    work = os.path.join(out, '.bake')
+    os.makedirs(work, exist_ok=True)
+    with open(os.path.join(work, 'project.godot'), 'w') as fh:
+        fh.write('config_version=5\n')
+    job = os.path.join(work, 'jobs.json')
+    json.dump(jobs, open(job, 'w'))
+    import subprocess
+    r = subprocess.run([godot_binary(), '--headless', '--path', work, '--script', os.path.join(HERE, 'er_mesh_bake.gd'), '--', job],
+                       capture_output=True, text=True, timeout=1800)
+    lines = [l for l in r.stdout.splitlines() if l.startswith('er_mesh_bake')]
+    print('\n'.join(lines[-40:]))
+    if r.returncode != 0 or not lines or 'done' not in lines[-1]:
+        print(r.stdout[-3000:], r.stderr[-3000:])
+        raise SystemExit('er_mesh_bake failed')
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
@@ -449,23 +865,33 @@ def main():
         # the level's chunks from its own file (every one; a dump has only what one frame drew), the models from the dump
         dump = {k: v for k, v in dump.items() if v[1] != 1}
         dump.update(load_level_obj(recipe['level_obj']))
+    means = texture_means(recipe.get('texture_means'))
     ground = Ground(recipe['world']) if recipe.get('world') else None
     index = json.load(open(recipe['material_index'])) if recipe.get('material_index') else {}
     out = recipe['out']
     os.makedirs(os.path.join(out, 'tex'), exist_ok=True)
     if pics:
         os.makedirs(pics, exist_ok=True)
-    pieces, volumes, report = [], [], []
+    pieces, volumes, report, jobs, baked_tex = [], [], [], [], set()
     for target in recipe['targets']:
         vols = target.get('volumes') or [target['volume']]
         vol = vols[0]
-        ref = np.concatenate([reference(dump, v, target.get('object')) for v in vols])
+        got = [reference(dump, v, target.get('object'), means, True) for v in vols]
+        ref = np.concatenate([g[0] for g in got])
+        ref_col = np.concatenate([g[1] for g in got])
+        ref_tex = sum([g[2] for g in got], [])
+        ref, ref_col, ref_tex = dedupe(ref, ref_col, ref_tex)
+        centre = ref.reshape(-1, 3).mean(0) if len(ref) else np.array(vol[:3], float)
         fitted, fits = [], []
         for part in target['parts']:
-            meshes = load_model(os.path.join(recipe['models'], part['model']))
-            if part.get('meshes'):
-                meshes = [m for k, m in enumerate(meshes) if k in part['meshes']]
-            f, info = fit(meshes, part, vol, ref)
+            if part['fit'] == 'surface':
+                f = surface_meshes(part, ref, ref_tex, centre)
+                info = {'surface': len(ref)}
+            else:
+                meshes = load_model(os.path.join(recipe['models'], part['model']))
+                if part.get('meshes'):
+                    meshes = [m for k, m in enumerate(meshes) if k in part['meshes']]
+                f, info = fit(meshes, part, vol, ref)
             part['_cx'], part['_cy'] = part.get('cx', vol[0]), part.get('cy', vol[1])
             allp = np.concatenate([m['p'] for m in f])
             part['_box'] = list(allp.min(0)) + list(allp.max(0))
@@ -490,10 +916,16 @@ def main():
         if not res['passed']:
             continue
         vi = len(volumes)
-        volumes.extend(vols)
+        overlay = bool(target.get('overlay'))
+        if not overlay:
+            volumes.extend(vols)
+        # the light the game gave the shape (its mean): the measure a metal's brightness follows
+        light_ref = (ref_col.reshape(-1, 3).mean(0) if len(ref_col) else np.array([0.5, 0.5, 0.5])).round(4).tolist()
+        if target.get('colour'):
+            light_ref = list(target['colour'])
         for k, (part, f) in enumerate(zip(target['parts'], fitted)):
             name = '%s-%d' % (target['name'], k)
-            pos, nrm, uvs, idx, surfaces = [], [], [], [], []
+            pos, nrm, uvs, idx, surfaces, v2 = [], [], [], [], [], []
             base = 0
             for m in f:
                 mat = dict(m['mat'])
@@ -502,16 +934,21 @@ def main():
                 albedo, normal = texture_pair(mat, recipe['textures'])
                 surf = {'first': int(sum(len(x) for x in idx)) * 3, 'count': int(len(m['i'])) * 3}
                 # the recipe's own say over this mesh's material (see "surfaces" above): other textures, a metal or mask
-                # map, shader values, its own tint
-                over = dict(part.get('surfaces', {}).get('*', {}), **part.get('surfaces', {}).get(str(m['k']), {}))
+                # map, shader values, its own tint; for a "surface" part, its top, side and plain
+                if m.get('role'):
+                    over = dict(part.get(m['role'], {}))
+                    albedo = normal = None
+                else:
+                    over = dict(part.get('surfaces', {}).get('*', {}), **part.get('surfaces', {}).get(str(m['k']), {}))
                 named = lambda b: os.path.join(recipe['textures'], b + '.png') if b else None
                 if over.get('albedo'):
                     albedo = named(over['albedo'])
                 if over.get('normal'):
                     normal = named(over['normal'])
-                maps = [('albedo', albedo), ('normal', normal)] + [(k, named(over[k])) for k in ('metal', 'mask') if over.get(k)]
-                if over.get('params'):
-                    surf['params'] = over['params']
+                maps = [('albedo', albedo), ('normal', normal)] + [(k2, named(over[k2])) for k2 in ('metal', 'mask') if over.get(k2)]
+                params = dict(part.get('params', {}), **over.get('params', {}))
+                if params:
+                    surf['params'] = params
                 if 'tint' in over:
                     surf['tint'] = over['tint']
                 for key, src in maps:
@@ -520,18 +957,51 @@ def main():
                         if not os.path.exists(dst):
                             (write_normal if key == 'normal' else write_picture)(src, dst)
                         surf[key] = 'tex/' + os.path.basename(src)
+                        res_name = 'tex/' + os.path.splitext(os.path.basename(src))[0] + '.tex.res'
+                        surf[key + '_res'] = res_name
+                        if res_name not in baked_tex:
+                            baked_tex.add(res_name)
+                            jobs.append({'texture': os.path.abspath(dst), 'out': os.path.abspath(os.path.join(out, res_name))})
                         if key == 'albedo':
                             surf['albedo_mean'] = [round(float(x), 4) for x in np.asarray(Image.open(src).convert('RGB').resize((32, 32))).reshape(-1, 3).mean(0) / 255.0]
+                # what every piece takes from the game: the colour it gave the surface here (per corner), and a relief's
+                # raised parts (for a gilding); normals made smooth where asked
+                n = m['n']
+                if part.get('smooth_normals') or over.get('smooth_normals'):
+                    n = smooth_normals_welded(m['p'], m['i'], n, float(over.get('smooth_normals', part.get('smooth_normals', 50.0))))
+                col = game_colour(m['p'], n, ref, ref_col)
+                fixed = over.get('colour', part.get('colour', target.get('colour')))
+                if fixed:
+                    # a model the game draws in several passes (its colour is not one texture's): the colour given, with
+                    # the game's light and dark over the shape kept round it
+                    lum = col @ np.array([0.3, 0.59, 0.11])
+                    col = np.array(fixed, float)[None] * np.clip(lum / max(float(lum.mean()), 1e-3), 0.3, 2.0)[:, None]
+                rel = m.get('relief', np.zeros(len(m['p'])))
+                g = over.get('relief') or part.get('relief')
+                if g and g.get('mode') == 'panels':
+                    rel, depth = relief_in_panels(m['p'], m['i'], n, float(g.get('radius', 4.0)), float(g.get('lo', 0.3)), float(g.get('hi', 0.75)),
+                                           float(g.get('frame', 0.12)), g.get('what', 'figures'), tuple(g.get('z', (0.0, 1.0))))
+                    col = col * (1.0 - float(g.get('cavity', 0.3)) * depth)[:, None]
+                elif g:
+                    rel = relief_mask(m['p'], m['i'], n, int(g.get('iters', 12)), float(g.get('lo', 0.15)), float(g.get('hi', 0.85)))
+                surf['game_light'] = True
                 surfaces.append(surf)
-                pos.append(m['p']); nrm.append(m['n']); uvs.append(m['uv']); idx.append(m['i'] + base)
+                pos.append(m['p']); nrm.append(n); uvs.append(m['uv']); idx.append(m['i'] + base)
                 base += len(m['p'])
+                v2.append({'p': m['p'], 'n': n, 'uv': m['uv'], 'c': np.concatenate([col, rel[:, None]], 1), 'i': m['i'],
+                           'budget': int(over.get('budget', part.get('budget', target.get('budget', recipe.get('budget', 20000)))))})
             with open(os.path.join(out, name + '.bin'), 'wb') as fh:
                 P, N, U, I = np.concatenate(pos), np.concatenate(nrm), np.concatenate(uvs), np.concatenate(idx)
                 fh.write(np.array([len(P), len(I) * 3], np.int32).tobytes())
                 fh.write(P.astype(np.float32).tobytes()); fh.write(N.astype(np.float32).tobytes()); fh.write(U.astype(np.float32).tobytes())
                 fh.write(I.astype(np.int32).tobytes())
-            pieces.append({'name': name, 'mesh': name + '.bin', 'volume': vi, 'volumes': list(range(vi, vi + len(vols))), 'surfaces': surfaces,
-                           'tint': target.get('tint', 0.6)})
+            write_v2(os.path.join(out, name + '.v2'), v2)
+            jobs.append({'mesh': os.path.abspath(os.path.join(out, name + '.v2')), 'out': os.path.abspath(os.path.join(out, name + '.mesh.res'))})
+            pieces.append({'name': name, 'mesh': name + '.bin', 'mesh_res': name + '.mesh.res', 'volume': -1 if overlay else vi,
+                           'volumes': [] if overlay else list(range(vi, vi + len(vols))), 'surfaces': surfaces, 'tint': target.get('tint', 0.6),
+                           'light_ref': light_ref, 'triangles': int(len(I))})
+    if '--no-bake' not in sys.argv:
+        bake(out, jobs)
     json.dump({'level': recipe['level'], 'tolerance': tol, 'volumes': volumes, 'pieces': pieces, 'check': report},
               open(os.path.join(out, 'rebuild.json'), 'w'), indent=1)
     print('%d of %d targets passed; %d pieces written to %s' % (sum(r['passed'] for r in report), len(recipe['targets']), len(pieces), out))
