@@ -7,16 +7,20 @@ nothing changes.
 
 Everything below says **Ran** (with what was seen) or **Read**.
 
-## STATE (2026-10-26, seventh session: gate 7)
+## STATE (2026-10-26, eighth session: gate 8)
 
-Phase 1 steps 1-3 are **working, Ran**. Step 4, the hub's rebuild: gate 7 fixed what gate 6 was refused for. **Floating
-overlays are fixed**: an overlay is cut by the game packet it lies on and drawn only on the frames the game drew that
-packet (a new watch-only volume kind in `rta_world.cpp`). Pixels drawn over the game's sky across the 26 shots went from
-26,082 (gate 6) to 4,946, and what is left is silhouette edges. The daises now have crisp steps, and the carving and gold
-read at play distance. The gate **refused it on review again** (Gate 7):
-- the daises' shape contrast is level with the game's or better, but their tops are still not as pale (on/game 0.89-0.93);
-- the trefoil, the stairs and the obelisk are richer, but at play distance they are level with the game, not clearly
-  better.
+Phase 1 steps 1-3 are **working, Ran**. Step 4, the hub's rebuild: **accepted at gate 8** and live
+(`rebuild/hub/rebuild.json`: 118 pieces, 5 of 5 targets). Gate 8 did gate 7's Next list (Gate 8 below):
+- the daises are as pale as the game's (on/game 0.97 / 0.97 / 1.00) with shape contrast at or above it (51.1 / 58.9 / 56.2
+  against 47.4 / 58.7 / 55.0);
+- the trefoil's inlays have a lit lip: from the east the trefoil now reads crisper than the game's (contrast 47.9 against 41.7,
+  light 0.97);
+- the obelisk's shaft is flared to the game's taper, so the cloud wall no longer shows past it in side light (o270 1.12 -> 1.01);
+- 24 of 26 views are within +-10% (all within 0.91-1.17). The two outside are the obelisk in side light (1.17: the sunlit
+  dais risers) and the start view (1.11: the bright lip), and both read right in the pictures.
+
+Judged on the pictures, the hub at play distance reads clearly richer than the game: carved relief, gold that catches the
+light, crisp lit lips and nosings.
 
 The hub draws the game's own shapes.
 
@@ -25,10 +29,10 @@ The hub draws the game's own shapes.
 | 1. Materials by class, ER albedo + normal, world scale, triplanar, blended | **done, Ran**: 8 classes; reader + our own table (`er_world.cfg`); wood now read on its own (a mine's beams), metal only by a strict rule (none read on the four levels tried) |
 | 2. Grass (MultiMesh, swaying, density by distance, no collision, not on paths / against walls) | **done, Ran**: clears painted flower patches and stones; no tufts in the air; valor 3,509 points |
 | 3. Skies: ER cloud layer tinted by the level's own sky | **done, Ran** |
-| 4. Hub fitted rebuild (ruin pieces fitted to the Champions shapes, a hand's-width check) | **refused on review** (gate 7, see Gate 7; gates 3-6 before it); arch **refused** by the check (max 13.4 units off), not retried |
-| Gate: before/after pictures, 60+ fps, room in step | **Ran**: pictures in `local/er-world/gate7/final/`; 60+ fps with the rebuild on (median frame 8.88 ms on, 8.94 ms off, same load); room in step (1,852 ticks, A drawing the gate-7 pieces) |
+| 4. Hub fitted rebuild (ruin pieces fitted to the Champions shapes, a hand's-width check) | **accepted, live** (gate 8, see Gate 8; refused at gates 3-7); arch **refused** by the check (max 13.4 units off), not retried |
+| Gate: before/after pictures, 60+ fps, room in step | **Ran**: pictures in `local/er-world/gate8/final/`; 60+ fps with the rebuild on (median frame 8.83 / 9.01 ms on, 14.6 / 13.9 ms off; the off runs were under heavier load); room in step (1,814 ticks, A drawing the live gate-8 pieces) |
 
-Built into `local/godot-r36/` (extension and project). Not committed.
+Built into `local/godot-r37/` (r36's library and extension; the project staged again). Local, not committed.
 
 ## How it works
 
@@ -347,7 +351,12 @@ Pictures in `local/er-world/gate/`; 106.8 / 107.3 fps; room in step over 1,854 t
 - The same fitting on other levels' landmarks: a recipe per level, a dump of the level (`app er world dump`).
 - The rebuild's loading (about 210 ms at the hub's start): read the pieces ahead, or on a worker.
 - Metal: try the strict rule on a level that has real metal (the gnome levels).
-- The hub rebuild back on only with pieces that beat the game's (Gates 3-7). After gate 7:
+- The hub rebuild: accepted at gate 8. What is left:
+  - the obelisk in side light (1.17): the sunlit braid risers of its dais. A darker riser frieze where it faces the sun
+    would bring it in, but would cost the front light's pale steps;
+  - the trefoil from the start view (1.11): the lit lip is a little bright there;
+  - the stairs from the north (0.87 on the stairs' box) are darker than the game's, though crisp.
+- Gate 7's list, for the record (done in gate 8):
   - the daises: the tops as pale as the game's (on/game 0.89-0.93 now). The crisp step edges are done (shape contrast
     level or better).
   - trefoil and stairs: something the game lacks that reads at play distance. The game's lit ring lips and plain pale
@@ -1095,3 +1104,136 @@ and 0 volumes. The gate-7 pieces stay in `local/er-world/gate7/world/` (point `R
   - `local/er-world/hubfit/hub-gate7.json`;
   - `local/godot-r36/` (r35's library; the extension and project built again; `test/room36.py`).
 
+## Gate 8 (Ran, eighth session)
+
+The asks (gate 7's Next):
+- daises as pale as the game's (0.97-1.05) with contrast at or above it;
+- a lit lip on the trefoil's inlays, so that from the east they read as crisp as the game's ring lips (gate 7: 38 against 49);
+- the obelisk's shaft fitted to the game's flare;
+- the pieces' light following the sun's bearing less, all 26 views within +-10%.
+
+Files:
+- Recipe: `local/er-world/gate8/recipe8.py` (gate 7's, plus the knobs below). Its final knobs are in `gate8/knobs-final.sh`.
+- Tries: `gate8/try8.sh NAME` (fit, route, measures), `b0` (gate 7 again), `t1..t31`, `g1..g2` (the game-like light test).
+  Summary: `summ.py`.
+- Route: gate 7's `route7.py` and `run8.sh` in r37. A mode named `game*` is the game's own shapes, and the route now takes
+  `game, on, game2`.
+- Measures:
+  - `measure7.py` (as gate 7);
+  - `measure8.py` (only pixels the rebuild changed: where the game's two shots differ - the clouds, the orb, a figure - the
+    pixel is left out);
+  - `regions7.py`, `floatcheck8.py`, `boxr.py` (on/game per box), `ratiomap.py`, `crop.py`, `sheet8.py`, `shaftprof.py`.
+- Final run on the live folder: `gate8/g1`. Pictures: `gate8/final/`.
+
+**1. What the measures showed (Ran).** The pieces do not follow the sun more than the game does; the measured pixels are
+the reason.
+- Lit exactly as the game's pieces (`GAMELIKE`: scene light 1, no shade of their own; `g1`), front read 0.85 and back
+  1.07. The game's surfaces themselves read darker against the light than their colour per corner says.
+- Flattening the sun's bearing (`sun_flat`, `t1`-`t9`) lifted the back views by 15-25%.
+- The tread inlay (an up-facing surface, lit the same from any side) read about 10% brighter than the game's against the
+  light and level with it with the light behind.
+- Two shader terms came out of this:
+  - `against_sun` (er_ruin.gdshader): a surface a little darker when looked at against the sun (by bearing, smooth; 0.06
+    at the end);
+  - `self_shade_off`, and `sun_flat` (kept, 0 at the end).
+- Measured on the rebuilt pixels only (`measure8.py`), gate 7's set already had all but one view within +-10%. The animated
+  clouds and the orb were what pushed `west-chase-o90` to 0.87.
+
+**2. Daises (Ran).** Paler treads and a worn top-edge highlight, not more scene light:
+- tread inlay gain 1.2 -> 1.55;
+- nosing 0.45 -> 0.85;
+- the riser's carving softer: contrast 0.8, `cavity` 0.2, foot crease 0.25;
+- riser gain 0.8 with scene light 7.5, so that a riser in its own shadow is not lifted.
+
+| View (`regions7.py`) | on/game | Shape contrast, game | on |
+|---|---|---|---|
+| start, far | 0.97 | 47.4 | 51.1 |
+| north, far | 0.97 | 58.7 | 58.9 |
+| west | 1.00 | 55.0 | 56.2 |
+
+**3. The lit lip (Ran).** `er_world_fit.py` inlay `lip`: a low bead along the rim, 0.15 units in, 0.9 wide and 0.7 high.
+- Its outer face leans out to the light and its inner face away.
+- Its relief is 1 at the crest and 0 at its feet, so the shader's nosing and crease apply.
+- It is pale worn stone (gain 1.9), like the game's lit ring lips. The trefoil's risers are a little lower (1.12).
+- From the east (`east-chase-o0`, the trefoil's box): **on/game 0.97, shape contrast 47.9 against the game's 41.7** (gate 7:
+  0.80, 31.3). `final/trefoil-east-zoom.png` shows game | gate 8 | gate 7.
+
+**4. The obelisk's flare (Ran).** `fit: box` takes `flare`: [[z, factor], ...], the width scaled round (cx, cy) by height,
+with the normals transformed by the map's inverse transpose.
+- The factors are the game's half width over the fitted model's (`shaftprof.py`): 1.26 at the foot, 1.35 at a third of the
+  way up, 1.13 under the head, 1.0 at the neck.
+- The check: max 10.4 (p99 2.8), as before.
+- In side light the cloud wall no longer shows past the shaft: `obelisk-chase-o270` went from 1.12 to 1.01
+  (`final/obelisk-side-o270.png`: game | gate 8 | gate 7).
+- The shaft: gain 0.7, scene light 1.6, `stone_sheen` 0.9, glint 1.6.
+
+**Brightness (Ran, `final/measure8.txt`, on/game over the rebuilt pixels).** Weighted: front 1.019, back 1.022, side 1.047.
+- 24 of 26 views fall within +-10%. All 26 lie in 0.91-1.17.
+- Outside: `obelisk-chase-o90` 1.17 (the dais's sunlit braid risers, 1.14 on their own) and `start-chase-o0` 1.11 (the bright
+  lip).
+- `measure7.py`, which counts the moving pixels too, also puts `westnear-shoulder-o0` at 1.17 (the orb and the shaft's
+  edge).
+
+**Floating (Ran, `floatcheck8.py`).** 5,016 pixels over the 26 shots (gate 7: 4,946): silhouette edges, nothing hanging.
+
+**The check (12 units, Ran):**
+
+| Target | Max off (units) |
+|---|---|
+| trefoil | 1.3 (the lip) |
+| stairs | 0.5 |
+| daises | 0.6 |
+| obelisk | 10.4 (p99 2.8) |
+
+All passed.
+
+**Frame rate (Ran, `gate8/fps8.sh`; paced, 3024x1964, the hub, `nice -n 10`, on and off alternated twice; load 6-30 with
+another worker's runs):**
+
+| Rebuild | Median frame | Mean fps |
+|---|---|---|
+| on | **8.83 / 9.01 ms** (113 / 111 fps) | 88.4 / 76.5 |
+| off | 14.58 / 13.88 ms (69 / 72 fps) | 56.3 / 59.2 |
+
+The off runs met the higher load: their process time per frame is 3.3-3.5 ms against 0.9-1.3. The rebuild's cost is not
+measurable, and the hub runs at **60+ fps** with it.
+
+**Room (Ran).** Command: `local/godot-r37/test/room37.py g8 --level valor` (port 41998).
+- A draws the live gate-8 pieces (`rebuild for hub, 118 pieces (10839 triangles)`).
+- B: `RTA_ER_WORLD=off`.
+- Result: **1,814 ticks compared, no shared column differs.** No script error.
+
+**Review** (`gate8/final/`):
+- sheets `sheet-play.jpg` (start, east, north, west in front light) and `sheet-light.jpg` (the obelisk close and in side light,
+  the back light, east side light), each game | gate 7 | gate 8;
+- a pair per shot `<shot>.jpg` (game | gate 8);
+- zooms.
+
+| Target | Seen | Verdict |
+|---|---|---|
+| trefoil | Gold-framed braid rings with a pale lit lip on every raised ring and the rim: crisper than the game's ring lips from every side, light matched | **accepted** |
+| stairs | Crisp pale nosings and dark feet on carved risers. Richer than the game's plain steps, light matched in front | **accepted** |
+| daises | As pale as the game's, crisp worn edges, a gold line and braid on each tread. Richer, contrast level or better | **accepted** |
+| obelisk | Flared to the game's taper; gold panels, bands and a gold-trimmed braided base catch the light. Richer than the game's single panel | **accepted** |
+
+The live `rebuild/hub/rebuild.json` holds 118 pieces and 5 of 5 targets passed, with no review reasons (recipe
+`local/er-world/hubfit/hub-gate8.json`). The same pieces are kept in `local/er-world/gate8/world/`.
+
+**The er_world.gd script error (fixed).** In a long Remastered session (`local/bug1/campaign/L1`, `L2`):
+- the log read "Invalid access to property or key 'paths'" at `_rebuild_poll` (er_world.gd:434), twice;
+- the cause: between two levels the level's name is empty, and so is an empty pending read's, so the poll ran on an empty
+  read;
+- the fix: `_rebuild_volumes` skips an empty level and polls only a read that has its paths, and `_rebuild_poll` returns on
+  one that has none.
+
+**Eighth session changed:**
+- Modified (tracked):
+  - `tools/godot/er_world_fit.py`: `flare` on a box fit, the inlay `lip`;
+  - `tools/godot/project/shaders/er_ruin.gdshader`: `against_sun`, `sun_flat`, `self_shade_off`;
+  - `tools/godot/project/er_world.gd`: the empty-read poll fix;
+  - this file.
+- Local:
+  - `local/er-world/gate8/`;
+  - `local/er-world/hubfit/hub-gate8.json`;
+  - the live `local/souls-ref/er-world/rebuild/hub/`;
+  - `local/godot-r37/` (`test/room37.py`).

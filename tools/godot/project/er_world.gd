@@ -387,8 +387,9 @@ func _rebuild_wanted() -> bool:
 # Before the drawer takes the frame: the volumes it leaves out (none when the rebuild is off, the level has none, or its
 # pieces are still being read)
 func _rebuild_volumes() -> void:
-	if _rebuild_wanted() and rebuild.get("level", "") != level and not rebuild_tried.has(level):
-		if rebuild_pending.get("level", "") != level:
+	# (no level between two levels: its name is empty, and an empty pending read's level is empty too - nothing to poll)
+	if _rebuild_wanted() and level != "" and rebuild.get("level", "") != level and not rebuild_tried.has(level):
+		if not rebuild_pending.has("paths") or rebuild_pending.get("level", "") != level:
 			_rebuild_load(level)        # (when the level is entered: the pieces asked of worker threads)
 		else:
 			_rebuild_poll()
@@ -431,6 +432,8 @@ func _rebuild_load(name: String) -> void:
 
 
 func _rebuild_poll() -> void:
+	if not rebuild_pending.has("paths"):
+		return
 	if not rebuild_pending.has("loaded"):
 		for f in rebuild_pending.paths:
 			if ResourceLoader.load_threaded_get_status(f) == ResourceLoader.THREAD_LOAD_IN_PROGRESS:

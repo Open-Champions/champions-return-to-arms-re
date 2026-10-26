@@ -29,6 +29,16 @@ uniform float gain = 1.0;
 uniform float bump = 1.0;
 uniform float sun_wrap = 0.72;          // as the level's pieces (gs_draw.gdshaderinc light(), GS_NORMALS)
 uniform float direct_gain = 1.0;        // the scene's lights only (a frieze as pale as the game's step in front light, as dark in shade)
+// how little a face follows the sun's bearing (0: as the level's pieces, 1: lit as if the sun were averaged round the sky
+// at its own height - a riser then reads the same from every side, as the game's hardly-changing risers do; a top is as it was)
+uniform float sun_flat = 0.0;
+// 1: no shade of its own on a face turned from the sun (lit by the wrap alone, as the level's own pieces are where no twin's
+// shadow falls on them); 0: in its own shadow
+uniform float self_shade_off = 0.0;
+// darker when looked at against the sun (the eye's bearing toward the sun's, 0 across it .. 1 straight at it): the level's
+// surfaces read darker against the light than the game's colour per corner says (gate 8, measured: an up-facing tread at
+// the same light 10-15% brighter than the game's in back light, level with it in front light)
+uniform float against_sun = 0.0;
 // the piece's own carving over the game's colour: its texture's light and dark round its local mean (contrast), and as much
 // of its own hue as own_hue says (0: the game's hue, 1: the texture's colour as it is)
 uniform float contrast = 1.0;
@@ -197,6 +207,12 @@ void fragment() {
 		+ vnoise(vec2(dot(v_world, brush_w) * 0.1, dot(v_world, brush_across) * 7.0)) * 0.4;
 	gold *= 0.88 + 0.24 * streak;
 	vec3 c = clamp(mix(s, gold * metal_diffuse, metal), vec3(0.0), vec3(1.0));
+	if (against_sun > 0.0) {
+		vec2 look = (v_world - CAMERA_POSITION_WORLD).xy;
+		vec2 sun = rta_sky_sun.xy;
+		float toward = (dot(look, look) > 1e-6 && dot(sun, sun) > 1e-6) ? dot(normalize(look), normalize(sun)) : 0.0;
+		c *= 1.0 - against_sun * smoothstep(0.0, 1.0, toward);
+	}
 	v_metal = metal;
 	v_brush = normalize((VIEW_MATRIX * vec4(brush_w, 0.0)).xyz);
 	// as the level's pieces: no specular of their own, the ambient and the haze in stored values (gs_draw.gdshaderinc GS_LIT)
@@ -232,11 +248,17 @@ void fragment() {
 
 void light() {
 	float facing = dot(NORMAL, LIGHT);
+	if (LIGHT_IS_DIRECTIONAL && sun_flat > 0.0) {
+		// the facing averaged over the sun's bearing: only its height is kept (world z of the normal times the sun's)
+		vec3 n_w = (INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz;
+		vec3 l_w = (INV_VIEW_MATRIX * vec4(LIGHT, 0.0)).xyz;
+		facing = mix(facing, n_w.z * l_w.z + 0.5 * sqrt(max(1.0 - n_w.z * n_w.z, 0.0)) * length(l_w.xy) * 0.6366, sun_flat);
+	}
 	// the level's own wrap (gs_draw.gdshaderinc light(), GS_NORMALS)
 	float wrap = LIGHT_IS_DIRECTIONAL ? mix(clamp(facing * 0.5 + 0.5, 0.0, 1.0), 1.0, sun_wrap) : clamp(facing * 0.6 + 0.4, 0.0, 1.0);
 	// a face turned from the sun lies in its own shadow, as the level's do (their twins throw it on them; a piece laid a
 	// little in front of the game's own face is not reached by that shadow)
-	float self_shade = LIGHT_IS_DIRECTIONAL ? smoothstep(-0.1, 0.15, facing) : 1.0;
+	float self_shade = LIGHT_IS_DIRECTIONAL ? mix(smoothstep(-0.1, 0.15, facing), 1.0, self_shade_off) : 1.0;
 	DIFFUSE_LIGHT += ATTENUATION * self_shade * LIGHT_COLOR / PI * wrap * direct_gain;
 	if (v_metal > 0.0 && facing > 0.0) {
 		// a brushed metal's highlight (anisotropic GGX, Burley), soft and in its own colour; none in the piece's shadow

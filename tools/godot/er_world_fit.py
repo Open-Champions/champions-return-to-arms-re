@@ -21,7 +21,8 @@ The recipe (a local file; numbers of the level's shapes and names of Elden Ring 
   disc: {"r": radius, "z0": bottom, "z1": top, "cx", "cy" (default: the volume's centre), "turn": degrees}
         the piece's own footprint centre to (cx, cy), its radius to r, its height span to z0..z1
   box:  {"box": [x0, y0, z0, x1, y1, z1] (default: the reference geometry's box), "turn": degrees, "keep_aspect": 0..1}
-        the piece's own box (turned) onto that box
+        the piece's own box (turned) onto that box; "flare": [[z, factor], ...] - then its width scaled round (cx, cy) by
+        height (world z, piecewise linear): a shaft widened to the game's own taper
   any part: "surfaces": {"<the model's mesh number>" or "*": {"albedo": "<PNG name>", "normal": ..., "metal": "<a metal map>",
         "mask": "<a mask map>", "params": {<er_ruin.gdshader uniform>: value}, "tint": <this surface's own tint 0..1>}}
         a mesh's material made other than the model's own: a carved stone's moulding made gold, a pale stone made marble
@@ -34,7 +35,8 @@ The recipe (a local file; numbers of the level's shapes and names of Elden Ring 
         by the game packet each triangle lies on, and each part is drawn only on frames the game drew that packet (a watch-only
         volume, kinds 4, naming the packet's figure: the game culls far packets, and an overlay drawn without them floats)
         "inlay": {"bands": [[d0, d1, "<key>"], ...], "offset", "band": {"<key>": [v0, v1]}, "above": z, "radial": bool} on a surface part - a worn inlay
-        laid in the tops along their rims, each band d0..d1 units in from the rim in the material the part names by <key>
+        laid in the tops along their rims, each band d0..d1 units in from the rim in the material the part names by <key>;
+        "lip": {"at", "w", "h", "key"} - a low lit bead along the rim, `at` units in (its outer face leaning to the light)
   loft: {"fit": "loft", "rings": [[z, half], ...], "spans": ["<key>", ...], "cap": "<key>", "turn": degrees, "sides": 4,
         "cx", "cy"} - a turned, tapered base made to a profile (the game's own, read from its triangles), each span in the
         material the part names by <key> (a "band" in it runs a frieze up the span, else "scale" lays it in world units)
@@ -285,14 +287,29 @@ def fit(meshes, part, vol, ref):
             scale[1] = scale[1] * (1 - k) + sxy * k
         offset = (b0 + b1) / 2.0 - (lo + hi) / 2.0 * scale
         offset[2] = b0[2] - lo[2] * scale[2]
+    flare = np.asarray(part.get('flare', []), float).reshape(-1, 2)
+    fc = np.array([part.get('cx', vol[0]), part.get('cy', vol[1])], float)
     out = []
     for m in meshes:
         p = turn(m['p'], deg) * scale + offset
         # normals under a scale that differs by axis: by the inverse
         n = turn(m['n'], deg) / scale
+        if len(flare):
+            # a flare: the width scaled round (cx, cy) by height (world z, piecewise linear) - a shaft widened toward its
+            # foot as the game's is; the normals by the map's inverse transpose (a face on a widening run leans up)
+            f = np.interp(p[:, 2], flare[:, 0], flare[:, 1])
+            df = np.gradient(flare[:, 1], flare[:, 0]) if len(flare) > 1 else np.zeros(1)
+            fd = np.interp(p[:, 2], flare[:, 0], df)
+            rxy = p[:, :2] - fc
+            nn = n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-9)
+            n = np.concatenate([nn[:, :2] / f[:, None], (nn[:, 2] - fd * (rxy * nn[:, :2]).sum(1))[:, None]], 1)
+            p = np.concatenate([fc + rxy * f[:, None], p[:, 2:]], 1)
         n /= np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-9)
         out.append(dict(m, p=p, n=n))
-    return out, {'scale': scale.round(3).tolist(), 'offset': offset.round(2).tolist(), 'turn': deg}
+    info = {'scale': scale.round(3).tolist(), 'offset': offset.round(2).tolist(), 'turn': deg}
+    if len(flare):
+        info['flare'] = flare.round(3).tolist()
+    return out, info
 
 
 # ---- the check --------------------------------------------------------------------------------------------------------
@@ -870,6 +887,41 @@ def inlay_meshes(spec, tt, offset, ground=None, centre=None):
         meshes.append({'p': p, 'n': np.repeat(up[None], len(p), 0), 'uv': uv, 'i': np.arange(len(p)).reshape(-1, 3), 'k': key,
                        'mat': {'name': key, 'textures': []}, 'role': key,
                        'relief': np.clip(1.0 - np.abs(uv[:, 1] * 2.0 - 1.0) if not band else np.zeros(len(p)), 0.0, 1.0)})
+    lip = spec.get('lip')
+    if lip:
+        # a lit lip (gate 8): a low bead along the rim, `at` units in, `w` wide and `h` high - its outer face leaning out to
+        # the light and its inner face away, so the line reads crisp from the side as the game's lit ring lips do (relief:
+        # 1 at the crest, 0 at its feet: the shader's nosing and crease)
+        at, w, h, key = float(lip.get('at', 1.0)), float(lip.get('w', 0.8)), float(lip.get('h', 0.45)), lip.get('key', 'inlay_lip')
+        p, nr, uv, rl = [], [], [], []
+        for k in range(len(e0)):
+            ia, ib = a_id[k], b_id[k]
+            pa, pb = wp[ia], wp[ib]
+            ua, ub = edge_u0[k] / 4.0, (edge_u0[k] + length[k]) / 4.0
+            rows = [(at, 0.0, 0.0), (at + w * 0.5, h, 1.0), (at + w, 0.0, 0.0)]
+            for (d0, z0, r0), (d1, z1, r1) in zip(rows[:-1], rows[1:]):
+                qa0, qa1 = pa[:2] + inward[ia] * d0 * miter[ia], pa[:2] + inward[ia] * d1 * miter[ia]
+                qb0, qb1 = pb[:2] + inward[ib] * d0 * miter[ib], pb[:2] + inward[ib] * d1 * miter[ib]
+                za, zb = pa[2] + offset, pb[2] + offset
+                quad = [np.r_[qa0, za + z0], np.r_[qb0, zb + z0], np.r_[qb1, zb + z1], np.r_[qa1, za + z1]]
+                # the face's normal: out (away from the inward direction) and up by its slope
+                mid_in = (inward[ia] + inward[ib]) / 2.0
+                mid_in /= max(np.linalg.norm(mid_in), 1e-9)
+                run, rise = d1 - d0, z1 - z0
+                fnrm = np.r_[-mid_in * rise, run]
+                fnrm /= np.linalg.norm(fnrm)
+                quv = [(ua, r0), (ub, r0), (ub, r1), (ua, r1)]
+                for tri in ((0, 1, 2), (0, 2, 3)):
+                    t3 = np.array([quad[j] for j in tri])
+                    if np.cross(t3[1] - t3[0], t3[2] - t3[0]) @ fnrm < 0:
+                        tri = (tri[0], tri[2], tri[1])
+                    p += [quad[j] for j in tri]
+                    uv += [quv[j] for j in tri]
+                    rl += [quv[j][1] for j in tri]
+                    nr += [fnrm] * 3
+        p = np.array(p, float)
+        meshes.append({'p': p, 'n': np.array(nr, float), 'uv': np.array(uv, float), 'i': np.arange(len(p)).reshape(-1, 3), 'k': key,
+                       'mat': {'name': key, 'textures': []}, 'role': key, 'relief': np.array(rl, float)})
     return meshes
 
 
