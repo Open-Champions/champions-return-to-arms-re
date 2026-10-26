@@ -145,6 +145,7 @@ func _drop_meshes() -> void:
 	weapon_models.clear()
 	game_weapons.clear()
 	ordered_materials.clear()
+	surface_arrays.clear()             # (keyed by the meshes themselves)
 	self_mesh = null
 	self_material = null
 

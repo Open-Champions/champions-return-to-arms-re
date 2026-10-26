@@ -31,7 +31,7 @@ Evidence under `local/godot-remaster-check/` (not tracked): the build, routes, l
 | [x] | Pictures per level | **Ran**: about 12 per level (arrival, HUD window picture, five views, end), sheets in `local/godot-remaster-check/` |
 | [x] | Remastered online, 2 copies through the portal | **Ran** (`online/r2a`): two portals, both Remastered by their cards, friends, room, Start; hub -> `drunare` -> `valor` -> `arachna1`, deaths and the reload; **6,467 ticks, no shared column differs** (the cut-scene clock column `cutf` left out: the front end's title fly-over clock, as `native-cutscenes.md` notes); copy A crashed at quit (bug 4) |
 | [x] | Remastered online, 3 and 4 copies | **Ran** (`online/r3a`, `r4a`: Godot copies with the Remastered options on the command line, launched by `n2party.py` through a service on this Mac): 3 copies 6,131 / 6,131 / 6,143 ticks every pair in step, 4 copies 6,038-6,045 ticks every pair in step; hub -> `drunare` -> `valor` -> `arachna1`, 6 and 8 deaths, 2 reloads after everybody died; Hardcore, aiming and hold-to-skip "ON (a room's game)" on every copy |
-| [ ] | Long sessions draw cleanly | **No**: bug 1 (4 of 4 long sessions) |
+| [x] | Long sessions draw cleanly | **Ran** after the fix (section 9): one Remastered session through the portal over 81 levels and both paths to `endgood`, and a Classic session over the 54 levels of the good path - no black build-up (bug 1, fixed) |
 | [ ] | A person playing it through | never done |
 
 ## 1. How it was run
@@ -67,17 +67,17 @@ session and the portal comes back ("the session is over (frontend)", `c2-2`). No
 
 | # | Severity | What | Where / cause | State |
 |---|---|---|---|---|
-| 1 | **Blocker** | In every long Remastered session (4 of 4) black geometry - a slab with jagged spikes and thin black streaks - appears and then stays fixed to the player through every later level, view and the ending, growing until the 3-D picture is wholly black: from `drunarm`'s Hardcore round in `c1` (levels 3-9 covered), from `watg2a` in `c2-1` (the next 34 levels and `endgood`'s closing scene), from `watg2a` in `t2` (nearly the whole picture black), from `disbonus` in `c4-1` (every later level's 3-D picture mean 0.0 of 255 while the game ran on with 300-700 draws a picture; only the HUD showed). A player cannot finish the campaign in one sitting | Godot side: the native program with the same route and modes draws cleanly (`endgood/w1`); seen also without the portal, paced (`w2`: the streaks); not seen in two short runs. Not removed by switching off any of `remaster_models`, `er_models`, `er_creatures`, `models`, `fill`, `er_world`, `lights`, `contact`, `backdrop`, `sky`, `batch`, `prepass`, nor by the display rate 60 (`t1`, `t2`). Left: the scene's kept meshes and the between-frames carry (`tools/godot/extension/src/rta_scene.cpp` `keep` / `carry`, `rta_drawer.cpp`), which no look key turns off. Other agents work in those files | **open** |
+| 1 | **Blocker** | In every long Remastered session (4 of 4) black geometry - a slab with jagged spikes and thin black streaks - appears and then stays fixed to the player through every later level, view and the ending, growing until the 3-D picture is wholly black: from `drunarm`'s Hardcore round in `c1` (levels 3-9 covered), from `watg2a` in `c2-1` (the next 34 levels and `endgood`'s closing scene), from `watg2a` in `t2` (nearly the whole picture black), from `disbonus` in `c4-1` (every later level's 3-D picture mean 0.0 of 255 while the game ran on with 300-700 draws a picture; only the HUD showed). A player cannot finish the campaign in one sitting | Godot side: the native program with the same route and modes draws cleanly (`endgood/w1`); seen also without the portal, paced (`w2`: the streaks); not seen in two short runs. Not removed by switching off any of `remaster_models`, `er_models`, `er_creatures`, `models`, `fill`, `er_world`, `lights`, `contact`, `backdrop`, `sky`, `batch`, `prepass`, nor by the display rate 60 (`t1`, `t2`). Left: the scene's kept meshes and the between-frames carry (`tools/godot/extension/src/rta_scene.cpp` `keep` / `carry`, `rta_drawer.cpp`), which no look key turns off. Other agents work in those files | **fixed** (section 9): the 3-D surface kept its picture between lists and every world draw is blended, so a pixel once non-finite stayed so; it is now cleared wherever the list begins with the game's own clearing rectangle |
 | 2 | **Major** | 60 a second not held: game frames 37.7 a second in `fire1` and 37.9 in `bossgood`, 51.8-59.1 elsewhere, at load 11-19; the 120 Hz picture rate reached only walking in light levels (`fearboss` 119.7, `valor` 92) | the machine was never quiet (other agents' Godot runs); `native-godot.md` measured 58.5-60 in fire1 alone. Needs a measurement on a quiet machine before a cause is named | **open** |
 | 3 | Medium | Remastered's per-level look presets reached no player: `levels.cfg` was kept as game output under `local/` and staged only where `presets.py make` had run, so no build since round 7 had it | the file holds only our own look numbers (shade, fog, bloom, light energy, brightness, contrast, saturation, sun height by level name; no colour, texture, geometry or code of the game): now tracked as `tools/godot/project/presets/levels.cfg` (the measurement comments left out); `build.py` stages and exports it with the project, `build_setups.py` no longer refuses the name | **fixed** (section 8) |
-| 4 | Medium | Crash at quit of a room copy: signal 11 in `RendererRD::MaterialStorage::free` from `BaseMaterial3D::~BaseMaterial3D` of `ArrayMesh`es held in nested GDScript dictionaries, freed in `SceneTree::finalize` after the rendering server's materials (`online/r2a/a.txt`; the crash report in the copy's `reports/`). 1 of about 12 Godot exits | a script-held mesh cache (`er_layer.gd`, `model_remaster.gd` or `er_world.gd` keep such dictionaries) not cleared before shutdown; clearing it in `_exit_tree` would avoid it | **open** |
+| 4 | Medium | Crash at quit of a room copy: signal 11 in `RendererRD::MaterialStorage::free` from `BaseMaterial3D::~BaseMaterial3D` of `ArrayMesh`es held in nested GDScript dictionaries, freed in `SceneTree::finalize` after the rendering server's materials (`online/r2a/a.txt`; the crash report in the copy's `reports/`). 1 of about 12 Godot exits | a script-held mesh cache (`er_layer.gd`, `model_remaster.gd` or `er_world.gd` keep such dictionaries) not cleared before shutdown; clearing it in `_exit_tree` would avoid it | **fixed** (section 9): `er_layer.gd` lets go of `models` (the outfits' glTF meshes: the chain in the backtrace), the weapons', `surface_arrays` and its own mesh at `release()` / `_exit_tree`; 9 clean quits since |
 | 5 | Minor | Remastered played at 4:3 between black bars in the test window's 16:9 picture | the profile's `wide` was on (the default since 2026-10-13); the game scene took the shape from the window, not from the viewport it is shown in - the portal's test window puts the portal into a 16:9 off-screen viewport inside a window of another shape. Now the viewport's shape; Classic kept at 4:3 whatever the setting | **fixed** (section 8) |
 | 6 | Minor | The game's picture in the Godot window was darker than the game's own picture - 2-D screens most visibly (the ending's save screen mean 3-4 against 19-22), the 3-D picture too | `view.gd`'s canvas shader multiplied `texture(TEXTURE, UV)` by `COLOR`, which in Godot 4 already holds the texture's colour: every value squared (not the sRGB curve twice) | **fixed** (section 8) |
 | 7 | Minor | The library's room status kept the text "the game runs: level hub" after level changes | `tools/recomp/net2/launch.cpp`: the text was set once at the start; now set again with the level when the presence sees it change | **fixed** (section 8) |
 | 8 | Cosmetic | Every run of the portal test window printed "unknown option" for the test window's own arguments | `main.gd` now knows the test window's and the join test's options (with their values) | **fixed** (section 8) |
 | 9 | - | Three level requests in the long runs brought back a level (`honor` -> `fire1`, `nitdung1` -> `nitdung2`, `nitbon2` -> `nitbonus` four times instead of `bossevil`); each level loads when asked for in a run of its own | not found; the route's request may meet the game's own restart or a bonus level's return | noted |
 
-Fixed here: none of the above was both small and clearly correct within the files open to this work.
+Fixed since: bugs 3 and 5-8 (section 8), bugs 1 and 4 (section 9).
 
 ## 4. Online (Ran)
 
@@ -111,8 +111,8 @@ were black (bug 1), so its later figures do not count.
 
 ## 6. Open items
 
-- Bug 1 (the black geometry) and bug 2 (60 / 120 on a quiet machine).
-- Bug 4.
+- Bug 2 (60 / 120 on a quiet machine).
+- Transient black pictures that are the game's own (section 9, "Not build-up"), to be compared with the native program view by view.
 - Spells cast and aimed by the look inside the campaign; weapon arts and two-handing in the campaign; a boss killed.
 - The sharp films seen in this route.
 - Remastered online through the public service with three and four copies, and from two networks.
@@ -160,4 +160,68 @@ import`); evidence in `local/rfix-check/` (not tracked).
 - **Rooms, two copies, one 16:9 and one 4:3** (`n2party.py`, Godot copies with the Remastered options, hub -> drunare
   -> valor -> arachna1, deaths and reloads): 6,418 ticks in step (`r2`), and after the `model_remaster.gd` fix 6,171
   ticks in step with no script error (`r3`).
+
+## 9. Bug 1 and bug 4 fixed (Ran, 2026-10-26)
+
+Built from a clean worktree of `5249c6e` with only the change below (`build.py all` into `local/bug1`, `run.py
+import`); evidence in `local/bug1/` (not tracked): `runs/` (the reproduction and the bisection), `campaign/` (the long
+sessions), `online/` (rooms). Load average 9-17 throughout.
+
+**Reproduced fast.** The check's route without the portal (`runs/run.sh`, paced, Remastered options) over `wat1`
+alone: after the level's opening fade 17 % of the 3-D picture stayed black, fixed to the screen, through every later
+view, the Hardcore round and the walk (`r2`: `s0005` .. `wat1-2-end` 0.17-0.18 black). Then, at the same tick, the
+world viewport cleared once (a test option, `dbg_clear`): **0.00** - nothing was being drawn black; what was black was
+left in the surface from before.
+
+**Cause.** The world's viewport keeps its picture between lists (`ENV_BG_KEEP`, made so because the GS never clears),
+and every draw of the world - the level's batches too - is in Godot's blended pass: `source x A + destination x (1 -
+A)`, with A = 1 for what covers. A destination that is not a finite number survives that (NaN x 0 = NaN), so a pixel
+that once took such a value - a fade, a light or a degenerate triangle in one list - stayed black under everything
+drawn later, in every view and level, and more of them gathered over a session. It was not in the kept meshes, the
+between-frames carry or any look layer, which is why switching each off changed nothing: they were not adding it,
+and switching one off did not clear what was there. (The value itself was not read back: the surface is half-float
+inside Godot. That it is non-finite follows from finite colours being replaced by the next draw with A = 1, and from
+one clear removing it all.)
+
+**Fix** (`tools/godot/extension/src/rta_scene.cpp`). A list whose first draw into the 3-D surface is the game's own
+opaque clearing rectangle (`scene_scan_sky`: whole surface, untextured, its blend not reading the destination) has
+the surface cleared (`ENV_BG_CLEAR_COLOR`) - the game draws every pixel of it anew there anyway, so nothing it shows
+changes; lists without one, and lists without the scene (menus over the picture, films), keep what is there as before.
+The figures line says how many: `the 3-D surface cleared in 261700 lists` of 262242 in the long session.
+
+**Proof.**
+
+| Run | What | Black share of the chase picture, mean over levels | levels > 0.5 | levels wholly black |
+|---|---|---|---|---|
+| `c2-1` (before) | Remastered, 46 levels from `islc1` | 0.32 | 4 | 0 |
+| `c4-1` (before) | Remastered, 28 medal / bonus levels | 0.45 | 12 | 12 (mean 0 from `disbonus` on) |
+| `campaign/L1` (after) | Remastered through the portal, one session: hub, shop, the good path `blood1` .. `fearboss`, the 27 evil-branch, medal and bonus levels to `bossevil`, then `endgood` - 81 levels, 2 h 22 min of game | **0.07** | 0 | 0 |
+| `campaign/K1` (after) | Classic through the portal, one session, the good path to `endgood` (54 levels) | 0.04 | 0 | 0 |
+
+`endbad` in a run of its own (`L2`): as in the check (`c4-2`). Every level's pictures in `L1` were looked at where the
+share was above 0.3: dark levels, the game's fades and the end of a level's walk, nothing fixed to the screen; the
+same levels' next pictures and the next level clean. The reproduction route (`r5`, `r6`: `wat1`, `watg2a`, `watg2b`)
+after the fix: 0.00 after the fade, and where it is not 0 (`watg2a` 0.2-0.5, an unlit underwater level) one clear
+changes nothing (`z-before` 0.34, `z-clear` 0.36): what is black there is drawn black.
+
+**Not build-up (left as they are).** Some pictures are wholly black for a moment and the next view is clean: the
+overhead and action views in `wat1`, `innovat1`, `islc1`, `islsm1`, `storm1`, `storm4` right after the view changes
+(a series in `wat1` every 4 ticks: black until tick 72, then the game's fade-in, `runs/o2`), and first person in the
+underwater levels `watg2a/b/c`, `swamp1`, `valor2`. Godot Classic shows the same pictures black in the same places
+(`K1`), so these come with the game's picture; to be checked against the native program view by view.
+
+**Two copies still in step.** `online/r2`: two Godot copies with the Remastered options in a room (`n2party.py`),
+hub -> drunare -> valor -> arachna1, 6 deaths, 3 reloads: 6,250 ticks in step; `online/r4`: four copies, 8 deaths,
+5,894-5,905 ticks, every pair in step. Each copy cleared its surface in 96 % of its lists.
+
+**Bug 4** (`tools/godot/project/er_layer.gd`). The backtrace's chain - a script dictionary, a dictionary, an array, a
+dictionary, an `ArrayMesh` - is `models[set].meshes[i].mesh`, the outfits' glTF meshes. `release()` (called from
+`scene_view.gd` before the drawer lets go, on the way out of `main.gd`) and `_exit_tree` now drop `models`,
+`weapon_models`, `surface_arrays`, the materials in waiting and the player's own mesh while the rendering server is
+whole, instead of leaving them to the script's destruction in `SceneTree::finalize`. Since: 2 + 4 room copies and the
+portal's quits after the three campaign runs, 9 of 9 clean. The crash was 1 in about 12, so this is a check, not a proof.
+
+Seen on the way, not from this change: `model_remaster.gd:477` (`f.name` on a figure without it, 90,401 script
+errors in `L1`) is in the `5249c6e` tree this was built from and already fixed on main (section 8, `r3`);
+`er_world.gd:434` (`paths`, 2 errors in `L1`) is the hub-rebuild work's file.
 
