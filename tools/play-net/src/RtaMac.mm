@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdlib>
 #include <mutex>
 #include "Rta.h"
 
@@ -102,8 +103,13 @@ void Rta::SendWindowBack(void* nsView)
 
 namespace
 {
-	std::mutex g_tickMutex;
-	std::condition_variable g_tickCondition;
+	// The display link's thread is CoreVideo's and keeps calling OnRefresh until the link is
+	// stopped - also while the application's static objects are being destroyed at its end. A
+	// static mutex destroyed under it ended every such quit in "mutex lock failed: Invalid
+	// argument" (std::terminate, exit -6). The lock and its condition are therefore made once on
+	// the heap and never destroyed, and the link is stopped at exit (StartDisplayClock).
+	std::mutex& g_tickMutex = *new std::mutex;
+	std::condition_variable& g_tickCondition = *new std::condition_variable;
 	uint64_t g_tick = 0;                 // refreshes counted
 	std::atomic<double> g_refreshRate{0}; // per second; 0 until known
 	std::atomic<bool> g_running{false};
@@ -117,6 +123,7 @@ namespace
 
 	CVReturn OnRefresh(CVDisplayLinkRef, const CVTimeStamp*, const CVTimeStamp* outputTime, CVOptionFlags, CVOptionFlags*, void*)
 	{
+		if(!g_running) return kCVReturnSuccess;
 		if(outputTime && (outputTime->videoRefreshPeriod > 0))
 		{
 			g_refreshRate = static_cast<double>(outputTime->videoTimeScale) / static_cast<double>(outputTime->videoRefreshPeriod);
@@ -150,6 +157,12 @@ void Rta::StartDisplayClock()
 	if(CVDisplayLinkCreateWithActiveCGDisplays(&g_displayLink) != kCVReturnSuccess || !g_displayLink) return;
 	CVDisplayLinkSetOutputCallback(g_displayLink, &OnRefresh, nullptr);
 	g_running = (CVDisplayLinkStart(g_displayLink) == kCVReturnSuccess);
+	// registered after the statics above were made, so it runs before anything of them goes:
+	// CVDisplayLinkStop returns when the link's thread has left its callback
+	std::atexit([] {
+		g_running = false;
+		if(g_displayLink) CVDisplayLinkStop(g_displayLink);
+	});
 #pragma clang diagnostic pop
 }
 

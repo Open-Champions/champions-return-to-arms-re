@@ -24,7 +24,7 @@ Started 2026-10-26. Evidence under `local/classic/` (not tracked): pictures, log
 | [x] | Classic online, 2 to 4 copies, Godot Classic + native + the Mac application | **Ran**: three rooms, through 2-3 level changes each, a boss level, forced relay, every pair in step (section 4) |
 | [x] | The art pack and Classic defaults in the native program | **Ran** (section 7): found by itself where Godot finds it; boss music off in Classic; Godot Classic no longer reads the Elden Ring materials |
 | [~] | 60 fps paced | Native **Ran**: 60.0 a second, 0 of ~300 pictures off the 60 grid in 11 of 13 levels measured cleanly; Godot **not settled**: measured at a load average of 200-500 from other work (section 5) |
-| [ ] | Windows and Linux in Classic | **Read** only: the native program runs and plays online on both (`native-windows.md`, `native-linux.md`); no Classic campaign there this round |
+| [~] | Windows and Linux in Classic | **Ran** (section 8): both built from this tree; Linux aarch64 and x86-64 (container, Xvfb) take the 11 tick-keyed `--plain` pictures - the same scenes as the Mac's, a rounding difference of the GL driver only - and the rig comparison byte for byte; Windows built and linked only (no wine here); no Classic campaign on either |
 | [ ] | A person playing it through | never done |
 
 ## 1. The campaign walk (Ran)
@@ -172,10 +172,60 @@ Checks of this round:
 - An online room (`roomparty.py`, `local/classic/mine/room-cc`): Godot Classic (this round's project)
   as host, this round's native program, the Mac application; hub > blood1 > boar1: **every pair in
   step** (5,358 - 5,363 ticks), all three launched and finished. The Mac application, after the other
-  two had left, ended with `recursive_mutex lock failed` in its teardown (exit -6) - the application is
-  not changed by this round, and its game had finished in step; noted, not chased.
+  two had left, ended with `recursive_mutex lock failed` in its teardown (exit -6): found and fixed in
+  section 8.
 - Not built here: the Windows and Linux programs carry the same settings step (`win_main.cpp`,
   `linux_main.cpp`); `settings.h` picks the place per system.
+
+## 8. The Mac application's quit; Windows and Linux (Ran, 2026-10-26)
+
+**"The Mac application"** of `roomparty.py` is the Play! build with this project's patch and
+`tools/play-net/src` (`--app`, default `local/app-rv/build/Source/ui_qt/Play.app/Contents/MacOS/Play`).
+Two faults, one after the other:
+
+- **`recursive_mutex lock failed`** (the run of section 7): that default build was from
+  2026-10-14 03:52, before the fix of `app-rendezvous.md` 9 (net2's lock made by `CRoom`'s
+  constructor, the session closed in `Detach`); the crash report's stack is `~CRoom` <- `~CState` <-
+  `exit`. Rebuilt from the tree's sources (`tools/play-net/src`, `tools/recomp/net2` as committed):
+  the line went, every quit prints "room: the session is closed (the application ends)".
+- **`mutex lock failed: Invalid argument`**, then 1 quit in 3 (`local/classic/room-quit`, run 1;
+  the same stack in two earlier crash reports of the day and in the test matrix's F1): the
+  display clock (`RtaMac.mm`) starts a CoreVideo display link whose thread calls `OnRefresh`
+  60-120 times a second and was never stopped; `OnRefresh` locks `g_tickMutex`, a namespace-scope
+  static. At `exit` the static went while the link's thread still ran: a destroyed mutex,
+  `EINVAL`, `std::terminate`. A race, hence 1 in 3. **Fix** (`tools/play-net/src/RtaMac.mm` only;
+  nothing in `tools/recomp/net2` or `tools/rendezvous`): the lock and its condition are made on
+  the heap and never destroyed; `StartDisplayClock` registers an `atexit` step (after those
+  objects exist, so it runs before any static of the file goes) that clears `g_running` and calls
+  `CVDisplayLinkStop`, which returns when the link's thread has left its callback; `OnRefresh`
+  returns at once when `g_running` is off.
+
+**Ran** (`local/classic/room-quit2`, the same room as section 7: Godot Classic host, `rta_app_cc`,
+the rebuilt application; hub > blood1 > boar1): **4 runs, every pair in step** (5,154 - 5,493
+ticks), **4 of 4 quits clean** - exit 0, the session closed, no `mutex` line - after the other two
+had left. Neither the native program nor the Godot library contains `RtaMac.mm`, so lockstep and
+mode-off are untouched by it (and see below).
+
+**Windows** (`build_win.py`, clang for `x86_64-w64-mingw32`, the tree as it stands): `rta_app.exe`,
+`rta_native.exe`, `fpcheck.exe`, `pnghash.exe` compiled and linked (PE32+ x86-64; Windows system
+DLLs and the UCRT only); the exe carries the settings step of section 7 (`RTA_ART_PACK`,
+`music.boss`). Not run: no wine on this machine.
+
+**Linux** (`build_linux.py --docker both --original`, the colima `rta` profile, Ubuntu 24.04):
+`rta_app`, `rta_app_orig`, `rta_native`, `fpcheck` for aarch64 and x86-64. **Ran** in the
+container under Xvfb (Mesa llvmpipe):
+- the 11 tick-keyed pictures of `native-app.md` 12/13 (`s12/mkdet.py`'s route, `--plain
+  --offscreen --unpaced`, 1280 x 896) against this round's Mac program's (`s12/det/cc-plain-fast`):
+  **the same scene at every tick** (title, hub, the fight in valor;
+  `local/classic/linux-det/sheet-mac-linux-a64.png`); not the same bytes - the drivers round
+  differently: mean difference 1.1 (aarch64) and 0.25 (x86-64) of 255, pixels off by more than 16:
+  0.002 - 0.18 %. The rig comparison (`rta_app_orig --plain`, the controller rows replayed):
+  **`merge/rig-final-compare.txt` line for line on both** (`linux/rig/cc-a64`, `cc-x64`). A
+  script there needs `names.tsv` and `symbols/` beside the program; the x86-64 folder lacked them
+  (copied from the aarch64 one).
+
+Left: Windows run (a Windows machine or wine), a Classic campaign on Windows and Linux, a person
+playing it.
 
 ## How to repeat
 
@@ -192,4 +242,11 @@ python3 tools/recomp/app/tour.py rigscript campaign --moments --out local/classi
 RTA_GODOT_OUT=local/godot-classic python3 -B tools/play-net/roomparty.py local/classic/room \
     --copies app,godot,native,godot --native-window local/recomp-out/bin/rta_app_classic \
     --play 900 --level fire1,storm1,nit1 --play2 1200 --level-every 2400
+# section 8: the application rebuilt from tools/play-net/src (local/app-rv/sync.sh), then
+RTA_GODOT_OUT=local/godot-classic python3 -B tools/play-net/roomparty.py local/classic/room-quit2 \
+    --copies godot,native,app --native-window local/recomp-out/bin/rta_app_cc --play 1600 \
+    --level blood1,boar1 --level-every 2400 --play2 600 --runs 4
+python3 tools/recomp/app/build_win.py; python3 tools/recomp/app/build_linux.py --docker both --original
+local/recomp-out/linux/lin.sh arm64|amd64 NAME rta_app --offscreen --unpaced --plain --size 1280x896 \
+    --data D --script ROUTE -- --opt sound-clock=machine      # ROUTE: s12/mkdet.py D
 ```
