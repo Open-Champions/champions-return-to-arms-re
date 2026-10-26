@@ -548,7 +548,7 @@ McEntry mc_entry(const std::string& name, u32 size, u16 attributes, const fs::pa
             time_t seconds = std::chrono::system_clock::to_time_t(system);
             struct tm* t = localtime(&seconds);
             u16 year = (u16)(t->tm_year + 1900);
-            u8 stamp[8] = {0, (u8)t->tm_sec, (u8)t->tm_min, (u8)t->tm_hour, (u8)t->tm_mday, (u8)t->tm_mon, (u8)year, (u8)(year >> 8)};
+            u8 stamp[8] = {0, (u8)t->tm_sec, (u8)t->tm_min, (u8)t->tm_hour, (u8)t->tm_mday, (u8)(t->tm_mon + 1), (u8)year, (u8)(year >> 8)};   // the card's month is 1..12
             memcpy(e.raw, stamp, 8);
             memcpy(e.raw + 8, stamp, 8);
         }

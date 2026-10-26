@@ -18,6 +18,21 @@ either is in the repository.
 
 ## STATE (rewritten at every step; read this first after a stop)
 
+**2026-10-26, closing round - the open checks of the fourth round closed: a three-copy room with the attributes and a
+spell hit, the memory card (save, quit, load; Classic and the unmodified program on the same card), Linux and Windows rooms
+with the Mac. Not committed.**
+
+- Program: `local/recomp-out/bin/rta_app_next`, `rta_app_next_orig` (the rig), rebuilt with this round's two changes: a
+  lockstep test aid (block word +0x580: a player put beside the nearest living creature, facing it; 2.9) and the memory
+  card's date (`rt/iop.cpp`: the month of a card entry was 0..11, the game shows it as 1..12 - a save made in October was
+  listed as "9/26/2026").
+- **Ran**: a three-copy room (`stats3a`, 5,654 ticks, all three pairs in step, 392 columns) through level-ups, points,
+  slot changes, a spell hit and a weapon hit on a creature, valor > drunare and four deaths (4.11); a real save at valor's
+  save point on the memory card, quit, power-on, "Load Saved Game" - in Hardcore every figure back, in Classic and in the
+  unmodified program (`rta_app_orig`) the game's own record byte for byte the same in both (4.12); a Linux (container) +
+  Mac and a Windows (VM) + Mac room with Hardcore on (4.13); mode off, the rig byte for byte (4.1).
+- **Not done**: the game's own level-up screen extended (by design: 2.9); a person playing it.
+
 **2026-10-25, fourth round - attributes (Vigor, Mind, Endurance, Strength, Dexterity, Intelligence, Faith) and the spellbook
 (the class's skills attuned to slots at save points, spell scaling by Intelligence and Faith), the character sheet in the
 native overlay and in Godot (`hud/sheet.gd`); built, run offline, in Godot and in a room. Not committed.**
@@ -331,7 +346,8 @@ there. **Ran**: kept through a level change offline (`t6/lc`) and in a room thro
 reloads after everybody died (4.10). A first try used +0x43e0..+0x43ef (no access found there either), but **Ran**: a level
 change clears them with the object pointer +0x43d8 (a block clear that the cross-reference does not see) - not used. So the
 attributes are on the memory card with the character and go to every machine at a net game's launch, like the weapons'
-upgrades (2.8). The unmodified game ignores the bytes (Read, as above; not run with such a save on the unmodified program).
+upgrades (2.8). The unmodified game ignores the bytes (Read, as above; **Ran** 2026-10-26: a Hardcore save loaded by `rta_app_orig` and by
+the Classic mode gives the same record byte for byte, 4.12).
 No sidecar file. Attunement is by ability-record index: a skill learned later that makes the game rebuild its records in
 another order can move a mark to another spell (the same on every machine; Read only - not seen). The game's own statistics
 (Vigor, Strength, Dexterity, Intelligence) are not changed by the mode: a character played in Hardcore and then in Classic has
@@ -346,7 +362,10 @@ with a bonus saved in it.
 
 Test aid (changes the simulation; never used outside tests): the block word +0x5e8 = slot + 1 | amount << 8 gives that
 player `amount` experience through the game's own `player_giveExp` in its next tick (its levels, the game's points, the
-refill) - a room's `--tick-do` writes it on every copy in one lockstep tick.
+refill) - a room's `--tick-do` writes it on every copy in one lockstep tick.  The block word +0x580 = slot + 1 (2026-10-26) puts that player
+40 units on the +x side of the nearest living creature (the collision grid in its own order, the first of equal distances),
+level with it and facing it (facing 0x8000: no trigonometry, so every build computes the same), in its next tick; its grid
+cell is left as it was (as the drop spot's aid). Rooms use it to make a cast land (4.11).
 
 Presentation (our own text): the native overlay draws the **character sheet** - the class, level and points; the seven
 attributes with the hit points, the mana, the stamina bar's length, the equip load and its tier; the weapon's grades and
@@ -510,6 +529,9 @@ machine's clock.
 Run twice: with the first build (`off-over`, `off-first`) and again with the final sources
 (`off-over2`, `off-first2`): byte for byte both times. (The section 12/13 contract of
 `native-app.md`: the reports are the gate, not whole memory.)
+
+Again on 2026-10-26 with the closing round's sources (the pose aid, the card's month; `rta_app_next_orig`): `off-over12`,
+`off-first12` byte for byte.
 
 ### 4.2 Offline, every mechanic (Ran)
 
@@ -681,6 +703,63 @@ counters).
 
 Not reached: a three-copy room this round; a spell hit on a creature inside a room (the casts were made, no hit landed in
 the drawn input); a save on the memory card and a load of it (the record is saved whole: Read).
+(All three reached on 2026-10-26: 4.11, 4.12.)
+
+### 4.11 Three copies, a spell hit in the room (Ran, 2026-10-26)
+
+`local/souls-combat/net/statsroom3.sh OUT 3 PORT` (`EXTRA="--level-option valor"`): `statsroom.sh` with the skill buttons
+pressed every 50 frames from frame 1,050 to 1,600 by every player, and from lockstep tick 1,240 to 1,840 the pose test aid
+(+0x580, 2.9) written for players 1 and 2 by every copy's `tick-do`, one player a tick, each every 9 ticks.
+
+| Run | Copies | Result | What happened |
+|---|---|---|---|
+| `stats3a` | 3 | **5,654 ticks in step on all three pairs** (`compare.py ticks`: no shared column differs; 392 columns) | all three level 6 by the test aid (ticks 201, 211, 221); p0's screen at valor's save point: Mind 38 -> 41, Endurance 28 -> 29, Faith 40 -> 41, the poison bolt out of its slot (p1, p2 refused: not near enough); upgrades to +1 (p0, p2); **p1's poison bolt hits the boar, 23.0 -> 28.5 (x 124 %), its hit points 493.6 -> 465.1, at tick 1,347**, the same line in all three logs (and the poison's later ticks); p2's mace on the boar 4.9 -> 6.6 (x 135 %, the upgrade); 134 poses; p2 and p1 killed in valor next to the creature, valor > drunare, the two deaths of the test aid; p0's attributes the same at the end |
+
+Offline first (`local/souls-combat/t7.py`: the t6 boar with the aid in place of `app souls pose front`): five casts, the
+bolt hits 26.0 -> 32.2 and 27.0 -> 33.4 (x 124 %).
+
+### 4.12 The memory card: save, quit, load; Classic and the unmodified program (Ran, 2026-10-26)
+
+`local/souls-combat/card/mkcard.py save` (power-on on a blank card; valor; 20,000 experience, 5,000 gold and 3 materials by
+the test aids; the character screen: Mind 38 -> 40, Endurance 28 -> 29, Faith 40 -> 42, the poison bolt out, in and out
+of its slot; the mace upgraded to +1 at the save point; then, by the route to the boar, the player put on valor's save point
+and **the game's own save**: the use button -> `Savepoint_interact` -> `memcard_requestSave`, "Create New Save Game", the
+"saved" burst) and `mkload.py` (power-on on that card, "Load Saved Game", slot 1). The card file
+`BASLUS-20973_slot0`, 310,392 bytes, holds the record with the save spot (+0x4c2a.. `82 80 00 00 a0 b5`). Three loads of the
+same card:
+
+| Program | Level, statistics (record) | Maximum mana | The mode's figures |
+|---|---|---|---|
+| `rta_app_next --combat hardcore` | valor; level 6, strength 46, intelligence 37, dexterity 24, stamina 28; gold 4,700 | 67.41 (the game's 64.2 + Mind) | Mind 40, Endurance 29, Faith 42, 5 points unspent, 3 slots, the spell out of its slot (as saved), the mace +1 (135 %), 2 materials |
+| `rta_app_next` (Classic) | the same | **64.2, the game's own** | none (the mode off) |
+| `rta_app_orig` (the unmodified translation) | the same | **64.2** | - |
+
+The Classic and the unmodified program's records are **byte for byte the same** at ticks 5 and 200 after the load; the
+Hardcore record differs from them only in +0xc0..+0xc7 (the mana and its maximum with Mind). The saved record carried the
+Hardcore maximum (67.41); the game recalculates it at the load, so Classic and the unmodified game see their own 64.2.
+The card's date was shown as "9/26/2026" for a save of 26 October: fixed (`rt/iop.cpp`, the month 1..12), Ran: listed
+"10/26/2026" after the fix.
+
+
+### 4.13 Linux and Windows with the attributes, in a room with the Mac (Ran, 2026-10-26)
+
+`local/souls-combat/xroom/xrun.sh OUT KIND PORT`: a service on the Mac's 127.0.0.1, the Mac's `rta_app_next --combat hardcore`
+hosting (room option: start in valor), the joiner by KIND; `xroom.py` writes both scripts with every press keyed on the
+lockstep tick (a slow copy then cannot shift them): the game's own character screens (a new character), 20,000 experience
+for each player by the test aid (ticks 201, 211: level 6), the mode's character screen at valor's save point for both
+(L3 + L2 at tick 420, points on Mind, Mind, Endurance, Faith, the poison bolt out, in, out, in, block), the skill buttons,
+valor > drunare at tick 1,100, then standing there; 382 tick-log columns (the attributes part, the save spot, the mana).
+Each joiner booted (power-on, card, title), made its character on the game's screens and took up the host's Hardcore
+choice by itself ("the host plays with Hardcore mode on: so does this copy now").
+
+| Run | Joiner | Route | Result |
+|---|---|---|---|
+| `m1` | the Mac's `rta_app_next` (a check of the scripts) | direct | **1,592 ticks in step** |
+| `l2` | Linux aarch64 `rta_app` in the colima container (`rta-linux:arm64`, Xvfb, `--plain`), service through 192.168.5.2 | direct, 16 ms | **1,574 ticks in step**, no shared column differs; both players level 6, Mind 40, 4 points spent, 8 slot changes counted, in drunare at the end |
+| `w1` | Windows `rta_app.exe` (x86-64 under Windows 11 ARM's emulation, Mesa llvmpipe, `--plain --offscreen`) in the test VM run by Homebrew QEMU in snapshot mode, service through QEMU's 10.0.2.2 | direct, 26-46 ms | **1,472 ticks in step**, no shared column differs; the same souls log line for line as the Mac's (the level-ups, the screens, every point and slot change), drunare at the end |
+
+The Linux and Windows programs need `names.tsv` and `symbols/` beside them to run a script (the tester folders do not
+carry them: a tester runs no script); put there for these runs (local copies only).
 
 ## 5. Files
 
@@ -698,6 +777,8 @@ the drawn input); a save on the memory card and a load of it (the record is save
 | second round (2026-10-21) | `soulscombat.{h,cpp}` (the mechanics of 2.7, the Tuning fields of 3.2, the block's version 2, the test aids, Hardcore names), `hud/souls.gd` (flasks, parry / riposte lines, drop marker); the name in `app_main.cpp`, `win_main.cpp`, `linux_main.cpp` (`--combat hardcore`), `testerkit_app.h`, `net2/session.cpp`, `net2/launch.cpp`, `godot/lib/rtag.cpp`, `godot/project/main.gd`, `portal/screens/room.gd`, `portal/gameflow.gd` |
 
 | fourth round (2026-10-25) | `soulscombat.{h,cpp}` (the attributes and the spellbook of 2.9, the Tuning fields of 3.4, `load_per_stamina` renamed `load_per_endurance`, the block's version 4, the experience test aid, the character sheet in the overlay, `app souls sheet`), `hud/sheet.gd` (new), `hud/souls.gd` (the sheet added, the level-up line, the stamina bar's length per player) |
+
+| closing round (2026-10-26) | `soulscombat.{h,cpp}` (the pose test aid, block word +0x580), `rt/iop.cpp` (a memory-card entry's month 1..12) |
 
 | third round (2026-10-21) | `soulscombat.{h,cpp}` (the weapons of 2.8, the Tuning fields and arrays of 3.3, `parry_first` named, the block's version 3, the material test aid, the weapon card in the overlay), `testerkit.{h,cpp}` (`testerkit::text`: the overlay's letters for another overlay), `hud/souls.gd` (the weapon card) |
 
@@ -749,6 +830,9 @@ python3 local/souls-combat/rig/check.py off-first7 rta_app_next_orig first
 # third round rooms:   cd local/souls-combat/net && EXTRA="--level-option valor" ./weaproom.sh weap2b 2 41991   (and 3 copies)
 # fourth round offline: cd local/souls-combat && python3 t6.py 0 t6/d0.rig 3000 d && sed -i '' 's#OUTDIR#t6/d0#g' t6/d0.rig && SOULS_LOG=1 PROG=rta_app_next ./run.sh t6/d0 t6/d0.rig --combat hardcore
 # fourth round rooms:   cd local/souls-combat/net && EXTRA="--level-option valor" ./statsroom.sh stats2c 2 41995
+# closing round:      cd local/souls-combat/net && EXTRA="--level-option valor" ./statsroom3.sh stats3a 3 41997
+#                      cd local/souls-combat/card && python3 mkcard.py save save1.rig (then the program with --data dataA), python3 mkload.py loadB > loadB.rig
+#                      cd local/souls-combat/xroom && ./xrun.sh l2 linux 42013; ./xrun.sh w1 win 42014   (rig: off-over12, off-first12)
 python3 local/souls-combat/rig/check.py off-over rta_app_combat_orig overhead
 python3 local/souls-combat/rig/check.py off-first rta_app_combat_orig first
 # offline: local/souls-combat/t1.py, t2.py (scripts from the valor route), run.sh DIR RIG --combat souls

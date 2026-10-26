@@ -686,6 +686,14 @@ pointed at).
 
 ## Resume here
 
+**2026-10-26, Hardcore mode with the attributes on Windows (Ran).** The VM run by Homebrew QEMU in snapshot mode
+(`local/er-world/vm/run.sh`; ssh on 127.0.0.1:2222, the Mac at 10.0.2.2 from inside), the program of
+`build_win.py --no-game` (cross build, llvmpipe as above, `--plain --offscreen`) joining a room hosted by the Mac's
+`rta_app_next --combat hardcore`: booted, made its character on the game's screens, took the host's Hardcore choice by
+itself, levelled to 6 by the test aid, used the mode's character screen (points, spell slots) and changed level with the Mac:
+**1,472 ticks in step, no shared column differs**, the souls log line for line the Mac's (`native-souls-combat.md` 4.13).
+The program needs `names.tsv` and `symbols\` beside it to run a script.
+
 **2026-10-20 17:05, the first run on Windows** (a virtual machine; "First run on Windows" above
 has everything). Ran there: checks 1, 2 and 4 of the README with both builds, a headless play
 run, the window program with Mesa's llvmpipe, three games in one room with the Mac's `rta_app`

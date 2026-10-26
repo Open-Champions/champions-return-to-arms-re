@@ -21,7 +21,7 @@ Built into `local/godot-r24/` (extension and project). Not committed.
 |---|---|
 | 1. Geometry: subdivision with creases, skin weights interpolated, drawn through the skeleton stream | **done, Ran**: players, NPCs, goblins, war boars, black widows, badgers, lava monster, critters baked (1-66 ms each, on a thread) |
 | 2. Materials: normal + ORM from the 4x textures, skin/leather/metal/cloth per texel, per-model override | **done, Ran** (maps cached by picture hash); class heuristics not yet tuned picture by picture |
-| 3. `look.remaster_models = on/off`, default on, Classic off; ER armour / Tripo over it | **done, Ran** (on/off pairs below); ER armour over the remastered body not pictured in this round |
+| 3. `look.remaster_models = on/off`, default on, Classic off; ER armour / Tripo over it | **done, Ran** (on/off pairs below); ER armour over the remastered body **pictured 2026-10-26** (r28, fire1: `local/er-world/haze/armour-fire1-p1-r28.png`; far off in the haze: `native-er-world.md` Gate 3) |
 | 4. Quality gate: sheets, 60+ fps, LOD, room in step | **Ran**: sheets of all 12 figures and the monsters met; 104 fps with it against 100 without; LOD in; **room in step** |
 
 ## How it works
@@ -124,7 +124,7 @@ Built into `local/godot-r24/` (extension and project). Not committed.
 
 - Tune the class heuristics on a per-texture picture sheet; add a debug view of the derived maps.
 - Find levels with orcs and trolls for the sheet.
-- Picture the ER armour over the remastered body.
+- ~~Picture the ER armour over the remastered body.~~ Done 2026-10-26 (r28, fire1, near and far in the haze).
 - A draw that mixes skinned and rigid packets of one object stays drawn by the game, which would double the body. This
   has not been seen.
 - The bake on first sight takes up to 66 ms on a thread, but the hand-over and merge happen on the main thread: one

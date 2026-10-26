@@ -364,6 +364,18 @@ grime near the piece's foot (`ground_z`, set by `er_world.gd`), moss in patches 
 (stored values) to linear light before adding them, as `er_ruin.gdshader` does. Near figures are unchanged
 (`gate3/figures-haze-*.jpg`: r27 | r28).
 
+**The haze check far off (Ran, 2026-10-26).** The same r27 | r28 pair in two hazy levels, with the figures far from the eye:
+`local/er-world/haze/hazerun.sh BUILD LEVEL` (power-on, the level asked for, chase view, the camera pulled back 1, 3, 5, 7,
+orbit 0 and 180, the Elden Ring armour on and off; pictures `haze/BUILD-LEVEL/`, pairs `haze/zoom-*`, `cmp-*`).
+- **fire1** (red haze): in r27 every remastered figure beyond the near ground - the creatures across the level and the
+  player itself at pull 3 and more - is drawn white-hot over the haze (near-white pixels in the picture at pull 1 / 3 / 5 / 7:
+  1,474 / 567 / 431 / 190); in r28 they take the haze's colour like the level's pieces round them (0 / 0 / 0 / 0). The
+  shaman close with the armour on (`armour-fire1-p1-r28.png`: the necromancer outfit over the remastered body) is the same
+  in both.
+- **swamp1** (a dark, misty night level): r27 draws the far player a pale blue-white; r28 the haze's dark brown; near, the
+  same.
+No change in the near pictures, so the fix holds; nothing else found.
+
 **Build** `local/godot-r28` (`build.py all`, `run.py import`: exit 0).
 
 **Smoke and room** (`local/godot-r28/test/room28.py g3 --level valor`, both copies Remastered by the portal's card, B

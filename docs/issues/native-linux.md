@@ -13,6 +13,13 @@ Nothing derived from the game is in the repository: the translation
 (`local/recomp-out/linux/gen-app`, `gen-orig`), objects, programs, logs and the tester's
 folders are under `local/recomp-out/linux/`.
 
+## STATE (2026-10-26): Hardcore mode with the attributes, Ran
+
+The aarch64 `rta_app` (`build_linux.py --docker arm64 --no-game`) in the colima `rta` container joined a room hosted by the
+Mac's `rta_app_next --combat hardcore`: boot, a new character on the game's screens, the host's Hardcore choice taken up,
+level 6 by the test aid, the mode's character screen (points, spell slots), valor > drunare: **1,574 ticks in step, no
+shared column differs** (`native-souls-combat.md` 4.13). A script needs `names.tsv` and `symbols/` beside the program.
+
 ## STATE (2026-10-21, evening): the tester's kit
 
 `linux_main.cpp` has the tester's kit (`docs/issues/native-app.md` 15): F8 and the L3 + R3 chord (`testerkit::pad`), the
