@@ -55,6 +55,13 @@ global uniform vec4 rta_model_rim;      // rgb: the rim light's colour
 
 varying vec3 v_world;
 
+// the sky's and the haze's colours are stored values (as the game's are): the level's pieces add the haze before they turn
+// to linear light (gs_draw.gdshaderinc), so this does too - added as it is, linear, a far figure came out washed to the
+// haze's colour (as er_ruin.gdshader)
+vec3 lin(vec3 c) {
+	return pow((clamp(c, vec3(0.0), vec3(1.0)) + vec3(0.055)) * (1.0 / 1.055), vec3(2.4));
+}
+
 void vertex() {
 	v_world = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
@@ -118,13 +125,13 @@ void fragment() {
 	vec3 to_eye = normalize(CAMERA_POSITION_WORLD - v_world);
 	vec3 r = reflect(-to_eye, n_world);
 	float fres = pow(1.0 - clamp(dot(n_world, to_eye), 0.0, 1.0), 4.0);
-	vec3 sky = rta_sky(r) * rta_light_ambient.rgb;     // (as dark as the level's ambient: a cave's metal does not shine with the sky)
+	vec3 sky = lin(rta_sky(r)) * rta_light_ambient.rgb;     // (as dark as the level's ambient: a cave's metal does not shine with the sky)
 	vec3 f0 = mix(vec3(0.04), base, metal);
 	vec3 refl = sky * (f0 + (vec3(1.0) - f0) * fres) * (1.0 - rough * 0.75) * sky_reflect * (0.25 + 0.75 * metal);
 	// the haze between the eye and the piece, as the world's (atmosphere.gdshaderinc)
 	float dist = length(v_world - CAMERA_POSITION_WORLD);
 	float h = rta_haze(dist, v_world.z);
-	vec3 haze = rta_haze_colour((v_world - CAMERA_POSITION_WORLD) / max(dist, 0.001));
+	vec3 haze = lin(rta_haze_colour((v_world - CAMERA_POSITION_WORLD) / max(dist, 0.001)));
 	// cloth catches a soft light along its outline (the game models' rim light), so a dark cape keeps its shape in a cave
 	vec3 to_eye_v = normalize(VIEW);
 	float rim = pow(1.0 - clamp(abs(dot(n_view, to_eye_v)), 0.0, 1.0), 3.0);

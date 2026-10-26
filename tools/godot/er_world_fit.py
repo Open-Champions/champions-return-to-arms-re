@@ -15,6 +15,7 @@ The recipe (a local file; numbers of the level's shapes and names of Elden Ring 
    "tolerance": 12, "reach": <optional, per target: tops higher than this over the ground are not floors (40)>,
    "targets": [{"name": ..., "volume": [cx, cy, cz, hx, hy, hz, yaw, cylinder 0|1, kinds 1 level|2 models] (or "volumes": [...]),
                 "object": <optional: only this object's packets>,
+                "review": <optional: why the pictures refused it although the check passed (the game's shape stays)>,
                 "parts": [{"model": "<flverdump stem>", "fit": "disc" | "box", ...}]}]}
 
   disc: {"r": radius, "z0": bottom, "z1": top, "cx", "cy" (default: the volume's centre), "turn": degrees}
@@ -458,8 +459,13 @@ def main():
         res, (p, vis, over) = check(target, fitted, ref, ground, tol)
         res['name'] = target['name']
         res['fits'] = fits
+        if target.get('review'):
+            # refused on sight (the pictures): a fit can pass the check and still look worse than the game's own shape
+            # (plainer, less carved, less colour); then the game's shape stays - never a downgrade
+            res['review'] = target['review']
+            res['passed'] = False
         report.append(res)
-        verdict = 'passed' if res['passed'] else 'REFUSED'
+        verdict = 'passed' if res['passed'] else ('REFUSED on review (%s)' % res['review'] if res.get('review') else 'REFUSED')
         print('%-12s %s: %d visible samples of %d, surface distance max %.1f (p99 %.1f, mean %.1f), up-facing to collision max %.1f; '
               '%d over %.0f units; %d reference triangles' % (target['name'], verdict, res['visible'], res['samples'], res['surface_distance']['max'],
               res['surface_distance']['p99'], res['surface_distance']['mean'], res['collision_distance_up']['max'], res['over'], tol,

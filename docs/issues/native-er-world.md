@@ -7,17 +7,18 @@ nothing changes.
 
 Everything below says **Ran** (with what was seen) or **Read**.
 
-## STATE (2026-10-25, second session)
+## STATE (2026-10-26, third session: gate 3)
 
-Phase 1 steps 1-3 are **working, Ran**, with their faults fixed (below). Step 4, the hub's fitted rebuild, is **working
-for the two stone daises and the obelisk, Ran**; the arch was tried and **refused by the check**.
+Phase 1 steps 1-3 are **working, Ran**, with their faults fixed (below). Step 4, the hub's fitted rebuild: the daises and
+the obelisk pass the check but are now **refused on review** (gate 3: plainer than the game's own); the arch is **refused
+by the check**. The hub draws the game's own shapes. The haze fault in the figures' shaders is **fixed, Ran**.
 
 | Step | State |
 |---|---|
 | 1. Materials by class, ER albedo + normal, world scale, triplanar, blended | **done, Ran**: 8 classes; reader + our own table (`er_world.cfg`); wood now read on its own (a mine's beams), metal only by a strict rule (none read on the four levels tried) |
 | 2. Grass (MultiMesh, swaying, density by distance, no collision, not on paths / against walls) | **done, Ran**: clears painted flower patches and stones; no tufts in the air; valor 3,509 points |
 | 3. Skies: ER cloud layer tinted by the level's own sky | **done, Ran** |
-| 4. Hub fitted rebuild (ruin pieces fitted to the Champions shapes, a hand's-width check) | **done for the daises and the obelisk, Ran**; arch **refused** (max 13.4 units off) |
+| 4. Hub fitted rebuild (ruin pieces fitted to the Champions shapes, a hand's-width check) | **refused on review** (daises, obelisk: they pass the check but read plainer than the game's; see Gate 3); arch **refused** by the check (max 13.4 units off) |
 | Gate: before/after pictures, 60+ fps, room in step | **Ran**: pictures in `local/er-world/gate2/`; **106.3 fps with the layer, 106.3 without** (hub 98.3 / 95.5, fire1 66.6 / 68.7); **room in step** (1,856 ticks) |
 
 Built into `local/godot-r27/` (extension and project). Not committed.
@@ -334,11 +335,40 @@ Pictures in `local/er-world/gate/`; 106.8 / 107.3 fps; room in step over 1,854 t
 - The same fitting on other levels' landmarks: a recipe per level, a dump of the level (`app er world dump`).
 - The rebuild's loading (about 210 ms at the hub's start): read the pieces ahead, or on a worker.
 - Metal: try the strict rule on a level that has real metal (the gnome levels).
-- **Seen in passing:** `remaster_model.gdshader` and `er_armour.gdshader` add the haze's colour, which is a stored
-  value, to linear light. The same fault made the rebuilt daises pale at a distance.
+- The hub rebuild back on only with pieces that beat the game's (Gate 3): an obelisk needs a carved, coloured piece whose
+  textures are fetched (the column `AEG230_497`, the pedestal `AEG270_194` and the tower `AEG099_070` have none here); a
+  dais needs a stepped round piece whose step edges read.
 - Grass: a second card (small plants).
 - Fetch the soil's own normal map.
 - Flicker check from a recording.
+
+## Gate 3 (Ran, third session)
+
+**The review.** The second session's rebuild was put beside the game's own shapes (`local/er-world/gate3/v1/hub-*.jpg`:
+game | gate 2 rebuild | gate 3 try; `gate3/zoom-*.png`: game | gate 3 try, close). The rule: never a downgrade.
+
+| Target | Tried | Check | Seen | Verdict |
+|---|---|---|---|---|
+| obelisk | octagonal stepped base `AEG022_029` + grave obelisk `AEG200_009` on the shaft alone (scale 13/13/10, near even, against 25/25/14 before) | passed, max 9.3 (was 11.8) | a slimmer, better-shaped stone obelisk, but plain grey-pink stone and a dark drum where the game has gold panels and a gold-trimmed base | **refused on review** |
+| obelisk | the base + column `AEG230_497`, + pedestal `AEG270_194`, + stele `AEG001_101`; the tower `AEG099_070`; the pedestal alone | passed at base inset 2-3 / refused 21-26 | the column, pedestal and tower have no textures fetched: untextured | not used |
+| daises | the three discs with the weathered material (below) | passed, max 1.5 | steps read better than gate 2 (worn edges, moss), but still flatter and muddier than the game's pink marble; the carved step edge and the engraved ring of the close view are lost | **refused on review** |
+
+A target refused on review is written in the recipe (`"review": "<why>"`); `er_world_fit.py` then refuses it like a
+failed check, and its reason goes into `rebuild.json`. The hub's rebuild now has no pieces (`rebuild for hub, 0 pieces`).
+
+**The ruin material (`er_ruin.gdshader`)**, for any future piece: the texture's carving lifted from its local mean
+(`contrast` 1.35), worn light on outer edges and dark in inner corners from the geometry's bend (`edge_wear` 0.45),
+grime near the piece's foot (`ground_z`, set by `er_world.gd`), moss in patches on what faces up and in the cracks.
+
+**The haze in the figures.** `remaster_model.gdshader` and `er_armour.gdshader` now turn the haze's colour and the sky's
+(stored values) to linear light before adding them, as `er_ruin.gdshader` does. Near figures are unchanged
+(`gate3/figures-haze-*.jpg`: r27 | r28).
+
+**Build** `local/godot-r28` (`build.py all`, `run.py import`: exit 0).
+
+**Smoke and room** (`local/godot-r28/test/room28.py g3 --level valor`, both copies Remastered by the portal's card, B
+with `RTA_ER_WORLD=off`): portal -> Remastered -> hub -> valor; no script or shader error; A **109.7 fps** mean (median
+gap 8.97 ms, p99 17.2 ms; valor part 106.8); **1,857 ticks compared, no shared column differs.**
 
 ## Changed
 
@@ -385,3 +415,13 @@ Pictures in `local/er-world/gate/`; 106.8 / 107.3 fps; room in step over 1,854 t
   fetched pieces and textures)
 - `local/godot-r25/`, `local/godot-r27/` (builds; `test/room27.py`)
 - the partial archives in `local/souls-ref/er/Game/`
+
+**Third session.**
+
+- Modified (tracked):
+  - `tools/godot/project/shaders/remaster_model.gdshader`, `er_armour.gdshader`: the haze and sky colours made linear
+  - `tools/godot/project/shaders/er_ruin.gdshader`: the weathering
+  - `tools/godot/project/er_world.gd`: `ground_z` per piece
+  - `tools/godot/er_world_fit.py`: `review`
+  - this file
+- Local: `local/er-world/gate3/`, `local/er-world/hubfit/hub-gate3.json`, `local/godot-r28/`

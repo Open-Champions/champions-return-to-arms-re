@@ -470,6 +470,8 @@ func _rebuild_load(name: String) -> void:
 		if mesh.get_surface_count() == 0:
 			continue
 		aabb = mesh.get_aabb()
+		for m in materials:
+			(m.material as ShaderMaterial).set_shader_parameter("ground_z", aabb.position.z)   # (the grime near its foot)
 		pieces.append({"name": p.name, "mesh": mesh, "materials": materials, "volumes": p.get("volumes", [p.volume]).map(func(x): return int(x)),
 			"tint_amount": float(p.get("tint", 0.6)),
 			"instance": RID(), "caster": RID(), "scenario": RID(), "tinted": 0.0, "aabb": aabb})
