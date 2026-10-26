@@ -1,0 +1,36 @@
+{
+ "style": "dark-fantasy, weathered knight; game-ready, clean topology, PBR textures, no baked lighting",
+ "assets": {
+  "armour": {"steps": [
+   {"type": "text_to_model", "texture": true, "pbr": true, "texture_quality": "detailed", "face_limit": 20000,
+    "prompt": "A complete suit of dark-fantasy weathered knight armour worn on a plain featureless mannequin in a T-pose: dented blackened steel breastplate, layered pauldrons with a tattered dark cloth half-cape, articulated gauntlets, greaves and sabatons, worn leather straps. Game-ready character asset, clean quad-friendly topology, PBR textures with worn edges, no baked lighting, even neutral lighting.",
+    "negative_prompt": "helmet, face, skin, hair, weapon, shield, base, pedestal, baked shadows"},
+   {"type": "animate_rig", "out_format": "glb"}
+  ]},
+  "sword": {"steps": [
+   {"type": "text_to_model", "texture": true, "pbr": true, "face_limit": 6000,
+    "prompt": "A dark-fantasy weathered knight's longsword, straight double-edged blade with nicks and rust, simple iron crossguard, leather-wrapped grip, round pommel, lying straight. Game-ready prop, clean topology, PBR textures, no baked lighting.",
+    "negative_prompt": "hand, scabbard, stand, base, baked shadows"}
+  ]},
+  "mace": {"steps": [
+   {"type": "text_to_model", "texture": true, "pbr": true, "face_limit": 6000,
+    "prompt": "A dark-fantasy weathered flanged war mace, blackened iron head with seven flanges, iron shaft with leather grip and a small pommel, straight. Game-ready prop, clean topology, PBR textures, no baked lighting.",
+    "negative_prompt": "hand, stand, base, baked shadows"}
+  ]},
+  "arch": {"steps": [
+   {"type": "text_to_model", "texture": true, "pbr": true, "face_limit": 15000,
+    "prompt": "A ruined dark-fantasy stone archway, weathered cracked grey blocks, one side partly collapsed, moss in the joints, free-standing. Game-ready environment prop, clean topology, PBR textures, no baked lighting.",
+    "negative_prompt": "ground plane, people, baked shadows"}
+  ]},
+  "brazier": {"steps": [
+   {"type": "text_to_model", "texture": true, "pbr": true, "face_limit": 8000,
+    "prompt": "A dark-fantasy wrought-iron brazier on three clawed legs, a rusted bowl with cold charcoal, weathered. Game-ready prop, clean topology, PBR textures, no baked lighting, no fire.",
+    "negative_prompt": "fire, flames, smoke, glow, baked shadows"}
+  ]},
+  "statue": {"steps": [
+   {"type": "text_to_model", "texture": true, "pbr": true, "face_limit": 15000,
+    "prompt": "A weathered stone statue of a robed hooded knight leaning on a greatsword, on a square plinth, eroded cracked stone with lichen, dark fantasy. Game-ready environment prop, clean topology, PBR textures, no baked lighting.",
+    "negative_prompt": "colour paint, baked shadows"}
+  ]}
+ }
+}
