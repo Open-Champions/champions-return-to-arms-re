@@ -183,8 +183,8 @@ func info_text() -> String:
 					far.append(msk.get_bone_name(b))
 		if not far.is_empty():
 			per.append("FAR: " + ",".join(far))
-		per.append("%s: set %s, bones within %.0f units, skeleton %d (%d joints), weapon class %s, holds [%s]" % [t.key, t.set, spread, t.skeleton,
-			int(data.skeletons[t.skeleton].joint_count), WEAPON_NAMES[t.wclass] if t.wclass > 0 and t.wclass < WEAPON_NAMES.size() else str(t.wclass), ", ".join(held)])
+		per.append("%s: set %s, bones within %.0f units, skeleton %d (%d joints), weapon class %s, holds [%s], light change %s" % [t.key, t.set, spread, t.skeleton,
+			int(data.skeletons[t.skeleton].joint_count), WEAPON_NAMES[t.wclass] if t.wclass > 0 and t.wclass < WEAPON_NAMES.size() else str(t.wclass), ", ".join(held), str(_game_light(int(data.skeletons[t.skeleton].state), root_at_now(data.skeletons[t.skeleton].joints)))])
 	return "mode %s, %s, players %d, figures drawn %d [%s], local skeleton %d (state %x at +0x%x of the player, %d joints), %d objects hidden, %d checks" % [mode,
 		"models " + ",".join(PackedStringArray(models.keys())) if er_failed == "" else er_failed, data.get("players", []).size(), targets.size(), "; ".join(per),
 		player_skeleton, player_state, player_offset, int(_player().get("joint_count", 0)), hidden.size(), checks]
@@ -2137,8 +2137,8 @@ func _fit_made(out: Dictionary, src_materials: Array, key: String, upm: float) -
 		var src: Material = src_materials[int(s.surface)]
 		mats.append(_armour_material(src, String(s.name), false))
 		names.append(String(s.name))
-	print("rta_godot: er fit: %s in %d ms: %d meshes drawn, left out: [%s], %d hand triangles left out; widening per region: %s" % [out.label, int(out.ms),
-		names.size(), ", ".join(out.left_out), int(out.dropped_hands), out.summary])
+	print("rta_godot: er fit: %s in %d ms: %d meshes drawn, left out: [%s], %d hand triangles left out, %d slit round the tail; widening per region: %s; own chains: %s" % [out.label, int(out.ms),
+		names.size(), ", ".join(out.left_out), int(out.dropped_hands), int(out.get("slit", 0)), out.summary, String(out.get("chains", ""))])
 	return {"ready": true, "key": key, "mesh": mesh, "materials": mats, "cloth": out.cloth, "n": int(out.n), "reach": out.reach, "upm": upm, "names": names}
 
 
@@ -2235,6 +2235,9 @@ func _draw_fitted(t: Dictionary) -> void:
 	_skin_fitted(f, pal)
 	var inst: RID = f.instances[0].instance
 	_place(inst, fit.materials, t)
+	var light := _game_light(int(p.state), root_at_now(joints))
+	for key in light:
+		RenderingServer.instance_geometry_set_shader_parameter(inst, key, light[key])
 	RenderingServer.instance_set_visible(inst, true)
 	RenderingServer.instance_set_custom_aabb(inst, AABB(root_at - Vector3(120, 120, 120), Vector3(240, 240, 240)))
 	f["drawn_frame"] = now_frame
@@ -2252,6 +2255,122 @@ func _skin_fitted(f: Dictionary, pal: Array) -> void:
 	var rid: RID = instances[0].skeleton
 	for q in pal.size():
 		RenderingServer.skeleton_bone_set_transform(rid, q, pal[q])
+
+
+# The game's own change of a figure's light this frame (docs/lighting.md section 1, `Creature_draw`): the pieces take it
+# as the figure under them does - without it a hit or a status lit the game's head and hands and not the armour (round 5:
+# the yellow-green heads of the cave pictures were the game's poison, bias (-100, +50, -100), from the spiders and
+# scorpions). rgb: the bias added to the figure's ambient, in the game's 0-255 units; a: the scale of all its light
+# (-1: the white hit flash).
+func _game_tint(state: int) -> Vector4:
+	if machine == null or state == 0:
+		return Vector4(0, 0, 0, 1)
+	var c := (state - 0x114) & 0x1ffffff                # the creature (its animation state at +0x114, animation.md 2.1)
+	var flags := int(machine.peek_u32(c + 0xc))
+	if flags & 0x100:
+		return Vector4(0, 0, 0, -1)                     # the one-frame white hit flash: ambient (255, 255, 255)
+	var bias := Vector3.ZERO
+	var w0 := int(machine.peek_u32(c + 0x98))
+	var w1 := int(machine.peek_u32(c + 0x9c))
+	var s16 := func(v: int) -> int: return v - 0x10000 if v >= 0x8000 else v
+	bias += Vector3(s16.call(w0 & 0xffff), s16.call((w0 >> 16) & 0xffff), s16.call(w1 & 0xffff))
+	var counting := false
+	for q in 16:
+		if int(machine.peek_u32(c + 0x36c + 4 * q)) != 0:
+			counting = true
+			break
+	if counting:
+		bias += Vector3(machine.peek_f32(c + 0x70), machine.peek_f32(c + 0x74), machine.peek_f32(c + 0x78))
+	var chill := clampf(float(machine.peek_f32(c + 0x344)), 0.0, 1.0)
+	var poison := clampf(float(machine.peek_f32(c + 0x34c)), 0.0, 1.0)
+	bias += Vector3(-100, -100, 100) * chill + Vector3(-100, 50, -100) * poison
+	for k in 3:
+		if is_nan(bias[k]) or absf(bias[k]) > 400.0:
+			bias[k] = 0.0
+	return Vector4(bias.x, bias.y, bias.z, 0.6 if flags & 0x2000000 else 1.0)
+
+
+func root_at_now(joints: Array) -> Vector3:
+	return (joints[0] as Transform3D).origin if not joints.is_empty() else Vector3.ZERO
+
+
+# The light the game gives this figure's model this frame (docs/lighting.md section 2, `light_emitModelLights`): its
+# ambient (the level's, scaled, with the figure's own change above), the sun and the fill, and the two point lights
+# (torches, lamps, the level's light chunks, spells) nearest it - the very light the game's vertex program puts on the
+# figure's own head and hands.  er_armour.gdshader lights the pieces with it per pixel by their own normals, so that a
+# torch that lights the head lights the armour too (round 5: the heads were lit by the cave's torches, the pieces were not).
+# Colours in the game's 0-255 units; "game_amb".a 1 when known.
+const LIGHT_GRID := 0x5d34d8
+const LIGHT_LAYER := 0x4039a4
+func _game_light(state: int, at: Vector3) -> Dictionary:
+	var none := {"game_amb": Vector4(0, 0, 0, 0)}
+	if machine == null or state == 0:
+		return none
+	var w_sun := int(machine.peek_u32(0x5d346c))       # scaled sun rgba bytes
+	var w_amb := int(machine.peek_u32(0x5d3470))       # scaled ambient
+	var w_set := int(machine.peek_u32(0x5d3478))       # ambient as set (the fill is 0.8 of it, not scaled)
+	var sun_dir := Vector3(machine.peek_f32(0x5d3448), machine.peek_f32(0x5d344c), machine.peek_f32(0x5d3450))
+	if not sun_dir.is_finite() or sun_dir.length() < 0.1:
+		return none
+	sun_dir = sun_dir.normalized()
+	var amb := Vector3(w_amb & 0xff, (w_amb >> 8) & 0xff, (w_amb >> 16) & 0xff)
+	var sun := Vector3(w_sun & 0xff, (w_sun >> 8) & 0xff, (w_sun >> 16) & 0xff)
+	var fill := Vector3(w_set & 0xff, (w_set >> 8) & 0xff, (w_set >> 16) & 0xff) * 0.8
+	var tint := _game_tint(state)
+	if tint.w < 0.0:
+		amb = Vector3(255, 255, 255)
+	else:
+		amb = (amb + Vector3(tint.x, tint.y, tint.z)).max(Vector3.ZERO)
+		if tint.w != 1.0:
+			amb *= tint.w
+			sun *= tint.w
+			fill *= tint.w
+	var fill_dir := Vector3(-sun_dir.x, -sun_dir.y, 0.5 * sun_dir.z).normalized()
+	# the two point lights: candidates within +-300 units, whose cube of their model radius holds the figure; the two of
+	# the smallest D^2 - R^2 (the grid's order of cells is not known here: both orders walked, each node once)
+	var layer := int(machine.peek_u32(LIGHT_LAYER)) & 0xff
+	var cx := (int(at.x) + 11520) >> 8
+	var cy := (int(at.y) + 11520) >> 8
+	var seen := {}
+	var best: Array = []
+	for dx in range(-2, 3):
+		for dy in range(-2, 3):
+			var a := cx + dx
+			var b := cy + dy
+			if a < 0 or b < 0 or a >= 90 or b >= 90:
+				continue
+			for idx in [b * 90 + a, a * 90 + b]:
+				var node := int(machine.peek_u32(LIGHT_GRID + 4 * idx)) & 0x1ffffff
+				var guard := 0
+				while node != 0 and guard < 64:
+					guard += 1
+					if not seen.has(node):
+						seen[node] = true
+						var w8 := int(machine.peek_u32(node + 0x8))
+						var wc := int(machine.peek_u32(node + 0xc))
+						var nl := w8 & 0xff
+						if nl >= 0x80:
+							nl -= 0x100
+						if nl == (layer if layer < 0x80 else layer - 0x100):
+							var pos := Vector3(machine.peek_f32(node + 0x30), machine.peek_f32(node + 0x34), machine.peek_f32(node + 0x38))
+							var r := float(machine.peek_f32(node + 0x1c))
+							var fo := float(machine.peek_f32(node + 0x20))
+							var d := pos - at
+							if pos.is_finite() and r > 0.0 and absf(d.x) <= r and absf(d.y) <= r and absf(d.z) <= r:
+								var s16 := func(v: int) -> int: return v - 0x10000 if v >= 0x8000 else v
+								var col := Vector3(s16.call((w8 >> 16) & 0xffff), s16.call(wc & 0xffff), s16.call((wc >> 16) & 0xffff))
+								var k := clampf((r * r - d.length_squared()) * fo, 0.0, 1.0)
+								best.append({"key": d.length_squared() - r * r, "pos": pos, "col": col * k})
+					node = int(machine.peek_u32(node)) & 0x1ffffff
+	best.sort_custom(func(x, y): return float(x.key) < float(y.key))
+	var out := {"game_amb": Vector4(amb.x, amb.y, amb.z, 1), "game_sun_dir": Vector4(sun_dir.x, sun_dir.y, sun_dir.z, 0),
+		"game_sun": Vector4(sun.x, sun.y, sun.z, 0), "game_fill_dir": Vector4(fill_dir.x, fill_dir.y, fill_dir.z, 0),
+		"game_fill": Vector4(fill.x, fill.y, fill.z, 0)}
+	for q in 2:
+		var e: Dictionary = best[q] if q < best.size() else {"pos": at, "col": Vector3.ZERO}
+		out["game_p%d_pos" % q] = Vector4(e.pos.x, e.pos.y, e.pos.z, 0)
+		out["game_p%d" % q] = Vector4(e.col.x, e.col.y, e.col.z, 0)
+	return out
 
 
 # The outfit's material as er_armour.gdshader draws it (every outfit, weapon and creature piece): cards cut, not blended
@@ -2288,8 +2407,14 @@ func _armour_material(src: Material, name: String, flip: bool) -> ShaderMaterial
 					cut = 0.5
 					break
 	sm.set_shader_parameter("cut", cut)
+	# fabric and leather (by the material's name): the soft light along a cape's outline
+	var lname := name.to_lower()
+	for w in ["fab", "cloth", "leather", "cape", "apron", "muffler", "robe", "skirt", "fur", "tatter"]:
+		if lname.contains(w):
+			sm.set_shader_parameter("cloth", true)
+			break
 	var cfg := _fit_table()
-	for key in ["gain", "fill", "floor_light", "metal_amount", "sun_wrap", "sky_reflect"]:
+	for key in ["gain", "fill", "floor_light", "metal_amount", "sun_wrap", "sky_reflect", "form", "fold_dark", "sheen", "game_light"]:
 		if cfg.has_section_key("look", key):
 			sm.set_shader_parameter(key, float(cfg.get_value("look", key)))
 	if view != null and view.look.has("er_metal") and not cfg.has_section_key("look", "metal_amount"):

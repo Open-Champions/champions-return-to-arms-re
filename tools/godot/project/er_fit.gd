@@ -165,6 +165,13 @@ static func compute(job: Dictionary) -> Dictionary:
 		var cells: PackedFloat32Array = r.body
 		cells[cell] = maxf(cells[cell], loc.rad)
 		r.body = cells
+	# ---- round 5: the game's own chains off the trunk (game_region -1: a tail, a skirt, the game's cape) - which of them
+	# an outfit piece would lie across: the figure's own skirt (round its hips, below them: the leg pieces would show it
+	# through and under them - they are left out, the skirt is the figure's lower garment) and its tail (behind, from the
+	# pelvis: a tabard or a cape hanging over it is slit round it)
+	var chains := _chains(regions, by_game, game_region, game_parent, game_bind, bp, bj, bw, n)
+	var tail: Dictionary = chains.get("tail", {})
+	var skirt := bool(chains.get("skirt", false))
 	# ---- the outfit's vertices in its rest space, their regions, and the inside of each piece per cell
 	var surfaces: Array = job.surfaces
 	var prepared: Array = []
@@ -360,6 +367,8 @@ static func compute(job: Dictionary) -> Dictionary:
 				cnt[0] += 1
 		part_bad[part] = cnt
 	var left_out := PackedStringArray()
+	if skirt and not bool(job.get("keep_legs", false)):
+		left_out.append("LG (the figure's own skirt is its lower garment)")
 	for part in part_bad:
 		var cnt: Array = part_bad[part]
 		if int(cnt[1]) > 0 and float(cnt[0]) / float(cnt[1]) > BAD_SHARE:
@@ -375,6 +384,7 @@ static func compute(job: Dictionary) -> Dictionary:
 			present["%s:%d" % [surfaces[si].part, num]] = true
 	var out_surfaces: Array = []
 	var dropped_hands := 0
+	var slit := 0
 	for si in surfaces.size():
 		var s: Dictionary = surfaces[si]
 		var name := String(s.name)
@@ -470,12 +480,16 @@ static func compute(job: Dictionary) -> Dictionary:
 			idx = (index as PackedInt32Array).duplicate()
 		var kept := PackedInt32Array()
 		var facing := 0.0
+		var slit_here := not tail.is_empty() and (part == "BD" or part == "LG")
 		for tri in range(0, idx.size() - 2, 3):
 			var i0 := idx[tri]
 			var i1 := idx[tri + 1]
 			var i2 := idx[tri + 2]
 			if not bool(job.get("keep_hands", false)) and part == "AM" and _on_hand(regions, dom, i0) and _on_hand(regions, dom, i1) and _on_hand(regions, dom, i2):
 				dropped_hands += 1
+				continue
+			if slit_here and _in_slit(tail, regions, dom, pos, i0, i1, i2):
+				slit += 1
 				continue
 			kept.append(i0)
 			kept.append(i1)
@@ -512,7 +526,158 @@ static func compute(job: Dictionary) -> Dictionary:
 	for r in regions:
 		summary.append("%s %.2f" % [r.name, float(r.s_mean)])
 	return {"surfaces": out_surfaces, "cloth": cloth_list, "n": n, "left_out": left_out, "reach": reach, "dropped_hands": dropped_hands,
+		"slit": slit, "chains": String(chains.get("text", "")),
 		"summary": ", ".join(summary), "ms": Time.get_ticks_msec() - started, "label": String(job.get("label", ""))}
+
+
+# The game's chains off the trunk, measured in its bind pose: per chain (its first unmapped joint) the joint it hangs from,
+# its joints and vertices, how far round the hips its vertices go (sectors of 8 round the up axis through the pelvis),
+# how far below the pelvis and behind it they reach.  A tail: from the pelvis or spine, at least 3 joints, behind, in at
+# most 3 sectors.  A skirt: what hangs from the pelvis or the thighs below the pelvis (tail left out) round 6 or more.
+static func _chains(regions: Array, by_game: Dictionary, game_region: PackedInt32Array, game_parent: PackedInt32Array, game_bind: Array,
+		bp: PackedVector3Array, bj: PackedInt32Array, bw: PackedFloat32Array, n: int) -> Dictionary:
+	var pelvis := -1
+	for i in regions.size():
+		if String(regions[i].name) == "pelvis":
+			pelvis = i
+	if pelvis < 0:
+		return {}
+	var hip: Vector3 = regions[pelvis].g0
+	var top_of := PackedInt32Array()            # joint -> its chain's first joint (-1: mapped or carried by a region)
+	top_of.resize(n)
+	var anchor := {}                            # chain -> the mapped joint it hangs from
+	var joints := {}
+	for j in n:
+		top_of[j] = -1
+		if game_region[j] >= 0:
+			continue
+		var q := j
+		var top := j
+		while q >= 0 and not by_game.has(q):
+			top = q
+			q = game_parent[q] if q < game_parent.size() else -1
+		if q < 0:
+			# hanging from the skeleton's root (unmapped; it sits at the hips): taken as hanging from the pelvis
+			q = int(regions[pelvis].game)
+		top_of[j] = top
+		anchor[top] = q
+		joints[top] = int(joints.get(top, 0)) + 1
+	var info := {}
+	for v in bp.size():
+		var best := -1
+		var bwt := 0.0
+		for q in 4:
+			if bw[v * 4 + q] > bwt:
+				bwt = bw[v * 4 + q]
+				best = bj[v * 4 + q]
+		if best < 0 or best >= n or top_of[best] < 0:
+			continue
+		var top := top_of[best]
+		var d: Dictionary = info.get(top, {"count": 0, "sectors": 0, "low": 0.0, "back": -1e9, "half": 0.0, "pts": []})
+		var rel := bp[v] - hip
+		var ang := atan2(rel.x, -rel.y)         # round the up axis, from the figure's front (-y)
+		var sec := int(floorf((ang + PI) / TAU * 8.0)) % 8
+		d.sectors = int(d.sectors) | (1 << clampi(sec, 0, 7))
+		d.count = int(d.count) + 1
+		d.low = maxf(float(d.low), -rel.z)
+		d.back = maxf(float(d.back), rel.y)
+		(d.pts as Array).append(bp[v])
+		info[top] = d
+	var thigh_len := 0.0
+	for r in regions:
+		if String(r.name).ends_with("_thigh"):
+			thigh_len = maxf(thigh_len, float(r.len_g))
+	var text := PackedStringArray()
+	var tail := {}
+	var skirt_sectors := 0
+	var skirt_count := 0
+	for top in info:
+		var d: Dictionary = info[top]
+		var a := int(anchor[top])
+		var aname := String(regions[int(by_game[a])].name)
+		var covered := 0
+		for b in 8:
+			if int(d.sectors) & (1 << b):
+				covered += 1
+		var kind := ""
+		var root: Vector3 = game_bind[int(top)]
+		if (aname == "pelvis" or aname == "spine") and int(joints[top]) >= 3 and covered <= 3 and float(d.back) > 0.0 and root.z < hip.z + 6.0:
+			kind = "tail"
+			if tail.is_empty() or int(d.count) > int(tail.count):
+				# its half width at the root: the vertices within a short way of the first joint, across the figure (x)
+				var half := 0.0
+				var reach := 0.0
+				for p in d.pts:
+					var off: Vector3 = (p as Vector3) - root
+					reach = maxf(reach, off.length())
+				for p in d.pts:
+					var off: Vector3 = (p as Vector3) - root
+					if off.length() < maxf(reach * 0.2, 3.0):
+						half = maxf(half, absf(off.x))
+				tail = {"root": root, "half": maxf(half, 1.0), "count": d.count}
+		elif (aname == "pelvis" or aname.ends_with("_thigh")) and int(joints[top]) >= 2 and float(d.low) > maxf(4.0, thigh_len * 0.75):
+			# (a skirt with bones of its own; what the root joint alone carries round the hips - a kilt's top, a
+			# loincloth - stays under the leg pieces)
+			kind = "skirt"
+			skirt_sectors |= int(d.sectors)
+			skirt_count += int(d.count)
+		text.append("%s from %s: %d joints, %d vertices, %d/8 round, %.1f below, %.1f behind" % [kind if kind != "" else "chain", aname, int(joints[top]), int(d.count), covered, float(d.low), float(d.back)])
+	# a skirt that is part of the body itself (weighted to the trunk, not a chain of its own: the male cleric's robe, the
+	# female wizard's skirt): the trunk's vertices well below the hip joint (past a third of the thigh), round the figure
+	var thigh := 0.0
+	for r in regions:
+		if String(r.name).ends_with("_thigh"):
+			thigh = maxf(thigh, float(r.len_g))
+	if thigh > 0.0:
+		var own_sectors := 0
+		var own_count := 0
+		for v in bp.size():
+			var best := -1
+			var bwt := 0.0
+			for q in 4:
+				if bw[v * 4 + q] > bwt:
+					bwt = bw[v * 4 + q]
+					best = bj[v * 4 + q]
+			if best < 0 or best >= n or game_region[best] < 0 or not String(regions[game_region[best]].name) in ["pelvis", "spine", "chest"]:
+				continue
+			var rel := bp[v] - hip
+			if -rel.z < thigh * 0.33:
+				continue
+			own_sectors |= 1 << clampi(int(floorf((atan2(rel.x, -rel.y) + PI) / TAU * 8.0)) % 8, 0, 7)
+			own_count += 1
+		var own_round := 0
+		for b in 8:
+			if own_sectors & (1 << b):
+				own_round += 1
+		text.append("trunk below a third of the thigh: %d vertices, %d/8 round" % [own_count, own_round])
+		if own_round >= 6 and own_count >= 30:
+			skirt_sectors |= own_sectors
+			skirt_count += own_count
+	var round_ := 0
+	for b in 8:
+		if skirt_sectors & (1 << b):
+			round_ += 1
+	return {"tail": tail, "skirt": round_ >= 6 and skirt_count >= 30, "text": "; ".join(text)}
+
+
+# a triangle of a tabard or cape lying across the tail: behind the hips, below the tail's root, within a slit as wide as
+# the tail at its root (and wider further down, where the tail swings), and not on a leg (a leg piece's back stays)
+static func _in_slit(tail: Dictionary, regions: Array, dom: PackedInt32Array, pos: PackedVector3Array, i0: int, i1: int, i2: int) -> bool:
+	var c := (pos[i0] + pos[i1] + pos[i2]) / 3.0
+	var root: Vector3 = tail.root
+	var below := root.z - c.z
+	if below < -float(tail.half) * 1.5 or c.y < root.y - float(tail.half) * 0.5:
+		return false
+	var half := float(tail.half) * 1.25 + 0.6 + maxf(below, 0.0) * 0.12
+	if absf(c.x - root.x) > half:
+		return false
+	for i in [i0, i1, i2]:
+		var d := dom[i]
+		if d >= 0 and d < 1000:
+			var nm := String(regions[d].name)
+			if nm.ends_with("_thigh") or nm.ends_with("_calf") or nm.ends_with("_foot"):
+				return false
+	return true
 
 
 static func _variant(name: String) -> int:

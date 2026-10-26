@@ -31,6 +31,27 @@ uniform float floor_light = 0.10;       // and a little everywhere, so that noth
 uniform float sun_wrap = 0.55;          // how much of the sun a surface turned away from it still gets (the game's: 0.72)
 uniform float sky_reflect = 0.55;       // how much of the sky round it a metal shows
 uniform bool flip = false;              // the triangles are wound with the outside at the back (a model not fitted by er_fit.gd)
+uniform float form = 1.0;               // round 5: the form light, sky from above and the folds' darkening of the ambient (0: flat)
+uniform float fold_dark = 0.55;         // how dark a deep fold (a strongly turned normal map, a concave bend) gets
+uniform float sheen = 0.5;              // cloth: the soft light along its silhouette (of the game models' rim light)
+uniform bool cloth = false;             // a fabric / leather piece (er_layer.gd by the material's name), not metal
+// (round 5) the game's own light change for this figure - the hit flash, poison, chill, status colours (docs/lighting.md
+// section 1) - is in game_amb: er_layer.gd adds it to the figure's ambient as Creature_draw does
+// and the light the game gives the figure's model (er_layer.gd _game_light, docs/lighting.md section 2): ambient (a 1:
+// known), sun and fill (direction to the light, colour), the two nearest point lights (position, colour weighted at the
+// figure); the vertex program's min(ambient + sum max(n.L, 0) colour, 255), here per pixel by the piece's own normal
+instance uniform vec4 game_amb = vec4(0.0);
+instance uniform vec4 game_sun_dir = vec4(0.0, 0.0, 1.0, 0.0);
+instance uniform vec4 game_sun = vec4(0.0);
+instance uniform vec4 game_fill_dir = vec4(0.0, 0.0, 1.0, 0.0);
+instance uniform vec4 game_fill = vec4(0.0);
+instance uniform vec4 game_p0_pos = vec4(0.0);
+instance uniform vec4 game_p0 = vec4(0.0);
+instance uniform vec4 game_p1_pos = vec4(0.0);
+instance uniform vec4 game_p1 = vec4(0.0);
+uniform float game_light = 1.0;         // how much of the game's own light on the figure the pieces take (0: round 4's)
+global uniform vec4 rta_model;          // rim light, form light, texture footprint scale, contact shadow (scene_view.gd)
+global uniform vec4 rta_model_rim;      // rgb: the rim light's colour
 
 varying vec3 v_world;
 
@@ -60,9 +81,17 @@ void fragment() {
 		rough = clamp(mr.g, 0.18, 1.0);
 		metal = mr.b * metal_amount;
 	}
+	vec3 n_view = NORMAL;
+	float fold = 1.0;
 	if (has_normal) {
-		NORMAL_MAP = texture(normal_tex, UV).rgb;
+		vec3 nm = texture(normal_tex, UV).rgb;
+		NORMAL_MAP = nm;
 		NORMAL_MAP_DEPTH = 1.0;
+		// the bumped normal here too (the ambient below is not lit by Godot): a fold of the normal map turns away
+		vec3 nt = nm * 2.0 - 1.0;
+		nt.z = sqrt(max(1.0 - dot(nt.xy, nt.xy), 0.0));
+		n_view = normalize(TANGENT * nt.x + BINORMAL * nt.y + NORMAL * nt.z);
+		fold = smoothstep(0.35, 0.95, nt.z);
 	}
 	ALBEDO = base;
 	ROUGHNESS = rough;
@@ -71,7 +100,21 @@ void fragment() {
 	// what arrives where the sun does not: the level's ambient, as the game's own surfaces take it, and a floor
 	vec3 amb = base * (rta_light_ambient.rgb * fill + vec3(floor_light)) * (1.0 - 0.6 * metal);
 	// a metal reflects the sky round it (the world's normal and view; z is up)
-	vec3 n_world = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+	vec3 n_world = normalize((INV_VIEW_MATRIX * vec4(n_view, 0.0)).xyz);
+	vec3 n_geo = normalize((INV_VIEW_MATRIX * vec4(NORMAL, 0.0)).xyz);
+	// round 5: the ambient given form, as the game's own models get it (gs_draw.gdshaderinc GS_MODEL): more from above
+	// than from below, a soft key from where the level's light comes from; and darker in the folds - where the normal map
+	// turns steeply (a crease) and where the surface bends inward (a concave fold of a cape: the normal turning toward
+	// the neighbouring surface, measured from the screen derivatives)
+	float hemi = mix(0.62, 1.0, n_world.z * 0.5 + 0.5);
+	float key_wrap = clamp(dot(n_world, normalize(rta_sky_sun.xyz)) * 0.5 + 0.5, 0.0, 1.0);
+	float keyed = mix(1.0, 0.8 + 0.34 * key_wrap * key_wrap, clamp(rta_model.y, 0.0, 1.0));
+	vec3 dpx = dFdx(v_world);
+	vec3 dpy = dFdy(v_world);
+	float bend = (dot(dFdx(n_geo), dpx) / max(dot(dpx, dpx), 1e-6) + dot(dFdy(n_geo), dpy) / max(dot(dpy, dpy), 1e-6)) * 0.5;
+	float concave = smoothstep(0.0, 0.6, -bend);
+	float occl = (1.0 - fold_dark * (1.0 - fold) * 0.8) * (1.0 - fold_dark * 0.6 * concave);
+	amb *= mix(1.0, hemi * keyed * occl, form);
 	vec3 to_eye = normalize(CAMERA_POSITION_WORLD - v_world);
 	vec3 r = reflect(-to_eye, n_world);
 	float fres = pow(1.0 - clamp(dot(n_world, to_eye), 0.0, 1.0), 4.0);
@@ -82,8 +125,24 @@ void fragment() {
 	float dist = length(v_world - CAMERA_POSITION_WORLD);
 	float h = rta_haze(dist, v_world.z);
 	vec3 haze = rta_haze_colour((v_world - CAMERA_POSITION_WORLD) / max(dist, 0.001));
-	ALBEDO = base * (1.0 - h);
-	EMISSION = (amb + refl) * (1.0 - h) + haze * h;
+	// cloth catches a soft light along its outline (the game models' rim light), so a dark cape keeps its shape in a cave
+	vec3 to_eye_v = normalize(VIEW);
+	float rim = pow(1.0 - clamp(abs(dot(n_view, to_eye_v)), 0.0, 1.0), 3.0);
+	vec3 rim_light = (cloth ? sheen : 0.35) * rim * rta_model_rim.rgb * rta_model.x * (0.35 + 0.65 * key_wrap) * mix(vec3(0.35), base, 0.65) * occl;
+	// the game's light on the figure (its torches, its poison or hit flash), as on the game's own head and hands: the
+	// game's colour is its texture times this / 128, then lit by the scene as every game draw (gs_draw.gdshaderinc)
+	vec3 tint = vec3(1.0);
+	if (game_amb.a > 0.5) {
+		vec3 L = game_amb.rgb;
+		L += max(dot(n_world, game_sun_dir.xyz), 0.0) * game_sun.rgb;
+		L += max(dot(n_world, game_fill_dir.xyz), 0.0) * game_fill.rgb;
+		L += max(dot(n_world, normalize(game_p0_pos.xyz - v_world + vec3(0.0, 0.0, 1e-3))), 0.0) * game_p0.rgb;
+		L += max(dot(n_world, normalize(game_p1_pos.xyz - v_world + vec3(0.0, 0.0, 1e-3))), 0.0) * game_p1.rgb;
+		tint = mix(vec3(1.0), clamp(L, vec3(0.0), vec3(255.0)) / 128.0, game_light);
+	}
+	vec3 lit = (amb + refl + rim_light) * tint;
+	ALBEDO = base * (1.0 - h) * tint;
+	EMISSION = lit * (1.0 - h) + haze * h;
 }
 
 void light() {

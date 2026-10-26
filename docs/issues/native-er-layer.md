@@ -7,6 +7,15 @@ Everything below says **Ran** (with what was seen) or **Read**. A successor need
 
 ## STATE
 
+**2026-10-25, round 5** (built into `local/godot-r21/`; pictures `local/er-layer/fit/r5/`; not committed): **polish** - the
+pieces now take the very light the game gives the figure's own model (its ambient, sun, fill, the two nearest torches or
+lamps, and the figure's own changes: poison, chill, hit flash, status colours), per pixel by their own normals: the
+"glowing" yellow-green heads in the cave were the game's **poison** tint, which now tints the armour too; capes get form
+(sky from above, the level's key, darker folds, a soft outline); the female wizard's own skirt is her lower garment (leg
+pieces left out where the figure has a skirt with bones of its own, or a robe on the trunk); tabards and capes are slit
+round a tail. First-person mace checked in a picture. Paced 86.1 fps with the layer against 84.1 without; the room:
+**1,855 ticks in step**. Round 5 below.
+
 **2026-10-25, round 4** (built into `local/godot-r18/`; pictures `local/er-layer/fit/`; not committed): **fit, not replace** -
 the owner saw the berserker replaced by a whole Elden Ring figure (white streaks on the cape, a hole through the back, the
 body near-black, nothing of the Champions character left). Now every player keeps its own Champions figure (face, race,
@@ -386,12 +395,68 @@ mace head (found by the bug agent) and a chest piece round the eye. Built; not s
 `portal/handover.gd` (passes the profile's choice), `portal/profile.gd` (`er_outfits` default), `portal/screens/settings.gd`
 (the two rows), this file. Local: `local/er-layer/fit/*`, `local/godot-r18/`.
 
+## Round 5 (2026-10-25): the owner's polish list
+
+Built into `local/godot-r21/` (a copy-on-write clone of r18's `lib`, `project`, `godot-home`; `build.py project`, no C++
+change; `local/er-layer/r5/stage.sh` stages with the files another agent was changing at the same time - `scene_view.gd`,
+`gs_draw.gdshaderinc`, `atmosphere.gdshaderinc`, `hud/souls.gd` - taken as committed). Tests: `local/er-layer/r5/run.sh`
+(round 4's route; `INV=0` leaves the player vulnerable), `sweep.sh`, `sheets.py`, `closeups.py`; the room
+`local/godot-r21/test/room21.py`.
+
+**1. The glowing heads (Ran, then Read).** The cave pictures at tick 150 have no glow; at 300 and 600 the whole game
+figure, layer off as well, is yellow-green (`local/er-layer/r5/g1`). The figure's light change read from its object
+(`Creature_draw`'s inputs, docs/lighting.md section 1: flag +0xc bit 0x100 the hit flash, +0x98 the status colour bias,
++0x70 while a status counter runs, chill +0x344, poison +0x34c) was **(-100, +50, -100): poison** - the spiders' and
+scorpions' (the tests keep the player invulnerable, not unpoisoned). So the game's own figure was right; the pieces, lit
+only by the level's ambient, were not. And without poison the head is still lit by the cave's torches (point lights of
+185 grey at the player) that the pieces never saw. Now `er_layer.gd _game_light` reads, each frame and figure, what
+`light_emitModelLights` gives the model: the scaled ambient (0x5d3470) with the figure's change added, the scaled sun
+(0x5d346c, direction 0x5d3448), the fill (0.8 x ambient as set, direction from the sun's), and the two point lights of
+the light grid (0x5d34d8, the current layer's, the cube of their model radius round the figure, ranked by D^2 - R^2,
+weighted by (R^2 - D^2) x falloff) - and `er_armour.gdshader` lights the piece per pixel by its own (bumped) normal with
+min(ambient + sum max(n.L, 0) x colour, 255) / 128, as the game's vertex program does for the head under it, before the
+scene's own light (as every game draw, `gs_draw.gdshaderinc`). `look game_light` (er_fit.cfg) scales it; `er info`
+prints it. Seen: in the cave the armour is poison-green with the body and warm where the torch reaches the cape's
+shoulder; in the hall and the hub as before.
+
+**2. Capes in dark places.** The ambient (what a dark level mostly is) was flat: now more from above than below, the
+level's key as the game models' form light (`rta_model.y`), darker in folds - where the normal map turns steeply and
+where the surface bends inward (screen-derivative curvature) - and cloth (by material name) gets a soft light along its
+outline (the models' rim light, `sheen`). The outfits' metal/roughness maps carry no occlusion (red is 255 throughout:
+measured), so the folds are derived. `er_fit.cfg [look]`: `form`, `fold_dark`, `sheen`.
+
+**3. Skirt and tail (`er_fit.gd _chains`).** The game's chains off the trunk measured in its bind pose (a chain hanging from
+the skeleton's root counts as hanging from the pelvis). A **tail**: from the pelvis or spine, 3+ joints, behind, in at
+most 3 of 8 sectors round the hips - the BD/LG triangles behind the hips below its root within a slit as wide as the tail
+there (wider lower down; leg pieces' own backs kept) are left out: shaman 371-388, berserker 276 triangles. A **skirt**:
+a chain with 2+ bones of its own reaching below 3/4 of the thigh round 6+ sectors (the female wizard: 5 joints, 595
+vertices, all round), or the trunk's own vertices below a third of the thigh round 6+ sectors (the male cleric's robe) -
+the leg pieces are left out and the figure's skirt is its lower garment (a first rule that counted what the root joint
+alone carries round the hips also took the barbarian's kilt, the shaman's loincloth, the male ranger's hips: dropped).
+The dark elves have no tail: what showed through the shadow knights' tabard in round 4 was not found in round 5's pictures.
+
+**4. First person, mace (Ran).** Cleric, swamp1 and fire1, idle and attack (`local/er-layer/r5/m6`,
+`fit/r5/first-person-mace.jpg`): the game's own mace on its shaft from the view's edge, layer on as off; no floating head.
+
+**The gate.** `local/er-layer/fit/r5/overview.jpg`, `sheet-cR.jpg` (12 figures, hub, valor, arachna1, islgoth; idle, run,
+attack; close and gameplay distance), `closeups.jpg` (every figure close: cave off | on, hall off | on, hub run). The
+cleric died of poison in arachna1 during the attack pictures (loading screen in two tiles) - the test's, not the layer's.
+**Cost (paced, 3024 x 1964, cleric, hub + valor + arachna1):** 86.1 pictures a second with the layer, 84.1 without
+(`local/er-layer/r5/fps-{on2,off2}`; a first pair under another agent's load, 63.0 / 75.7, discarded); the layer's own
+time 0.12 ms a frame. **The room (`room21.py rm1`, both Remastered, B without models):** A drew both players (shaman,
+berserker; slits 323, 309); **1,855 ticks compared, no shared column differs** (`local/godot-r21/test/rm1.log`).
+
+**Changed (tracked):** `tools/godot/project/er_layer.gd` (`_game_tint`, `_game_light`, the pieces' instance light, cloth
+flag, `er info`), `er_fit.gd` (`_chains`, `_in_slit`, skirt rule), `er_fit.cfg` (`form`, `fold_dark`, `sheen`),
+`shaders/er_armour.gdshader` (the game's light per pixel, form, folds, sheen), this file. Local: `local/er-layer/r5/`,
+`local/er-layer/fit/r5/`, `local/godot-r21/`.
+
 ## What is local only
 
 Everything of either game: `local/souls-ref/` (the depot's files, the partial archives `er/Game/Data0.bdt` and
 `Data3.bdt` - sparse, only the fetched ranges - the decrypted headers' index, `er-raw/`, `er-work/`, `er-models/`), the
 patched DepotDownloader and its source, SoulsFormatsNEXT and `flverdump`, the ooz builds, `unkrak.exe`, the .NET SDK,
-`local/godot-r10/`, `local/godot-r11/`, `local/godot-r12/`, `local/godot-r18/`, `local/er-layer/`, the Windows test machine's scratch folder (removed after each
+`local/godot-r10/`, `local/godot-r11/`, `local/godot-r12/`, `local/godot-r18/`, `local/godot-r21/`, `local/er-layer/`, the Windows test machine's scratch folder (removed after each
 decompression). Tracked: code and our own joint table only.
 
 ## Not done, and what to know
@@ -404,6 +469,9 @@ decompression). Tracked: code and our own joint table only.
   the enemy models are ours and partly guessed (a demi-human's collar takes the light orange).
 - (Round 4) Players keep their own Champions figures under fitted pieces; helms are left out; arm pieces mostly too
   (the Champions arms are much thicker than the outfits' sleeves allow without stretching).
+- (Round 5) The light grid's cell order (x-major or y-major) is not known: both are walked. The game's light is read
+  for every fitted figure but the replaced ones (creatures, `er_style = replace`) still take the level's ambient only.
+  The barbarians', shaman's and male ranger's own kilts/loincloths stay under the leg pieces.
 - Metal shows only half its strength (`er_metal`): the scene has no reflections of Godot's. The figure is drawn over
   see-through leaves in the overhead view (it is placed in the draw order at its first hidden draw).
 - A shield drawn by the game as an object of its own is taken since round 3 when it stays at a hand for 4 frames - not
