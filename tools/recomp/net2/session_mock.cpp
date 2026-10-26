@@ -270,7 +270,7 @@ struct Mock : Backend {
         return -1;
     }
     void walk_in(const Fake& f, uint32_t room_serial) {
-        if (s.room.state != NET2_ROOM_OPEN || serial != room_serial || s.room.count >= NET2_PLAYERS || member(f.id)) return;
+        if (s.room.state != NET2_ROOM_OPEN || serial != room_serial || s.room.count >= (s.room.options.max_players > 4 ? s.room.options.max_players : 4) || member(f.id)) return;
         s.room.members[s.room.count++] = member_of(f, free_slot(), false);
         s.chat_line("", std::string(f.name) + " joined.");
         room_changed();

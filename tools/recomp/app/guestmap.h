@@ -20,8 +20,9 @@ constexpr Block BLOCKS[] = {
     {0xE0000, 0xE0058, "tools/recomp/soak/soakhooks.cpp: pool figures and control"},
     {0xE0800, 0xE1480, "soulscombat.h: Hardcore mode (SOULS_BASE, BLOCK_SIZE 0xC80)"},
     {0xE1800, 0xE1940, "fpaim.h: aiming by looking (AIM_BASE)"},
-    {0xE1C00, 0xE1C40, "cinematic.h: hold to skip (CINE_BASE; +0x20 + slot x 4)"},
+    {0xE1C00, 0xE1C40, "cinematic.h: hold to skip (CINE_BASE; +0x20 + slot x 4, eight slots)"},
     {0xE2000, 0xE2080, "partyscale.h: Hardcore's party scaling (PARTY_BASE)"},
+    {0xE2100, 0xE2D80, "soulscombat.cpp: Hardcore's per-player parts of players 5..8 (SOULS_HIGH, the block's layout)"},
     {0xFF000, 0x100000, "tools/recomp/rt/iop.cpp: RPC packets (PACKETS)"},
 };
 constexpr int COUNT = (int)(sizeof BLOCKS / sizeof BLOCKS[0]);

@@ -27,7 +27,7 @@ APP_MODULES = [
     ('fpcontrols.cpp', 'plain_rt'),   # the controls of the look views (the Windows program compiles the same file)
     ('soulscombat.cpp', 'rt_render'), # Hardcore mode (soulscombat.h; docs/issues/native-souls-combat.md)
     ('partyscale.cpp', 'rt'),         # Hardcore's party scaling (partyscale.h): its numbers are in Hardcore's room figure
-    ('party8.cpp', 'rt'),             # the tables sized for four moved at run time (party8.h): app_main.cpp calls party8::
+    ('party8.cpp', 'rt_render'),      # the tables sized for four moved at run time (party8.h): app_main.cpp calls party8:: (and its overlay)
     ('fpaim.cpp', 'rt'),              # aiming by looking (fpaim.h)
     ('cinematic.cpp', 'rt'),          # hold to skip a cut scene (cinematic.h)
     ('testerkit.cpp', 'testerkit'),   # the tester's kit (testerkit.h); the build id is buildid.py's

@@ -1021,7 +1021,7 @@ void on_tick() {
         fprintf(S.tick_log, "\n");
     }
     for (u32 n = 0; n < 4; n++)
-        if (!S.oos_reported[n] && g_ram[G_PEERS + n * PEER_SIZE + PEER_OOS]) {
+        if (!S.oos_reported[n] && g_ram[party8_at(G_PEERS + n * PEER_SIZE + PEER_OOS)]) {
             S.oos_reported[n] = true;
             printf("[tick %u] frame %" PRIu64 ": the game holds peer %u OUT OF SYNC\n", tick, S.frame, n);
         }

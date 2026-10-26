@@ -75,10 +75,13 @@ func build() -> void:
 	var note_y := actions_y - note_h - UI.px(4)
 	var choices_y := note_y - choices_h - UI.px(10)
 	# ---- the seats ----
-	var seats_h := choices_y - UI.px(18) - y
+	# four, or eight in a room of up to eight (net2_options.max_players, a Remastered / Hardcore room: two rows)
+	var seats := 8 if int((room.get("options", {}) as Dictionary).get("max_players", 0)) > 4 else 4
+	var seat_rows := 2 if seats > 4 else 1
 	var seat_gap := UI.px(14)
+	var seats_h := (choices_y - UI.px(18) - y - seat_gap * (seat_rows - 1)) / seat_rows
 	var seat_w := (left_w - seat_gap * 3.0) / 4.0
-	for k in 4:
+	for k in seats:
 		var seat := Seat.new()
 		seat.key = "seat%d" % k
 		seat.starting = state >= Session.ROOM_STARTING
@@ -93,7 +96,7 @@ func build() -> void:
 		if not member.is_empty() and mine_kind != "" and room_kind != "" and Edition.of_member(member) != "" and Edition.of_member(member) != room_kind:
 			seat.odd = true
 			seat.odd_text = "Plays " + Edition.title(Edition.of_member(member))
-		put(seat, Rect2(k * (seat_w + seat_gap), y, seat_w, seats_h))
+		put(seat, Rect2((k % 4) * (seat_w + seat_gap), y + (k / 4) * (seats_h + seat_gap), seat_w, seats_h))
 		seat.build()
 		if member.is_empty():
 			if state != Session.ROOM_OPEN:
@@ -168,6 +171,17 @@ func build() -> void:
 		put(aiming, Rect2((cw + UI.px(14)) * column, choices_y, cw, choices_h))
 		aiming.changed.connect(func(index: int) -> void: portal.gameflow.call("set_aim", index == 1))
 		column += 1
+	# a room of up to eight (docs/issues/native-8-players.md): offered to a host whose copy can play one (fix_words bit
+	# 0x1000: started for rooms of up to eight - Remastered); every copy in the room must be able to
+	if i_host and (int(mine.get("fix_words", 0)) & PARTY8_BIT) != 0:
+		var wide := int(options.get("max_players", 0)) > 4
+		var size_choice := W.Choice.new("Players", PackedStringArray(["Up to 4", "Up to 8"]), 1 if wide else 0,
+			("Everyone's copy must allow 8" if wide and _capacity(room, members) < 8 else "") )
+		size_choice.key = "players"
+		size_choice.locked = not can_choose or members.size() > 4
+		size_choice.narrow = true
+		put(size_choice, Rect2((cw + UI.px(14)) * column, choices_y - choices_h - UI.px(10), cw, choices_h))
+		size_choice.changed.connect(func(index: int) -> void: _set_option("max_players", 8 if index == 1 else 4))
 	var open_to := W.Choice.new("Who can join", PackedStringArray(["Code only", "Friends too"]), clampi(int(options.get("open_to", 0)), 0, 1))
 	open_to.key = "open_to"
 	open_to.locked = not can_choose
@@ -252,7 +266,7 @@ func build() -> void:
 	invite.font_size = 21.0
 	invite.fixed = true
 	invite.key = "invite"
-	invite.disabled = state != Session.ROOM_OPEN or members.size() >= 4
+	invite.disabled = state != Session.ROOM_OPEN or members.size() >= _capacity(room, members)
 	var side_w := (left_w - main_w - UI.px(14) * 2.0) * 0.5
 	put(invite, Rect2(main_w + UI.px(14), actions_y, side_w, actions_h))
 	invite.activated.connect(func() -> void: portal.call("go", "friends"))
@@ -483,6 +497,21 @@ func _member_actions(m: Dictionary, i_host: bool, state: int) -> Array:
 		acts.append({"text": "Take out of the room", "icon": "cross", "run": func() -> void:
 			portal.call("confirm", "Take %s out of the room?" % name, "", "Take out", func() -> void: portal.session.kick(slot), true)})
 	return acts
+
+
+const PARTY8_BIT := 0x1000     # a copy that can play a game of five to eight (net2/launch.cpp souls_describe)
+
+
+# how many the room holds: eight when the host asked for it and every copy in it can play one, else four (the service
+# decides the same way: tools/rendezvous/rendezvous.py Room.capacity)
+static func _capacity(room: Dictionary, members: Array) -> int:
+	var want := int((room.get("options", {}) as Dictionary).get("max_players", 0))
+	if want <= 4:
+		return 4
+	for m in members:
+		if (int(m.get("fix_words", 0)) & PARTY8_BIT) == 0:
+			return 4
+	return want
 
 
 func _set_option(key: String, value: int) -> void:

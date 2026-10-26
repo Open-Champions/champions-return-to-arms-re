@@ -67,7 +67,7 @@ const u32 G_PLAYER_OBJECT = 0x4DCEC8, PLAYER_STRIDE = 0x4C30;   // g_players[slo
 const u32 OBJ_POS = 0x10, OBJ_FACING = 0x38;
 const u32 G_PADS = 0x41BFD8, PAD_STRIDE = 0x58, PAD_RX = 0x1C, PAD_RY = 0x20;
 const u32 G_DL_CURSOR = 0x44FE10, G_DL_BASE = 0x44FE0C, G_DL_UNITS = 0x44FDA4;
-const u32 RAM_MASK = 0x01FFFFFF;
+const u32 RAM_MASK = RAM_SIZE - 1;     // ramsize.h
 
 // what camera_setProjection (0x18619c) and camera_setView (0x18a2b0, with camera_buildFrustum
 // 0x1863fc) write, and g_farClip: saved before a view is put in place, put back after the pass
@@ -671,7 +671,7 @@ const char* fallback_reason(u32& camera, u32& object, int& slot) {
     if (alive > 1) return "more than one local player";
     slot = (s32)W(G_LOCAL_ALIVE);
     if (slot < 0 || slot > 3) return "no local player";
-    object = W(party8_at(G_PLAYER_OBJECT + (u32)slot * PLAYER_STRIDE));   // moved.h
+    object = W(party8_at(G_PLAYER_OBJECT) + (u32)slot * PLAYER_STRIDE);   // moved.h: slots 4..7 past the old end
     if (!in_ram(object, 0x600)) return "no player object";
     return nullptr;
 }
@@ -752,8 +752,8 @@ bool begin_pass(Ctx* c) {
     in.facing_dir = v3(std::cos(in.facing * DEG), std::sin(in.facing * DEG), 0);
     u32 pad_slot = W(at(camera) + CAM_PAD_SLOT);
     if (pad_slot > 3) pad_slot = (u32)slot;
-    in.stick_x = F(G_PADS + pad_slot * PAD_STRIDE + PAD_RX);
-    in.stick_y = F(G_PADS + pad_slot * PAD_STRIDE + PAD_RY);
+    in.stick_x = F(party8_at(G_PADS) + pad_slot * PAD_STRIDE + PAD_RX);     // moved.h
+    in.stick_y = F(party8_at(G_PADS) + pad_slot * PAD_STRIDE + PAD_RY);
     u32 ticks = v.tick - g_last_tick;
     if (g_was_fallback || ticks > 8) ticks = ticks ? 1 : 0;     // a level start, a long stall: no jump
     g_last_tick = v.tick;

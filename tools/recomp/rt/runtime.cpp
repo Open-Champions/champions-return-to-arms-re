@@ -392,8 +392,8 @@ static void fire_due_events(u64 t, bool accepting = true) {
             g_fields++;
             g_gs_csr |= 8;                      // VSINT
             g_gs_csr ^= 0x2000;                 // FIELD
-            if (W(ST_BASE + ST_VSYNC1)) W(W(ST_BASE + ST_VSYNC1) & 0x1FFFFFF) = 1;
-            if (W(ST_BASE + ST_VSYNC2)) W(W(ST_BASE + ST_VSYNC2) & 0x1FFFFFF) = (g_gs_csr >> 13) & 1;
+            if (W(ST_BASE + ST_VSYNC1)) W(W(ST_BASE + ST_VSYNC1) & (RAM_SIZE - 1)) = 1;
+            if (W(ST_BASE + ST_VSYNC2)) W(W(ST_BASE + ST_VSYNC2) & (RAM_SIZE - 1)) = (g_gs_csr >> 13) & 1;
             g_intc_stat |= 1u << 2;
             g_vblank_hold = t + VBLANK_HOLD;
             on_vblank();
@@ -705,7 +705,7 @@ void rt_syscall(Ctx* c, u32 pc) {
     case 0x20: {                                        // CreateThread(param)
         u32 id = alloc_slot(THREAD_BASE, T_SIZE, 1, MAX_THREAD);
         if (id == ~0u) { result = SX32(-1); break; }
-        u32 p = a0 & 0x1FFFFFF, t = thr(id);
+        u32 p = a0 & (RAM_SIZE - 1), t = thr(id);
         W(t + T_STATUS) = TH_ZOMBIE;
         W(t + T_PROC) = W(p + 4); W(t + T_STACKBASE) = W(p + 8); W(t + T_STACKSIZE) = W(p + 12);
         W(t + T_GP) = W(p + 16); W(t + T_INITPRI) = W(p + 20); W(t + T_PRI) = W(p + 20);
@@ -781,7 +781,7 @@ void rt_syscall(Ctx* c, u32 pc) {
         default: out = 16;
         }
         if (a1) {
-            u32 p = a1 & 0x1FFFFFF;
+            u32 p = a1 & (RAM_SIZE - 1);
             W(p) = out; W(p + 4) = W(t + T_PROC); W(p + 8) = W(t + T_STACKBASE); W(p + 12) = W(t + T_STACKSIZE);
             W(p + 16) = W(t + T_GP); W(p + 20) = W(t + T_INITPRI); W(p + 24) = W(t + T_PRI);
         }
@@ -824,7 +824,10 @@ void rt_syscall(Ctx* c, u32 pc) {
         break;
     }
     case 0x3C: {                                        // SetupThread(gp, stack, size, args, root)
-        u32 top = a1 == 0xFFFFFFFFu ? RAM_SIZE - 4096 : a1 + a2;
+        // the top of memory as the game is told (moved.h).  The game's start-up code gives its own stack, at the top of
+        // 32 MB; told of more, the game sizes its heap up to the new top (0x19d5a8), over that stack: the stack goes to
+        // the top as well (Ran: the heap's fill of 0xa5 wrote over the start-up code's return addresses)
+        u32 top = a1 == 0xFFFFFFFFu || g_party8_memtop != 0x02000000u ? g_party8_memtop - 4096 : a1 + a2;
         u32 t = thr(me);
         g_gp = a0;
         W(t + T_GP) = a0;
@@ -833,10 +836,10 @@ void rt_syscall(Ctx* c, u32 pc) {
         // the game starts with no arguments at all (the count is 0); with it the block is
         // filled as the kernel fills it for a start from the disc: the program's name
         // first, then one argument per --arg.
-        W(a3 & 0x1FFFFFF) = 0;                          // argc
-        W((a3 & 0x1FFFFFF) + 4) = 0;
+        W(a3 & (RAM_SIZE - 1)) = 0;                          // argc
+        W((a3 & (RAM_SIZE - 1)) + 4) = 0;
         if (!g_boot_args.empty()) {
-            u32 block = a3 & 0x1FFFFFF, text = block + 4 + 16 * 4, at = text;
+            u32 block = a3 & (RAM_SIZE - 1), text = block + 4 + 16 * 4, at = text;
             std::vector<std::string> words = {"cdrom0:\\SLUS_209.73;1"};
             words.insert(words.end(), g_boot_args.begin(), g_boot_args.end());
             for (size_t i = 0; i < words.size() && i < 16 && at + words[i].size() + 1 <= text + 256; i++) {
@@ -859,7 +862,7 @@ void rt_syscall(Ctx* c, u32 pc) {
     case 0x40: {                                        // CreateSema(param)
         u32 id = alloc_slot(SEMA_BASE, S_SIZE, 0, MAX_SEMA);
         if (id == ~0u) { result = SX32(-1); break; }
-        u32 p = a0 & 0x1FFFFFF;
+        u32 p = a0 & (RAM_SIZE - 1);
         W(sem(id) + S_COUNT) = W(p + 8); W(sem(id) + S_MAX) = W(p + 4); W(sem(id) + S_OPTION) = W(p + 20);
         result = id;
         break;
@@ -897,12 +900,12 @@ void rt_syscall(Ctx* c, u32 pc) {
     case 0x47: case 0x48:                               // ReferSemaStatus(id, out)
         if (!sem_ok(a0)) { result = SX32(-1); break; }
         if (a1) {
-            u32 p = a1 & 0x1FFFFFF;
+            u32 p = a1 & (RAM_SIZE - 1);
             W(p) = W(sem(a0) + S_COUNT); W(p + 4) = W(sem(a0) + S_MAX); W(p + 12) = W(sem(a0) + S_WAITERS);
         }
         result = a0;
         break;
-    case 0x4B: if (a0) W(a0 & 0x1FFFFFF) = 0x00021000; break;    // GetOsdConfigParam: English, NTSC
+    case 0x4B: if (a0) W(a0 & (RAM_SIZE - 1)) = 0x00021000; break;    // GetOsdConfigParam: English, NTSC
     case 0x64: case 0x68: break;                        // FlushCache
     case 0x70: result = g_gs_imr; break;
     case 0x71: g_gs_imr = a0; break;
@@ -969,7 +972,7 @@ void rt_syscall(Ctx* c, u32 pc) {
     }
     case 0x4A: break;                                   // SetOsdConfigParam
     case 0x7E: result = 0x100; break;
-    case 0x7F: result = RAM_SIZE; break;
+    case 0x7F: result = g_party8_memtop; break;           // GetMemorySize: 32 MB unless a game of up to eight was asked for (moved.h)
     default:
         rt_note(rt_fmt("UNHANDLED syscall 0x%02x at 0x%x", n, pc));
     }
@@ -1010,7 +1013,7 @@ static u8* phys(u32 addr, u32 size) {
         u32 off = addr & 0x3FFF;
         return off + size <= sizeof(g_spr) ? g_spr + off : nullptr;
     }
-    addr &= 0x01FFFFFF;
+    addr &= (RAM_SIZE - 1);
     return addr <= RAM_SIZE - size ? g_ram + addr : nullptr;
 }
 
@@ -1816,6 +1819,8 @@ int run(int argc, char** argv, const Hooks& hooks) {
         else rt_die("unknown option %s", a.c_str());
     }
     g_ram = (u8*)calloc(RAM_SIZE + 4096, 1);
+    if (RAM_SIZE > 0x02000000u)                         // rt/moved.h: a copy started for rooms of five to eight is told all of it
+        if (const char* o = rt_option("party8")) if (strchr(o, '8')) g_party8_memtop = RAM_SIZE;    // party8=8 (or poison8)
     g_text_lo = 0xFFFFFFFFu; g_text_hi = 0;
     for (unsigned i = 0; i < g_recomp_entry_count; i++) {
         u32 a = g_recomp_entries[i].addr;
@@ -1941,7 +1946,7 @@ int run(int argc, char** argv, const Hooks& hooks) {
             // point just behind a call instruction (not a proof of the call chain, a guide)
             if (g_cur) {
                 printf("  stack of thread %u (sp 0x%x), possible return addresses:", g_cur->id, (u32)g_cur->ctx.r[29]);
-                u32 sp = (u32)g_cur->ctx.r[29] & 0x1FFFFFF;
+                u32 sp = (u32)g_cur->ctx.r[29] & (RAM_SIZE - 1);
                 for (u32 a = sp, found = 0; a < sp + 0x1000 && a < RAM_SIZE - 4 && found < 24; a += 4) {
                     u32 v = W(a);
                     if (v < g_text_lo + 8 || v >= g_text_hi || (v & 3)) continue;

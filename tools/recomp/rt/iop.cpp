@@ -196,7 +196,7 @@ void serve_disc(Call& c) {
         case 0x05: return;                          // seek
         case 0x08: c.delay = us(50, 16666); return; // pause
         case 0x09: {                                // stream: sector, count, address, command, mode
-            u32 sector = c.arg(0), count = c.arg(1), to = c.arg(2) & 0x1FFFFFF;
+            u32 sector = c.arg(0), count = c.arg(1), to = c.arg(2) & (RAM_SIZE - 1);
             switch (c.arg(3)) {
             case 1: g_stream_pos = sector; g_streaming = true; c.ret(0, 1); return;
             case 2: {

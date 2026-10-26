@@ -74,6 +74,11 @@ import buildid  # noqa: E402  (the build id the tester's kit says: app/testerkit
 PATCH = os.path.join(HERE, 'recomp.patch')
 PARTS = ('rt', 'render', 'sound', 'app', 'net', 'net2')    # net, net2: the network and a room of our own (fix-set library only)
 GAMES = {'fix': ('obj-rta_native_fix', 'gen-app'), 'orig': ('obj-run', 'gen')}
+# RTA_GODOT_PARTY8=1: the fix-set library from the relocatable translation (app/build.py --party8: gen-app-p8), which
+# can play a room of up to eight (docs/issues/native-8-players.md); with its tables where the game has them it runs as
+# the plain one does
+if os.environ.get('RTA_GODOT_PARTY8') == '1':
+    GAMES['fix'] = ('obj-rta_native_p8', 'gen-app-p8')
 RENDER_CORE = ['vu1.cpp', 'vif1.cpp', 'gs.cpp', 'renderer.cpp', 'worldfill.cpp']
 RUNTIME = ['runtime.cpp', 'iop.cpp', 'script.cpp']
 NICE = ['nice', '-n', '10']
@@ -249,8 +254,15 @@ def build_lib(args):
     opt = args.opt
     render_flags = ['-std=c++17', opt, '-fno-strict-aliasing', '-ffp-contract=off', '-frounding-math', '-Wall', '-Wno-unused-function', '-I', render]
     rt_flags = ['-std=c++17', opt, '-fno-strict-aliasing', '-fwrapv', '-w', '-ffp-contract=off', '-frounding-math', '-I', rt, '-I', game_dir]
+    if os.environ.get('RTA_GODOT_PARTY8') == '1' and game == 'fix':
+        # the relocatable translation was compiled with 64 MB of guest memory (app/build.py --party8, rt/ramsize.h):
+        # everything that includes the runtime's headers is compiled with the same size
+        render_flags = render_flags + ['-DRAM_SIZE=0x04000000u']
+        rt_flags = rt_flags + ['-DRAM_SIZE=0x04000000u']
     lib_flags = ['-std=c++17', opt, '-Wall', '-Wno-unused-function', '-fno-strict-aliasing', '-ffp-contract=off', '-frounding-math',
                  '-I', LIB, '-I', app, '-I', render, '-I', rt] + (['-DRTAG_ORIGINAL'] if args.original else [])
+    if os.environ.get('RTA_GODOT_PARTY8') == '1' and game == 'fix':
+        lib_flags = lib_flags + ['-DRAM_SIZE=0x04000000u']
     # What the library can do depends on what the snapshot's core has (recomp.patch, or the shared tree once it is merged):
     # the music's own volume (sound/drivers.cpp: rta_sound_set_music_gain) and the second HUD group (render/gs.h:
     # hide_text - and the translation must wrap the two draw functions: funcs.h then declares orig_001d93b0).
@@ -301,6 +313,10 @@ def build_lib(args):
         if os.path.exists(os.path.join(app, 'fpaim.cpp')):
             jobs.append((os.path.join(app, 'fpaim.cpp'), rt_flags + ['-I', app], 'a_'))
             lib_flags.append('-DRTAG_HAVE_AIM')
+    # the tables sized for four moved for a game of up to eight (app/party8.h): with the relocatable translation only
+    if not args.original and os.path.exists(os.path.join(app, 'party8.cpp')) and has(os.path.join(game_dir, 'funcs.h'), 'g_party8_slots'):
+        jobs.append((os.path.join(app, 'party8.cpp'), rt_flags + ['-I', app, '-I', render], 'a_'))
+        lib_flags.append('-DRTAG_HAVE_PARTY8')
     # the tester's kit (app/testerkit.h): the bug and crash reports, the build line; the host draws the box (main.gd)
     if os.path.exists(os.path.join(app, 'testerkit.cpp')):
         jobs.append((os.path.join(app, 'testerkit.cpp'), rt_flags + ['-I', app, '-I', render, buildid.define()], 'a_'))

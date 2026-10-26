@@ -12,22 +12,25 @@ Three parts:
 - **B. Enemy scaling**: what the game does with the player count today, and a curve for one to eight players in
   Hardcore mode (hit points, damage, experience, poise, elites, more creatures). **Built and Ran** for parties of
   one to four, and with the party size forced to five to eight on the copies of a room of two (section B.5).
-- **C. Five to eight in the lockstep core and net2**: designed in A.9; the first step (the tables move) built and
-  Ran offline, the rest not this round (section C).
+- **C. Five to eight in the lockstep core and net2**: **built and Ran** - rooms of five, six and eight copies in step
+  through a level change and a Hardcore fight (section C).
 
 Every statement says **Read** (from the decompile, the translation or the docs it cites), **Counted** (a scan of the
 local translation, numbers below) or **Ran**.
 
 ## STATE (rewritten at every step)
 
-**2026-10-26.** A written (with a census of the translation: A.0). B built (`tools/recomp/app/partyscale.{h,cpp}`,
-`partyscale_hle.cpp`, one line in `app/hle-app.txt`, small hunks in `soulscombat.cpp`, `app/build.py`,
-`godot/build.py`) and **Ran**: offline (one and eight), and rooms of two and three copies in step - 4,836 ticks through
-valor > drunare with the numbers for eight on two copies, 4,918 with three copies on the game's own count, 11,439
-through 17 wipes and reloads with three copies on the numbers for eight (B.5). C not started: the order of work is
-A.9: its first step (the tables sized for four moved at run time) is built and proven offline - the game plays tick
-for tick the same with every table at its new place and the old places poisoned - while a room's launch with the
-tables moved does not complete yet (C). Nothing committed (the orchestrator merges).
+**2026-10-26, second round.** A, B as before. **C built and Ran: rooms of five, six and eight copies play in step**
+through a level change and a fight in Hardcore with the party scaling at the real count (`n5` 8,165 ticks, `n6` 4,821,
+`n8` 4,738 - every pair, C.10), and four Godot copies with four window programs in one room of eight (Classic combat,
+3,564 ticks every pair). Rooms of one to four unchanged: the rig byte for byte (overhead and first person), the
+offline route 74 of 74 rows identical with the switch off and with the tables moved, Classic and moved rooms of two
+and three in step. What it took: the room launch with moved tables (two translation faults, C.3; the `ori` fault from
+the ChatGPT review), the hard-coded fours and more per-slot tables (C.4), the wire, the launch for eight and the room's
+capacity (C.5), the equipment cache (C.6), 64 MB for a copy started for five to eight (C.7), the native modules
+(C.8), the HUDs and the portal (C.9). Open (C.11): Hardcore across the Godot library and the window program in a room
+of five to eight. The public service still holds four (`tools/rendezvous/deploy/STEPS.txt` 14-17 prepared, not run).
+Nothing committed.
 
 ---
 
@@ -368,10 +371,9 @@ Seen in `r3p8`: a reload after a wipe loads the level's saved state, so the extr
 (73 extras over 17 reloads: all from the first load). As designed (B.2); a party that wipes meets the level's own
 creatures, scaled and with elites, on the next try.
 
-## C. Five to eight: the first step built (the tables move), the rest not this round
+## C. Five to eight (built; Ran in rooms of five, six and eight)
 
-A.9 steps 1 and 3 are built and **Ran offline**; the room launch with the tables moved does not complete yet; steps 2
-and 4 to 8 are not started.
+C.1 and C.2 are the first round (the tables move, offline); C.3 to C.11 the second.
 
 ### C.1 What was built
 
@@ -411,13 +413,185 @@ What the runs taught, for the next round:
    join a room of five to eight is started that way (the portal knows the room's size before it starts the game).
 3. **Every native reader goes through `party8_at`**: the runtime's `guest_addr` covers most at once.
 
-### C.3 Next, in order
+### C.3 The room launch with the tables moved (2026-10-26, second round: Ran)
 
-1. The room launch with moved tables (C.2, last row).
-2. Split the back-to-back tables into their own ranges; the review list of A.0 (44 functions) into
-   `party8-sites.txt` (the literal fours, A.9 step 2).
-3. The wire (A.3, packet type 0xbd48), the launch (A.4), `NET2_PLAYERS` 8 and the room's capacity (A.8).
-4. Five and six headless copies in one room through a level change.
+Two faults, both in the translation, neither in a native reader (the coordinator's lead - `cinematic.cpp` reading
+`g_pads` at its fixed address - was real and is fixed too, but it did not hold the launch):
+
+1. **Tables reached from a pointer into another table.** `net_launchTransfer` reads the two address tables from a pointer
+   into the port tables (0x135130: `lbu -0x2e(r17)`, r17 = the port table + 4k), and the end of the launch reads the
+   records' neighbours the same way; with each table moved by its own amount those reads land in other memory: the
+   game sent its launch packets to 0.0.0.0. `reloc.py` now follows a pointer into table k and reports every access
+   from it that lands outside table k ("reached from a pointer into another table", `gen-app-p8/reloc-crosses.txt`);
+   the launch's settings block, address and port tables, the launch buffer's words and the launch records are one
+   range (0x402a30-0x4030a0); with that the list is empty apart from two known cases (the equipment cache, C.6, and a
+   string index in `Player_interact`).
+2. **`ori` relocated wrongly** (found by the ChatGPT review, item 5): a relocated `lui`/`ori` pair was emitted as
+   `r | imm + delta`, which C++ reads as `r | (imm + delta)`. Now `SX32((u32)(r | imm) + delta)`.
+   `tools/recomp/reloc_test.py` compiles and runs 308 synthetic cases (lui + addiu, lui + ori, lui + load / store;
+   positive and negative deltas, carries and borrows across the 16-bit immediate and the 64 KB upper half): 308 right,
+   and 54 of them wrong with the old `reloc.py`.
+
+Also: a moved table keeps its old address modulo 16 (the address tables at 0x402b3b are read with `lwl`/`lwr`), and
+jump tables are followed to their own targets (`reloc.py jump_table`: the `sltiu` bound, the `lui`/`lw` table) instead
+of "every label of the unit", which lost registers that stay the same across one dispatch (`net_launchUpdate`'s r18).
+
+**Ran** (`rta_app_p8`, `--opt party8=poison`, valor 1,500 frames > drunare 2,400, drawn input): a room of **two**, 4,932
+ticks in step; a room of **three**, 4,914 / 4,915 / 4,914 ticks in step, all three pairs (`local/party8/m2b`, `m3b`).
+
+### C.4 The hard-coded fours (A.9 step 2)
+
+The review of A.0's 44 functions and the launch code (`party8-sites.txt`, each line with its reason) found seven
+immediates that are the slot count and nothing else, and more that need other treatment. The translator emits a listed
+site with `g_party8_slots` (4, or 8 in a game of five to eight; `recomp.py --reloc-sites`), by kind:
+
+| Kind | What | Sites |
+|---|---|---|
+| (slots) | an immediate 4: `slti`, `sltiu`, `addiu`, `ori` | 0x134d58 (launch: the peers), 0x13df74 (`net_dropAllRemotes`), 0x158b78 (`Player1_ctor`: spawn points), 0x18ce68 (pause menu: active players), 0x1a02b8 (a menu nobody owns: the pads), 0x1dc6c0, 0x1dc6d8, 0x1dcc64 (gold), 0x1a3044 (`eqcache_release`) |
+| `last` | `addiu r, $zero, 3`, a count-down over the four | 0x1a2820, 0x1bf790 (`mission_setComplete`), 0x1ec2d4, 0x1eb900 (dead countdowns), 0x1e4ff4 (notice boxes) |
+| `lastoff:N` | from element 0 of an array to its last | 0x1ec2d0, 0x1eb8c4, 0x1e4fe0 |
+| `rows:0x160` | a step or offset in rows of one record per slot | the equipment cache, C.6 |
+| `shl+1` | a row offset made as (row x 11) << 5 | 0x1a2ab4 |
+| `rxmask` | the input packet's active mask | 0x13b694, C.5 |
+| `memtop` | the top of memory the heap is sized by | 0x19d59c, C.7 |
+
+Kept at four (Read): the raw controllers (`pad_readAll`, `pad_updateRumble`, `pad_resetSlotMap`), the save format's
+four blocks, the game's own HUD places (`hud_drawGold`'s positions), `net_restoreButtonConfig` and the two other
+installs of the offline button configuration (they read a table of four), `pad_init` (its loop also clears the raw
+buffers; slots 4..7 of the moved pads start empty), the developer LAN lobby, `net_frameLoop`'s save / clear / restore
+of four raw pads' edges (its stack arrays hold four: a local player 5..8 keeps its edges through the ticks of one call -
+local menus only).
+
+**Per-slot tables added** (`party8-ranges.txt`, now 65 tables in 96 slots of `g_reloc`): `g_netSendCycleTable` (and
+`party8.cpp` fills its entries for four to seven remote peers), the HUD's gold arrays and `g_goldPending`, the per-slot
+copies the launch's end makes (0x4f84b0 + slot x 0x40, 0x4f85d0 + slot x 4: slot 4's would have overwritten
+`g_gameLevelLoaded`), the notice and recall arrays, the aura and prompt arrays, the spell selector's, the HUD notices,
+the hit flash, `g_playerAuraLightColor`, `g_itemPanels`, the twelve button tables each on its own line, the launch's
+character summaries (0x4030a0), the interact prompt's text, the equipment cache's ten rows, and the **raw pads by
+player slot**: `net_main` samples the local player's pad into `g_rawPads[own slot]` and `g_rawPadPrev[own slot]`
+(0x1334b4, 0x1334d4) - for player 5 that wrote into the launch's settings block.
+
+### C.5 The wire, the launch, the room (A.3, A.4, A.8)
+
+- **The input packet's active mask** (`rt/moved.h`, `net/netdrv.cpp`): in a game of five to eight the network layer
+  appends a trailer word 0xB8000000 | mask (eight bits, computed as `net_sendInputPacket` computes it) to every input
+  packet (0xbd3f) and raw relay (0xbd42) it sends, and takes it off every one it receives, leaving the mask in
+  `g_party8_rx_mask`; the site 0x13b694 (`net_receivePackets`' `sra $10, $10, 4`) reads that instead of the nibble.
+  Sync-word alignment is unchanged (the trailer is after the message blocks; the receiver walks blocks to the end of
+  the datagram, which no longer includes it). Only in rooms of five to eight; every other packet as before.
+- **The launch for five to eight** (`net2/launch.cpp`): `party8_game(count)` (net2 hook) turns the fours into eights
+  before `net_launchTransfer`; the second address table is left empty in such a room (a player 4..7 looks for its own
+  outside address at `addr1[own]`, which is entry own-4 of the second table: empty, no packet matches it, so the "two
+  consoles behind one router" re-addressing never fires); after `net_launchTransfer` the launch records 4..7 get their
+  addresses and ports written field for field as the game's loop writes 0..3 (`party8_records`); when the launch
+  completes, peers 4..7 get +0x44c0 = 1 and their two **input-codec states** (+0x10, +0x60: `net_shutdown`'s loop
+  ends at four peers; with zero states a sender's encoder and the receivers' decoder disagreed from the first tick,
+  Ran) - `party8_peers`.
+- **Room capacity** (`NET2_PLAYERS` 8, `net2_options.max_players`, `--opt net2-size=N`; `rendezvous.py`
+  `Room.capacity`): a host asks for a room of 5..8 (option `size`); the room takes a fifth player only while every copy
+  in it says it can play one (bit 0x1000 of the copy's word count, set by `launch.cpp` when the copy was started with
+  `--opt party8=1` and its translation has the relocations); the room line says `size=` (asked) and `cap=` (holds now).
+  `check.py` 262 of 262 (eight checks new); `check_client.py` 136 of 136. **The public service is not changed**:
+  `tools/rendezvous/deploy/STEPS.txt` 14-17 (prepared, not run); until then rooms there hold four.
+- `session.cpp clean_options` passes `max_players` (it dropped it: the first five-copy run was refused at the fifth).
+
+### C.6 The equipment cache
+
+`eqcache_*` (0x1a2680-0x1a3080) keeps ten rows (equipment kinds) of one 0x58-byte record per slot, rows 0x160 apart
+(0x8659e8). Players 5..8 indexed past their row into the next row's slot 0..3: a weapon read into a 0x140-byte
+'armor(righthand)' buffer overran the heap block after it (Ran: `party8: HEAP` - a heap walk every 30 blanks in a
+game of five to eight, `PARTY8_HEAPCHECK`, found the list broken after 'armor(helmet)', 'armor(lefthand)',
+'armor(righthand)' blocks; the record dump showed rows 5-9 with size 0). Each row is its own table, moved 0x2c0 apart in
+order (`party8.cpp` checks it), and the code that steps or offsets by rows (0x160 multiples, and 0x1a2ab4's
+(row x 11) << 5) is listed in `party8-sites.txt` (`rows:0x160`, `shl+1`). After that: no heap break in any run.
+
+### C.7 Memory for eight
+
+The game sizes its heap from the top of memory (0x19d59c: 32 MB; 23 MB of heap). Every player costs about 0.85 MB of
+it (the equipment cache's buffers - body 80 KB, boots, gloves, helmet, leggings, the hands, shield 150 KB - and the
+character's model lump, 290 KB for an iksar). **Ran**: five players fit; the sixth ran the heap out loading valor
+(`memAlloc failed`, 24 KB free). A program built for rooms of up to eight (`app/build.py --party8`) now has 64 MB of
+guest memory (`rt/ramsize.h` `RAM_SIZE`, every file of the program compiled with it), and a copy started with
+`--opt party8=1` is told of all of it (`g_party8_memtop`: `GetMemorySize`, the main thread's stack, the heap's size at
+0x19d59c); every other copy of the same program is told of 32 MB, as before. Native readers that masked guest
+addresses with a 32 MB constant now use `RAM_SIZE - 1` (the runtime's system calls, the IOP's reads, the render
+pipeline's memory copy, `fpworld`, `fpview`, `gfx_rt`, `testerkit`, `fpcontrols`, `gamestate`, `control.h`,
+`skeleton_export`, `worldfill`). The Godot extension's own readers (`rta_machine.cpp`) still read the first 32 MB only.
+
+### C.8 The native modules for slots 4..7
+
+`party8_at(address)` maps an address inside an old place; a slot past the old end is reached as
+`party8_at(table) + slot x size` (the table's base mapped, then the slot): `gamestate.cpp`, `fpcontrols.cpp`, `fpview.cpp`,
+`cinematic.cpp`, `testerkit.cpp`, `soulscombat.cpp`, `launch.cpp`, `skeleton_export.cpp`, and the script's symbols
+(`rt/script.cpp`: a moved table's name is its new place, so `g_players+4*0x4c30` is slot 4 in `show`, the tick logs and
+`n2party.py`'s columns). Hardcore's per-player parts for players 5..8 are a second block with the same layout at
+0xE2100 (`soulscombat.cpp high()`, `guestmap.h`); its guards and loops go to eight. Aiming by looking (`fpaim`) stays at
+players 1..4 (5..8 aim the game's way).
+
+### C.9 What the players see
+
+- `gamestate.h` `RTA_GS_PLAYERS` 8 (version 2): the HUD state has eight players; the Godot HUD reads eight
+  (`hud.gd MAX_PLAYERS`), and `status.gd` draws the others' frames compact (name, level, health) when there are more
+  than three; `--hud-fake-party` takes up to 7.
+- The window program without Godot: the game's own HUD draws players 1..4; `party8::overlay` draws players 5..8 as a
+  list on the right (name, health bar, "(LEFT)").
+- The portal's room screen (`room.gd`): eight seats in two rows in a room of up to eight; a "Players: up to 4 / up to 8"
+  choice for a host whose copy can play one; Invite follows the room's capacity. A Remastered copy is started with
+  `--opt party8=1` (`handover.gd`); the Godot library is built from the relocatable translation with
+  `RTA_GODOT_PARTY8=1 python3 tools/godot/build.py` (`party8.cpp` and its blank in `rtag.cpp`, 64 MB).
+- The game's own launch screen (`net_launchDraw`) is left as it is (rows for four).
+
+### C.10 Ran: five, six and eight in one room
+
+Program `rta_app_next` = `app/build.py --party8 --as rta_app_next` (the relocatable translation, 64 MB, the switch off
+unless asked). Copies started with `--opt party8=poison8` (tables moved at boot, old places filled with 0xA5, 64 MB for
+the heap); the window program offscreen (`local/souls-combat/net/as-app.py`); a service of the run's own on 127.0.0.1;
+`local/party8/room8h.sh`: a **Hardcore** room (the host chooses, the joiners follow; party scaling at the game's own
+count), valor 1,500 frames > drunare 2,400, drawn input; Hardcore's test aid puts players 1 and 2 beside the nearest
+creature at tick 1500 and everybody at ticks 3000 and 3400 (fights); every pair of tick logs compared (`compare.py
+ticks`: seed, level, count, the twelve button tables, every player's position, state, hit points, gold, experience, the
+out-of-step flags, the sync hash, the party block and Hardcore's figures).
+
+| Run | Copies | Ticks in step, every pair | Levels | Fight (Hardcore's figures) | Party scaling |
+|---|---|---|---|---|---|
+| `n5` | 5 | **8,165 - 8,168** (10 pairs) | valor > drunare | 12 creature hits by players, 2 player hits, 2 deaths | party of 5: 135 scaled, 16 elites, 29 extra creatures (5 not made), 3 bosses |
+| `n6` | 6 | **4,821 - 4,828** (15 pairs) | valor > drunare | 11 creature hits, 11 player hits, 5 deaths | party of 6: 155 scaled, 20 elites, 48 extra (10 not made) |
+| `n8` | **8** | **4,738 - 4,752** (all 28 pairs) | valor > drunare | 23 creature hits, 22 player hits, 4 deaths | party of 8: 180 scaled, 40 elites, 73 extra (20 not made) |
+| `gm8` | **4 Godot + 4 window programs** (Classic combat) | **3,564 - 3,582** (all 28 pairs) | valor > drunare | - | - |
+| `gm5` | 1 Godot + 4 | 1,857 - 1,863 (10 pairs), valor | | | |
+| `g8` | 4 Godot + 4, Hardcore | each group of four in step with itself; **the two groups differ** from tick 219 (a player's state, then the seed at 386) | valor > drunare | | party of 8 |
+
+The Godot copies: `RTA_GODOT_PARTY8=1 RTA_GODOT_OUT=local/godot-p8 python3 tools/godot/build.py all` (the library from
+`obj-rta_native_p8`, 64 MB), started by `local/party8/as-godot8.py` (scene mode, 640 x 360, offscreen; `GODOT_ROLES`
+picks which copies). `g8`: the library's snapshot was older than one change - it read `party8=poison8` as "no
+poison", so its copies kept stale copies at the old places where the window programs had 0xA5: the two groups differ
+exactly as a read of an old place in Hardcore's path would make them. That read is the open item (C.11).
+
+Rooms of one to four, the same program: a Classic room of two (`fc2`, switch off) 4,933 ticks in step through valor >
+drunare; tables moved (`party8=poison`) rooms of two (`fm2`, 3,445 ticks) and three (`fm3`, 3,451-3,452, all pairs).
+(Room runs are not repeatable tick for tick between two runs - the drawn input is keyed to frames: two runs of the same
+plain program part at tick 1,176 - so the program-against-program identity is shown offline and by the rig:)
+
+| Check | Result |
+|---|---|
+| the rig comparison, the unpatched translation with all of this work linked in (`app/build.py --original --as rta_app_orig_p8`; `local/souls-combat/rig/check.py`) | **overhead and first person both byte for byte the reference** (`reference-compare.txt`, `s13-first-compare.txt`) |
+| offline valor route (`cs.rig`, 74 rows of seed, hit points, gold, place, facing, pool heads, with their addresses) `rta_app_next` (switch off) against `rta_app_next_plain` (`app/build.py` without `--party8`) | **74 of 74 identical**, addresses included |
+| the same with `--opt party8=poison` (tables moved and poisoned, 32 MB) | **74 of 74 values identical** |
+| the same with `party8=8` (64 MB) | differs from the first row: a bigger heap is other addresses, other choices - why only a copy for rooms of five to eight is started that way (C.7) |
+
+### C.11 Open
+
+- **Hardcore across the Godot library and the window program in a room of five to eight** (`g8`, above): a read of an
+  old place in Hardcore's path (native or translated); a check-build Hardcore room (`--party8-check`) lists translated
+  ones. All-window-program and all-Godot Hardcore rooms are in step (both read the same thing), so a room of eight in
+  one program plays; a mixed one does not yet.
+- The public service holds four until `deploy/STEPS.txt` 14-17 are run.
+- Players 5..8: aiming by looking off for them (`fpaim` keeps four), the Elden Ring layer's figures for four
+  (`rtag_skeletons` holds four), the Godot extension's own readers (`rta_machine.cpp`) read the first 32 MB, the game's
+  own launch screen draws four rows, `inventory_pollResources` clears four item-list blocks (a local player 8 would
+  overrun its block by 0x1cc40 bytes into the inventory textures' region: not run with eight local inventories),
+  `pauseMenu_task`'s player list holds four (0x18db2c), the eqcache release at the end of a game of eight frees eight.
+- No room of four copies was run (three processes at most outside the five-to-eight proofs).
 
 ## Found on the way
 
@@ -439,5 +613,6 @@ What the runs taught, for the next round:
 | `tools/recomp/reloc.py`, `tools/recomp/recomp.py` (`--reloc`), `tools/recomp/app/party8-ranges.txt` | C: relocatable addresses |
 | `tools/recomp/app/party8.{h,cpp}`, `tools/recomp/rt/moved.h`, `rt/recomp.h` (`RECOMP_RELOC_DYN`, `RECOMP_RELOC_CHECK`), `rt/rt.h` (`guest_addr`), `rt/script.cpp`, `app/build.py` (`--party8`, `--party8-check`), `app/app_main.cpp` (`party8::blank`, `app party8`) | C: the move and its checks |
 | the readers through `party8_at` | `net/netshim.cpp`, `net2/launch.cpp`, `app/fpaim.cpp`, `fpcontrols.cpp`, `fpview.cpp`, `gamestate.cpp`, `testerkit.cpp`, `soulscombat.cpp` (its eight memory helpers), `partyscale.cpp` |
-| `local/party8/` (not tracked) | `v1.rig`, `v8.rig`, `run.sh` (offline), `room.sh`, `n2p8.py` (rooms), `cs.rig`, `cms.rig`, `cmb.rig`, `runt.sh`, `room8.sh` (C), the runs |
+| second round | `reloc.py` (crosses, jump tables, `ori`, sites: `slots`, `last`, `lastoff`, `rows`, `shl+1`, `rxmask`, `memtop`), `reloc_test.py`, `recomp.py --reloc-sites`, `app/party8-sites.txt`, `app/party8-ranges.txt` (65 tables), `rt/ramsize.h`, `rt/moved.h` (wide game, trailer, memory top), `rt/recomp.h`, `rt/runtime.cpp`, `rt/iop.cpp`, `rt/script.cpp`, `render/worldfill.cpp`, `net/netdrv.cpp`, `net/netshim.cpp`, `net/lobbyparty.py`, `net2/{hooks.h,launch.cpp,session.h,session.cpp,session_net.cpp,session_mock.cpp,n2party.py}`, `app/{party8.*,build.py,appmodules.py,app_main.cpp,gamestate.*,soulscombat.cpp,partyscale.cpp,fpcontrols.cpp,fpview.cpp,cinematic.cpp,testerkit.cpp,fpworld.cpp,gfx_rt.cpp,pipeline.h,control.h,guestmap.h}`, `tools/rendezvous/{rendezvous.py,check.py,deploy/STEPS.txt}`, `tools/godot/{build.py,lib/rtag.cpp,lib/skeleton_export.cpp,extension/src/rta_net2.cpp,project/hud/{hud,status}.gd,project/portal/{handover,profile}.gd,project/portal/screens/room.gd}` |
+| `local/party8/` (not tracked) | `v1.rig`, `v8.rig`, `run.sh` (offline), `room.sh`, `n2p8.py` (rooms), `cs.rig`, `cms.rig`, `cmb.rig`, `runt.sh`, `room8.sh` (C), `room8h.sh` (Hardcore rooms of up to eight), `room8g.sh`, `as-godot8.py` (Godot copies), the runs |
 | the census (not tracked) | a scratch script over `local/recomp-out/gen`; its output is A.0's table |

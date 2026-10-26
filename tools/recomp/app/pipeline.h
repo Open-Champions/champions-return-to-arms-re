@@ -26,6 +26,7 @@
 // does not wait (a hidden window, a display that is asleep) the grid is the clock's.
 #pragma once
 #include "iface.h"
+#include "ramsize.h"     // RAM_SIZE
 #include "renderer.h"
 #include "stream.h"
 
@@ -274,11 +275,11 @@ struct Sink : rta::VideoSink {
     void prepare() {
         if (!first) return;
         first = false;
-        ram_copy.assign(rta::memory(), rta::memory() + 0x2000000);
+        ram_copy.assign(rta::memory(), rta::memory() + RAM_SIZE);
         vu_data.assign(0x4000, 0);
         vu_micro.assign(0x4000, 0);
         index.ram = rta::memory();
-        index.size = 0x2000000;
+        index.size = RAM_SIZE;
         rescan();
     }
     void rescan() {

@@ -81,6 +81,7 @@ var machine: Object                     # RtaMachine
 var gs: Object                          # RtaGameState
 var ok := false                         # a state was read this frame
 var frame := {}                         # RtaGameState.get_frame()
+const MAX_PLAYERS := 8                  # the game's own four, or eight in a room of five to eight (RTA_GS_PLAYERS)
 var players: Array = []                 # per slot: RtaGameState.get_player(slot), or test data marked "fake"
 var me := {}                            # the local player
 var creatures := PackedFloat32Array()
@@ -221,7 +222,7 @@ func command(w: Array) -> void:
 		"radar":
 			setting.radar = value != "off"
 		"fake-party":
-			setting.fake_party = clampi(value.to_int() if value.is_valid_int() else (0 if value == "off" else 1), 0, 3)
+			setting.fake_party = clampi(value.to_int() if value.is_valid_int() else (0 if value == "off" else 1), 0, MAX_PLAYERS - 1)
 		"music":
 			if value in ["on", "off"]:
 				setting.music = value == "on"
@@ -412,8 +413,9 @@ func _process(delta: float) -> void:
 		frame = gs.call("get_frame")
 		phase = frame.phase
 		var count: int = frame.player_count
-		players.resize(4)
-		for slot in range(4):
+		# eight slots: a game of five to eight (docs/issues/native-8-players.md); the slots past the count are empty
+		players.resize(MAX_PLAYERS)
+		for slot in range(MAX_PLAYERS):
 			players[slot] = gs.call("get_player", slot) if slot < count else {"present": false}
 		_fake_party()
 		var local: int = frame.local_slot
@@ -549,7 +551,7 @@ func _fake_party() -> void:
 		return
 	var real: Dictionary = players[0]
 	var made := 0
-	for slot in range(1, 4):
+	for slot in range(1, MAX_PLAYERS):
 		if made >= n:
 			break
 		if players[slot].get("present", false):

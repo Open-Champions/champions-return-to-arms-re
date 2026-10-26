@@ -23,10 +23,12 @@ typedef uint16_t u16;
 typedef uint32_t u32;
 typedef uint64_t u64;
 
-const u32 RAM_SIZE = 0x02000000;
+// (RAM_SIZE: ../rt/ramsize.h, through moved.h)
 
 // ---- addresses ------------------------------------------------------------------------------------
 const u32 G_PLAYERS = 0x4D8AF0, PLAYER_SIZE = 0x4C30;   // docs/player.md
+// (a per-slot table is reached as party8_at(table) + slot x size: in a game of five to eight the tables are moved with
+// room for eight, and slots 4..7 lie past the old end, where party8_at alone would not follow - rt/moved.h)
 const u32 G_NUM_PLAYERS = 0x4D8AE0;                     // names.tsv g_numPlayers (s32)
 const u32 G_NETWORK_MODE = 0x402791;                    // names.tsv g_networkMode (s8)
 const u32 G_NUM_PEERS = 0x4027C4;                       // names.tsv g_numPeers (s32)
@@ -495,7 +497,7 @@ void read_creatures(R& r) {
         s.creatures_dropped = count - RTA_GS_CREATURES;
         count = RTA_GS_CREATURES;
     }
-    u32 first_rec = G_PLAYERS + (u32)(s.local_slot >= 0 ? s.local_slot : 0) * PLAYER_SIZE;
+    u32 first_rec = party8_at(G_PLAYERS) + (u32)(s.local_slot >= 0 ? s.local_slot : 0) * PLAYER_SIZE;
     bool meter_on = m.i(G_BOSS_MAX) > 0;
     for (int k = 0; k < count; k++) {
         u32 o = found[k].object;
@@ -608,12 +610,12 @@ void read_creatures(R& r) {
 bool is_local(const Mem& m, int slot) {
     if (!m.sb(G_NETWORK_MODE)) return true;
     if (slot >= m.i(G_NUM_PEERS)) return true;                      // net_isLocalSlot 0x13e150
-    return m.b(G_PEER_LOCAL + (u32)slot * PEER_SIZE) != 0;
+    return m.b(party8_at(G_PEER_LOCAL) + (u32)slot * PEER_SIZE) != 0;
 }
 
 bool is_active(const Mem& m, int slot) {
     if (!m.sb(G_NETWORK_MODE)) return true;                         // net_isSlotActive 0x13dd40
-    return slot < m.i(G_NUM_PEERS) && m.b(G_PEER_GONE + (u32)slot * PEER_SIZE) == 0;
+    return slot < m.i(G_NUM_PEERS) && m.b(party8_at(G_PEER_GONE) + (u32)slot * PEER_SIZE) == 0;
 }
 
 // An item's name as the game builds it (0x101e48, first language): [prefix] noun [of suffix]
@@ -700,7 +702,7 @@ void read_player(R& r, int slot) {
     rta_gamestate& s = r.s;
     rta_gs_player& p = s.player[slot];
     PlayerTrack& t = r.ptrack[slot];
-    u32 rec = G_PLAYERS + (u32)slot * PLAYER_SIZE;
+    u32 rec = party8_at(G_PLAYERS) + (u32)slot * PLAYER_SIZE;
     memset(&p, 0, sizeof p);
     if (slot >= s.player_count || !m.b(rec) || !is_active(m, slot)) { t.valid = false; return; }
     p.present = 1;
@@ -730,7 +732,7 @@ void read_player(R& r, int slot) {
     if (p.health < 0) p.health = 0;
     if (p.mana < 0) p.mana = 0;
     p.gold = m.i(rec + 0xE4);
-    p.gold_coming = m.i(G_GOLD_PENDING + (u32)slot * 4);
+    p.gold_coming = m.i(party8_at(G_GOLD_PENDING) + (u32)slot * 4);
     for (u32 k = 0; k < GOLD_FLOATERS; k++) {
         u32 a = G_GOLD_FLOATERS + k * GOLD_FLOATER_SIZE;
         if (m.i(a + 0x1C) > 0 && m.sb(a + 0x20) == slot) p.gold_coming += m.i(a + 0x1C);
@@ -784,8 +786,8 @@ void read_player(R& r, int slot) {
         read_slot(m, rec, o, 0, p);
         read_slot(m, rec, o, 1, p);
         // the quick-cast selector (hud_spellSelect 0x1dd270): the eight positions it offers
-        p.selector_open = (u8)(m.i(G_SPELL_SELECT_ALPHA + (u32)slot * 4) > 0 ? 1 : 0);
-        p.selector_position = (int8_t)m.i(G_SPELL_SELECT_DIR + (u32)slot * 4);
+        p.selector_open = (u8)(m.i(party8_at(G_SPELL_SELECT_ALPHA) + (u32)slot * 4) > 0 ? 1 : 0);
+        p.selector_position = (int8_t)m.i(party8_at(G_SPELL_SELECT_DIR) + (u32)slot * 4);
         // status: the creature timers, then what only players have
         creature_status(m, o, p.status, p.status_count, RTA_GS_STATUS);
         int protect = m.sh(o + 0x4B4);                              // spawn protection (docs/player.md)
@@ -955,14 +957,14 @@ void read_prompt(R& r) {
     if (slot < 0) return;
     const rta_gs_player& p = s.player[slot];
     // the tests Player_draw makes before it draws the prompt (0x1a47a0-0x1a4800)
-    if (m.i(G_PROMPT_ALPHA + (u32)slot * 4) <= 0 || !p.alive || m.i(G_PAUSED) || m.i(G_MENU_INPUT_LOCKOUT) || m.i(G_SPELL_SELECT_HELD + (u32)slot * 4) || m.w(G_DIALOG_DATA))
+    if (m.i(party8_at(G_PROMPT_ALPHA) + (u32)slot * 4) <= 0 || !p.alive || m.i(G_PAUSED) || m.i(G_MENU_INPUT_LOCKOUT) || m.i(party8_at(G_SPELL_SELECT_HELD) + (u32)slot * 4) || m.w(G_DIALOG_DATA))
         return;
-    m.wide(G_PROMPT_TEXT + (u32)slot * PROMPT_TEXT_SIZE, q.text, sizeof q.text);
+    m.wide(party8_at(G_PROMPT_TEXT) + (u32)slot * PROMPT_TEXT_SIZE, q.text, sizeof q.text);
     if (!q.text[0]) return;
     q.active = 1;
     q.slot = (int8_t)slot;
-    u32 first = m.h(G_PROMPT_TEXT + (u32)slot * PROMPT_TEXT_SIZE);
-    q.button = (first >= 0x7B && first <= 0x86) ? m.w(G_BTN_USE + (u32)slot * 4) : 0;      // a glyph in front = a button does it
+    u32 first = m.h(party8_at(G_PROMPT_TEXT) + (u32)slot * PROMPT_TEXT_SIZE);
+    q.button = (first >= 0x7B && first <= 0x86) ? m.w(party8_at(G_BTN_USE) + (u32)slot * 4) : 0;      // a glyph in front = a button does it
     q.kind = RTA_GS_USE_OTHER;
     // what it is about is not kept anywhere: ask as Player_interact 0x1b2640 asks - the nearest usable object (flag 0x100000)
     // in the box x, y +-48, z .. z + 60 round the player, through the grid (world_collectObjectsInBox 0x14a928)
@@ -1134,7 +1136,7 @@ const rta_gamestate* rta_gs_update(rta_gs_reader* reader, const uint8_t* ram) {
         if (!p.present) continue;
         if (p.object) any_object = true;
         if (p.local) { any_local = true; if (s.local_slot < 0) s.local_slot = slot; if (p.alive) any_local_alive = true; }
-        if (p.local && m.b(G_NOTICE_OPEN + (u32)slot)) phase |= RTA_GS_PH_DIALOGUE;
+        if (p.local && m.b(party8_at(G_NOTICE_OPEN) + (u32)slot)) phase |= RTA_GS_PH_DIALOGUE;
     }
     if (level && any_object) phase |= RTA_GS_PH_LEVEL;
     if ((phase & RTA_GS_PH_LEVEL) && any_local && !any_local_alive) phase |= RTA_GS_PH_DEAD;
@@ -1184,7 +1186,7 @@ const rta_gamestate* rta_gs_update(rta_gs_reader* reader, const uint8_t* ram) {
         s.net_exit_frames = m.sh(G_NET_EXIT);
         if (m.i(G_CHECKSUM_FAILED)) s.net_notice = RTA_GS_NET_CHECKSUM;
         for (int slot = 0; slot < RTA_GS_PLAYERS && slot < m.i(G_NUM_PEERS); slot++) {
-            if (m.b(G_PEER_DESYNC + (u32)slot * PEER_SIZE)) { s.net_notice = RTA_GS_NET_DESYNC; s.net_notice_slot = (int8_t)slot; }
+            if (m.b(party8_at(G_PEER_DESYNC) + (u32)slot * PEER_SIZE)) { s.net_notice = RTA_GS_NET_DESYNC; s.net_notice_slot = (int8_t)slot; }
         }
         if (s.net_stall_frames > 1200 || m.b(G_NET_KICKED)) s.net_notice = RTA_GS_NET_LOST;
         else if (s.net_stall_frames > 30 && s.net_notice == RTA_GS_NET_OK) s.net_notice = RTA_GS_NET_STALLED;
@@ -1196,7 +1198,7 @@ const rta_gamestate* rta_gs_update(rta_gs_reader* reader, const uint8_t* ram) {
             if (sender < 0 || sender >= RTA_GS_PLAYERS || m.i(G_CHAT_AGE + (u32)k * 4) >= 601 || s.chat_count >= RTA_GS_CHAT_LINES) continue;
             char text[80], name[RTA_GS_TEXT];
             m.str(a + 3, text, sizeof text);
-            m.str(G_PLAYERS + (u32)sender * PLAYER_SIZE, name, sizeof name);
+            m.str(party8_at(G_PLAYERS) + (u32)sender * PLAYER_SIZE, name, sizeof name);
             if (!text[0]) continue;
             snprintf(s.chat[s.chat_count], sizeof s.chat[0], "%s: %s", name, text);
             s.chat_slot[s.chat_count] = (int8_t)sender;

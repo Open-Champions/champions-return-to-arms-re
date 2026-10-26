@@ -574,6 +574,50 @@ def friend_checks(check, port):
         p.close()
 
 
+def eight_checks(check, port):
+    """A room of up to eight (option size, docs/issues/native-8-players.md A.8): only while every copy can play one."""
+    names = ['Hosty', 'Anna', 'Bobo', 'Cyra', 'Dina', 'Eddy', 'Flora', 'Gusto', 'Halle']
+    ps = [new_player(port, n) for n in names]
+    for p in ps:
+        p.ask('copy', fix='27f61e1d', words=0x1000 | 91, can=3, does=0)
+    plain = new_player(port, 'Oldie')
+    plain.ask('copy', fix='27f61e1d', words=91, can=3, does=0)
+    kind, ans = ps[0].ask('host', level='', diff=1, open=0, size=8)
+    code = ans.get('code', '')
+    room, members = snapshot(ps[0]) or (None, [])
+    check('a room of up to eight says so (size=8, holds 8)', kind == 'ok' and room and room.get('size') == '8' and room.get('cap') == '8', room)
+    joins = [p.ask('join', code=code)[0] for p in ps[1:4]]
+    check('players 2 to 4 join', joins == ['ok'] * 3, joins)
+    snapshot(ps[0], until=lambda r, m: len(m) == 4)
+    got = plain.ask('join', code=code)
+    check('a fifth player whose copy cannot play eight is refused: the room is full', got[1].get('code') == str(R.E_FULL), got)
+    for p in ps[4:8]:
+        got = p.ask('join', code=code)
+        check('player %d of eight joins' % (ps.index(p) + 1), got[0] == 'ok', got)
+    room, members = snapshot(ps[0], until=lambda r, m: len(m) == 8) or (None, [])
+    check('eight players, in the order they came', room is not None and [m['name'] for m in members] == names[:8], members)
+    check('a ninth: the room is full', ps[8].ask('join', code=code)[1].get('code') == str(R.E_FULL))
+    for p in ps[:8]:
+        p.ask('leave')
+    # a room that did not ask for more stays at four, whatever the copies can do
+    qs = ps[:5]
+    for p in qs:
+        p.drain()
+    kind, ans = qs[0].ask('host', level='', diff=1, open=0)
+    code = ans.get('code', '')
+    room, members = snapshot(qs[0], until=lambda r, m: r.get('code') == code) or (None, [])
+    check('a room that did not ask for more holds four (cap=4)', room and room.get('size') == '0' and room.get('cap') == '4', room)
+    for p in qs[1:4]:
+        p.ask('join', code=code)
+    snapshot(qs[0], until=lambda r, m: len(m) == 4)
+    got = qs[4].ask('join', code=code)
+    check('... and a fifth is refused', got[1].get('code') == str(R.E_FULL), got)
+    for p in qs[:4]:
+        p.ask('leave')
+    for p in ps + [plain]:
+        p.close()
+
+
 def room_checks(check, port):
     a, b, c, d, e = [new_player(port, n) for n in ('Hosta', 'Jon', 'Kim', 'Lee', 'Max')]
     for p in (a, b, c, d, e):
@@ -1503,6 +1547,12 @@ def main():
         finally:
             text = service.stop()
         check('the service ran through all of it without an error', 'Traceback' not in text, text[-1500:])
+        service = Service(':memory:', 'registrations_per_hour=1000', 'connections_per_address=64', 'requests_per_hour=1000')
+        try:
+            eight_checks(check, service.port)
+        finally:
+            text = service.stop()
+        check('... and through the rooms of eight', 'Traceback' not in text, text[-3000:])
         stored_checks(check, work)
         limit_checks(check, work)
         exposure_checks(check, work)

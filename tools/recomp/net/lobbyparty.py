@@ -69,8 +69,10 @@ def known(k, offset=0):
 def watches(n):
     record = lambda i: 'g_players+%d' % (i * 0x4C30)
     peer = lambda i: 'g_peers+%d' % (i * 0x44E0)
-    specs = ['net=g_netFrame:s32', 'seed=g_randSeed:x32', 'level=g_levelName:str12', 'nplayers=g_numPlayers:s32',
-             'btnmaps=0x41b980:crc192',
+    # the twelve button tables: one column for four players; in a game of five to eight each table is moved on its
+    # own with room for eight (tools/recomp/app/party8-ranges.txt): a column per table
+    buttons = ['btnmaps=0x41b980:crc192'] if n <= 4 else ['btn%d=0x%x:crc%d' % (k, 0x41b980 + 0x10 * k, 4 * n) for k in range(12)]
+    specs = ['net=g_netFrame:s32', 'seed=g_randSeed:x32', 'level=g_levelName:str12', 'nplayers=g_numPlayers:s32'] + buttons + [
              # this machine's own sync hash of the previous tick (its player number is the byte at 0x402a39)
              'prevhash=g_peers+([0x402a39]&255)*0x44e0+0x18ac+((g_netFrame-1)&0xff)*12+8:x32',
              'l_inp=g_localInputFrame:s32', 'l_drawframe=g_drawFrame:u32', 'l_lobby=%s:u32' % A_LOBBY]

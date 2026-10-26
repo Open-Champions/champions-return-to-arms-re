@@ -111,3 +111,30 @@ the project's server 2026-10-25 (docs/issues/native-rendezvous.md, "The fallback
      cp -p $B/<site> /etc/nginx/sites-available/<site> && nginx -t && systemctl reload nginx &&
      cp -p $B/champions-net2.service /etc/systemd/system/ && cp -p $B/rendezvous.py /opt/champions-net2/ &&
      systemctl daemon-reload && systemctl restart champions-net2'
+
+----------------------------------------------------------------------------------------------
+Rooms of up to eight (2026-10-26, docs/issues/native-8-players.md C).  PREPARED, NOT RUN.
+rendezvous.py: a host may ask for a room of 5..8 (option `size`); the room takes a fifth player only
+while every copy in it says it can play one (bit 0x1000 of its word count); the room line carries
+size= (asked) and cap= (what it holds now).  Everything else unchanged: a client of before says
+nothing of `size` and gets four, as today; a service of before ignores `size` and keeps rooms at four.
+
+14. Keep what runs now
+   ssh root@<server-address> 'cp -p /opt/champions-net2/rendezvous.py /opt/champions-net2/rendezvous.py.before-eight'
+
+15. The new file beside it, its self-test on the server (as step 2; expect "262 of 262 checks passed",
+   or 260 of 260 without a private-network address), then switch
+   scp tools/rendezvous/rendezvous.py root@<server-address>:/opt/champions-net2/rendezvous.py.new
+   scp tools/rendezvous/check.py root@<server-address>:/opt/champions-net2/check.py
+   ssh root@<server-address> 'cd /opt/champions-net2 && mkdir -p t && cp rendezvous.py.new t/rendezvous.py &&
+     cp check.py t/ && python3 -I t/check.py; rm -rf t'
+   ssh root@<server-address> 'cd /opt/champions-net2 && mv rendezvous.py.new rendezvous.py && systemctl restart champions-net2 &&
+     sleep 2 && journalctl -u champions-net2 -n 5 --no-pager'
+
+16. From the Mac: a room of five copies through it (copies started for rooms of up to eight)
+   RTA_DISC=... python3 -B tools/recomp/net2/n2party.py local/party8/public5 --players 5 --external \
+     --service-address <server-host> --port 41900 --opt party8=1 --program <the window program run headless, as in
+     docs/issues/native-8-players.md C: app/build.py --party8 --as rta_app_next>
+
+17. Back
+   ssh root@<server-address> 'cd /opt/champions-net2 && cp -p rendezvous.py.before-eight rendezvous.py && systemctl restart champions-net2'

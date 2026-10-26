@@ -117,11 +117,12 @@ func _make_game() -> Node:
 			var more: PackedStringArray = opt.get("args", PackedStringArray())
 			if not more.has("net2-boot=1"):
 				more.append_array(PackedStringArray(["--opt", "net2-boot=1"]))
-			# Remastered: the game's tables sized for four are moved at power-on, so that this copy can play a room of up to
-			# eight (docs/issues/native-8-players.md; a library without the relocatable translation ignores it).  Classic
-			# runs the game's own memory layout, untouched.
-			if String(e.get("edition", "")) == "remastered" and not more.has("party8=1"):
-				more.append_array(PackedStringArray(["--opt", "party8=1"]))
+			# Remastered: the game's tables sized for four are moved at power-on (party8=1: a room of one to four plays the
+			# same game, value for value); with the profile's "eight" the game also has 64 MB for its heap (party8=8), and
+			# only then can it play a room of five to eight (docs/issues/native-8-players.md; a library without the
+			# relocatable translation ignores both).  Classic runs the game's own memory layout, untouched.
+			if String(e.get("edition", "")) == "remastered" and not more.has("party8=1") and not more.has("party8=8"):
+				more.append_array(PackedStringArray(["--opt", "party8=8" if bool(profile.setting("eight")) else "party8=1"]))
 			opt["args"] = more
 	return g
 

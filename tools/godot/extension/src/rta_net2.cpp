@@ -152,6 +152,7 @@ Dictionary options_out(const net2_options& o) {
     d["open_to"] = o.open_to;
     d["mission"] = o.mission;
     d["kill_limit"] = o.kill_limit;
+    d["max_players"] = o.max_players;          // 0/4: four; 5..8: a room of up to that many (docs/issues/native-8-players.md)
     return d;
 }
 
@@ -163,6 +164,7 @@ net2_options options_in(const Dictionary& d) {
     o.open_to = (int)(int64_t)d.get("open_to", 0);
     o.mission = (int)(int64_t)d.get("mission", 0);
     o.kill_limit = (int)(int64_t)d.get("kill_limit", 0);
+    o.max_players = (int)(int64_t)d.get("max_players", 0);
     return o;
 }
 

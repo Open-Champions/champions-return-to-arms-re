@@ -21,9 +21,10 @@ const u32 START = 0x800;
 enum : u32 { H_MAGIC = 0, H_VERSION = 4, H_MODE = 8, H_SKIPS = 0xc, H_NEED = 0x10, H_PLAYERS = 0x14, H_FRAME = 0x18, H_HELD_BACK = 0x1c };
 
 bool ok(u32 a, u32 size = 4) { a &= 0x1FFFFFFF; return a >= 0x80000 && a <= RAM_SIZE - size; }
-u32 RD(u32 a) { u32 v = 0; if (ok(a)) memcpy(&v, g_ram + (a & 0x1FFFFFFF), 4); return v; }
-u8 RB(u32 a) { return ok(a, 1) ? g_ram[a & 0x1FFFFFFF] : 0; }
-void WR(u32 a, u32 v) { if (ok(a)) memcpy(g_ram + (a & 0x1FFFFFFF), &v, 4); }
+// a table moved for eight players (the pads) is where it is (moved.h)
+u32 RD(u32 a) { a = party8_at(a); u32 v = 0; if (ok(a)) memcpy(&v, g_ram + (a & 0x1FFFFFFF), 4); return v; }
+u8 RB(u32 a) { a = party8_at(a); return ok(a, 1) ? g_ram[a & 0x1FFFFFFF] : 0; }
+void WR(u32 a, u32 v) { a = party8_at(a); if (ok(a)) memcpy(g_ram + (a & 0x1FFFFFFF), &v, 4); }
 s32 BR(u32 off) { return (s32)RD(CINE_BASE + off); }
 void BW(u32 off, s32 v) { WR(CINE_BASE + off, (u32)v); }
 
@@ -91,7 +92,7 @@ void run_frame(Ctx* c, RecompFn original) {
     g_calls++;
     s32 n = (s32)RD(G_PLAYER_COUNT);
     if (n < 0) n = 0;
-    if (n > 4) n = 4;
+    if (n > 8) n = 8;                           // eight: the block's holds (+0x20 + slot x 4) reach +0x40, its end (guestmap.h)
     BW(H_PLAYERS, n);
     // Once a game frame.  H_FRAME holds the frame counted last PLUS ONE; 0 means none yet in this scene (after the mode
     // was set, or after a scene ended in a tick), so the first tick of a scene - frame 0 after a level load included -
@@ -104,7 +105,7 @@ void run_frame(Ctx* c, RecompFn original) {
     if (count) g_counted++;
     bool all = n > 0;
     for (s32 k = 0; k < n; k++) {
-        u32 row = G_PADS + (u32)k * PAD;
+        u32 row = party8_at(G_PADS) + (u32)k * PAD;
         bool held = (RD(row + PAD_HELD) & START) != 0;
         s32 t = BR(CINE_HOLD + (u32)k * 4);
         if (fresh && t > 0) t = 0;
@@ -116,9 +117,9 @@ void run_frame(Ctx* c, RecompFn original) {
         all = all && t >= HOLD_TICKS;
     }
     // the game's own skip test sees START pressed only in the ticks in which every player has held it long enough
-    u32 saved[4] = {0, 0, 0, 0};
+    u32 saved[8] = {};                          // up to eight players (a game of five to eight)
     for (s32 k = 0; k < n; k++) {
-        u32 row = G_PADS + (u32)k * PAD;
+        u32 row = party8_at(G_PADS) + (u32)k * PAD;
         saved[k] = RD(row + PAD_PRESSED);
         if ((saved[k] & START) && !all) { g_held_back++; BW(H_HELD_BACK, BR(H_HELD_BACK) + 1); }
         WR(row + PAD_PRESSED, saved[k] & ~START);
@@ -126,7 +127,7 @@ void run_frame(Ctx* c, RecompFn original) {
     if (all) WR(G_PADS + PAD_PRESSED, RD(G_PADS + PAD_PRESSED) | START);
     u8 skip_before = RB(G_CUT_SKIP);
     original(c);
-    for (s32 k = 0; k < n; k++) WR(G_PADS + (u32)k * PAD + PAD_PRESSED, saved[k]);
+    for (s32 k = 0; k < n; k++) WR(party8_at(G_PADS) + (u32)k * PAD + PAD_PRESSED, saved[k]);
     bool ended = !RB(G_CUT_ACTIVE);
     if (all) {
         // The game took the skip (g_cutSkip set) or the scene ended: each player counts again only after letting go (a

@@ -33,6 +33,7 @@
 //   --opt net2-players=N           host: start by itself when N players are in and ready (default 2;
 //                                  0: never - somebody says `app net2 start`)
 //   --opt net2-level=NAME --opt net2-difficulty=N    the host's options
+//   --opt net2-size=N (5..8)                          a room of up to N players (a copy started with --opt party8=1)
 //   --opt net2-again=1             after a game: choose a character and be ready again
 //   --opt net2-relay=force|never   tests: this machine's routes
 //   --opt net2-bind=ADDRESS:PORT   tests: the UDP socket's own address
@@ -73,6 +74,7 @@ const u32 A_LAUNCHING = 0x402793, A_DEV_LOBBY = 0x402792, A_NETWORK_MODE = 0x402
 const u32 A_LOBBY_STATE = 0x506160;
 const u32 A_NET_FRAME = 0x4027ac, A_NUM_PEERS = 0x4027c4, A_PEERS = 0x5bf838, PEER_SIZE = 0x44e0, PEER_DROPPED = 0x44d5;
 const u32 A_PLAYERS = 0x4d8af0, PLAYER_SIZE = 0x4c30, PLAYER_CLASS = 0x50, PLAYER_LEVEL = 0x59;
+const u32 A_LAUNCH_RECS = 0x402b90, LAUNCH_REC = 0x144;     // g_launchRecs (docs/netcode.md "Launch")
 const u32 A_NUM_PLAYERS = 0x4d8ae0, A_DIFFICULTY = 0x4f719c, A_SAVED_CONFIG = 0x4f8f38;
 const u32 A_SEL_TASK_NAME = 0x53ce38;       // "playerSelection"
 const u32 A_SEL_PAGE = 0x8e2c02;
@@ -214,8 +216,52 @@ void do_choose(Ctx* c, bool host) {
     set_phase(NET2_GAME_CHOOSING, "the game's character screens are up");
 }
 
+// A game of five to eight (app/party8.h): the game's address and port tables have four entries, at fixed distances
+// from one another that net_launchTransfer's loop over the players reaches with one pointer (0x1350d8-0x1351c8), so
+// for players 4..7 it reads other words.  Its launch records have room for eight (moved), and in a room every
+// machine's address is known (player k is GAME_NET + k, GAME_PORT): what the loop writes for k >= 4 is written here
+// afterwards, field for field as the loop writes it for 0..3.
+void launch_ended(bool failed, const std::string& text);
+void party8_records(int count) {
+    const u32 recs = party8_at(A_LAUNCH_RECS);
+    for (int k = 4; k < count && k < NET2_PLAYERS; k++) {
+        const u32 r = recs + (u32)k * LAUNCH_REC;
+        const u32 ip = n2::GAME_NET + (u32)k;
+        const u8 bytes[4] = {(u8)(ip >> 24), (u8)(ip >> 16), (u8)(ip >> 8), (u8)ip};      // as the address table holds them
+        for (int b = 0; b < 4; b++) { wr8(r + 4 + (u32)b, bytes[3 - b]); wr8(r + 0x24 + (u32)b, 0); }   // the second address: empty (do_launch)
+        wr32(r + 0x30, n2::GAME_PORT);
+        wr32(r + 0x34, n2::GAME_PORT);
+        for (u32 b = 0; b < 16; b++) wr8(r + 0x10 + b, rd8(r + b));      // the address block the sends use
+        wr32(r + 0x38, n2::GAME_PORT);
+        wr32(r + 0x40, (u32)k);
+        wr32(r + 0x44, 0);
+        wr32(r + 0x64, 0);
+    }
+}
+// ... and at the end of the launch the game sets +0x44c0 = 1 for the peers 0..3 only (a countdown from 3, 0x13766c)
+// ... and the two input-codec states of each peer (+0x10 and +0x60: four 16-byte channel states with 128.0 at +8, and
+// 0xc bytes after them) are set up by net_shutdown 0x1393f8 for the four peers of its table only (its loop ends at
+// g_peers + 0x11380): peers 4..7 are given the same starting states here, before the first input packet - with zeroes
+// a sender's encoder and its receivers' decoder would start from different states (Ran: player 5's stick read
+// differently by everyone else from the first tick)
+void party8_peers(int count) {
+    const u32 peers = party8_at(A_PEERS);
+    for (int k = 4; k < count && k < NET2_PLAYERS; k++) {
+        const u32 p = peers + (u32)k * PEER_SIZE;
+        wr32(p + 0x44c0, 1);
+        for (u32 state : {0x10u, 0x60u}) {
+            for (u32 b = 0; b < 0x4c; b += 4) wr32(p + state + b, 0);
+            for (u32 ch = 0; ch < 4; ch++) wr32(p + state + ch * 0x10 + 8, 0x43000000u);   // 128.0f
+        }
+    }
+}
+
 void do_launch(Ctx* c) {
     const net2_direct& d = G.direct;
+    if (d.count > 4 && !(net2hook::party8_capable && net2hook::party8_capable() == 1 && net2hook::party8_game)) {
+        launch_ended(true, "a game of more than four players needs a copy started for rooms of up to eight");
+        return;
+    }
     G.options = d.options;
     // what the front end's state 7 does once a character is chosen
     wr8(A_SETTINGS + 10, 0xff);
@@ -243,16 +289,25 @@ void do_launch(Ctx* c) {
     wr8(A_SETTINGS + 7, (u8)d.count);
     wr8(A_SETTINGS + 8, 0);
     wr8(A_SETTINGS + 9, (u8)d.my_slot);
-    for (int k = 0; k < NET2_PLAYERS; k++) {
+    // A game of five to eight (party8_records): the second address table - the "internal" address the game turns to
+    // when a packet comes from its own outside address (two consoles behind one router, docs/netcode.md "Launch") -
+    // is left empty.  In a room every address is distinct, so nothing needs it; and a player 4..7 looks for its own
+    // outside address at addr1[own], which is the second table's entry own-4: empty, no packet ever matches it.
+    const bool wide = d.count > 4;
+    for (int k = 0; k < 4; k++) {           // the game's tables have four entries (a room of five to eight: party8_records)
         u32 ip = n2::GAME_NET + (u32)k;
         const u8 bytes[4] = {(u8)(ip >> 24), (u8)(ip >> 16), (u8)(ip >> 8), (u8)ip};
+        const u8 none[4] = {0, 0, 0, 0};
         memcpy(g_ram + party8_at(A_ADDR1 + k * 4), bytes, 4);
-        memcpy(g_ram + party8_at(A_ADDR2 + k * 4), bytes, 4);
+        memcpy(g_ram + party8_at(A_ADDR2 + k * 4), wide ? none : bytes, 4);
         wr32(A_PORT1 + k * 4, n2::GAME_PORT);
-        wr32(A_PORT2 + k * 4, n2::GAME_PORT);
+        wr32(A_PORT2 + k * 4, n2::GAME_PORT);   // (players 4..7 read their own port at port1[own]: these, all GAME_PORT)
     }
+    // a game of five to eight: the hard-coded fours become eight before the launch's first loop over the peers
+    if (wide) net2hook::party8_game(d.count);
     G.carrying = true;
     call_unheld(c, fn_00134c60);                           // net_launchTransfer
+    if (wide) party8_records(d.count);
     G.launch_blank = G.blank;
     G.told_running = false;
     char text[200];
@@ -301,6 +356,7 @@ void on_tasks(Ctx* c, bool from_tick) {
 }
 
 void launch_ended(bool failed, const std::string& text) {
+    if (net2hook::party8_game) net2hook::party8_game(0);  // a game of five to eight is over: the fours are four again
     if (net2hook::souls_room) net2hook::souls_room(-1);     // the room's game is over: the souls mode is this copy's setting again
     if (net2hook::aim_room) net2hook::aim_room(-1);         // ... and so is aiming by looking
     if (net2hook::cine_room) net2hook::cine_room(-1);       // ... and hold to skip
@@ -322,6 +378,7 @@ void on_after(Ctx* c, bool from_tick) {
     // net_launchUpdate has answered: 2 (launched: the front end has set the network mode and
     // left) or -1 (failed or cancelled: the front end stays)
     if (rd8(A_NETWORK_MODE) == 1) {
+        if (G.direct.count > 4) party8_peers(G.direct.count);
         if (G.options.level[0]) {
             // another first level than the game's own: the pending name, replaced on every
             // machine alike before anything is loaded
@@ -350,6 +407,8 @@ void souls_describe(uint32_t& set, uint16_t& words) {
     if (net2hook::aim_wanted && net2hook::aim_wanted() == 1) { words |= 0x4000; if (net2hook::aim_figure) set ^= net2hook::aim_figure(); }
     // hold to skip a cut scene (app/cinematic.h): bit 0x2000, Remastered's
     if (net2hook::cine_wanted && net2hook::cine_wanted() == 1) { words |= 0x2000; if (net2hook::cine_figure) set ^= net2hook::cine_figure(); }
+    // a copy that can play a game of five to eight (app/party8.h): bit 0x1000 (the room service's capacity follows it)
+    if (net2hook::party8_capable && net2hook::party8_capable() == 1) words |= 0x1000;
 }
 void follow_souls() {
     if (!G.session) return;
@@ -480,6 +539,7 @@ void play_by_itself(int64_t now) {
             net2_options o{};
             if (const char* level = rt_option("net2-level")) net2impl::put(o.level, level);
             if (const char* difficulty = rt_option("net2-difficulty")) o.difficulty = atoi(difficulty);
+            if (const char* size = rt_option("net2-size")) o.max_players = atoi(size);   // a room of up to eight (5..8)
             o.open_to = G.want_room == "host:friends" ? NET2_OPEN_FRIENDS : NET2_OPEN_CODE;
             net2_host(G.session, &o);
         } else if (G.want_room.compare(0, 5, "join:") == 0) net2_join(G.session, G.want_room.c_str() + 5);
@@ -566,7 +626,7 @@ void on_blank(uint64_t number) {
                 set_phase(NET2_GAME_RUNNING, "the game runs: level " + level);     // the status follows the level
             }
             u32 my_slot = (u32)G.direct.my_slot;
-            net2_character mine = read_character(A_PLAYERS + my_slot * PLAYER_SIZE);
+            net2_character mine = read_character(party8_at(A_PLAYERS) + my_slot * PLAYER_SIZE);   // slot 4..7: past the old table (moved.h)
             if (G.session && mine.name[0] && (mine.level != G.character.level || strcmp(mine.name, G.character.name) || strcmp(mine.cls, G.character.cls))) {
                 G.character = mine;
                 net2_set_character(G.session, &mine);
@@ -764,7 +824,8 @@ void install() {
     if (!relay.empty()) net2_set(G.session, "relay", relay.c_str());
     std::string bind = option("net2-bind");
     if (!bind.empty()) net2_set(G.session, "bind", bind.c_str());
-    say("going to a room by itself: %s (fix set %08x, %u words)", G.want_room.c_str(), info.patch_set, info.patch_words);
+    say("going to a room by itself: %s (fix set %08x, %u words; described as %08x / %04x)", G.want_room.c_str(), info.patch_set, info.patch_words,
+        config.fix_set, config.fix_words);
 }
 
 void first_blank(uint64_t number) {
@@ -807,7 +868,7 @@ void net2_game_status(net2_game_status_t* out) {
         out->tick = rd32(A_NET_FRAME);
         u32 peers = rd32(A_NUM_PEERS);
         for (u32 k = 0; k < peers && k < NET2_PLAYERS; k++)
-            if (rd8(A_PEERS + k * PEER_SIZE + PEER_DROPPED) == 0) out->players++;
+            if (rd8(party8_at(A_PEERS) + k * PEER_SIZE + PEER_DROPPED) == 0) out->players++;
     }
 }
 

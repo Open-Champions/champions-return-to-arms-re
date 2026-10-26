@@ -339,6 +339,7 @@ static net2_options clean_options(const net2_options* given) {
         o.open_to = given->open_to == NET2_OPEN_FRIENDS ? NET2_OPEN_FRIENDS : NET2_OPEN_CODE;
         o.mission = given->mission < 0 || given->mission > 13 ? 0 : given->mission;
         o.kill_limit = given->kill_limit < 0 || given->kill_limit > 99 ? 0 : given->kill_limit;
+        o.max_players = given->max_players >= 4 ? (given->max_players > NET2_PLAYERS ? NET2_PLAYERS : given->max_players) : 0;
     }
     return o;
 }

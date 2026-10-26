@@ -20,6 +20,7 @@
 // is read), as many as there are until one of them waits.  POSIX sockets: a test aid, not
 // part of what a player uses.
 #pragma once
+#include "ramsize.h"
 #include "iface.h"
 
 #include <atomic>
@@ -147,7 +148,7 @@ struct Control {
     }
 
     // ---- expressions over main memory ----
-    static const uint32_t RAM = 0x2000000;
+    static const uint32_t RAM = RAM_SIZE;      // ramsize.h
     struct Parser {
         const std::string& s;
         size_t i = 0;

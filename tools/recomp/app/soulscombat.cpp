@@ -84,7 +84,12 @@ float flt(u32 b) { float v; memcpy(&v, &b, 4); return v; }
 // the block (soulscombat.h)
 s32 SR(u32 off) { return (s32)W(SOULS_BASE + off); }
 void SW(u32 off, s32 v) { PW(SOULS_BASE + off, (u32)v); }
-u32 slot_off(int slot, u32 field) { return 0x40 + (u32)slot * 0x40 + field; }
+// Players 5..8 of a game of five to eight have the same per-player parts in a second block (SOULS_HIGH, guestmap.h): the
+// block's four-player layout stays as it is (docs/issues/native-8-players.md A.8)
+const u32 SOULS_HIGH = 0xE2100;
+u32 high(int slot) { return slot >= 4 ? SOULS_HIGH - SOULS_BASE : 0; }
+int low(int slot) { return slot & 3; }
+u32 slot_off(int slot, u32 field) { return high(slot) + 0x40 + (u32)low(slot) * 0x40 + field; }
 enum : u32 { S_STAMINA = 0, S_DELAY = 4, S_FLAGS = 8, S_DODGE = 0xc, S_COOL = 0x10, S_ATK = 0x14, S_L3 = 0x18, S_BROKEN = 0x1c,
              S_LAST_STATE = 0x20, S_LAST_COMBO = 0x24, S_DODGES = 0x28, S_HEAVIES = 0x2c, S_LIGHTS = 0x30, S_REFUSED = 0x34,
              S_AVOIDED = 0x38, S_BLOCKS = 0x3c };
@@ -93,14 +98,14 @@ enum : u32 { H_MAGIC = 0, H_VERSION = 4, H_MODE = 8, H_UPDATES = 0xc, H_BREAKS =
              H_GOLD_BACK = 0x38, H_GOLD_LOST = 0x3c, H_DROPS = 0x300, H_PICKUPS = 0x304, H_DRUNK = 0x308, H_DEAD = 0x30c, H_TEST_GO = 0x31c, BLOCK_SIZE = 0xc80,
              L_LOCK = 0x180, L_OBJECT = 0x184, L_X = 0x188, L_Y = 0x18c, L_Z = 0x190, L_HP = 0x194, L_HP_MAX = 0x198, L_DROP = 0x19c };
 // the second per-player part (soulscombat.h): kept over a death and a level change
-u32 ext_off(int slot, u32 field) { return 0x200 + (u32)slot * 0x40 + field; }
+u32 ext_off(int slot, u32 field) { return high(slot) + 0x200 + (u32)low(slot) * 0x40 + field; }
 enum : u32 { E_FLASKS = 0, E_PARRY = 4, E_RIPOSTE = 8, E_COUNTER = 0xc, E_DRINK = 0x10, E_DROP = 0x14, E_DROP_X = 0x18, E_DROP_Y = 0x1c,
              E_DROP_Z = 0x20, E_DROP_LEVEL = 0x24, E_PENDING = 0x28, E_PARRIES = 0x2c, E_CRITS = 0x30, E_COUNTERS = 0x34, E_DRUNK = 0x38,
              E_GOLD_BACK = 0x3c };
 s32 ER(int slot, u32 f) { return SR(ext_off(slot, f)); }
 void EW(int slot, u32 f, s32 v) { SW(ext_off(slot, f), v); }
 // the weapons part (soulscombat.h, version 3)
-u32 wpn_off(int slot, u32 field) { return 0x400 + (u32)slot * 0x60 + field; }
+u32 wpn_off(int slot, u32 field) { return high(slot) + 0x400 + (u32)low(slot) * 0x60 + field; }
 enum : u32 { W_CLASS = 0, W_LOAD = 4, W_CAP = 8, W_TIER = 0xc, W_UPG = 0x10, W_GRADES = 0x14, W_SCALE = 0x18, W_TWOHAND = 0x1c,
              W_ART_T = 0x20, W_ART_KIND = 0x24, W_MATS = 0x28, W_NEAR = 0x2c, W_ARTS = 0x30, W_UPGRADES = 0x34, W_RECOVER = 0x38,
              W_SWING = 0x3c, W_ART_CD = 0x40, W_BUFFER = 0x44, W_DMG = 0x48, W_GOLD_NEXT = 0x4c, W_MATS_NEXT = 0x50, W_UP_REFUSED = 0x54 };
@@ -109,7 +114,7 @@ enum : u32 { H_ARTS = 0x320, H_UPGRADES = 0x324, H_MAT_DROPS = 0x328, H_TWOHANDS
 s32 WR(int slot, u32 f) { return SR(wpn_off(slot, f)); }
 void WW(int slot, u32 f, s32 v) { SW(wpn_off(slot, f), v); }
 // the attributes and spellbook part (soulscombat.h, version 4)
-u32 st_off(int slot, u32 field) { return 0x600 + (u32)slot * 0x80 + field; }
+u32 st_off(int slot, u32 field) { return high(slot) + 0x600 + (u32)low(slot) * 0x80 + field; }
 enum : u32 { A_VIG = 0, A_MND = 4, A_END = 8, A_STR = 0xc, A_DEX = 0x10, A_INT = 0x14, A_FTH = 0x18, A_UNSPENT = 0x1c, A_SPENT = 0x20,
              A_OPEN = 0x24, A_ROW = 0x28, A_SLOTS = 0x2c, A_BOOK = 0x30, A_ATTUNED = 0x34, A_STAMINA_MAX = 0x38, A_MANA_BASE = 0x3c,
              A_MANA_WRITTEN = 0x40, A_MANA_LAST = 0x44, A_SPELL_PCT = 0x48, A_SPELL_GRADES = 0x4c, A_SPELL_T = 0x50, A_CASTS = 0x54,
@@ -129,8 +134,8 @@ int g_last_room = -1;
 bool g_on = false;                      // in force (game thread)
 bool g_installed = false;
 RecompFn g_orig_run = nullptr, g_orig_ptd = nullptr, g_orig_ctd = nullptr, g_orig_save = nullptr;
-u32 g_riposte_target[4] = {0, 0, 0, 0}; // per slot: the creature a parry opened (an object of this machine, see Poise)
-u32 g_last_object[4] = {0, 0, 0, 0};    // per machine: which object the slot's numbers belong to
+u32 g_riposte_target[8] = {};          // per slot: the creature a parry opened (an object of this machine, see Poise)
+u32 g_last_object[8] = {};             // per machine: which object the slot's numbers belong to
 char g_level[16] = "";
 struct Ghost { s32 atk = 0, l3 = 0, dodge = -1; u32 object = 0; } g_ghost;   // the prediction copy's own presses (picture only)
 struct Poise { s32 poise = 0; u32 last = 0, broken = 0, crit = 0; };   // broken / crit: the tick + 1 of the last poise break / critical
@@ -193,10 +198,10 @@ void reset_ext(int slot) {
 }
 
 void reset_all() {
-    for (u32 a = 0; a < BLOCK_SIZE; a += 4) PW(SOULS_BASE + a, 0);
+    for (u32 a = 0; a < BLOCK_SIZE; a += 4) { PW(SOULS_BASE + a, 0); PW(SOULS_HIGH + a, 0); }
     SW(H_MAGIC, (s32)SOULS_MAGIC);
     SW(H_VERSION, 4);
-    for (int k = 0; k < 4; k++) {
+    for (int k = 0; k < 8; k++) {               // eight: players 5..8 of a game of five to eight (SOULS_HIGH)
         reset_slot(k); reset_ext(k); g_last_object[k] = 0; g_riposte_target[k] = 0;
         WW(k, W_ART_T, -1); WW(k, W_SWING, -1);
         AW(k, A_SPELL_T, -1);
@@ -263,7 +268,7 @@ bool start_dodge(Ctx* c, u32 P, int slot, int cls) {
     u32 table = W(P + O_ANIM_TABLE);
     u32 clip = table ? W(table + (u32)cls * 0x68 + 0xa4) : 0;
     if (!clip) return false;
-    u32 pad = G_PADS + (u32)slot * PAD;
+    u32 pad = party8_at(G_PADS) + (u32)slot * PAD;
     float lx = F(pad + PAD_LX), ly = F(pad + PAD_LY);
     if (lx * lx + ly * ly > 0.09f) {
         s16 stick = (s16)call(c, MATH_ATAN2_16, 0, 0, 0, bits(lx), bits(ly));
@@ -439,7 +444,7 @@ s32 equip_load(Ctx* c, u32 record) {
 struct Weapon { u32 item = 0; s32 cls = WC_NONE, level = 0, damage = 100, scale = 0; bool two = false; };
 Weapon weapon_now(int slot) {
     Weapon w;
-    u32 record = G_PLAYERS + (u32)slot * REC;
+    u32 record = party8_at(G_PLAYERS) + (u32)slot * REC;
     w.item = weapon_item(record);
     w.cls = w.item ? weapon_class(W(w.item)) : WC_NONE;
     w.level = upgrade_of(w.item);
@@ -600,7 +605,7 @@ void stats_numbers(Ctx* c, int slot, u32 record, bool costs) {
     AW(slot, A_SPELL_PCT, 100 + (t.sc_int[a.cls] * curve(a.v[5]) + t.sc_faith[a.cls] * curve(a.v[6])) / 100);
     AW(slot, A_SPELL_GRADES, (s32)((u32)(u8)grade(t.sc_int[a.cls]) | (u32)(u8)grade(t.sc_faith[a.cls]) << 8));
     if (!costs) return;
-    u32 at = SOULS_BASE + COST_BASE + (u32)slot * 0x40;
+    u32 at = SOULS_BASE + high(slot) + COST_BASE + (u32)low(slot) * 0x40;
     for (int k = 0; k < 15; k++) {
         float cost = 0;
         s32 rank = 0;
@@ -689,10 +694,10 @@ void w_player_run(Ctx* c) {
     u32 P = (u32)c->r[4];
     if (!g_on || !ok(P, 0x590)) { g_orig_run(c); return; }
     s32 slot = (s32)W(P + P_SLOT);
-    if (slot < 0 || slot > 3) { g_orig_run(c); return; }
+    if (slot < 0 || slot > 7) { g_orig_run(c); return; }
     const Tuning& t = g_tuning;
     bool copy = (W(P + O_FLAGS) & FLAG_COPY) != 0;
-    u32 record = G_PLAYERS + (u32)slot * REC;
+    u32 record = party8_at(G_PLAYERS) + (u32)slot * REC;
     if (!copy) {
         g_runs++;
         if (level_changed()) g_poise.clear();
@@ -774,13 +779,13 @@ void w_player_run(Ctx* c) {
     s32 wc = WR(slot, W_CLASS);
     if (wc < 0 || wc >= WC_COUNT) wc = WC_NONE;
     s32 tier = std::max(0, std::min(3, WR(slot, W_TIER)));
-    u32 pad = G_PADS + (u32)slot * PAD;
+    u32 pad = party8_at(G_PADS) + (u32)slot * PAD;
     u32 held = W(pad + PAD_HELD), pressed = W(pad + PAD_PRESSED), nh = held, np = pressed;
-    u32 attack = W(G_BTN_ATTACK + (u32)slot * 4) & 0xffff, block = W(G_BTN_BLOCK + (u32)slot * 4) & 0xffff;
-    u32 potion = W(G_BTN_POTION_A + (u32)slot * 4) & 0xffff;
-    u32 swap = W(G_BTN_SWAP + (u32)slot * 4) & 0xffff, use = W(G_BTN_USE + (u32)slot * 4) & 0xffff;
-    u32 potion_b = W(G_BTN_POTION_B + (u32)slot * 4) & 0xffff;
-    u32 ability_a = W(G_BTN_ABILITY_A + (u32)slot * 4) & 0xffff, ability_b = W(G_BTN_ABILITY_B + (u32)slot * 4) & 0xffff;
+    u32 attack = W(party8_at(G_BTN_ATTACK) + (u32)slot * 4) & 0xffff, block = W(party8_at(G_BTN_BLOCK) + (u32)slot * 4) & 0xffff;
+    u32 potion = W(party8_at(G_BTN_POTION_A) + (u32)slot * 4) & 0xffff;
+    u32 swap = W(party8_at(G_BTN_SWAP) + (u32)slot * 4) & 0xffff, use = W(party8_at(G_BTN_USE) + (u32)slot * 4) & 0xffff;
+    u32 potion_b = W(party8_at(G_BTN_POTION_B) + (u32)slot * 4) & 0xffff;
+    u32 ability_a = W(party8_at(G_BTN_ABILITY_A) + (u32)slot * 4) & 0xffff, ability_b = W(party8_at(G_BTN_ABILITY_B) + (u32)slot * 4) & 0xffff;
     bool open = AR(slot, A_OPEN) != 0, screen_toggle = false, cast_refused = false;
     u32 nav = 0;
     s16 recast0 = (s16)H(P + P_RECAST);
@@ -1128,17 +1133,17 @@ void w_player_run(Ctx* c) {
         s32 share = gold > 0 ? (s32)(gold * t.drop_percent / 100) : 0;
         EW(slot, E_DROP, 0);
         EW(slot, E_PENDING, share);
-        SW(H_DEAD + 4 * (u32)slot, 1);
+        SW(high(slot) + H_DEAD + 4 * (u32)low(slot), 1);
         PW(SOULS_BASE + ext_off(slot, E_DROP_X), W(P + O_POS));
         PW(SOULS_BASE + ext_off(slot, E_DROP_Y), W(P + O_POS + 4));
         PW(SOULS_BASE + ext_off(slot, E_DROP_Z), W(P + O_POS + 8));
         EW(slot, E_DROP_LEVEL, (s32)level_figure());
         if (g_log) fprintf(stderr, "souls: tick %u: p%d died with %lld gold: %d to be left at %.1f %.1f %.1f\n", frame_now(), slot, (long long)gold, share, F(P + O_POS), F(P + O_POS + 4), F(P + O_POS + 8));
     }
-    if (alive && SR(H_DEAD + 4 * (u32)slot)) {
+    if (alive && SR(high(slot) + H_DEAD + 4 * (u32)low(slot))) {
         // back after a death (a respawn or the reload after everybody died; the object can be the same one): the flasks
         // are full again
-        SW(H_DEAD + 4 * (u32)slot, 0);
+        SW(high(slot) + H_DEAD + 4 * (u32)low(slot), 0);
         if (ER(slot, E_FLASKS) < t.flask_count) { EW(slot, E_FLASKS, t.flask_count); bump(H_REFILLS); }
     }
     if (alive && ER(slot, E_PENDING) > 0) {
@@ -1194,7 +1199,7 @@ void w_player_take_damage(Ctx* c) {
     u32 P = (u32)c->r[4];
     if (!g_on || !ok(P, 0x590) || (W(P + O_FLAGS) & FLAG_COPY)) { g_orig_ptd(c); return; }
     s32 slot = (s32)W(P + P_SLOT);
-    if (slot < 0 || slot > 3 || g_last_object[slot] != P) { g_orig_ptd(c); return; }
+    if (slot < 0 || slot > 7 || g_last_object[slot] != P) { g_orig_ptd(c); return; }
     g_ptd_calls++;
     const Tuning& t = g_tuning;
     u32 attacker = (u32)c->r[5], flags = (u32)c->r[6];
@@ -1230,7 +1235,7 @@ void w_player_take_damage(Ctx* c) {
     bool blocking = (state == 8 || state == 0xb) && !(flags & HIT_UNBLOCKABLE) && attacker && amount > 0 && amount < 100000.0f;
     float before = F(P + C_PENDING);
     g_orig_ptd(c);
-    u32 record = G_PLAYERS + (u32)slot * REC;
+    u32 record = party8_at(G_PLAYERS) + (u32)slot * REC;
     float most = F(record + REC_HP_MAX);
     if (!(most > 1.0f)) most = 1.0f;
     float added = F(P + C_PENDING) - before;
@@ -1248,7 +1253,7 @@ void w_player_take_damage(Ctx* c) {
     // a player's spear thrust partly goes through a block
     if (ok(attacker, 0x590) && W(attacker + O_VTABLE) == VT_PLAYER && !(W(attacker + O_FLAGS) & FLAG_COPY)) {
         s32 aslot = (s32)W(attacker + P_SLOT);
-        if (aslot >= 0 && aslot < 4 && WR(aslot, W_CLASS) == WC_SPEAR) {
+        if (aslot >= 0 && aslot < 8 && WR(aslot, W_CLASS) == WC_SPEAR) {
             float chip = amount * ((float)t.spear_chip_percent / 100.0f);
             PF(P + C_PENDING, F(P + C_PENDING) + chip);
             bump(H_CHIPS);
@@ -1322,7 +1327,7 @@ void w_creature_take_damage(Ctx* c) {
     u32 V = (u32)c->r[4], A = (u32)c->r[5];
     if (!g_on || !ok(V, 0x3c8) || !ok(A, 0x590) || W(A + O_VTABLE) != VT_PLAYER || (W(A + O_FLAGS) & FLAG_COPY)) { g_orig_ctd(c); return; }
     s32 slot = (s32)W(A + P_SLOT);
-    if (slot < 0 || slot > 3) { g_orig_ctd(c); return; }
+    if (slot < 0 || slot > 7) { g_orig_ctd(c); return; }
     g_ctd_calls++;
     const Tuning& t = g_tuning;
     float amount = flt(c->f[12]), raw = amount;
@@ -1354,7 +1359,7 @@ void w_creature_take_damage(Ctx* c) {
     bool art_hit = WR(slot, W_ART_T) >= 0 && (art_kind == ART_BOLT ? source == SRC_SPELL : (state == 6 || state == 9 || state == 10));
     // the lunge's and the bolt's hits are the skills' own fixed damage (made for characters of a higher level): scaled down
     if (art_hit && (art_kind == ART_LUNGE || art_kind == ART_BOLT) && amount > 0 && amount < 100000.0f) amount = amount * ((float)t.art_fixed_percent / 100.0f);
-    if (slam) amount = F(G_PLAYERS + (u32)slot * REC + REC_DMG_MAX) * ((float)t.art_slam_percent / 100.0f);
+    if (slam) amount = F(party8_at(G_PLAYERS) + (u32)slot * REC + REC_DMG_MAX) * ((float)t.art_slam_percent / 100.0f);
     if (kind && amount > 0) amount = amount * ((float)percent / 100.0f);
     else if (counter && amount > 0) amount = amount * ((float)t.guard_counter_damage_percent / 100.0f);
     else if (heavy && amount > 0) amount = amount * ((float)t.heavy_damage_percent / 100.0f);
@@ -1430,8 +1435,8 @@ void w_savepoint_run(Ctx* c) {
         if (g_log) fprintf(stderr, "souls: tick %u: a save point at %.1f %.1f %.1f\n", frame_now(), F(S + O_POS), F(S + O_POS + 4), F(S + O_POS + 8));
     }
     float r = (float)t.flask_refill_radius;
-    for (int slot = 0; slot < 4; slot++) {
-        u32 record = G_PLAYERS + (u32)slot * REC, P = W(record + REC_OBJECT);
+    for (int slot = 0; slot < 8; slot++) {
+        u32 record = party8_at(G_PLAYERS) + (u32)slot * REC, P = W(record + REC_OBJECT);
         if (!P || P != g_last_object[slot] || !ok(P, 0x590) || !(F(record + REC_HP) > 0)) continue;
         if (ER(slot, E_FLASKS) >= t.flask_count || !(ground2(P, S) <= r * r)) continue;
         EW(slot, E_FLASKS, t.flask_count);
@@ -1560,8 +1565,8 @@ void room_agreed(bool on) { g_room = on ? 1 : 0; }
 bool active() { return g_on; }
 
 bool attributes(int slot, int32_t out[7]) {
-    if (!g_ram || slot < 0 || slot > 3) return false;
-    u32 record = G_PLAYERS + (u32)slot * REC;
+    if (!g_ram || slot < 0 || slot > 7) return false;
+    u32 record = party8_at(G_PLAYERS) + (u32)slot * REC;
     if (!W(record + REC_OBJECT)) return false;
     Attr a = attributes_of(record);
     for (int k = 0; k < 7; k++) out[k] = a.v[k];
@@ -1570,8 +1575,8 @@ bool attributes(int slot, int32_t out[7]) {
 
 int32_t weapon_class_in_hand(int slot, uint32_t* item) {
     if (item) *item = 0;
-    if (!g_ram || slot < 0 || slot > 3) return WC_NONE;
-    const u32 it = weapon_item(G_PLAYERS + (u32)slot * REC);
+    if (!g_ram || slot < 0 || slot > 7) return WC_NONE;
+    const u32 it = weapon_item(party8_at(G_PLAYERS) + (u32)slot * REC);
     if (item) *item = it;
     return it ? weapon_class(W(it)) : WC_NONE;
 }
@@ -1597,7 +1602,7 @@ void blank(uint64_t number) {
     // the local part of the block, and what the overlay shows
     const fpcontrols::Hud& h = fpcontrols::hud();
     Shown s;
-    if (on && h.slot >= 0 && h.slot < 4) {
+    if (on && h.slot >= 0 && h.slot < 8) {
         s.valid = h.playing;
         s.slot = h.slot;
         s.stamina = (float)SR(slot_off(h.slot, S_STAMINA));
@@ -1620,13 +1625,13 @@ void blank(uint64_t number) {
         s.mats_next = WR(h.slot, W_MATS_NEXT); s.art_cd = WR(h.slot, W_ART_CD); s.damage = WR(h.slot, W_DMG);
         s.grades = (u32)WR(h.slot, W_GRADES); s.two = WR(h.slot, W_TWOHAND) != 0 && s.cls != WC_BOW && s.cls != WC_NONE;
         s.near = WR(h.slot, W_NEAR) != 0;
-        u32 it = weapon_item(G_PLAYERS + (u32)h.slot * REC), name = it ? W(W(it)) : 0;
+        u32 it = weapon_item(party8_at(G_PLAYERS) + (u32)h.slot * REC), name = it ? W(W(it)) : 0;
         for (u32 k = 0; k < 31; k++) { char ch = name && ok(name + k, 1) ? (char)B(name + k) : 0; s.name[k] = ch; if (!ch) break; }
         s.name[31] = 0;
         for (u32 k = 0; k < 32; k += 4) { u32 v = 0; memcpy(&v, s.name + k, 4); PW(SOULS_BASE + L_NAME + k, v); }
         // the character sheet: the block's attributes part, and from the record the names of the spells (the skills' own
         // internal names) for the HUDs
-        u32 record = G_PLAYERS + (u32)h.slot * REC;
+        u32 record = party8_at(G_PLAYERS) + (u32)h.slot * REC;
         s.open = AR(h.slot, A_OPEN) != 0;
         s.sheet = s.open || g_sheet_view.load();
         s.row = AR(h.slot, A_ROW); s.unspent = AR(h.slot, A_UNSPENT); s.char_level = AR(h.slot, A_LEVEL); s.slots = AR(h.slot, A_SLOTS);
@@ -1643,8 +1648,8 @@ void blank(uint64_t number) {
                 for (u32 q = 0; q < 23; q++) { char ch = ok(name + q, 1) ? (char)B(name + q) : 0; sp.name[q] = ch; if (!ch) break; }
                 sp.name[23] = 0;
                 if (!sp.name[0]) snprintf(sp.name, sizeof sp.name, "skill %d", id);
-                sp.cost10 = H(SOULS_BASE + COST_BASE + (u32)h.slot * 0x40 + 2 * (u32)k);
-                sp.rank = B(SOULS_BASE + COST_BASE + (u32)h.slot * 0x40 + 0x20 + (u32)k);
+                sp.cost10 = H(SOULS_BASE + high(h.slot) + COST_BASE + (u32)low(h.slot) * 0x40 + 2 * (u32)k);
+                sp.rank = B(SOULS_BASE + high(h.slot) + COST_BASE + (u32)low(h.slot) * 0x40 + 0x20 + (u32)k);
                 sp.attuned = ((attuned >> k) & 1) != 0;
             }
             for (u32 q = 0; q < 24; q += 4) { u32 v = 0; memcpy(&v, sp.name + q, 4); PW(SOULS_BASE + L_SPELL_NAMES + 24 * (u32)k + q, v); }
@@ -1914,7 +1919,7 @@ std::string command(const std::string& text) {
             out += one;
             snprintf(one, sizeof one, " flasks=%d parry=%d riposte=%d counter=%d drink=%d drop=%d pending=%d crits=%d counters=%d drunk=%d back=%d gold=%d",
                      ER(k, E_FLASKS), ER(k, E_PARRY), ER(k, E_RIPOSTE), ER(k, E_COUNTER), ER(k, E_DRINK), ER(k, E_DROP), ER(k, E_PENDING),
-                     ER(k, E_CRITS), ER(k, E_COUNTERS), ER(k, E_DRUNK), ER(k, E_GOLD_BACK), (s32)W(G_PLAYERS + (u32)k * REC + REC_GOLD));
+                     ER(k, E_CRITS), ER(k, E_COUNTERS), ER(k, E_DRUNK), ER(k, E_GOLD_BACK), (s32)W(party8_at(G_PLAYERS) + (u32)k * REC + REC_GOLD));
             out += one;
             snprintf(one, sizeof one, " class=%s upg=%d grades=%c%c%c scale=%d dmg=%d load=%d/%d tier=%d 2h=%d mats=%d art=%d/%d arts=%d upgrades=%d recover=%d swing=%d",
                      class_name(WR(k, W_CLASS)), WR(k, W_UPG), (char)(WR(k, W_GRADES) & 0xff) ? (char)(WR(k, W_GRADES) & 0xff) : '.',
@@ -1929,7 +1934,7 @@ std::string command(const std::string& text) {
                      "stmax=%d mana=%.1f/%.1f spell=%d%% spellt=%d casts=%d refused=%d spot=%d level=%d", k,
                      AR(k, A_VIG), AR(k, A_MND), AR(k, A_END), AR(k, A_STR), AR(k, A_DEX), AR(k, A_INT), AR(k, A_FTH), AR(k, A_UNSPENT), AR(k, A_SPENT),
                      AR(k, A_SLOTS), AR(k, A_BOOK), AR(k, A_ATTUNED), AR(k, A_OPEN), AR(k, A_ROW), AR(k, A_STAMINA_MAX),
-                     F(G_PLAYERS + (u32)k * REC + REC_MANA), F(G_PLAYERS + (u32)k * REC + REC_MANA_MAX), AR(k, A_SPELL_PCT), AR(k, A_SPELL_T),
+                     F(party8_at(G_PLAYERS) + (u32)k * REC + REC_MANA), F(party8_at(G_PLAYERS) + (u32)k * REC + REC_MANA_MAX), AR(k, A_SPELL_PCT), AR(k, A_SPELL_T),
                      AR(k, A_CASTS), AR(k, A_CAST_REFUSED), AR(k, A_SPOT), AR(k, A_LEVEL));
             out += one;
         }
@@ -1945,8 +1950,8 @@ std::string command(const std::string& text) {
     if (w == "turn" || w == "go-drop" || w == "pose front" || w == "pose back") {
         if (B(G_NETWORK_MODE)) return "souls: not during an online game";
         const fpcontrols::Hud& h = fpcontrols::hud();
-        if (h.slot < 0 || h.slot > 3) return "souls: no player";
-        u32 P = W(G_PLAYERS + (u32)h.slot * REC + REC_OBJECT);
+        if (h.slot < 0 || h.slot > 7) return "souls: no player";
+        u32 P = W(party8_at(G_PLAYERS) + (u32)h.slot * REC + REC_OBJECT);
         if (!ok(P, 0x590)) return "souls: no player object";
         if (w == "go-drop") {
             for (u32 k = 0; k < 3; k++) PW(P + O_POS + 4 * k, W(SOULS_BASE + ext_off(h.slot, E_DROP_X) + 4 * k));

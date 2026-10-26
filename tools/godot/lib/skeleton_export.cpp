@@ -27,7 +27,7 @@ namespace {
 // docs/spec/animation.md 2.1, 2.2, 2.4, 2.5
 const uint32_t POOL = 0x791EC0, POOL_COUNT = 100, BUFFER = 0x620;
 const uint32_t G_DRAW_FRAME = 0x44FDD0;
-const uint32_t RAM = 32u << 20;
+const uint32_t RAM = RAM_SIZE;          // ramsize.h
 
 struct Record {
     uint32_t buffer = 0, state = 0, clip = 0;
@@ -187,7 +187,7 @@ uint32_t drawn(const uint8_t* ram) {
         batch->records.push_back(r);
     }
     for (int slot = 0; slot < 4; slot++) {
-        const uint32_t record = G_PLAYERS + (uint32_t)slot * REC;
+        const uint32_t record = party8_at(G_PLAYERS + (uint32_t)slot * REC);    // a table moved for eight players (moved.h)
         const uint32_t object = rd32(ram, record + REC_OBJECT);
         if (!object || !in_ram(object, 0x600) || rd32(ram, object + O_VTABLE) != VT_PLAYER) continue;
         rtag_skeleton_player p;

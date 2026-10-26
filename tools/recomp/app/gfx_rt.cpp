@@ -36,7 +36,7 @@ const u32 PLANES_CAMERA = 0x7D5BC0, PLANES_CAMERA_SIZE = 0x48;      // six norma
 const u32 PLANES_WORLD = 0x44F0A8, PLANES_WORLD_SIZE = 0x60;        // six planes, world space
 const u32 MATRICES[3] = {0x44F140, 0x44F180, 0x44F1C0};             // g_viewProj, g_viewProjWorld, g_viewProjModel
 const u32 G_CAMERA_MATRIX = 0x44F110;
-const u32 RAM_MASK = 0x01FFFFFF;                    // the display list is addressed through the 0x30000000 mirror of main memory
+const u32 RAM_MASK = RAM_SIZE - 1;                    // the display list is addressed through the 0x30000000 mirror of main memory
 
 enum Mode : u16 { M_NONE = 0, M_EDGE = 1, M_WORLD = 2, M_BILLBOARD = 3, M_MENU3D = 4, M_TEXT = 5 };
 

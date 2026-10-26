@@ -38,6 +38,11 @@
 #else
 #undef RTAG_HAVE_SOULS
 #endif
+// the tables sized for four moved for a game of up to eight (tools/recomp/app/party8.h): build.py defines RTAG_HAVE_PARTY8
+// when the library's translation is the relocatable one (RTA_GODOT_PARTY8=1)
+#ifdef RTAG_HAVE_PARTY8
+#include "party8.h"
+#endif
 // aiming by looking (tools/recomp/app/fpaim.h, docs/issues/native-first-person-aim.md): build.py defines RTAG_HAVE_AIM
 // when the snapshot has app/fpaim.cpp (it needs the controls: the look's pitch, set_aim)
 #if defined(RTAG_HAVE_AIM) && defined(RTAG_HAVE_CONTROLS)
@@ -210,6 +215,9 @@ struct Pads : rta::PadSource {
         if (port > 1) return;
 #ifdef RTAG_HAVE_CINE
         if (port == 0) cinematic::blank(blank);         // hold to skip a cut scene (cinematic.h): off unless asked for; as app_main.cpp
+#endif
+#ifdef RTAG_HAVE_PARTY8
+        if (port == 0) party8::blank(blank);            // the tables moved for eight (party8.h): nothing unless asked for; as app_main.cpp
 #endif
         rtag_pad p;
         { std::lock_guard<std::mutex> hold(lock); p = held[port]; }

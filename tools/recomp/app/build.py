@@ -118,12 +118,12 @@ def main():
             # a translation of its own (the shared gen-app is left as it is) with the relocations of party8.h
             args.gen, args.game_objects = os.path.join(OUT, 'gen-app-p8'), os.path.join(OUT, 'obj-rta_native_p8')
             translate[translate.index('--out') + 1] = args.gen
-            translate += ['--reloc', os.path.join(HERE, 'party8-ranges.txt')]
+            translate += ['--reloc', os.path.join(HERE, 'party8-ranges.txt'), '--reloc-sites', os.path.join(HERE, 'party8-sites.txt')]
             # every load and store at an old place goes to the new one (rt/recomp.h RECOMP_RELOC_DYN)
-            game = ['run', '--gen', args.gen, '--name', 'rta_native_p8', '--define', 'RECOMP_RELOC_DYN']
+            game = ['run', '--gen', args.gen, '--name', 'rta_native_p8', '--define', 'RECOMP_RELOC_DYN', '--define', 'RAM_SIZE=0x04000000u']
             if args.party8_check:
                 args.game_objects = os.path.join(OUT, 'obj-rta_native_p8chk')
-                game = ['run', '--gen', args.gen, '--name', 'rta_native_p8chk', '--define', 'RECOMP_RELOC_CHECK']
+                game = ['run', '--gen', args.gen, '--name', 'rta_native_p8chk', '--define', 'RECOMP_RELOC_CHECK', '--define', 'RAM_SIZE=0x04000000u']
     if not args.no_game:
         result = subprocess.run([sys.executable, os.path.join(RECOMP, 'recomp.py')] + translate, capture_output=True, text=True)
         if result.returncode != 0:
@@ -194,6 +194,10 @@ def main():
     if missing:
         print('the game is not compiled: %s is missing (run without --no-game)' % os.path.relpath(missing[0], ROOT))
         return 1
+    if args.party8:
+        # a program for rooms of up to eight has 64 MB of guest memory (rt/ramsize.h; a game of five to eight is told of
+        # all of it, every other game of 32 MB: rt/moved.h g_party8_memtop) - every file compiled with the same size
+        jobs = [(source, flags + ['-DRAM_SIZE=0x04000000u'], prefix) for source, flags, prefix in jobs]
     objects = []
     todo = []
     for source, flags, prefix in jobs:

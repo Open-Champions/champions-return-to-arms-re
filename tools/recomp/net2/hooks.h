@@ -45,6 +45,13 @@ inline void (*aim_room)(int on) = nullptr;
 inline int (*cine_wanted)() = nullptr;
 inline uint32_t (*cine_figure)() = nullptr;
 inline void (*cine_room)(int on) = nullptr;
+// A game of five to eight (tools/recomp/app/party8.h; docs/issues/native-8-players.md C): null in a program without it.
+//   party8_capable  1: this copy's tables sized for four are moved (it was started for rooms of up to eight): its
+//                   description says so (fix_words bit 0x1000) and the room service lets a fifth player in
+//   party8_game     the launched game's player count: 5..8 begins a game of five to eight (the hard-coded fours of the
+//                   translation become eight), 0 when the room's game is over; 1..4 changes nothing
+inline int (*party8_capable)() = nullptr;
+inline void (*party8_game)(int count) = nullptr;
 // The bug report (tools/recomp/app/testerkit.h): the room's code and every member's copy as "key = value" lines
 // into out (empty when the lock is busy or there is no session).  Set by launch.cpp; null in a program without it.
 inline void (*room_describe)(char* out, size_t size) = nullptr;

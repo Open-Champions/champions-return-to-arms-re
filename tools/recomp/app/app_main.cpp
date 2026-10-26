@@ -944,6 +944,7 @@ class Screen : public QObject {
             if (h != opt.size_h || w != opt.size_w) { opt.size_w = w; opt.size_h = h; backend->set_output_size(w, h); }
         }
         soulscombat::overlay(*frame);           // the souls mode's stamina bar and lock-on marker (nothing when it is off)
+        party8::overlay(*frame);                // players 5..8 of a game of five to eight (party8.h; nothing in any other game)
         testerkit::overlay(*frame);             // the build line, the report box, its notes (testerkit.h; nothing in a test)
         backend->execute(*frame);
         vertices += frame->vertices.size();

@@ -47,7 +47,8 @@ extern "C" {
 #define NET2_TEXT 160           /* a chat line (120 bytes kept), a notice, an error */
 #define NET2_LEVEL 24           /* a level's name as the game has it ("hub", "drunare") */
 #define NET2_CLASS 24
-#define NET2_PLAYERS 4          /* the game's limit */
+#define NET2_PLAYERS 8          /* the most a room holds: the game's own four, or eight in a room of five to eight
+                                   (net2_options.max_players; docs/issues/native-8-players.md) */
 #define NET2_CHAT_LINES 32      /* what a room keeps */
 
 typedef struct net2 net2;       /* one connection to the service (or one mock) */
@@ -243,10 +244,14 @@ typedef struct net2_options {
     int mission;                /* mode 0: 0 = from the hub as the host's progress has it; 1..13 the
                                    game's "menu_mis1".."menu_mis13" (what its own net menu offers a host) */
     int kill_limit;             /* mode 2: 5, 10 or 25 (the game's own three); 0 = 5 */
+    int max_players;            /* 0: the game's own four (and, in net2_set_options, "leave it as it is"); 4: four.
+                                   5..8: a room of up to that many - a Remastered / Hardcore room option; the service
+                                   lets a fifth in only while every copy in the room can play one (fix_words bit
+                                   0x1000: net2_member.fix_words).  In a room: what the host asked for */
 } net2_options;
 
 typedef struct net2_member {
-    int slot;                   /* 0..3: the player number in the game; the host of a new room is 0 */
+    int slot;                   /* 0..7: the player number in the game; the host of a new room is 0 */
     char id[NET2_ID];
     char name[NET2_NAME];
     net2_character character;

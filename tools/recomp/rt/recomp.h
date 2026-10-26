@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstddef>
+#include "moved.h"      // tables moved for eight players (app/party8.h): g_party8_rx_mask for reloc.py's sites
 
 typedef uint8_t u8;
 typedef int8_t s8;
@@ -48,7 +49,7 @@ struct RecompEntry { u32 addr; RecompFn fn; };
 extern const RecompEntry g_recomp_entries[];
 extern const unsigned g_recomp_entry_count;
 
-#define RAM_SIZE 0x02000000u
+#include "ramsize.h"     // RAM_SIZE: 32 MB, or 64 MB in a program built for rooms of up to eight
 extern u8* g_ram;       // RAM_SIZE bytes plus a guard page
 
 // ---- supplied by whichever program links the generated code --------------------------
@@ -97,13 +98,25 @@ extern u32 g_site;
 // with the translated function it came from (app/party8.cpp).
 #include "moved.h"
 __attribute__((weak, noinline)) void reloc_check_hit(u32 address) { (void)address; }   // app/party8.cpp has the one that reports
+__attribute__((weak, noinline)) bool reloc_check_header(u32 address) { (void)address; return false; }
+// In a game of five to eight it also reports accesses just past an old place (as far again as the table is long):
+// slot 4..7 of a table reached through an address the translator did not relocate - the dynamic map below cannot
+// send those to the new place (it has only the old place's addresses), so they land on whatever follows the table.
+// The check build maps as the ordinary one does (RECOMP_RELOC_DYN), so a run goes on as it would.
 static inline void RELOC_CHECK(u32 a) {
     if (UNLIKELY(g_party8_delta != nullptr)) {
         u32 p = a & 0x1FFFFFFFu;
-        for (int k = 0; k < 32; k++)
-            if (p >= g_party8_spans[k][0] && p < g_party8_spans[k][1]) { reloc_check_hit(a); break; }
+        if (UNLIKELY(p >= g_party8_watch_lo && p < g_party8_watch_hi)) { reloc_check_hit(a); return; }
+        if (UNLIKELY(g_party8_heapwatch) && reloc_check_header(p)) { reloc_check_hit(a); return; }
+        for (int k = 0; k < PARTY8_TABLES; k++) {
+            const u32 lo = g_party8_spans[k][0], hi = g_party8_spans[k][1];
+            if (p >= lo && (p < hi || (g_party8_wide && p < hi + (hi - lo)))) { reloc_check_hit(a); break; }
+        }
     }
 }
+#ifndef RECOMP_RELOC_DYN
+#define RECOMP_RELOC_DYN
+#endif
 #else
 #define RELOC_CHECK(a) ((void)0)
 #endif

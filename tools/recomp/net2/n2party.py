@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""n2party.py - two to four native copies through the rendezvous service on this computer
+"""n2party.py - two to eight native copies through the rendezvous service on this computer
 into one game: a room by code, the game's own character screens, chat, start, lockstep
 ticks compared, and what happens afterwards.  The proof runs of docs/issues/native-rendezvous.md.
 
@@ -52,7 +52,7 @@ sys.path.insert(0, os.path.join(ROOT, 'tools', 'recomp', 'net'))
 import lobbypair   # noqa: E402  (new_character_lines, play_lines)
 import lobbyparty  # noqa: E402  (watches, split_games, story, brief)
 
-ROLES = ['host', 'j1', 'j2', 'j3']
+ROLES = ['host', 'j1', 'j2', 'j3', 'j4', 'j5', 'j6', 'j7']
 A_PAGE, A_CHOSEN = '0x8e2c02', '0x4fbbe2'
 STATUS = ('show g_netFrame:s32 g_numPlayers:s32 g_levelName:str12 g_inFrontend:u8 0x402791:u8 '
           + ' '.join('%s+0x44d5:u8 %s+0x44d7:u8' % (('g_peers+%d' % (i * 0x44E0),) * 2) for i in range(4)))
@@ -76,21 +76,29 @@ def leave_lines(role):
             'until g_inFrontend:u8 == 1 timeout 3600', 'echo back-at-the-title', STATUS])
 
 
-def to_game_lines():
+def to_game_lines(n=4):
     table = ' '.join(['0x402a37:u8', '0x402a39:u8'] + ['0x%x:x32' % (0x402b3b + 4 * i) for i in range(4)] + ['0x%x:u32' % (0x402b5c + 4 * i) for i in range(4)])
-    return ['until 0x402793:u8 == 1 timeout 30000', 'echo launch-tables', 'show ' + table,
-            'until g_levelName:str8 != intro timeout 6000', 'echo in-level', 'until g_netFrame:s32 >= 200 timeout 6000', 'echo launched', STATUS,
+    # a game of five to eight: every launch record's player id, state and flags (g_launchRecs is moved: its name is its new place)
+    records = ['wait 300', 'show ' + ' '.join('g_launchRecs+0x%x:s32 g_launchRecs+0x%x:u8 g_launchRecs+0x%x:u8' % (k * 0x144 + 0x40, k * 0x144 + 0x5c, k * 0x144 + 0x5d)
+                                             for k in range(n))] if n > 4 else []
+    # ... and, once in the level, every peer's heard word (+0x44d0) and its flags word (+0x44d4: local, dropped, kicked, out of step)
+    peers = ['wait 900', 'show g_netFrame:s32 g_localInputFrame:s32 g_netLongStallCalls:s32 g_simFrame:s32 g_netSendCycle:s32 ' + ' '.join('g_peers+0x%x:x32 g_peers+0x%x:x32' % (k * 0x44e0 + 0x44d0, k * 0x44e0 + 0x44d4)
+                                                         for k in range(n)),
+             'show ' + ' '.join(' '.join('g_peers+0x%x:s32' % (k * 0x44e0 + off) for off in (0x44bc, 0x44c0, 0x44c4, 0x44c8, 0x44cc)) for k in range(n)),
+             'show ' + ' '.join('g_spawnPos+%d:x32 g_spawnPos+%d:x32 g_spawnFacing+%d:s16' % (12 * k, 12 * k + 4, 2 * k) for k in range(n))] if n > 4 else []
+    return ['until 0x402793:u8 == 1 timeout 30000', 'echo launch-tables', 'show ' + table] + records + [
+            'until g_levelName:str8 != intro timeout 6000', 'echo in-level'] + peers + ['until g_netFrame:s32 >= 200 timeout 6000', 'echo launched', STATUS,
             'app net2 status']
 
 
 def script_lines(role, index, n, args):
-    seeds = {'host': 0, 'j1': 1000, 'j2': 2000, 'j3': 3000}
+    seeds = {r: 1000 * k for k, r in enumerate(ROLES)}
     last = ROLES[n - 1]
     play = (lambda frames, salt: ['wait %d' % frames]) if args.idle else (lambda frames, salt: lobbypair.play_lines(frames, args.seed + seeds[role] + salt))
     lines = ['# written by n2party.py: %s, scenario %s' % (role, args.scenario)]
     # in the room, with the character screens just up: a line of chat before anybody is ready
     lines += ['until %s:u8 == 1 timeout 12000' % A_PAGE, 'app net2 chat hello from %s' % role]
-    lines += character_lines() + to_game_lines() + play(args.play, 0)
+    lines += character_lines() + to_game_lines(n) + play(args.play, 0)
     if args.scenario == 'plain':
         if args.level:
             lines += ['echo waiting-for-level', 'until g_levelName:str8 == %s timeout 12000' % args.level,
@@ -111,7 +119,7 @@ def script_lines(role, index, n, args):
                 lines += ['echo waiting-to-be-alone', 'until g_inFrontend:u8 == 1 timeout %d' % (900 * n + 3600), 'echo back-at-the-title', STATUS]
             else:
                 lines += ['wait %d' % (600 * (n - 1 - index))] + leave_lines(role)
-            lines += ['app net2 room'] + character_lines() + to_game_lines() + play(args.play, 10 * r)
+            lines += ['app net2 room'] + character_lines() + to_game_lines(n) + play(args.play, 10 * r)
     lines += ['wait 120', STATUS, 'app net2 status', 'app net2 room', 'app net2 debug udp', 'echo done', 'quit']
     return lines
 
@@ -162,6 +170,8 @@ def start_copy(role, index, out, run, room, n, args):
         options['net2-relay'] = relay
     if args.level_option and role == 'host':
         options['net2-level'] = args.level_option
+    if n > 4 and role == 'host':
+        options['net2-size'] = str(n)          # a room of up to eight (docs/issues/native-8-players.md): the host asks for it
     for item in args.opt:
         key, _, value = item.partition('=')
         options[key] = value
@@ -315,8 +325,8 @@ def main():
     args = parser.parse_args()
     if not os.environ.get('RTA_DISC'):
         raise SystemExit('name the disc image with RTA_DISC')
-    if not 2 <= args.players <= 4:
-        raise SystemExit('two to four players')
+    if not 2 <= args.players <= 8:
+        raise SystemExit('two to eight players (five to eight: copies started for rooms of up to eight, --opt party8=1)')
     mine = own_address()
     if not args.external and args.service_address not in ('127.0.0.1', mine):
         raise SystemExit('the service must be on this computer (127.0.0.1 or %s), not %s' % (mine, args.service_address))

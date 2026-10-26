@@ -9,7 +9,8 @@
 // there: checked to be empty at every move), each table given room for eight players (twice its size).  Moving (and moving back) is done between two frames on the game's thread, while
 // no level is loaded (the title screen or the front end): then no object holds a pointer into a table.
 //
-// `--opt party8=1` (or `=poison`): moved at the first vertical blank, for the whole run.
+// `--opt party8=1` (or `=poison`): moved at the first vertical blank, for the whole run.  `--opt party8=8` (`poison8`):
+// the same and 64 MB of memory for the game's heap (rt/moved.h): only such a copy says it can play five to eight.
 // Test aids: `app party8 on [poison] | off | info`; with `poison` the old places are filled with 0xA5 after the
 // move, so that an access the translator missed reads nonsense instead of a stale copy.
 #pragma once
@@ -24,5 +25,13 @@ bool moved();                           // the tables are at their new place
 void want(bool on, bool poison = false);
 void blank(uint64_t number);            // once per vertical blank on the game's thread
 std::string command(const std::string& text);   // "app party8 on [poison] | off | info"
+}  // namespace party8
+
+namespace render { struct FrameList; }
+namespace party8 {
+// The game's own HUD has four places for the players' status (hud_drawPlayerStatus by slot 0..3); in a game of five to
+// eight the window program draws the others - players 5..8 - as a compact list on the right: name and a health bar.
+// Nothing in any other game.  Reads only (the lockstep is not touched).
+void overlay(render::FrameList& frame);
 
 }  // namespace party8

@@ -52,7 +52,7 @@ namespace {
 enum { RING = 3600, PLAYERS = 4 };                     // 60 s of vertical blanks
 // addresses of the game's state (names.tsv; the rig's tick-log columns, tools/rig/rig.py tick_watches)
 const uint32_t A_NET_FRAME = 0x4027ac, A_RAND_SEED = 0x404464, A_LEVEL_NAME = 0x41b721, A_NUM_PLAYERS = 0x4d8ae0,
-               A_PLAYERS = 0x4d8af0, PLAYER_SIZE = 0x4c30, RAM = 32u << 20;
+               A_PLAYERS = 0x4d8af0, PLAYER_SIZE = 0x4c30, RAM = RAM_SIZE;
 struct Tick {
     uint64_t number;
     int32_t net_frame, players;
@@ -663,7 +663,7 @@ void blank(uint64_t number, const uint8_t* ram) {
         memcpy(t.level, ram + A_LEVEL_NAME, 12);
         t.players = (int32_t)rd32(ram, A_NUM_PLAYERS);
         for (int k = 0; k < PLAYERS; k++) {
-            uint32_t record = A_PLAYERS + k * PLAYER_SIZE, object = rd32(ram, record + 0x43d8) & (RAM - 1);
+            uint32_t record = party8_at(A_PLAYERS) + k * PLAYER_SIZE, object = rd32(ram, record + 0x43d8) & (RAM - 1);
             Tick::P& p = t.p[k];
             if (object) { p.x = rd32(ram, object + 0x10); p.y = rd32(ram, object + 0x14); p.z = rd32(ram, object + 0x18); p.state = (int32_t)rd32(ram, object + 0x58c); }
             p.hp = rd32(ram, record + 0xac);

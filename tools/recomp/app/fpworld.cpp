@@ -39,7 +39,7 @@ namespace fpworld {
 namespace {
 
 const u32 G_DL_BASE = 0x44FE0C, G_DL_CURSOR = 0x44FE10, G_DL_UNITS = 0x44FDA4;
-const u32 RAM_MASK = 0x01FFFFFF;
+const u32 RAM_MASK = RAM_SIZE - 1;     // ramsize.h
 
 enum { WHEN_VIEWS = 0, WHEN_OFF = 1, WHEN_ALWAYS = 2 };
 std::atomic<int> g_when{WHEN_VIEWS};
@@ -530,14 +530,14 @@ void level_fill(u32 world) {
     opt.ceilings = ceilings == ON || (ceilings == AUTO && !dome && black);
     opt.rims = rims == ON || (rims == AUTO && dome);
     if (opt.ceilings || opt.skirts || opt.rims) {
-        std::shared_ptr<const render::FillLevel> level = render::build_fill(g_ram, 0x02000000, world, true, name, opt);
+        std::shared_ptr<const render::FillLevel> level = render::build_fill(g_ram, RAM_SIZE, world, true, name, opt);
         g_fill_builds++;
         if (level) {
             bool walled = level->floor_area > 0 && (double)level->walls * 256.0 >= 0.10 * level->floor_area;
             bool keep_ceiling = opt.ceilings && (ceilings == ON || walled);
             if (opt.ceilings && !keep_ceiling) {            // not an interior after all: built again without
                 opt.ceilings = false;
-                level = opt.skirts || opt.rims ? render::build_fill(g_ram, 0x02000000, world, true, name, opt) : nullptr;
+                level = opt.skirts || opt.rims ? render::build_fill(g_ram, RAM_SIZE, world, true, name, opt) : nullptr;
             }
             if (level) {
                 g_level.kinds = (level->ceiling_area > 0 ? 1u : 0u) | (level->skirt_area > 0 ? 2u : 0u) | (level->rim_area > 0 ? 4u : 0u);

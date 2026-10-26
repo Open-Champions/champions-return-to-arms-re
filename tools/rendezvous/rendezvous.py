@@ -453,6 +453,16 @@ class Room:
         self.address = None         # the address it was made from, for the per-address limit
         self.invited = set()        # player ids that were invited: they may walk in
 
+    def capacity(self, joiner=None):
+        """Four - the game's own limit - unless the host asked for a room of up to eight (option `size` 5..8, a
+        Remastered / Hardcore room) and every copy in it, the one joining included, says it can play one (bit 0x1000
+        of the copy's word count: docs/issues/native-8-players.md A.8)."""
+        want = self.options.get('size', 0)
+        if want <= 4:
+            return 4
+        copies = [m.conn.copy for m in self.members] + ([joiner.copy] if joiner is not None else [])
+        return want if all(c[1] & 0x1000 for c in copies) else 4
+
 
 class Service:
     def __init__(self, store, quiet=False, tls=None):
@@ -962,7 +972,7 @@ class Service:
         member = self.member(room, conn)
         if room.started and member is not None and member.phase:
             return 3, '', 0, len(room.members), conn.level, conn.since
-        joinable = int(room.options['open'] == 1 and not room.started and len(room.members) < 4 and
+        joinable = int(room.options['open'] == 1 and not room.started and len(room.members) < room.capacity() and
                        not self.store.blocked(room.members[0].conn.pid, viewer))
         return 2, room.code if joinable else '', joinable, len(room.members), '', conn.since
 
@@ -1259,10 +1269,10 @@ class Service:
 
     @staticmethod
     def options_of(f, old=None):
-        o = dict(old) if old else {'level': '', 'diff': 0, 'mode': 0, 'mission': 0, 'kills': 0, 'open': 0}
+        o = dict(old) if old else {'level': '', 'diff': 0, 'mode': 0, 'mission': 0, 'kills': 0, 'open': 0, 'size': 0}
         if 'level' in f:
             o['level'] = clean(f['level'], LIMITS['label_bytes'])
-        for key, most in (('diff', 9), ('mode', 9), ('mission', 99), ('kills', 99), ('open', 1)):
+        for key, most in (('diff', 9), ('mode', 9), ('mission', 99), ('kills', 99), ('open', 1), ('size', 8)):
             if key in f:
                 try:
                     o[key] = max(0, min(most, int(f[key])))
@@ -1274,7 +1284,8 @@ class Service:
         o = room.options
         mine = self.member(room, conn)
         out = [line('room', code=room.code, state='started' if room.started else 'open', slot=room.members.index(mine), host=0, count=len(room.members),
-                    level=o['level'], diff=o['diff'], mode=o['mode'], mission=o['mission'], kills=o['kills'], open=o['open'])]
+                    level=o['level'], diff=o['diff'], mode=o['mode'], mission=o['mission'], kills=o['kills'], open=o['open'],
+                    size=o.get('size', 0), cap=room.capacity())]
         for slot, m in enumerate(room.members):
             p = self.store.player(m.conn.pid)
             out.append(line('member', slot=slot, id=m.conn.pid, name=p['name'], ready=int(m.ready), phase=m.phase, fix='%08x' % m.conn.copy[0],
@@ -1335,7 +1346,10 @@ class Service:
             return self.answer(conn, f, E_NOT_FOUND, 'There is no such room.')
         if room.started:
             return self.answer(conn, f, E_REFUSED, 'That game has already started.')
-        if len(room.members) >= 4:
+        if len(room.members) >= room.capacity(conn):
+            if room.options.get('size', 0) > 4:
+                self.log('a room of up to %d is full at %d: not every copy can play more than four (words %s)' % (
+                    room.options['size'], len(room.members), ' '.join('%04x' % c[1] for c in [m.conn.copy for m in room.members] + [conn.copy])))
             return self.answer(conn, f, E_FULL, 'That room is full.')
         if by_friend is not None and room.options['open'] != 1 and conn.pid not in room.invited:
             return self.answer(conn, f, E_REFUSED, 'That room is by code or invitation only.')

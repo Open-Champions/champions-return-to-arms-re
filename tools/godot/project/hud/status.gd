@@ -186,8 +186,15 @@ func _status_row(p: Dictionary, at: Vector2, s: float, centred := false) -> void
 func _party() -> void:
 	# the other players: compact frames stacked above the player's own
 	var s: float = hud.s
+	# four others or fewer: the full frames; five to seven (a game of up to eight): compact ones, so that the stack
+	# keeps to the lower left (name and level on one line with the bars, no mana bar)
+	var others := 0
+	for p in hud.players:
+		if p.get("present", false) and not p.get("local", false):
+			others += 1
+	var compact := others > 3
 	var w: float = 250.0 * s
-	var h: float = 50.0 * s
+	var h: float = (34.0 if compact else 50.0) * s
 	var y: float = hud.area.end.y - (104.0 + 62.0) * s * (0.9 if hud.layout == Hud.LAYOUT_THIRD else 1.0)
 	if hud.layout == Hud.LAYOUT_FIRST:
 		y = hud.area.end.y + 8.0 * s       # first person has no frame of one's own: the stack starts at the foot
@@ -200,7 +207,7 @@ func _party() -> void:
 			continue
 		y -= h
 		var o := Vector2(hud.area.position.x, y).round()
-		y -= 8.0 * s
+		y -= (5.0 if compact else 8.0) * s
 		var alpha: float = 1.0 if p.alive else 0.6
 		Style.panel(self, Rect2(o, Vector2(w, h)), s, alpha, 6.0)
 		draw_rect(Rect2(o + Vector2(0, 6.0 * s), Vector2(3.0 * s, h - 12.0 * s)), Color(Style.PARTY, alpha))
@@ -209,10 +216,11 @@ func _party() -> void:
 		Style.text(self, o + Vector2(w - 12.0 * s, 19.0 * s), "Lv " + tag, 12.0 * s, Color(Style.TEXT_DIM, alpha), 2)
 		if p.get("fake", false):
 			Style.text(self, o + Vector2(w + 8.0 * s, 30.0 * s), "TEST DATA - not a player", 12.0 * s, Style.WARN, 0, true)
-		var hr := Rect2((o + Vector2(14.0, 26.0) * s).round(), Vector2(w - 26.0 * s, 9.0 * s).round())
+		var hr := Rect2((o + Vector2(14.0, 26.0 if not compact else 24.0) * s).round(), Vector2(w - 26.0 * s, (9.0 if not compact else 6.0) * s).round())
 		if p.alive:
 			Style.bar(self, hr, b.hp, b.ghost, Style.HEALTH_A, Style.HEALTH_B, s, alpha)
-			Style.bar(self, Rect2(hr.position + Vector2(0, 13.0 * s), Vector2(hr.size.x, 4.0 * s)).abs(), b.mana, 0.0, Style.MANA_A, Style.MANA_B, s, alpha)
+			if not compact:
+				Style.bar(self, Rect2(hr.position + Vector2(0, 13.0 * s), Vector2(hr.size.x, 4.0 * s)).abs(), b.mana, 0.0, Style.MANA_A, Style.MANA_B, s, alpha)
 		else:
 			Style.skull(self, hr.position + Vector2(7.0, 7.0) * s, 7.0 * s, Style.TEXT_DIM)
 			Style.text(self, hr.position + Vector2(20.0, 12.0) * s, "down", 13.0 * s, Style.TEXT_DIM, 0, true)

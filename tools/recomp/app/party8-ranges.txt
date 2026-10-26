@@ -1,15 +1,29 @@
 # The game's tables sized for four players that a game of five to eight moves (docs/issues/native-8-players.md A.9;
 # tools/recomp/reloc.py reads this for recomp.py --reloc).  One table per line: slot of g_reloc (decimal), start, end
-# (exclusive; hex).  Each moves as a whole; a table whose slots are back to back with another table's is listed on its own line
-# so that each can grow.
+# (exclusive; hex).  Each moves as a whole.  Tables the game reaches from a pointer into one another (reloc.py's
+# "reached from a pointer into another table", gen-app-p8/reloc-crosses.txt) must be one line: they move by one amount.
 0   4d8af0  4ebbb0   # g_players: 4 x 0x4c30
 1   5bf838  5d0bb8   # g_peers: 4 x 0x44e0 (with the sync ring g_localSyncRing 0x5c10e4)
 2   41bfd8  41c138   # g_pads: 4 x 0x58
 3   41c140  41c144   # g_padSlotMap: s8[4]
-4   41b980  41ba40   # the button tables: 12 x u32[4] (each 0x10)
-5   402b3b  402b5b   # the address tables: 2 x 4 x 4 bytes
-6   402b5c  402b7c   # the port tables: 2 x u32[4]
-7   402b90  4030a0   # g_launchRecs: 4 x 0x144
+4   41b980  41b990   # the button tables, 12 x u32[4], each on its own line (each grows to u32[8]): g_btnAttack
+42  41b990  41b9a0   # g_btnAbilityA
+43  41b9a0  41b9b0   # g_btnAbilityB
+44  41b9b0  41b9c0   # 0x41b9b0
+45  41b9c0  41b9d0   # g_btnUse
+46  41b9d0  41b9e0   # g_btnBlock
+47  41b9e0  41b9f0   # 0x41b9e0
+48  41b9f0  41ba00   # 0x41b9f0
+49  41ba00  41ba10   # 0x41ba00
+50  41ba10  41ba20   # g_btnPotionA
+51  41ba20  41ba30   # g_btnPotionB
+52  41ba30  41ba40   # g_btnWeaponSwap
+5   402a30  4030a0   # the launch's block, one group (reloc.py finds the game reaching each part from a pointer into
+                     # another: net_launchTransfer reads the address tables from a pointer into the port tables, the end of
+                     # the launch the port tables from one into the records): the settings 0x402a30 (count +7, own number
+                     # +9), the address tables 2 x 4 x 4 bytes 0x402b3b, the port tables 2 x u32[4] 0x402b5c, the launch
+                     # buffer's pointer and words 0x402b7c..0x402b8f, g_launchRecs 4 x 0x144 0x402b90 (last: records 4..7
+                     # follow them in the moved block)
 8   5d0bc0  5d0bc8   # g_netCamYaw: u16[4]
 9   5d0bc8  5d0bf8   # g_netInputLock: 4 x 12
 10  5d1454  5d1458   # g_netKickAcks: u8[4]
@@ -18,3 +32,54 @@
 13  4f84a8  4f84b0   # g_playerDeadCountdown: s16[4]
 14  4039c8  4039f8   # g_activityCenters: Vec3[4] (the count at 0x403a08 stays; 0x4039f8 is the script-self word)
 15  879ec0  88cf80   # g_savedPlayers: 4 x 0x4c30
+# The network's per-peer table and the per-slot arrays a game of five to eight indexes up to slot 7 (A.1-A.3; the
+# per-slot arrays from symbols/*.tsv and the review of the hard-coded fours, C.4).  Each its own line so that each
+# can grow to eight entries in place.
+16  4027e8  4027f8   # g_netSendCycleTable s32[4] by remote count (6, 2, 4, 6): party8.cpp fills entries 4..7
+17  86acd8  86ace8   # the HUD's per-slot gold shown, int[4] (hud_drawGold writes [local slot]; zeroed by hud_flushGold)
+18  86ace8  86acf8   # g_goldPending int[4]
+19  4f6950  4f6960   # the HUD's per-slot gold counter, int[4] (zeroed by hud_flushGold)
+20  4f84b0  4f85b0   # per slot 0x40 bytes (s16[0x20]) copied from the launch record at the end of the launch (0x137780); 0x4f85b0 is g_gameLevelLoaded
+21  4f85d0  4f85e0   # per slot a word copied from the launch record at the end of the launch (0x1377d8)
+22  41b518  41b51c   # g_playerNoticeOpen u8[4] (0x41b51c, the recall flag, and 0x41b51d stay)
+23  41b520  41b550   # the recall return positions, 4 x xyz
+24  4d8a30  4d8a38   # g_playerDrawPulse s16[4]
+25  4d8a38  4d8a40   # its phase, s16[4]
+26  4d8a40  4d8a50   # g_playerAuraLevel int[4]
+27  4d8a50  4d8a90   # g_playerAuraColor int[4][4]
+28  4d8a90  4d8aa0   # g_playerAuraFadeRate float[4]
+29  4d8aa0  4d8ab0   # g_playerAuraFade float[4]
+30  4d8ab0  4d8ac0   # g_playerAuraDir int[4]
+31  4d8ac0  4d8ad0   # g_interactPromptAlpha int[4]
+32  4d8ad0  4d8ae0   # g_interactPromptIcon int[4]
+33  41b818  41b828   # g_spellSelectorHeld int[4]
+34  41b828  41b8a8   # g_hudNoticeTimers int[4][8]
+35  41b8a8  41b928   # g_hudNoticeRows int[4][8]
+36  41b930  41b940   # g_hudHitFlash int[4]
+37  4f66b8  4f66c8   # g_spellSelectorDir int[4]
+38  86a8d8  86a8e8   # g_spellSelectorAlpha int[4]
+39  86aa90  86aa94   # g_noticeButtonReleased u8[4]
+40  8659a0  8659e0   # g_playerAuraLightColor int[4][4]
+41  4f4040  4f4210   # g_itemPanels 4 x 0x74
+53  4030a0  403150   # the launch's character summaries, 4 x 0x2c (net_launchUpdate 0x135e18: 0x4030a0 + player x 0x2c)
+54  864f50  865750   # the interact prompt's text per slot, 4 x 0x200 UTF-16 (Player_interact 0x1b2640)
+# The equipment cache (eqcache_*: 0x1a2680-0x1a3080): ten rows of 0x160 bytes, each row one 0x58-byte record per player
+# slot.  Each row is its own table, moved with room for eight, one after the other 0x2c0 apart (party8.cpp places
+# tables of one size in the order of their slots and checks it); the code that steps from row to row by 0x160 is
+# in party8-sites.txt (kind rows:0x160).
+6   8659e8  865b48   # equipment cache row 0
+7   865b48  865ca8   # equipment cache row 1
+55  865ca8  865e08   # equipment cache row 2
+56  865e08  865f68   # equipment cache row 3
+57  865f68  8660c8   # equipment cache row 4
+58  8660c8  866228   # equipment cache row 5
+59  866228  866388   # equipment cache row 6
+60  866388  8664e8   # equipment cache row 7 (Player_draw's 0x866388 + slot x 0x58)
+61  8664e8  866648   # equipment cache row 8
+62  866648  8667a8   # equipment cache row 9 (0x866648 + slot x 0x58)
+# The raw pads per player slot (not per controller): net_main samples the local player's pad into g_rawPads[own slot]
+# (0x1334d4, pad_apply) and keeps the last one in g_rawPadPrev[own slot] (0x1334b4); a player 5..8 has own slot 4..7.
+# (net_frameLoop's save / clear / restore of four raw pads' edges, 0x139f7c / 0x13b13c / 0x13b1ac, stays at four: its
+# stack arrays hold four; a local slot 4..7 keeps its edges through the ticks of one call - local menus only.)
+63  4028d0  402a30   # g_rawPads, 4 x 0x58
+64  5d0bf8  5d0c18   # g_rawPadPrev, 4 x 8

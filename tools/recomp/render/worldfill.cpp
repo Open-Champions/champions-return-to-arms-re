@@ -21,7 +21,7 @@ struct Reader {
     const uint8_t* m; size_t size; uint32_t world; bool relocated;
     bool ok = true;
     // an offset the loader turns into a pointer: a place in `m`
-    size_t at(uint32_t value) const { return relocated ? (size_t)(value & 0x01FFFFFFu) : (size_t)world + value; }
+    size_t at(uint32_t value) const { return relocated ? (size_t)(value & (uint32_t)(size - 1)) : (size_t)world + value; }   // size: the memory, a power of two
     bool fits(size_t a, size_t n) const { return a <= size && n <= size - a; }
     uint32_t u32(size_t a) { uint32_t v = 0; if (fits(a, 4)) memcpy(&v, m + a, 4); else ok = false; return v; }
     int32_t s32(size_t a) { return (int32_t)u32(a); }
@@ -89,7 +89,7 @@ std::shared_ptr<const FillLevel> current_fill() { std::lock_guard<std::mutex> ho
 std::shared_ptr<const FillLevel> build_fill(const uint8_t* memory, size_t size, uint32_t world, bool relocated, const char* name, const FillOptions& opt) {
     const auto started = std::chrono::steady_clock::now();
     Reader r{memory, size, world, relocated};
-    const size_t base = relocated ? (size_t)(world & 0x01FFFFFFu) : (size_t)world;
+    const size_t base = relocated ? (size_t)(world & (uint32_t)(size - 1)) : (size_t)world;
     if (!r.fits(base, 0x84)) return nullptr;
     const uint32_t chunks = r.u32(base), elements = r.u32(base + 0x1C);
     if (!chunks || chunks > 0xFFFF || !elements || elements > 100000) return nullptr;

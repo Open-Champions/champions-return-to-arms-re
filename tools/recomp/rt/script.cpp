@@ -59,7 +59,7 @@ struct Parser {
         if (isdigit((unsigned char)word[0])) return (u32)strtoul(word.c_str(), nullptr, 0);
         auto it = g_symbols.find(word);
         if (it == g_symbols.end()) rt_die("expression '%s': unknown name %s (is a --sym file missing?)", s.c_str(), word.c_str());
-        return it->second;
+        return party8_at(it->second);       // a moved table's name is its new place: g_players+4*0x4c30 is slot 4 (moved.h)
     }
     u32 product() {
         u32 v = factor();

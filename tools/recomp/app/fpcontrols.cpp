@@ -30,7 +30,7 @@ typedef uint32_t u32;
 typedef int32_t s32;
 
 // ---- the game's memory ----------------------------------------------------------------------
-const u32 RAM = 0x2000000;
+const u32 RAM = RAM_SIZE;               // ramsize.h
 bool ok(u32 a, u32 size = 4) { a &= 0x1FFFFFFF; return a >= 0x80000 && a <= RAM - size; }
 u8* at(u32 a) { return rta::memory() + (party8_at(a) & 0x1FFFFFFF); }   // moved.h: a table moved for eight players
 u32 W(u32 a) { u32 v = 0; if (ok(a)) memcpy(&v, at(a), 4); return v; }
@@ -169,7 +169,7 @@ Body find_body() {
     s32 alive = (s32)W(G_LOCAL_ALIVE_COUNT);
     b.slot = alive >= 1 ? (s32)W(G_LOCAL_ALIVE) : 0;
     if (b.slot < 0 || b.slot > 3) return b;
-    u32 record = G_PLAYERS + (u32)b.slot * PLAYER_STRIDE;
+    u32 record = party8_at(G_PLAYERS) + (u32)b.slot * PLAYER_STRIDE;
     b.real = W(record + REC_OBJECT);
     if (!ok(b.real, 0x590)) return b;
     b.object = b.real;
@@ -190,7 +190,7 @@ Body find_body() {
 float speed_scale(const Body& b) {
     float base = 0.861945f;
     if (b.net && strncmp((const char*)at(G_LEVEL_NAME), "watmedal", 8) != 0) base = 0.75f;
-    float s = base * F(G_PLAYERS + (u32)b.slot * PLAYER_STRIDE + REC_SPEED) * F(G_RUN_SPEED);
+    float s = base * F(party8_at(G_PLAYERS) + (u32)b.slot * PLAYER_STRIDE + REC_SPEED) * F(G_RUN_SPEED);
     if (!(s > 0.05f)) s = base;
     return s > 1.2f ? 1.2f : s;
 }
@@ -271,7 +271,7 @@ void update_hud(uint64_t blank, const Body& b, bool steer, int heading_units, fl
         h.last_hit_amount = g_prev_hp - b.hp;
         h.last_hit_bearing = 0;
         for (int k = 0; k < h.threat_count; k++) if (h.threats[k].targets_me) { h.last_hit_bearing = h.threats[k].bearing; break; }
-        float full = std::max(1.0f, F(G_PLAYERS + (u32)std::max(0, b.slot) * PLAYER_STRIDE + REC_HP + 4));
+        float full = std::max(1.0f, F(party8_at(G_PLAYERS) + (u32)std::max(0, b.slot) * PLAYER_STRIDE + REC_HP + 4));
         float size = clampf(h.last_hit_amount / full * 12.0f, 0.5f, 3.0f);
         g_kick_pitch += size;
         g_kick_roll += (h.last_hit_bearing >= 0 ? -1.0f : 1.0f) * size * 0.8f;
@@ -281,7 +281,7 @@ void update_hud(uint64_t blank, const Body& b, bool steer, int heading_units, fl
     h.souls = g_souls.load();
     h.usable = false; h.usable_text[0] = 0; h.usable_object = 0;
     // events that do not need a living player: death and coming back
-    u32 record = G_PLAYERS + (u32)std::max(0, b.slot) * PLAYER_STRIDE;
+    u32 record = party8_at(G_PLAYERS) + (u32)std::max(0, b.slot) * PLAYER_STRIDE;
     // (the simulated object names the character: the prediction copy of a net game is made anew every half second)
     if (b.real && b.real != g_prev_object) {
         if (g_prev_object && g_prev_hp <= 0 && b.hp > 0) h.respawns++;
@@ -437,9 +437,9 @@ void translate(uint64_t blank, rta::PadState& state) {
 
     // the mouse's buttons are buttons of the pad in a look view (the masks are the game's own table)
     u32 mouse = set.mouse_buttons && look_view ? g_mouse_held.load() : 0;
-    u16 attack = swap_bytes(W(G_BTN_ATTACK + (u32)std::max(0, b.slot) * 4)), block = swap_bytes(W(G_BTN_BLOCK + (u32)std::max(0, b.slot) * 4));
-    u16 use = swap_bytes(W(G_BTN_USE + (u32)std::max(0, b.slot) * 4)), swap_set = swap_bytes(W(G_BTN_SWAP + (u32)std::max(0, b.slot) * 4));
-    u16 ability = swap_bytes(W(G_BTN_ABILITY_A + (u32)std::max(0, b.slot) * 4)) | swap_bytes(W(G_BTN_ABILITY_B + (u32)std::max(0, b.slot) * 4));
+    u16 attack = swap_bytes(W(party8_at(G_BTN_ATTACK) + (u32)std::max(0, b.slot) * 4)), block = swap_bytes(W(party8_at(G_BTN_BLOCK) + (u32)std::max(0, b.slot) * 4));
+    u16 use = swap_bytes(W(party8_at(G_BTN_USE) + (u32)std::max(0, b.slot) * 4)), swap_set = swap_bytes(W(party8_at(G_BTN_SWAP) + (u32)std::max(0, b.slot) * 4));
+    u16 ability = swap_bytes(W(party8_at(G_BTN_ABILITY_A) + (u32)std::max(0, b.slot) * 4)) | swap_bytes(W(party8_at(G_BTN_ABILITY_B) + (u32)std::max(0, b.slot) * 4));
     if (!attack) attack = rta::PAD_CROSS;
     if (!block) block = rta::PAD_R1;
     if (!use) use = rta::PAD_SQUARE;
@@ -609,7 +609,7 @@ void translate(uint64_t blank, rta::PadState& state) {
     // In a net game the simulation steers by the yaw word as the wire's codec approximates it (within about a
     // degree; g_netCamYaw holds this machine's own after the prediction of the last blank): the character is
     // turned to that, or the turning push would never be satisfied.  The picture keeps the exact word.
-    int steered = b.net ? T_UP - (s16)H(G_NET_CAM_YAW + (u32)b.slot * 2) : heading;
+    int steered = b.net ? T_UP - (s16)H(party8_at(G_NET_CAM_YAW) + (u32)b.slot * 2) : heading;
     if (b.net && std::abs((int)wrap16(steered - heading)) > 0x300) steered = heading;        // the look is turning fast: the word in the table is an old one
     int error = wrap16(steered - b.facing);
     float error_deg = std::fabs((float)error / UNITS);

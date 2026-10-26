@@ -964,7 +964,23 @@ void fn_00365830(Ctx* c) {                  // sceInetSendTo(cd, buf, id, ptr, l
     if (!conn || conn->type != T_DGRAM || !data) { answer(c, conn ? (s32)length : E_FAILED); return; }
     u32 dest = block_ip(arg(c, 6));
     u16 port = (u16)arg(c, 7);
-    if (D.log_all) rtanet::log("sceInetSendTo(port %u -> %s:%u, %u bytes, first %02x %02x)", conn->game_port, rtanet::ip_text(dest).c_str(), port, length, data[0], length > 1 ? data[1] : 0);
+    if (D.log_all) {
+        char head[64] = "";
+        for (u32 i = 0; i < length && i < 16; i++) snprintf(head + 3 * i, 4, " %02x", data[i]);
+        rtanet::log("sceInetSendTo(port %u -> %s:%u, %u bytes, first%s)", conn->game_port, rtanet::ip_text(dest).c_str(), port, length, head);
+    }
+    u32 type = 0;
+    if (length >= 12) memcpy(&type, data, 4);
+    if (g_party8_wide && (type == 0xbd3f || type == 0xbd42) && length <= 2040) {
+        // a game of five to eight: the sender's whole active mask rides behind the packet (moved.h PARTY8_TRAILER)
+        u8 wide[2048];
+        memcpy(wide, data, length);
+        const u32 trailer = PARTY8_TRAILER | party8_active_mask(g_ram);
+        memcpy(wide + length, &trailer, 4);
+        s32 sent = udp_send(*conn, wide, length + 4, dest, port);
+        answer(c, sent == (s32)(length + 4) ? (s32)length : sent);
+        return;
+    }
     answer(c, udp_send(*conn, data, length, dest, port));
 }
 
@@ -984,12 +1000,25 @@ void fn_00365670(Ctx* c) {                  // sceInetRecvFrom(cd, buf, id, ptr,
             if (attempt == 0 && nap(c, ms)) continue;
             break;
         }
+        u32 type = 0;
+        if (size >= 12) memcpy(&type, buffer, 4);
+        if (g_party8_wide && (type == 0xbd3f || type == 0xbd42)) {
+            // a game of five to eight: the sender's active mask is the trailer (moved.h); the game sees the packet as sent
+            u32 trailer = 0;
+            if (size >= 16) memcpy(&trailer, buffer + size - 4, 4);
+            if ((trailer & 0xFF000000u) == PARTY8_TRAILER) { g_party8_rx_mask = trailer & 0xFF; size -= 4; }
+            else g_party8_rx_mask = 0x100;
+        }
         if (size > length) size = length;
         memcpy(into, buffer, size);
         block_set(arg(c, 6), shown);
         wr32(arg(c, 7), port);
         wr32(arg(c, 5), 0);
-        if (D.log_all) rtanet::log("sceInetRecvFrom(port %u) -> %zu bytes from %s:%u, first %02x %02x", conn->game_port, size, rtanet::ip_text(shown).c_str(), port, buffer[0], size > 1 ? buffer[1] : 0);
+        if (D.log_all) {
+            char head[64] = "";
+            for (size_t i = 0; i < size && i < 16; i++) snprintf(head + 3 * i, 4, " %02x", buffer[i]);
+            rtanet::log("sceInetRecvFrom(port %u) -> %zu bytes from %s:%u, first%s", conn->game_port, size, rtanet::ip_text(shown).c_str(), port, head);
+        }
         answer(c, (s32)size);
         return;
     }

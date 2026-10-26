@@ -548,8 +548,19 @@ RELOC_MISSED = []
 _simple_plain = simple
 
 
+RELOC_SITES = {}         # --reloc-sites: instructions whose immediate 4 is the number of player slots {pc: kind}
+RELOC_SITES_DONE = set()
+
+
 def simple(pc, w):  # noqa: F811 (the plain one wrapped)
     text = _simple_plain(pc, w)
+    if pc in RELOC_SITES:
+        moved = reloc.slots(pc, w, text, RELOC_SITES[pc])
+        if moved is None:
+            RELOC_MISSED.append(pc)
+        else:
+            RELOC_SITES_DONE.add(pc)
+            text = moved
     k = RELOC_DECIDE.get(pc)
     if k is None:
         return text
@@ -1032,6 +1043,8 @@ def main(argv=None):
                         'after the words of --pnach, and are not counted in recomp_patch_set_words()')
     parser.add_argument('--reloc', help='a file of table ranges (reloc.py) whose addresses the translation forms '
                         'with g_reloc[k] added: 0 unless a mode has moved the table at run time')
+    parser.add_argument('--reloc-sites', help='with --reloc: a file of instruction addresses (reloc.read_sites) whose '
+                        'immediate 4 is the number of player slots; emitted as g_party8_slots (4, or 8 in a game of five to eight)')
     parser.add_argument('--hle-add', action='append', default=[],
                         help='one more file of addresses supplied by whoever links the translation (repeatable), '
                         'added to --hle: a module such as tools/recomp/net keeps its own list')
@@ -1123,6 +1136,8 @@ def main(argv=None):
         current, current_size = [], 0
 
     reloc_ranges = reloc.read_ranges(args.reloc) if args.reloc else []
+    if reloc_ranges and args.reloc_sites:
+        RELOC_SITES.update(reloc.read_sites(args.reloc_sites))
     reloc_count, reloc_units = {}, 0
     for unit in units:
         RELOC_DECIDE.clear()
@@ -1146,7 +1161,8 @@ def main(argv=None):
     text += ['void fn_%08x(Ctx*);' % addr for addr in sorted(known)]
     text += ['void orig_%08x(Ctx*);' % addr for addr in sorted(hle & {u.start for u in units})]
     if reloc_ranges:
-        text += ['extern u32 g_reloc[32];   // reloc.py: added to the addresses of the moved tables; 0 = where the game has them']
+        text += ['extern u32 g_reloc[%d];' % reloc.TABLES + '   // reloc.py: added to the addresses of the moved tables; 0 = where the game has them',
+                 'extern u32 g_party8_slots;    // reloc.py: the number of player slots at the hard-coded fours (4, or 8)']
     write_if_changed(os.path.join(args.out, 'funcs.h'), '\n'.join(text) + '\n')
     text = ['// generated - do not commit', '#include "recomp.h"', '#include "funcs.h"',
             'const RecompEntry g_recomp_entries[] = {']
@@ -1154,10 +1170,10 @@ def main(argv=None):
     text += ['};', 'const unsigned g_recomp_entry_count = %d;' % len(known)]
     if reloc_ranges:
         # the moved tables: what reloc.py relocates, for the module that moves them (app/party8.cpp; weak there)
-        text += ['u32 g_reloc[32];', 'u32 g_reloc_spans[32][2] = {']
+        text += ['u32 g_reloc[%d];' % reloc.TABLES, 'u32 g_reloc_spans[%d][2] = {' % reloc.TABLES]
         text += ['    {0x%xu, 0x%xu},' % (lo, hi) if any(r[0] == k for r in reloc_ranges) else '    {0u, 0u},'
-                 for k in range(32) for (lo, hi) in [next(((r[1], r[2]) for r in reloc_ranges if r[0] == k), (0, 0))]]
-        text += ['};', 'unsigned g_reloc_count = %d;' % len(reloc_ranges)]
+                 for k in range(reloc.TABLES) for (lo, hi) in [next(((r[1], r[2]) for r in reloc_ranges if r[0] == k), (0, 0))]]
+        text += ['};', 'unsigned g_reloc_count = %d;' % len(reloc_ranges), 'u32 g_party8_slots = 4;']
     write_if_changed(os.path.join(args.out, 'table.cpp'), '\n'.join(text) + '\n')
     # a program that does not replace a function on the HLE list gets the translation
     text = ['// generated - do not commit', '#include "recomp.h"', '#include "funcs.h"']
@@ -1203,6 +1219,18 @@ def main(argv=None):
         print('relocated: %d instructions in %d units (%s); not rewritten: %d%s' % (
             sum(reloc_count.values()), reloc_units, ', '.join('table %d: %d' % kv for kv in sorted(reloc_count.items())),
             len(RELOC_MISSED), (' (' + ' '.join('%x' % a for a in RELOC_MISSED[:20]) + ')') if RELOC_MISSED else ''))
+    if reloc_ranges:
+        # accesses through a pointer into a moved table that land outside it (reloc.CROSSES): such tables must move as
+        # one group, or the access is a field next to the table
+        with open(os.path.join(args.out, 'reloc-crosses.txt'), 'w') as out:
+            for pc in sorted(reloc.CROSSES):
+                k, address, other = reloc.CROSSES[pc]
+                out.write('%x table %d reaches %x (%s)\n' % (pc, k, address, 'table %d' % other if other is not None else 'no table'))
+        print('reached from a pointer into another table: %d accesses (%s)' % (len(reloc.CROSSES), os.path.join(args.out, 'reloc-crosses.txt')))
+    if RELOC_SITES:
+        print('player-slot fours: %d of %d sites emitted as g_party8_slots%s' % (
+            len(RELOC_SITES_DONE), len(RELOC_SITES), ('; not found: ' + ' '.join('%x' % a for a in sorted(set(RELOC_SITES) - RELOC_SITES_DONE)))
+            if set(RELOC_SITES) - RELOC_SITES_DONE else ''))
     print('C++ files: %d (+ funcs.h, table.cpp) in %s' % (len(files), args.out))
     return 0
 

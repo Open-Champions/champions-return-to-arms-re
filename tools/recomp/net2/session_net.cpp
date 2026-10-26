@@ -619,6 +619,7 @@ struct Net : Backend {
             incoming.options.mission = (int)l.num("mission");
             incoming.options.kill_limit = (int)l.num("kills");
             incoming.options.open_to = (int)l.num("open");
+            incoming.options.max_players = (int)l.num("size");       // what the host asked for (0: four; a service before rooms of eight: 0)
         } else if (v == "member" && in_room_block) {
             if (incoming.count >= NET2_PLAYERS) return;
             net2_member& m = incoming.members[incoming.count++];
@@ -926,7 +927,8 @@ struct Net : Backend {
     }
     static std::string option_fields(const net2_options& o) {
         return "level=" + enc(o.level) + " diff=" + std::to_string(o.difficulty) + " mode=" + std::to_string(o.mode) + " mission=" + std::to_string(o.mission) +
-               " kills=" + std::to_string(o.kill_limit) + " open=" + std::to_string(o.open_to);
+               " kills=" + std::to_string(o.kill_limit) + " open=" + std::to_string(o.open_to) +
+               (o.max_players >= 4 ? " size=" + std::to_string(o.max_players > 8 ? 8 : o.max_players) : std::string());
     }
     int joining(int r) {
         if (r == NET2_OK) { s.room = net2_room_t{}; s.room.state = NET2_ROOM_JOINING; early_chat.clear(); s.event(NET2_EV_ROOM); }

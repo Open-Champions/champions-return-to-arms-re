@@ -30,8 +30,8 @@
 extern "C" {
 #endif
 
-#define RTA_GS_VERSION 1
-#define RTA_GS_PLAYERS 4
+#define RTA_GS_VERSION 2      /* 2: eight player slots (a game of five to eight, docs/issues/native-8-players.md) */
+#define RTA_GS_PLAYERS 8
 #define RTA_GS_CREATURES 64
 #define RTA_GS_EVENTS 48
 #define RTA_GS_STATUS 10

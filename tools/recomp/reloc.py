@@ -13,10 +13,11 @@ register but s0-s8, gp and sp.  A register written by anything else forgets.  Wh
 relocated (a missed access, which a test finds by poisoning the old table).
 
 File format (FILE): one range per line, `index start end`: the index in decimal, start and end in hex (end exclusive), `#` comments.  The index is the
-slot of g_reloc (0..31).
+slot of g_reloc (0..95).
 """
 
 MASK = 0xFFFFFFFF
+TABLES = 96          # the slots of g_reloc (rt/moved.h PARTY8_TABLES)
 
 
 def sx16(x):
@@ -32,7 +33,7 @@ def read_ranges(path):
             if not fields:
                 continue
             k, lo, hi = int(fields[0]), int(fields[1], 16), int(fields[2], 16)
-            if not 0 <= k < 32 or hi <= lo:
+            if not 0 <= k < TABLES or hi <= lo:
                 raise ValueError('bad relocation range: %s' % line.strip())
             ranges.append((k, lo, hi))
     return ranges
@@ -49,6 +50,11 @@ LOADS = {0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x37, 0x1A, 0x1B, 0x1E}
 STORES = {0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x3F, 0x1F}                    # sb sh swl sw sdl sdr swr sd sq
 FP_MEM = {0x31, 0x39, 0x36, 0x3E}                                                  # lwc1 swc1 lqc2 sqc2 (base is a GPR)
 KEEP_OVER_CALL = set(range(16, 24)) | {28, 29, 30}
+
+# Accesses through a pointer into table k (formed by a relocated addiu) whose offset lands outside table k: in another
+# listed table (that table then has to move by the same amount: one group) or outside every table (a field next to
+# it).  Filled by analyse_unit; recomp.py prints them.  {pc: (k, address, other table or None)}
+CROSSES = {}
 
 
 def transfer(state, w, decide=None, pc=None, ranges=()):
@@ -72,8 +78,12 @@ def transfer(state, w, decide=None, pc=None, ranges=()):
         src = state.get(rs)
         if src is not None and rt:
             address = (src[1] + imm) & MASK
-            if note(address) is not None:
-                state.pop(rt, None)                  # a moved pointer from here on: plain arithmetic
+            if src[0] in ('p', 'pi', 'px'):          # a moved pointer: plain arithmetic (not relocated again)
+                state[rt] = (src[0], address, src[2])
+                return
+            k = note(address)
+            if k is not None:
+                state[rt] = ('p', address, k)        # a moved pointer from here on
             else:
                 state[rt] = (src[0], address)
         else:
@@ -92,7 +102,15 @@ def transfer(state, w, decide=None, pc=None, ranges=()):
         return
     if op in LOADS or op in STORES or op in FP_MEM:
         src = state.get(rs)
-        if src is not None:
+        if src is not None and src[0] in ('p', 'pi', 'px'):
+            address = (src[1] + imm) & MASK
+            k = src[2]
+            own = [r for r in ranges if r[0] == k]
+            # outside the table but near it (a pointer turned into something else - an offset, a count - is not one)
+            near = own and own[0][1] - 0x1000 <= address < own[0][2] + 0x1000
+            if near and range_of(own, address) is None and decide is not None:
+                CROSSES[pc] = (k, address, range_of(ranges, address))
+        elif src is not None:
             note(src[1] + imm)
         if op in LOADS:
             state.pop(rt, None)
@@ -108,7 +126,8 @@ def transfer(state, w, decide=None, pc=None, ranges=()):
         elif rs == 0 and b is not None:
             state[rd] = b
         elif (a is None) != (b is None) and rs and rt:
-            state[rd] = ('x', (a or b)[1])
+            v = a or b
+            state[rd] = ('px', v[1], v[2]) if v[0] in ('p', 'pi', 'px') else ('x', v[1])
         else:
             state.pop(rd, None)
         return
@@ -131,7 +150,51 @@ def transfer(state, w, decide=None, pc=None, ranges=()):
 def meet(a, b):
     if a is None:
         return dict(b)
-    return {r: v for r, v in a.items() if b.get(r) == v}
+    out = {}
+    for r, v in a.items():
+        w = b.get(r)
+        if w == v:
+            out[r] = v
+        elif w is not None and v[0] in ('p', 'pi', 'px') and w[0] in ('p', 'pi', 'px') and v[2] == w[2]:
+            # a pointer into the same table that a loop moves on: kept with its lowest address (a lower bound;
+            # only used to find accesses that reach below the table)
+            out[r] = ('pi', min(v[1], w[1]), v[2])
+    return out
+
+
+def data_word(image, address):
+    """A word of the executable's loaded data (None when the address is not in the file)."""
+    import struct
+    for vaddr, offset, filesz, _m in image.segments:
+        if vaddr <= address and address + 4 <= vaddr + filesz:
+            return struct.unpack_from('<I', image.data, offset + address - vaddr)[0]
+    return None
+
+
+def jump_table(image, nodes, i, index):
+    """The targets of the jump table that the `jr` at node i goes through, when the compiler's pattern is there
+    (`sltiu t, x, N` ... `lui r, hi` ... `lw r, lo(r)` ... `jr r` within a few instructions): the N words of the
+    table that are code of this unit.  None when the pattern is not found (then every label, as before)."""
+    reg = (nodes[i][1] >> 21) & 31
+    table, bound, upper = None, None, {}
+    for j in range(i - 1, max(-1, i - 12), -1):
+        w = nodes[j][1]
+        op, rs, rt = w >> 26, (w >> 21) & 31, (w >> 16) & 31
+        if table is None and op == 0x23 and rt == reg:                 # lw reg, lo(base)
+            table = ('lw', rs, sx16(w))
+        elif isinstance(table, tuple) and op == 0x0F and rt == table[1]:
+            table = ((w & 0xFFFF) << 16) + table[2]
+        elif op == 0x0B and bound is None:                              # sltiu t, x, N
+            bound = w & 0xFFFF
+    if not isinstance(table, int) or not bound or bound > 512:
+        return None
+    out = []
+    for k in range(bound):
+        t = data_word(image, (table + 4 * k) & MASK)
+        if t is None or t not in index:
+            return None
+        out.append(index[t])
+    return out
 
 
 def analyse_unit(image, unit, walk, control_kind, branch_target, jump_target, always_taken, ranges, strong=None):
@@ -170,7 +233,10 @@ def analyse_unit(image, unit, walk, control_kind, branch_target, jump_target, al
                 out.append((nxt, 'saved'))
         elif kind == 'jr':
             if ((w >> 21) & 31) != 31:              # a jump through a register other than ra: a jump table
-                out += [(j, 'after') for j in labels]
+                # its own targets when the table can be read (a state that reaches every label of the unit from
+                # every jump table loses the registers that stay the same across one dispatch), else every label
+                targets = jump_table(image, nodes, i, index)
+                out += [(j, 'after') for j in (targets if targets is not None else labels)]
         else:                                       # a branch
             t = branch_target(pc, w)
             if t in index:
@@ -247,8 +313,102 @@ def apply(pc, w, text, k, ea):
             return text.replace(old, old + ' + (u64)(s64)(s32)g_reloc[%d]' % k, 1)
         return None
     if op == 0x0D:
+        # the delta is added to the whole OR (C++ would add it to the immediate first: `r | imm + delta`), in 32 bits
+        # with the sign extension of a MIPS address (lui values are sign-extended)
         old = ' | 0x%xull' % (w & 0xFFFF)
-        if old in text:
-            return text.replace(old, old + ' + (u64)g_reloc[%d]' % k, 1)
+        head, eq, rhs = text.partition(' = ')
+        if eq and rhs.endswith(';') and old in rhs:
+            expr = rhs[:-1]
+            return '%s = SX32((u32)(%s) + g_reloc[%d]);' % (head, expr, k)
         return None
+    return None
+
+
+# ---- hard-coded fours (docs/issues/native-8-players.md A.9 step 2) -----------------------------------------------
+# A list of instruction addresses whose immediate 4 is the number of player slots (a loop over the four peers, the
+# four button tables, ...): the translation emits g_party8_slots there instead (4 unless a game of five to eight runs,
+# then 8).  File format: one hex address per line, `#` comments.
+
+# A line may name another kind of site after the address:
+#   rxmask   net_receivePackets' `sra $10, $10, 4` (the active mask from the input packet's high nibble): in a game of
+#            five to eight the whole mask the network layer took off the packet's trailer (rt/moved.h g_party8_rx_mask)
+#   rows:N   an addiu / load / store offset in units of rows of N bytes, a row holding one entry per slot: in a game of
+#            five to eight floor(imm / N) x 2N + imm mod N (the rows are moved 2N apart)
+#   last     `addiu r, $zero, 3`, the first slot of a count-down over the four: g_party8_slots - 1
+#   memtop   `lui r, 0x200`: the top of memory the game's heap is sized by (rt/moved.h g_party8_memtop)
+#   shl+1    `sll rd, rt, sa` whose result is a row offset (row x 0x160 made as (row x 11) << 5): sa + 1
+#   lastoff:N  `addiu r, r, 3N`: from an array's first element of N bytes to its last of four - of g_party8_slots
+
+def read_sites(path):
+    sites = {}
+    with open(path) as source:
+        for line in source:
+            fields = line.split('#')[0].split()
+            if fields:
+                sites[int(fields[0], 16)] = fields[1] if len(fields) > 1 else 'slots'
+    return sites
+
+
+def slots(pc, w, text, kind='slots'):
+    """The statement with its immediate 4 replaced by g_party8_slots; None when the instruction is not one of the
+    forms with an immediate 4 (slti, sltiu, addiu, daddiu, ori with 4)."""
+    op = w >> 26
+    if kind == 'rxmask':
+        # sra rd, rt, 4
+        if op != 0 or (w & 63) != 0x03 or ((w >> 6) & 31) != 4:
+            return None
+        head, eq, rhs = text.partition(' = ')
+        if not eq or not rhs.endswith(';'):
+            return None
+        return '%s = g_party8_slots > 4 ? (u64)g_party8_rx_mask : %s;' % (head, rhs[:-1])
+    if kind.startswith('rows:'):
+        # an offset or step in units of a table's rows, each row one entry per player slot (the equipment cache: rows of
+        # 0x160 = 4 x 0x58): in a game of five to eight the rows lie twice as far apart (party8.cpp places them so)
+        row = int(kind.split(':', 1)[1], 0)
+        imm = sx16(w)
+        wide = (imm // row) * 2 * row + imm % row
+        token = '0x%xu' % (imm & 0xFFFFFFFF)
+        if op not in (0x09,) and op not in LOADS and op not in STORES:
+            return None
+        if text.count(token) != 1:
+            return None
+        return text.replace(token, '(g_party8_slots > 4 ? 0x%xu : %s)' % (wide & 0xFFFFFFFF, token))
+    if kind == 'memtop':
+        # `lui r, 0x200` (32 MB): the top of memory the game sizes its heap by - rt/moved.h g_party8_memtop
+        if op != 0x0F or (w & 0xFFFF) != 0x200 or not text.endswith(' = 0x2000000ull;'):
+            return None
+        return text[:-len('0x2000000ull;')] + '(u64)g_party8_memtop;'
+    if kind == 'shl+1':
+        # `sll rd, rt, sa` that makes a row offset (rows of one entry per slot): one more in a game of five to eight
+        sa = (w >> 6) & 31
+        token = ' << %d)' % sa
+        if op != 0 or (w & 63) != 0 or text.count(token) != 1:
+            return None
+        return text.replace(token, ' << (g_party8_slots > 4 ? %d : %d))' % (sa + 1, sa))
+    if kind.startswith('lastoff:'):
+        # `addiu r, r, 3 x size`: the last of four elements of `size` bytes -> the last of g_party8_slots
+        size = int(kind.split(':', 1)[1], 0)
+        token = ' + 0x%xu)' % (3 * size)
+        if op != 0x09 or sx16(w) != 3 * size or text.count(token) != 1:
+            return None
+        return text.replace(token, ' + (g_party8_slots - 1) * %du)' % size)
+    if kind == 'last':
+        # the last slot of a count-down over the four slots (`addiu r, $zero, 3` ... `bgez`): 3, or 7
+        if op != 0x09 or (w & 0xFFFF) != 3 or ((w >> 21) & 31) != 0 or not text.endswith(' = 0x3ull;'):
+            return None
+        return text[:-len('0x3ull;')] + '(u64)(g_party8_slots - 1);'
+    if kind != 'slots' or (w & 0xFFFF) != 4:
+        return None
+    if op == 0x0A and '(s64)4)' in text:                                     # slti
+        return text.replace('(s64)4)', '(s64)g_party8_slots)', 1)
+    if op == 0x0B and '< 0x4ull)' in text:                                   # sltiu
+        return text.replace('< 0x4ull)', '< (u64)g_party8_slots)', 1)
+    if op == 0x09 and ' + 0x4u)' in text:                                    # addiu
+        return text.replace(' + 0x4u)', ' + g_party8_slots)', 1)
+    if op == 0x09 and text.endswith(' = 0x4ull;'):                           # addiu r, $zero, 4
+        return text[:-len('0x4ull;')] + '(u64)g_party8_slots;'
+    if op == 0x19 and ' + 0x4ull' in text:                                   # daddiu
+        return text.replace(' + 0x4ull', ' + (u64)g_party8_slots', 1)
+    if op == 0x0D and ' | 0x4ull' in text:                                   # ori
+        return text.replace(' | 0x4ull', ' | (u64)g_party8_slots', 1)
     return None
