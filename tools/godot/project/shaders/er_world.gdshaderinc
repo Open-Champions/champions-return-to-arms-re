@@ -159,6 +159,12 @@ vec3 er_apply(int cls, int cls_b, vec3 texel, vec3 low, vec3 tint, vec3 p, vec3 
 	// the relief: the normal bent by the map, against the level's light (the game lit its textures from there)
 	vec3 nb = normalize(n + bent * rta_er.y);
 	vec3 sun = normalize(rta_sky_sun.xyz);
+	// what the game painted bright into its ground (a flower's petals, a pale stone in the grass) stays as it is: the
+	// material's detail would have smeared it into the grass
+	if (cls == 1 || cls == 2) {
+		float lt = dot(texel, vec3(0.3, 0.59, 0.11)), ll = dot(low, vec3(0.3, 0.59, 0.11));
+		strength *= 1.0 - er_smooth(1.35, 1.9, (lt + 8.0) / (ll + 8.0));
+	}
 	relief = mix(1.0, clamp(1.0 + 0.9 * (dot(nb, sun) - dot(n, sun)), 0.55, 1.45), strength);
 	return mix(texel, clamp(detail, vec3(0.0), vec3(255.0)), strength);
 }

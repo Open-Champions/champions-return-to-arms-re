@@ -7,25 +7,26 @@ nothing changes.
 
 Everything below says **Ran** (with what was seen) or **Read**.
 
-## STATE (2026-10-25)
+## STATE (2026-10-25, second session)
 
-Phase 1 steps 1-3 are **working, Ran**. Step 4 (the hub's fitted rebuild) is **not started**.
+Phase 1 steps 1-3 are **working, Ran**, with their faults fixed (below). Step 4, the hub's fitted rebuild, is **working
+for the two stone daises and the obelisk, Ran**; the arch was tried and **refused by the check**.
 
 | Step | State |
 |---|---|
-| 1. Materials by class, ER albedo + normal, world scale, triplanar, blended | **done, Ran**: 8 classes; reader + our own table (`er_world.cfg`); hub, valor, arachna1 (cave), fire1 pictured |
-| 2. Grass (MultiMesh, swaying, density by distance, no collision, not on paths / against walls) | **done, Ran**: valor 3,340 points, ~330 drawn near the eye; hub 424 |
-| 3. Skies: ER cloud layer tinted by the level's own sky | **done, Ran**: valor (blue), fire1 (orange), hub (above its dome) |
-| 4. Hub fitted rebuild (ruin pieces fitted to the Champions shapes, a hand's-width check) | **not started** (plan below) |
-| Gate: before/after pictures, no seams/flicker, 60+ fps, room in step | **Ran**: pictures in `local/er-world/gate/`; **106.8 fps with the layer, 107.3 without**; **room in step** (1,854 ticks) |
+| 1. Materials by class, ER albedo + normal, world scale, triplanar, blended | **done, Ran**: 8 classes; reader + our own table (`er_world.cfg`); wood now read on its own (a mine's beams), metal only by a strict rule (none read on the four levels tried) |
+| 2. Grass (MultiMesh, swaying, density by distance, no collision, not on paths / against walls) | **done, Ran**: clears painted flower patches and stones; no tufts in the air; valor 3,509 points |
+| 3. Skies: ER cloud layer tinted by the level's own sky | **done, Ran** |
+| 4. Hub fitted rebuild (ruin pieces fitted to the Champions shapes, a hand's-width check) | **done for the daises and the obelisk, Ran**; arch **refused** (max 13.4 units off) |
+| Gate: before/after pictures, 60+ fps, room in step | **Ran**: pictures in `local/er-world/gate2/`; **106.3 fps with the layer, 106.3 without** (hub 98.3 / 95.5, fire1 66.6 / 68.7); **room in step** (1,856 ticks) |
 
-Built into `local/godot-r25/` (extension and project). Not committed.
+Built into `local/godot-r27/` (extension and project). Not committed.
 
 ## How it works
 
-**Read** `tools/godot/extension/src/rta_world.cpp` (new), `tools/godot/project/er_world.gd` (new),
-`shaders/er_world.gdshaderinc`, `shaders/er_grass.gdshader` (new) and the hooks in `rta_drawer.*`, `rta_scene.cpp`,
-`gs_draw.gdshaderinc`, `sky.gdshader`, `scene_view.gd`.
+**Read** `tools/godot/extension/src/rta_world.cpp`, `tools/godot/project/er_world.gd`, `shaders/er_world.gdshaderinc`,
+`shaders/er_grass.gdshader`, `shaders/er_ruin.gdshader` (new), `tools/godot/er_world_fit.py` (new) and the hooks in
+`rta_drawer.*`, `rta_scene.cpp`, `gs_draw.gdshaderinc`, `sky.gdshader`, `scene_view.gd`.
 
 ### Look keys
 
@@ -33,7 +34,8 @@ Built into `local/godot-r25/` (extension and project). Not committed.
 - The Classic look sets it off (`portal/edition.gd`).
 - `RTA_ER_WORLD=off` forces it off whatever the look says (used by the room test).
 - `er_world_strength` 0..1. A negative value is a test aid: it paints each class in a colour of its own.
-- `er_grass` is the grass density (0 = no grass).
+- `er_grass` is the grass density (0 = no grass; 1.2 now, see Grass).
+- `er_rebuild = on | off` (default on): the fitted Elden Ring pieces (step 4). It needs `er_world` on.
 - The folder is `$RTA_ER_WORLD_DIR`, else `local/souls-ref/er-world` beside the staged project.
 
 ### 1. What a piece of the level is made of (`rta_world.cpp`)
@@ -46,9 +48,18 @@ The level's chunks each have their own pre-lit texture (`docs/formats/world.md`)
   example, gets much of its colour from the vertex light.
 - **Per texel.** Each texel gets a membership of five families (grass, dirt, sand, snow, stone) by hue, saturation and
   brightness: `member()`, mirrored in the shader as `er_member`.
-- **The whole texture** adds what only it shows:
-  - strong, even edges on grey read as **cobble** (`cobble_edge`);
-  - one-directional edges on brown read as **wood**.
+- **The whole texture** adds what only it shows (measured on class pictures of hub, valor, fire1 and inmine1):
+  - **wood**: a warm texture (the dirt or sand family, or a warm grey) whose edges are much stronger along one of its
+    axes than the other (`wood_aniso` 1.45: a mine's beams measure 1.5..1.9, rock and lava swirls 1.0..1.2) and strong
+    enough (`wood_edge`). It no longer has to read as dirt first: inmine1's beams are read as wood (13 textures).
+    The structure tensor's coherence (edges one way at any turn) is measured too, but it is 0.2..0.5 for beams, rock and
+    grass alike, so it counts only over `wood_coherence` 0.6;
+  - **metal**: a near-colourless grey (saturation < 0.1), smooth (edge < 0.5), with a share of glints (texels 1.8× over
+    its middle brightness: `metal_glint` 0.1) and a strong spread of brightness (`metal_contrast` 0.85). A first, looser
+    rule read valor's cliffs as metal (they are cool and have a few glints); this one reads **no** texture as metal on
+    the four levels tried, so metal is still mostly the table's. Not checked on a level with real metal;
+  - strong, even edges on grey read as **cobble** (`cobble_edge`).
+- `app er world info FILE` also writes `coherence`, `sat`, `contrast`, `glint`, `cool` per texture.
 - **The result.** The strongest family is `er_class`. A second family that covers at least 14% of the texture is
   `er_class_b`; the shader picks between the two per pixel (a path through grass).
 - **Not read.** A texture whose alpha is in use (some texels high, some low) is a cut-out and stays as it is. A texture
@@ -105,13 +116,31 @@ the cover by brightness.
 ### 2. Grass
 
 - **Scattering** (`world_scan`). Once per level piece of a grass-class draw:
-  - points on triangles facing up (n.z ≥ 0.8), by area, `density` per 1000 square units (2.4);
+  - points on triangles facing up (n.z ≥ 0.8), by area, `density` per 1000 square units (1.2);
+  - **a triangle's side is the game's normals'.** The strips' winding alternates, so half of every ground's triangles
+    had been taken as facing down. With that fixed, the same density gave twice the points, so the density is halved
+    (valor 3,509 points; 3,340 before);
+  - **only on ground pieces:** a piece whose area faces up for less than `[grass] ground` 0.3 of it (a bush's mound,
+    a rock, the hub's round shrubs: 0.06) grows none;
   - deterministic: hashed from the piece and the triangle;
   - each kept only where the texel under it, times the vertex light, reads as grass (≥ 0.45). A path or stone painted
-    into the grass stays bare.
+    into the grass stays bare;
+  - **painted features**: valor's flower patches are painted into the ground's own pre-lit texture. The texels within
+    `[grass] clear` 10 units of the point (a 5 × 5 pattern, by the triangle's texels per unit) are looked at too: two that
+    are not grass, or far brighter than the grass there (white and yellow petals), and no tuft is put there;
+  - a see-through texel (a cut-out's) grows nothing;
+  - **decals**: an alpha-blended level draw whose texture is see-through somewhere (≥ 2%) is a decal laid on the
+    ground. The game draws them with depth written, like the ground. Where its texel × vertex alpha covers ≥ 0.35 with
+    something not grass, its 4-unit cells are kept, and no point within a cell of them is drawn.
 - **Walls.** Every piece's walls (|n.z| < 0.5) are written into an 8-unit cell grid with their height span. A point
   within one cell of a wall at its height is not drawn.
 - **No grass on cut-out cards.** Tree crowns were growing grass at first; alpha-tested draws are now skipped.
+- **No grass from the screen before.** The hub's "flat dark grass slabs" near the arch were tufts standing 25..60 units
+  in the air. **Ran:** they matched no piece of the hub. They grew on the character choice's own little scene, still drawn
+  for a few pictures after the level name had become `hub`. The grass is now forgotten once more when the level has run a
+  moment (`g_simFrame` started again and passed 30, or 120 pictures went by).
+- **The ground's own painted features** (a flower's petals, a pale stone) are also kept by the ground material: where the
+  texel is far brighter than its coarse colour, the material's detail gives way (`er_world.gdshaderinc`).
 - **Points near the eye** (`get_grass`):
   - within `radius` 1400 units;
   - all of them out to a third of the radius, then thinning to a quarter at the edge (by each point's own number).
@@ -136,42 +165,143 @@ the cover by brightness.
 - Where the level has a painted dome, the clouds start above the dome's upper edge, where the dome becomes the sky. A
   hard arc seen on the hub at first is gone.
 
+### 4. The rebuild: Elden Ring pieces fitted over the hub's shapes
+
+**What.** Three of the hub's shapes are drawn by Elden Ring ruin pieces:
+
+- the two round stone daises with their three steps and engraved rings: each step is a circular stone platform with a
+  flower pattern, scaled to that step's radius and height and turned against the one under it;
+- the obelisk's plinth and shaft: a grave obelisk with a stepped base, turned 45° like the game's.
+  The game's gem in its cage stays on top.
+
+The game's collision, paths and scripts are untouched: only what is drawn changes.
+
+**Making it (local, `tools/godot/er_world_fit.py RECIPE --pictures DIR`).** The inputs are all local:
+
+- the recipe (`local/er-world/hubfit/hub.json`): the volumes of the shapes and which piece goes where;
+- the level's chunks (`world_info.py --obj`);
+- the models (`app er world dump FILE`: the scene tap's packets, world space);
+- the level's terrain height field (the collision);
+- the converted pieces (`flverdump`) and their textures.
+
+The fitting:
+
+- **disc**: the piece's footprint centre to the step's centre, its radius to the step's, its height to the step's span;
+- **box**: the piece's own box, turned, onto the shape's box.
+
+**The check (automatic, per target).** It refuses a target that fails; nothing of a refused target is written, and the
+game's shape stays.
+
+- The piece's surface is sampled about every 3 units, with every corner.
+- A sample is **not seen** when it faces down onto the ground or onto another part of the target, or when it lies
+  inside the rebuilt shape itself. The last is found by a ray out along its normal: if the first surface it meets is a
+  back face, the sample is inside (the top of the plinth under the obelisk's shaft).
+- Every seen sample must lie within **12 units** (a hand's width) of the surface the game draws there. That surface is
+  exactly what the drawer leaves out at run time (point-to-triangle distance).
+- For the level's own chunks, every seen sample that faces up and lies within reach of the ground (40 units: a floor or a
+  step, not an arch's crown) must also lie within 12 units of a terrain collision sample next to it.
+- A model's collision is its own circle, so for a model only the surface is checked.
+
+**Ran:**
+
+| Target | Result | Distance to the game's surface | To the collision (up) |
+|---|---|---|---|
+| west dais (3 steps) | passed | max 1.5, mean 0.3 | max 1.0 |
+| east dais (3 steps) | passed | max 1.5, mean 0.3 | max 1.0 |
+| obelisk (plinth + shaft) | passed | max 11.8, p99 5.6, mean 1.4 | (a model) |
+| arch | **refused** | best max 13.4; 762 of 10,118 seen samples over | max 43 |
+
+The arch: an arch on two columns (the closest of three Elden Ring arches tried) was fitted in two parts, the arch stones
+to the ring's crown and the columns to its legs. It comes within 13.4 units. Its column capitals stand out of the game's
+legs, so it is refused, and the game's own arch stays. Pictures of every check: `local/er-world/gate2/check-*.png`
+(green within, red over).
+
+**Leaving the game's shape out (`RtaDrawer.set_world_hide`, `rta_world.cpp`).** Each volume is
+`[cx, cy, cz, hx, hy, hz, yaw, cylinder, kinds]`.
+
+- A level draw (kind 1) all of whose corners lie inside a level volume is not made. This is drawing only; its walls
+  still go into the grass's wall grid.
+- A model draw (kind 2) whose packets' middle lies inside a model volume loses the triangles that lie wholly inside the
+  volumes. They are collapsed to a point; the gem above stays. Such a draw is not curved. Its kept meshes are keyed with
+  the volumes' generation.
+- Per volume, the drawer notes where in the list its first draw left out stood, and the mean colour of those draws (their
+  texture's mean × the game's vertex light): `get_world_hide()`. `app er world rebuild` prints them.
+
+**Drawing (`er_world.gd`, `er_ruin.gdshader`).**
+
+- The pieces are read from `rebuild/<level>/rebuild.json` in the folder when the level is entered with the rebuild on.
+  This takes about 210 ms: the worst frame of the layer, once, at the hub's start.
+- Each piece is drawn at the place in the list of the draws it stands in for: in the transparent pass, depth tested and
+  written, like every world draw. Its shadow comes from an opaque twin drawn only into the shadow maps.
+- **Colour.** Each surface's albedo is drawn towards the colour of the shape it replaces: its hue fully (`tint` 1.0), and
+  its brightness to the game's. `gain` 1.3 was measured on the hub: the game's own pieces come out about that much
+  brighter in their light.
+- **Light.** Lit like `remaster_model.gdshader`: the level's ambient given form, the scene's lights, the haze.
+- **Haze.** The level's pieces add the sky's and the haze's colours as stored values, before they turn to linear
+  (`gs_draw.gdshaderinc`). The piece now does too. Added as linear at first, the far daises came out washed to the haze's
+  lavender.
+- Measured on the near views: the rebuilt dais is a little greyer than the game's pink-white (115/99/101 against
+  125/101/111).
+
 ## Gate (Ran)
 
-### Pictures
+### Pictures (second session)
 
-Before above, after below, 1280×720: `local/er-world/gate/{hub,valor,arachna1,fire1}-{ch,sh}.jpg` (`ch` = chase /
-gameplay distance, `sh` = shoulder / close); 3024×1964: `gate/valor-3024-on.png`. Runs: `local/er-world/t/r7` (final),
-r3..r6 (tuning).
+In `local/er-world/gate2/`, 1280×720 halves.
 
-| Level | What was seen |
+- **Hub** (`hub-<place>-<view>-o<orbit>.jpg`): the layer off | on without the rebuild | on, from five places:
+  - the start, chase and shoulder;
+  - the west dais, from two sides;
+  - a close shoulder view at the west dais (0.6 of the camera's distance);
+  - the east side, from two sides;
+  - a close view at the east dais.
+
+  The player was put at each place by poking its position. The runs are `local/er-world/t2/g4` (route
+  `local/er-world/hubroute.py`) and `t2/x3` (the far view after the haze fix).
+- **Valor and fire1** (`valor-{chase,shoulder}.jpg`, `fire1-*.jpg`): the layer off | on, after the grass fixes. Run:
+  `t2/g2`.
+- **Checks**: `check-*.png`, one per target of the fit.
+
+| Where | What was seen |
 |---|---|
-| valor | dense swaying ER grass over ER-grass ground; cliffs with rock detail; clouds in the blue sky |
-| hub | floor keeps its carvings with fine stone grain; olive grass gets grass detail and a few tufts; clouds only above the dome |
-| arachna1 (cave) | gravel on the floor, rock on the walls; subtle, darkness kept |
-| fire1 | lava-rock grain over the game's swirls (kept); orange-tinted clouds |
+| hub, near the daises | flagstone steps in place of the pink marble, a dark stone obelisk with its stepped base under the game's gem; colours close to the game's, a little greyer |
+| hub, far | the rebuilt daises and obelisk hazed like everything around them |
+| hub, by the arch | no tufts in the air any more (the round shrubs and the screen before grew none) |
+| valor | the flower patches and the brown patch by the player stay clear of tufts; petals kept by the ground material |
+| fire1 | stone, no false wood; as before |
+| class pictures (`t2/c2`) | valor's cliffs stone (a first metal rule had made them metal), fire1's lava ground stone (a first wood rule had made it wood), inmine1's beams wood |
 
 ### Seams and flicker
 
-- **Seen:** no seam lines and no new shimmer. The mapping is world-space and the derivatives are explicit.
+- **Seen:** no seam lines and no new shimmer. The rebuilt pieces sit on the game's ground without gaps in any of the
+  views.
 - **Not judged frame by frame:** flicker. Only stills were taken; no recording was made.
 
-### Frame rate
+### Frame rate (second session)
 
-Paced, 3024×1964; hub, valor, arachna1, fire1; chase and shoulder; `local/er-world/t/fps-{on,off}/frames.csv`:
+Paced, 3024×1964; hub (with the rebuild), valor, arachna1, fire1; chase and shoulder. Files:
+`local/er-world/t2/fps-{on,off}/frames.csv`; script: `local/er-world/fps27.sh`.
 
 | | Layer on | Layer off |
 |---|---|---|
-| Mean fps, stalls over 50 ms left out | **106.8** | 107.3 |
-| Median picture gap | 8.93 ms | 8.71 ms |
-| 99th percentile gap | 17.2 ms | 17.3 ms |
+| Mean fps, stalls over 50 ms left out | **106.3** | 106.3 |
+| Median picture gap | 8.95 ms | 8.67 ms |
+| 99th percentile gap | 17.6 ms | 17.2 ms |
+| hub | 98.3 | 95.5 |
+| fire1 (the slowest level, as before) | 66.6 | 68.7 |
 
-The layer's own GDScript time is 16 µs a frame (mean); the worst was 1.9 ms, a grass rebuild.
+The layer's own GDScript time is 41..51 µs a frame (mean). The worst frame, 180..210 ms, is the rebuild's loading when
+the hub is entered.
 
-### Room (`local/godot-r25/test/room25.py ew1 --level valor`)
+### Room (`local/godot-r27/test/room27.py ew3 --level valor`)
 
-Both copies were Remastered; B ran with `RTA_ER_WORLD=off`. A drew the layer in hub and valor; B drew none.
-**1,854 ticks compared, no shared column differs.**
+Both copies were Remastered; B ran with `RTA_ER_WORLD=off`. A drew the layer and the rebuild in the hub, and the layer
+in valor; B drew none (it did not even load the rebuild). **1,856 ticks compared, no shared column differs.**
+An earlier run (`ew2`, before the last shader changes) gave 1,849, also in step.
+
+### First session's gate
+
+Pictures in `local/er-world/gate/`; 106.8 / 107.3 fps; room in step over 1,854 ticks (`local/godot-r25`).
 
 ## Fetching the files (local only)
 
@@ -181,49 +311,77 @@ Both copies were Remastered; B ran with `RTA_ER_WORLD=off`. A drew the layer in 
   - the low-resolution versions of six environment texture groups: 1,379 files. Their chunks are interleaved
     with the full ones, so 1.07 GB was fetched.
   - 15 full packages (9 more chunks).
+  - Second session:
+    - 26 asset geometry bundles (ruins, platforms, columns, pedestals, obelisks, arches; 28 MB of chunks);
+    - the 24 texture packages their materials name (35 MB).
+
+    They were picked by a community list of the assets' names (Smithbox's alias file, read into
+    `local/souls-ref/tools/er-assets.json`) and a contact sheet of the converted models (`local/er-world/hubfit/
+    ruins_sheet.jpg`). Materials without textures in the model were resolved through the material index.
 - **Decompression.** The DCX streams are Oodle Kraken, which the open decoders cannot read. They were decompressed with
   the game's own DLL in the Windows test VM. UTM's `utmctl start` timed out (OSStatus −1712), so the VM was run by
   Homebrew QEMU directly from its UTM disk with `-snapshot` (its disk unchanged): `local/er-world/vm/run.sh`, ssh on
   127.0.0.1:2222. The VM was stopped after.
 - **Conversion.** Scripts in `local/er-world/work/`: `undcx.py`, `tpf.py`, `dds2png.py` (sRGB DXGI forms read as plain),
-  `make_world.py` (the folder).
+  `make_world.py` (the folder). The models go through `local/souls-ref/tools/flverdump` into `local/er-world/ruins/flv`.
 
 ## Next
 
-- **Step 4, the hub's fitted rebuild.** Fetch ER ruin assets: the `aeg` geometry bundles of ruins, stairs and stone
-  rings, found by material names like the terrain was. Convert them with `flverdump` and fit them to the hub's
-  plinth/obelisk and rings by their bounding shapes. The check: sample the seen surface and measure its distance to the
-  game's collision triangles (the level's chunks from the scene tap); within ~8 units (a hand's width), else that piece
-  is refused.
-- Tune the reader per level on class pictures (`er_world_strength -1`): the cave walls read partly dirt (handled by the
-  steep rule); wood/metal are only from the table.
-- Grass:
-  - painted flower patches (blended decals) are grown over; skip points under decal draws;
-  - a second card (small plants).
+- The arch: a piece made of parts, each part fitted on its own (the crown, the legs), or a column without a capital. The
+  check says how far it is.
+- The hub's other shapes: the trefoil platform's stepped rims, the stairs up to the arch, the broken stone rings by the
+  arch (a model).
+- The same fitting on other levels' landmarks: a recipe per level, a dump of the level (`app er world dump`).
+- The rebuild's loading (about 210 ms at the hub's start): read the pieces ahead, or on a worker.
+- Metal: try the strict rule on a level that has real metal (the gnome levels).
+- **Seen in passing:** `remaster_model.gdshader` and `er_armour.gdshader` add the haze's colour, which is a stored
+  value, to linear light. The same fault made the rebuilt daises pale at a distance.
+- Grass: a second card (small plants).
 - Fetch the soil's own normal map.
 - Flicker check from a recording.
 
 ## Changed
 
-**New (tracked):**
-- `tools/godot/extension/src/rta_world.cpp`
-- `tools/godot/project/er_world.gd`
-- `tools/godot/project/er_world.cfg`
-- `tools/godot/project/shaders/er_world.gdshaderinc`
-- `tools/godot/project/shaders/er_grass.gdshader`
-- this file
+**First session.**
 
-**Modified (tracked):**
-- `tools/godot/extension/src/rta_drawer.{h,cpp}`
-- `tools/godot/extension/src/rta_scene.cpp`
-- `tools/godot/extension/src/rta_variant.h`
-- `tools/godot/project/scene_view.gd`
-- `tools/godot/project/portal/edition.gd`
-- `tools/godot/project/shaders/gs_draw.gdshaderinc`
-- `tools/godot/project/shaders/sky.gdshader`
+- New (tracked):
+  - `tools/godot/extension/src/rta_world.cpp`
+  - `tools/godot/project/er_world.gd`
+  - `tools/godot/project/er_world.cfg`
+  - `tools/godot/project/shaders/er_world.gdshaderinc`
+  - `tools/godot/project/shaders/er_grass.gdshader`
+  - this file
+- Modified (tracked):
+  - `tools/godot/extension/src/rta_drawer.{h,cpp}`
+  - `tools/godot/extension/src/rta_scene.cpp`
+  - `tools/godot/extension/src/rta_variant.h`
+  - `tools/godot/project/scene_view.gd`
+  - `tools/godot/project/portal/edition.gd`
+  - `tools/godot/project/shaders/gs_draw.gdshaderinc`
+  - `tools/godot/project/shaders/sky.gdshader`
+
+**Second session.**
+
+- New (tracked):
+  - `tools/godot/er_world_fit.py`
+  - `tools/godot/project/shaders/er_ruin.gdshader`
+- Modified (tracked):
+  - `tools/godot/extension/src/rta_world.cpp`: reader, grass, decals, hide volumes, dump
+  - `tools/godot/extension/src/rta_drawer.{h,cpp}`: declarations, bindings
+  - `tools/godot/extension/src/rta_scene.cpp`: the hooks
+  - `tools/godot/project/er_world.gd`: rebuild, commands, second reset
+  - `tools/godot/project/er_world.cfg`: `[keep]` header restored, reader and grass keys, density 1.2
+  - `tools/godot/project/scene_view.gd`: `er_rebuild`, `er_grass` 1.2
+  - `tools/godot/project/shaders/er_world.gdshaderinc`: painted features kept
+  - this file
+
+  In the first session's `er_world.cfg` the `[keep]` header had been lost, so its values sat outside any section and the
+  shader used 0.6 for every class. They are in force now: grass 0.45, stone 0.85, and so on.
 
 **Local:**
-- `local/souls-ref/er-world/` (the materials)
-- `local/er-world/` (scripts, runs, gate, VM runner)
-- `local/godot-r25/` (build, `test/room25.py`)
+- `local/souls-ref/er-world/` (the materials; `rebuild/hub/`: the fitted pieces, their textures, `rebuild.json` with the
+  check)
+- `local/er-world/` (scripts, runs, gate, gate2, VM runner, `hubfit/`: recipe, check pictures, loaders; `ruins/`: the
+  fetched pieces and textures)
+- `local/godot-r25/`, `local/godot-r27/` (builds; `test/room27.py`)
 - the partial archives in `local/souls-ref/er/Game/`

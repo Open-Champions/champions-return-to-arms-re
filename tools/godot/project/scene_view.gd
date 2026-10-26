@@ -58,7 +58,8 @@ extends Node
 #   er_world  on (default) | off: the Elden Ring world layer (er_world.gd): the owner's own Elden Ring materials on the
 #             level's pieces by what their textures read as, grass on the grass, clouds in the sky - when their local
 #             folder is there (nothing changes otherwise); the Classic look sets it off.  er_world_strength 0..1,
-#             er_grass (points per 1000 square units; 0 = no grass)
+#             er_grass (points per 1000 square units; 0 = no grass), er_rebuild on | off (Elden Ring ruin pieces fitted over
+#             some of the level's shapes, where the folder has them for the level: er_world.gd)
 #   remaster_models on (default) | off: the game's own figures drawn as smooth meshes baked on this machine from their own
 #             bind-pose meshes, posed by the game's own skin matrices, with maps derived from their (art pack) textures
 #             (model_remaster.gd, RtaRemaster; model_remaster.cfg per model); the Classic look sets it off
@@ -105,7 +106,7 @@ var look := {
 	"backdrop": "auto", "models": "on", "model_smooth": 2.0, "model_crease": 0.35, "model_near": 520.0, "model_rim": 0.35, "model_form": 0.7, "model_sharp": 0.6, "contact": 0.55,
 	"er_models": "off", "er_set": "auto", "er_who": "all", "er_springs": "on", "er_metal": 0.5, "er_creatures": "off", "er_style": "fit", "er_outfits": "",
 	"remaster_models": "on",
-	"er_world": "on", "er_world_strength": 1.0, "er_grass": 2.4,
+	"er_world": "on", "er_world_strength": 1.0, "er_grass": 1.2, "er_rebuild": "on",
 }
 # Per level presets (tools/godot/presets.py): the look keys above, by level, picked from what the level's own colours
 # are (its clear colour, its dome, its light level, the game's light nodes, the picture the game's own camera gives) by

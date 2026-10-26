@@ -821,6 +821,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         return false;
     }
     RenderingServer* s = RenderingServer::get_singleton();
+    if (!world_dump_path.empty()) world_dump_take(d, sc.tap, index);     // (app er world dump: rta_world.cpp)
     if (fill_drops(f, d)) return true;                      // the library's plain fill: drawn here by rta_fill.cpp instead
     if (d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count && d.texture && !d.tex_is_target) {
         for (uint32_t k = 0; k < d.scene_piece_count; k++) {
@@ -859,6 +860,11 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     if (sc.shadows && d.tex_is_target && d.scene_kind == RTAG_SCENE_DEPTH && d.blend) { sc.blob_shadows_dropped++; return true; }
     const bool normals = d.scene_kind == RTAG_SCENE_EXACT && sc.tap->normals != nullptr;
     if (world_on && normals && d.depth_write) world_scan(d, sc.tap);      // the Elden Ring world layer: grass, walls (rta_world.cpp)
+    if (world_on && normals && d.blend) world_decal(d, sc.tap);                      // ... no grass under a painted decal
+    if (world_on && !world_hide.empty() && world_hidden(d, sc.tap, order) >= 0) {   // ... a shape the rebuild draws instead
+        sc.segment++;
+        return true;
+    }
     if (sc.batch_on && normals && sc.packets && batch_take(pass, f, d, target, texture, order)) {
         // (test aid, RTA_BATCH_SINGLE=1: each chunk a batch of its own, at its own place - fused, but not gathered)
         static const bool single = getenv("RTA_BATCH_SINGLE") && atoi(getenv("RTA_BATCH_SINGLE")) != 0;
@@ -893,6 +899,11 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
             const rtag_scene_full& v0 = sc.tap->full[pieces[0].full_first];
             if (Vector3(v0.x, v0.y, v0.z).distance_to(sc.camera.origin) > (real_t)sc.model_near) smooth = 1;
         }
+        // the Elden Ring world layer's rebuild: a model it draws itself (its middle inside one of its volumes) loses the
+        // triangles that lie inside them; drawn flat, as they are (rta_world.cpp)
+        const bool world_take = world_on && world_hide_models && pieces[0].kind == 2 && world_model_taken(d, sc.tap);
+        int world_took = -1;
+        if (world_take) smooth = 1;
         auto curved = [&](const rtag_scene_piece& piece) { return smooth > 1 && (piece.flags & 4) && piece.full_count % 3 == 0; };
         for (uint32_t k = 0; k < d.scene_piece_count; k++) corners += (int)pieces[k].full_count * (curved(pieces[k]) ? smooth * smooth : 1);
         if (model) sc.model_draws++;
@@ -915,6 +926,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
                 }
             }
             mix(h[3], (uint64_t)smooth * 0x51ED27u + (any_model ? 7 : 0));
+            if (any_model || pieces[0].kind == 2) mix(h[3], world_on ? world_hide_gen : 0);   // (the rebuild's shapes: rta_world.cpp)
             sc.kept_key = (h[0] ^ (h[1] * 3) ^ (h[2] * 5) ^ (h[3] * 7) ^ ((uint64_t)corners << 40)) | 1;
             uint64_t id = 0xA24BAED4963EE407ull ^ ((uint64_t)corners << 32) ^ (normals ? 1 : 0);
             for (uint32_t k = 0; k < d.scene_piece_count; k++) {
@@ -953,6 +965,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
                 sc.smoothed_corners += pieces[k].full_count * smooth * smooth;
                 continue;
             }
+            uint8_t* p0 = p;
             for (uint32_t n = 0; n < pieces[k].full_count; n++, v++, p += 12, a += stride) {
                 memcpy(p, &v->x, 12);
                 memcpy(a, &v->r, 4);
@@ -960,8 +973,18 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
                 memcpy(a + 4, st, 16);
                 memcpy(a + 20, &v->nx, 12);
             }
+            // the Elden Ring world layer's rebuild: a model's triangles inside a shape it draws itself go (to a point)
+            if (world_take && pieces[k].kind == 2)
+                for (uint32_t n = 0; n + 2 < pieces[k].full_count; n += 3) {
+                    const int vi = world_tri_hidden(sc.tap->full + pieces[k].full_first + n, order);
+                    if (vi < 0) continue;
+                    memcpy(p0 + (size_t)(n + 1) * 12, p0 + (size_t)n * 12, 12);
+                    memcpy(p0 + (size_t)(n + 2) * 12, p0 + (size_t)n * 12, 12);
+                    if (world_took < 0) world_took = vi;
+                }
         }
         }
+        if (world_took >= 0) world_hide_colour(world_took, d);
         if (smooth > 1) sc.smoothed_draws++;
         sc.packet_draws++;
         sc.packet_extra += corners - (int)d.count;

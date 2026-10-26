@@ -27,6 +27,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <vector>
 
 using namespace godot;
 using namespace rta_variant;
@@ -108,8 +110,11 @@ void RtaDrawer::world_read(uint32_t id, const float tint[3]) {
     if (t.width < 8 || t.height < 8 || !t.rgba) return;
     // at most 64 x 64 texels looked at
     const int step_x = std::max(1, t.width / 64), step_y = std::max(1, t.height / 64);
-    double sum[C_COUNT] = {0}, rgb[3] = {0, 0, 0}, edge = 0, edge_x = 0, edge_y = 0, lum_sum = 0;
-    int n = 0, opaque = 0, high = 0, total = 0;
+    double sum[C_COUNT] = {0}, rgb[3] = {0, 0, 0}, edge = 0, edge_x = 0, edge_y = 0, lum_sum = 0, lum_sq = 0;
+    double jxx = 0, jyy = 0, jxy = 0, sat_sum = 0;      // the structure tensor of its brightness (which way its edges run)
+    int n = 0, opaque = 0, high = 0, total = 0, coloured = 0, cool = 0;
+    std::vector<float> lums;
+    lums.reserve(4096);
     // alpha: a texture whose texels all have a low alpha does not use it (a 24-bit texture, its alpha from TEXA, or a draw
     // that does not take the texture's alpha); one with some texels high and some low is cut out
     for (int y = 0; y + step_y < t.height; y += step_y)
@@ -134,7 +139,17 @@ void RtaDrawer::world_read(uint32_t id, const float tint[3]) {
             const uint8_t* py = p + (size_t)t.width * 4 * step_y;
             const float lx = (0.3f * px[0] + 0.59f * px[1] + 0.11f * px[2]) / 255.0f, ly = (0.3f * py[0] + 0.59f * py[1] + 0.11f * py[2]) / 255.0f;
             edge_x += std::fabs(lx - l); edge_y += std::fabs(ly - l);
-            lum_sum += l;
+            jxx += (lx - l) * (lx - l); jyy += (ly - l) * (ly - l); jxy += (lx - l) * (ly - l);
+            lum_sum += l; lum_sq += l * l;
+            lums.push_back(l);
+            const float mx = std::max(r, std::max(g, b)), mn = std::min(r, std::min(g, b));
+            const float sat = (mx - mn) / std::max(mx, 0.04f);
+            sat_sum += sat;
+            if (sat > 0.06f && mx - mn > 1e-4f) {
+                coloured++;
+                float hue = mx == r ? 60.0f * std::fmod((g - b) / (mx - mn) + 6.0f, 6.0f) : mx == g ? 60.0f * ((b - r) / (mx - mn) + 2.0f) : 60.0f * ((r - g) / (mx - mn) + 4.0f);
+                if (hue >= 180.0f && hue <= 260.0f) cool++;
+            }
         }
     if (!n) return;
     w.opaque = (float)opaque / n;
@@ -145,6 +160,19 @@ void RtaDrawer::world_read(uint32_t id, const float tint[3]) {
     edge = (edge_x + edge_y) / opaque;
     w.edge = (float)(edge / lum);                                  // strong edges for its brightness: cobbles, blocks, boards
     w.aniso = (float)(std::max(edge_x, edge_y) / std::max(std::min(edge_x, edge_y), 1e-6));
+    w.coherence = (float)(std::sqrt((jxx - jyy) * (jxx - jyy) + 4.0 * jxy * jxy) / std::max(jxx + jyy, 1e-9));
+    w.sat = (float)(sat_sum / opaque);
+    w.contrast = (float)(std::sqrt(std::max(lum_sq / opaque - (lum_sum / opaque) * (lum_sum / opaque), 0.0)) / lum);
+    w.cool = coloured ? (float)cool / coloured : 0.0f;
+    {
+        // glints: texels far brighter than the texture's middle (a metal's painted highlights)
+        std::vector<float> sorted(lums);
+        std::nth_element(sorted.begin(), sorted.begin() + sorted.size() / 2, sorted.end());
+        const float median = std::max(sorted[sorted.size() / 2], 0.02f);
+        int glints = 0;
+        for (float l : lums) glints += l > median * 1.8f && l > 0.35f ? 1 : 0;
+        w.glint = (float)glints / (float)lums.size();
+    }
     // its strongest family, and a second one that covers enough of it
     int a = C_NONE, b = C_NONE;
     for (int k = 1; k < C_COUNT; k++) {
@@ -155,8 +183,18 @@ void RtaDrawer::world_read(uint32_t id, const float tint[3]) {
     if (w.opaque < 0.8f) a = b = C_NONE;                           // a cut-out (foliage, railings): left as it is
     if (b != C_NONE && w.frac[b] < 0.14f) b = C_NONE;
     // what only the whole texture shows
-    if (a == C_STONE && w.edge > world_cobble_edge) a = C_COBBLE;
-    if (a == C_DIRT && w.aniso > world_wood_aniso && w.edge > world_wood_edge) a = C_WOOD;
+    //  - wood: warm (earth or sand colours, or a warm grey) with edges running one way - its grain, its boards - at any
+    //    turn (the structure tensor's coherence; the old test took only edges along the texture's own axes)
+    //  - metal: grey or blue-grey, smooth between bright glints (painted highlights), with a strong spread of brightness
+    //  - cobble: grey with strong, even edges (setts, flagstones)
+    // (measured on class pictures: a mine's beams have edges 1.5..1.9 times stronger along one axis; rock, lava swirls and
+    // painted floors 1.0..1.2 - the coherence, whichever way the edges run, is 0.2..0.5 for all of them, so it only
+    // counts when it is far over that; valor's cliffs are cool and have glints too, but few and with a coloured cast)
+    const bool warm = a == C_DIRT || a == C_SAND || (a == C_STONE && w.mean[0] > w.mean[2] * 1.12f && w.sat > 0.08f);
+    const bool grained = w.aniso > world_wood_aniso || w.coherence > world_wood_coherence;
+    if (warm && grained && w.edge > world_wood_edge) a = C_WOOD;
+    else if (a == C_STONE && w.sat < 0.1f && w.glint > world_metal_glint && w.contrast > world_metal_contrast && w.edge < 0.5f) a = C_METAL;
+    else if (a == C_STONE && w.edge > world_cobble_edge) a = C_COBBLE;
     if (b == C_STONE && w.edge > world_cobble_edge) b = C_COBBLE;
     w.guess = (uint8_t)a;
     w.guess_b = (uint8_t)b;
@@ -204,8 +242,13 @@ void RtaDrawer::set_world_layer(bool on, const Dictionary& table) {
         if (key == "cobble_edge") { world_cobble_edge = (float)(double)value; continue; }
         if (key == "wood_aniso") { world_wood_aniso = (float)(double)value; continue; }
         if (key == "wood_edge") { world_wood_edge = (float)(double)value; continue; }
+        if (key == "wood_coherence") { world_wood_coherence = (float)(double)value; continue; }
+        if (key == "metal_glint") { world_metal_glint = (float)(double)value; continue; }
+        if (key == "metal_contrast") { world_metal_contrast = (float)(double)value; continue; }
         if (key == "grass") { world_grass_density = (float)(double)value; continue; }
         if (key == "grass_hue") { grass_hue = (float)(double)value; continue; }
+        if (key == "grass_ground") { world_grass_ground = (float)(double)value; continue; }
+        if (key == "grass_clear") { world_grass_clear = (float)(double)value; continue; }
         const String v = value;
         if (key.begins_with("remap.")) {
             const int from = class_of_name(key.substr(6)), to = class_of_name(v);
@@ -250,6 +293,11 @@ Dictionary RtaDrawer::get_world_info(int64_t frames_back) const {
         d["frac"] = fr;
         d["edge"] = w.edge;
         d["aniso"] = w.aniso;
+        d["coherence"] = w.coherence;
+        d["sat"] = w.sat;
+        d["contrast"] = w.contrast;
+        d["glint"] = w.glint;
+        d["cool"] = w.cool;
         d["opaque"] = w.opaque;
         d["draws"] = (int64_t)w.draws;
         list.push_back(d);
@@ -300,6 +348,21 @@ void RtaDrawer::world_scan(const rtag_draw& d, const rtag_scene* tap) {
         uint64_t id = mix64(pc.mesh ^ ((uint64_t)(int64_t)std::lround(v[0].x * 4) << 1) ^ ((uint64_t)(int64_t)std::lround(v[0].y * 4) << 23) ^
                             ((uint64_t)(int64_t)std::lround(v[0].z * 4) << 45));
         if (!grass_pieces.insert(id).second) continue;
+        // a piece that is mostly not ground (a bush's mound, a rock, a tree's crown: little of its area faces up) grows no
+        // grass on the little that does - the tufts stood on such tops like slabs in the air
+        bool ground_piece = true;
+        if (grassy && cpu) {
+            double up = 0, all = 0;
+            for (uint32_t i = 0; i + 2 < pc.full_count; i += 3) {
+                const rtag_scene_full &a = v[i], &b = v[i + 1], &c = v[i + 2];
+                const float ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z, wx = c.x - a.x, wy = c.y - a.y, wz = c.z - a.z;
+                const float nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+                const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+                all += len;
+                if (len > 1e-6f && std::fabs(nz) / len >= 0.8f) up += len;
+            }
+            ground_piece = all <= 0 || up / all >= world_grass_ground;
+        }
         for (uint32_t i = 0; i + 2 < pc.full_count; i += 3) {
             const rtag_scene_full &a = v[i], &b = v[i + 1], &c = v[i + 2];
             const float ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z, wx = c.x - a.x, wy = c.y - a.y, wz = c.z - a.z;
@@ -307,6 +370,8 @@ void RtaDrawer::world_scan(const rtag_draw& d, const rtag_scene* tap) {
             const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
             if (len < 1e-4f) continue;
             nx /= len; ny /= len; nz /= len;
+            // the triangle's side by the game's own normals (the strips' winding alternates)
+            if (nx * (a.nx + b.nx + c.nx) + ny * (a.ny + b.ny + c.ny) + nz * (a.nz + b.nz + c.nz) < 0) { nx = -nx; ny = -ny; nz = -nz; }
             if (std::fabs(nz) < 0.5f) {
                 // a wall: the cells it stands in (every 6 units along it), with the height it spans
                 const float lo = std::min(a.z, std::min(b.z, c.z)), hi = std::max(a.z, std::max(b.z, c.z));
@@ -322,9 +387,14 @@ void RtaDrawer::world_scan(const rtag_draw& d, const rtag_scene* tap) {
                     }
                 continue;
             }
-            if (!grassy || !cpu || nz < 0.8f) continue;        // grass on what faces up (slopes up to about 37 degrees)
+            if (!grassy || !cpu || !ground_piece || nz < 0.8f) continue;     // grass on what faces up (slopes up to about 37 degrees)
             const float area = 0.5f * len;
             const float want = area * world_grass_density / 1000.0f;
+            // texels a world unit here (the triangle's area in texels over its area in units): the ground's painted
+            // features (a flower patch, a path's edge) are looked for around each point, not only under it
+            const float tax = (b.u - a.u) * d.st_scale[0], tay = (b.v - a.v) * d.st_scale[1], tbx = (c.u - a.u) * d.st_scale[0], tby = (c.v - a.v) * d.st_scale[1];
+            const float texel_area = 0.5f * std::fabs(tax * tby - tay * tbx);
+            const float per_unit = area > 1e-4f ? std::sqrt(texel_area / area) : 0.0f;
             const uint64_t seed = mix64(id + i * 0x9E3779B97F4A7C15ull);
             int count = (int)want;
             if ((float)((seed >> 11) & 0xffff) / 65536.0f < want - count) count++;
@@ -340,12 +410,33 @@ void RtaDrawer::world_scan(const rtag_draw& d, const rtag_scene* tap) {
                 tx = ((tx % cpu->w) + cpu->w) % cpu->w;
                 ty = ((ty % cpu->h) + cpu->h) % cpu->h;
                 const uint8_t* texel = &cpu->rgba[((size_t)ty * cpu->w + tx) * 4];
+                if (d.tcc && wt->second.opaque < 0.999f && texel[3] < 0x40) continue;      // a see-through texel: nothing grows on it
                 // the ground colour there (with the game's vertex light), for the grass to take - and to be grass at all
                 const float lr = (a.r + (b.r - a.r) * s + (c.r - a.r) * r) / 128.0f, lg = (a.g + (b.g - a.g) * s + (c.g - a.g) * r) / 128.0f,
                             lb = (a.b + (b.b - a.b) * s + (c.b - a.b) * r) / 128.0f;
                 float m[C_COUNT];
                 member(std::min(1.0f, texel[0] / 255.0f * lr), std::min(1.0f, texel[1] / 255.0f * lg), std::min(1.0f, texel[2] / 255.0f * lb), m);
                 if (m[C_GRASS] < 0.45f) continue;
+                if (per_unit > 0.0f && world_grass_clear > 0.0f) {
+                    // a painted feature within `grass_clear` units (a flower, a stone, a path): no tuft leans over it
+                    const float rad = world_grass_clear * per_unit;
+                    int features = 0;
+                    for (int oy = -2; oy <= 2 && features < 2; oy++)
+                        for (int ox = -2; ox <= 2 && features < 2; ox++) {
+                            if (!ox && !oy) continue;
+                            int qx = (int)std::floor(fx + ox * rad * 0.5f), qy = (int)std::floor(fy + oy * rad * 0.5f);
+                            qx = ((qx % cpu->w) + cpu->w) % cpu->w;
+                            qy = ((qy % cpu->h) + cpu->h) % cpu->h;
+                            const uint8_t* q = &cpu->rgba[((size_t)qy * cpu->w + qx) * 4];
+                            float mq[C_COUNT];
+                            member(std::min(1.0f, q[0] / 255.0f * lr), std::min(1.0f, q[1] / 255.0f * lg), std::min(1.0f, q[2] / 255.0f * lb), mq);
+                            const float lum = (0.3f * q[0] + 0.59f * q[1] + 0.11f * q[2]) / 255.0f;
+                            const float lum_here = (0.3f * texel[0] + 0.59f * texel[1] + 0.11f * texel[2]) / 255.0f;
+                            // not grass, or far brighter than the grass here (white and yellow petals read as pale grass)
+                            if (mq[C_GRASS] < 0.3f || lum > lum_here * 1.8f + 0.08f) features++;
+                        }
+                    if (features >= 2) continue;
+                }
                 GrassPoint g;
                 g.x = px; g.y = py; g.z = pz;
                 g.r = std::min(1.0f, texel[0] / 255.0f * lr); g.g = std::min(1.0f, texel[1] / 255.0f * lg); g.b = std::min(1.0f, texel[2] / 255.0f * lb);
@@ -394,7 +485,7 @@ PackedFloat32Array RtaDrawer::get_grass(const Vector3& eye, double radius, int64
                 const float keep = share < 0.33f ? 1.0f : 1.0f - 0.75f * smooth(0.33f, 1.0f, share);
                 if (g.seed > keep) continue;
                 if (std::fabs(g.z - (float)eye.z) > 900.0f) continue;
-                if (grass_near_wall(g.x, g.y, g.z)) continue;
+                if (grass_near_wall(g.x, g.y, g.z) || grass_under_decal(g.x, g.y, g.z)) continue;
                 v.insert(v.end(), {g.x, g.y, g.z, g.r, g.g, g.b, g.seed, share, g.nz});
                 if (++n >= max_points) break;
             }
@@ -410,4 +501,280 @@ void RtaDrawer::world_reset() {
     grass_cells.clear();
     wall_cells.clear();
     grass_total = 0;
+    decal_pieces.clear();
+    decal_cells.clear();
+    decal_textures.clear();
+    world_hide_cache.clear();
+}
+
+// ---- decals ------------------------------------------------------------------------------------------------------------
+
+// an alpha-blended draw of the level's chunks whose texture is partly see-through: a decal painted over the ground - a flower
+// patch, a path, moss (the game draws them with depth written, like the ground).  Where it covers the ground (its texel's
+// alpha times the game's vertex alpha) with something that is not grass itself, no grass grows: the cells it covers are
+// kept with the height they are covered at.  Once per piece.
+void RtaDrawer::world_decal(const rtag_draw& d, const rtag_scene* tap) {
+    if (!tap || !d.scene_piece_count || d.scene_piece_first + d.scene_piece_count > tap->piece_count || !tap->full) return;
+    if (world_grass_density <= 0.0f) return;
+    // an alpha blend (Cs - Cd) * As + Cd: what it paints covers the ground; an additive one (a glow) does not
+    if (!(d.ba == 0 && d.bb == 1 && d.bc == 0 && d.bd == 1)) return;
+    auto c = cpu_textures.find(d.texture);
+    if (c == cpu_textures.end() || c->second.w < 4 || c->second.h < 4) return;
+    const CpuTexture& cpu = c->second;
+    if (!d.tcc) return;                                         // its alpha is the vertices' alone: not a painted shape
+    {
+        // see-through somewhere (a ground texture is opaque all over): looked at once per texture
+        auto known = decal_textures.find(d.texture);
+        if (known == decal_textures.end()) {
+            int low = 0, n = 0;
+            const int sx = std::max(1, cpu.w / 32), sy = std::max(1, cpu.h / 32);
+            for (int y = 0; y < cpu.h; y += sy)
+                for (int x = 0; x < cpu.w; x += sx, n++) low += cpu.rgba[((size_t)y * cpu.w + x) * 4 + 3] < 0x40 ? 1 : 0;
+            known = decal_textures.emplace(d.texture, n && low * 50 >= n).first;       // at least 2% of it see-through
+        }
+        if (!known->second) return;
+    }
+    for (uint32_t k = 0; k < d.scene_piece_count; k++) {
+        const rtag_scene_piece& pc = tap->pieces[d.scene_piece_first + k];
+        if (pc.kind != 1 || !pc.full_count || pc.full_first + pc.full_count > tap->full_count) continue;
+        const rtag_scene_full* v = tap->full + pc.full_first;
+        const uint64_t id = mix64(pc.mesh ^ 0x5DEECE66Dull ^ ((uint64_t)(int64_t)std::lround(v[0].x * 4) << 1) ^
+                                  ((uint64_t)(int64_t)std::lround(v[0].y * 4) << 23) ^ ((uint64_t)(int64_t)std::lround(v[0].z * 4) << 45));
+        if (!decal_pieces.insert(id).second) continue;
+        for (uint32_t i = 0; i + 2 < pc.full_count; i += 3) {
+            const rtag_scene_full &a = v[i], &b = v[i + 1], &cc = v[i + 2];
+            const float ux = b.x - a.x, uy = b.y - a.y, uz = b.z - a.z, wx = cc.x - a.x, wy = cc.y - a.y, wz = cc.z - a.z;
+            const float nz = ux * wy - uy * wx;
+            const float len = std::sqrt((uy * wz - uz * wy) * (uy * wz - uz * wy) + (uz * wx - ux * wz) * (uz * wx - ux * wz) + nz * nz);
+            if (len < 1e-4f || std::fabs(nz) / len < 0.5f) continue;          // (a decal on a wall: no grass there anyway)
+            // samples every 2 units or so over the triangle
+            const float span = std::max(std::sqrt(ux * ux + uy * uy), std::sqrt(wx * wx + wy * wy));
+            const int steps = std::min(160, (int)(span / 2.0f) + 1);
+            for (int si = 0; si <= steps; si++)
+                for (int ri = 0; ri <= steps - si; ri++) {
+                    const float fs = (float)si / steps, fr = (float)ri / steps;
+                    const float tu = a.u + (b.u - a.u) * fs + (cc.u - a.u) * fr, tv = a.v + (b.v - a.v) * fs + (cc.v - a.v) * fr;
+                    int tx = (int)std::floor(tu * d.st_scale[0] + d.tex_offset[0]), ty = (int)std::floor(tv * d.st_scale[1] + d.tex_offset[1]);
+                    tx = ((tx % cpu.w) + cpu.w) % cpu.w;
+                    ty = ((ty % cpu.h) + cpu.h) % cpu.h;
+                    const uint8_t* texel = &cpu.rgba[((size_t)ty * cpu.w + tx) * 4];
+                    const float va = (a.a + (b.a - a.a) * fs + (cc.a - a.a) * fr) / 128.0f;
+                    const float ta = d.tcc ? texel[3] / 128.0f : 1.0f;
+                    if (ta * va < 0.35f) continue;
+                    const float lr = (a.r + (b.r - a.r) * fs + (cc.r - a.r) * fr) / 128.0f, lg = (a.g + (b.g - a.g) * fs + (cc.g - a.g) * fr) / 128.0f,
+                                lb = (a.b + (b.b - a.b) * fs + (cc.b - a.b) * fr) / 128.0f;
+                    float m[C_COUNT];
+                    member(std::min(1.0f, texel[0] / 255.0f * lr), std::min(1.0f, texel[1] / 255.0f * lg), std::min(1.0f, texel[2] / 255.0f * lb), m);
+                    if (m[C_GRASS] > 0.6f) continue;                              // a decal of grass itself: grass may grow there
+                    const float px = a.x + ux * fs + wx * fr, py = a.y + uy * fs + wy * fr, pz = a.z + uz * fs + wz * fr;
+                    const int64_t cx = (int64_t)std::floor(px / DECAL_CELL), cy = (int64_t)std::floor(py / DECAL_CELL);
+                    WallCell& dc = decal_cells[(uint64_t)(cx & 0xffffffff) | ((uint64_t)cy << 32)];
+                    dc.lo = std::min(dc.lo, pz); dc.hi = std::max(dc.hi, pz);
+                }
+        }
+    }
+}
+
+// under a decal, or within a cell of one (a tuft leans over its neighbours: a flower patch must stay clear)
+bool RtaDrawer::grass_under_decal(float x, float y, float z) const {
+    if (decal_cells.empty()) return false;
+    const int64_t cx = (int64_t)std::floor(x / DECAL_CELL), cy = (int64_t)std::floor(y / DECAL_CELL);
+    for (int64_t dy = -1; dy <= 1; dy++)
+        for (int64_t dx = -1; dx <= 1; dx++) {
+            auto it = decal_cells.find((uint64_t)((cx + dx) & 0xffffffff) | ((uint64_t)(cy + dy) << 32));
+            if (it != decal_cells.end() && it->second.lo < z + 12.0f && it->second.hi > z - 12.0f) return true;
+        }
+    return false;
+}
+
+// ---- the rebuild: shapes drawn by fitted Elden Ring pieces instead ---------------------------------------------------------
+
+void RtaDrawer::set_world_hide(const Array& volumes) {
+    world_hide.clear();
+    world_hide_cache.clear();
+    world_hide_models = false;
+    world_hide_gen++;
+    for (int64_t i = 0; i < volumes.size(); i++) {
+        const Array v = volumes[i];
+        if (v.size() < 9) continue;
+        WorldHide h;
+        for (int k = 0; k < 3; k++) { h.c[k] = (float)(double)v[k]; h.h[k] = (float)(double)v[3 + k]; }
+        const double yaw = (double)v[6] * 3.14159265358979323846 / 180.0;
+        h.cos_yaw = (float)std::cos(yaw); h.sin_yaw = (float)std::sin(yaw);
+        h.cylinder = (int64_t)v[7] != 0;
+        h.kinds = (int)(int64_t)v[8];
+        world_hide.push_back(h);
+        if (h.kinds & 2) world_hide_models = true;
+    }
+}
+
+// a model draw the rebuild takes: the middle of its packets' box lies inside a volume for models (a figure walking past is
+// not: its middle is never inside the shape it walks around)
+bool RtaDrawer::world_model_taken(const rtag_draw& d, const rtag_scene* tap) {
+    if (!tap || !d.scene_piece_count || d.scene_piece_first + d.scene_piece_count > tap->piece_count || !tap->full) return false;
+    float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+    for (uint32_t k = 0; k < d.scene_piece_count; k++) {
+        const rtag_scene_piece& pc = tap->pieces[d.scene_piece_first + k];
+        if (pc.full_first + pc.full_count > tap->full_count) return false;
+        const rtag_scene_full* v = tap->full + pc.full_first;
+        for (uint32_t n = 0; n < pc.full_count; n++) {
+            lo[0] = std::min(lo[0], v[n].x); lo[1] = std::min(lo[1], v[n].y); lo[2] = std::min(lo[2], v[n].z);
+            hi[0] = std::max(hi[0], v[n].x); hi[1] = std::max(hi[1], v[n].y); hi[2] = std::max(hi[2], v[n].z);
+        }
+    }
+    const float m[3] = {(lo[0] + hi[0]) * 0.5f, (lo[1] + hi[1]) * 0.5f, (lo[2] + hi[2]) * 0.5f};
+    for (const WorldHide& h : world_hide) {
+        if (!(h.kinds & 2)) continue;
+        const float dx = m[0] - h.c[0], dy = m[1] - h.c[1], dz = m[2] - h.c[2];
+        if (std::fabs(dz) > h.h[2]) continue;
+        if (h.cylinder ? dx * dx + dy * dy <= h.h[0] * h.h[0]
+                       : std::fabs(dx * h.cos_yaw + dy * h.sin_yaw) <= h.h[0] && std::fabs(-dx * h.sin_yaw + dy * h.cos_yaw) <= h.h[1])
+            return true;
+    }
+    return false;
+}
+
+// a model's triangle all of whose corners lie in a volume that takes models (its place in the list noted)
+int RtaDrawer::world_tri_hidden(const rtag_scene_full* c, float order) {
+    for (size_t vi = 0; vi < world_hide.size(); vi++) {
+        WorldHide& h = world_hide[vi];
+        if (!(h.kinds & 2)) continue;
+        bool all = true;
+        for (int i = 0; i < 3 && all; i++) {
+            const float dx = c[i].x - h.c[0], dy = c[i].y - h.c[1], dz = c[i].z - h.c[2];
+            if (std::fabs(dz) > h.h[2]) all = false;
+            else if (h.cylinder) all = dx * dx + dy * dy <= h.h[0] * h.h[0];
+            else {
+                const float lx = dx * h.cos_yaw + dy * h.sin_yaw, ly = -dx * h.sin_yaw + dy * h.cos_yaw;
+                all = std::fabs(lx) <= h.h[0] && std::fabs(ly) <= h.h[1];
+            }
+        }
+        if (all) {
+            if (world_hide_frame != frames) {
+                world_hide_frame = frames;
+                for (WorldHide& o : world_hide) o.order = -1;
+            }
+            if (h.order < 0 || order < h.order) h.order = order;
+            return (int)vi;
+        }
+    }
+    return -1;
+}
+
+Array RtaDrawer::get_world_hide() const {
+    Array out;
+    for (const WorldHide& h : world_hide) {
+        Array a;
+        a.push_back(world_hide_frame == frames ? h.order : -1.0f);
+        a.push_back((int64_t)h.draws);
+        a.push_back(h.weight > 0 ? Color((float)(h.rgb[0] / h.weight), (float)(h.rgb[1] / h.weight), (float)(h.rgb[2] / h.weight)) : Color(0, 0, 0, 0));
+        a.push_back(h.weight);
+        out.push_back(a);
+    }
+    return out;
+}
+
+// the volume that holds every corner of the draw's packets (-1 none); its place in the list and colour are noted
+int RtaDrawer::world_hidden(const rtag_draw& d, const rtag_scene* tap, float order) {
+    if (world_hide_frame != frames) {
+        world_hide_frame = frames;
+        for (WorldHide& h : world_hide) h.order = -1;
+    }
+    if (!tap || !d.scene_piece_count || d.scene_piece_first + d.scene_piece_count > tap->piece_count || !tap->full) return -1;
+    const rtag_scene_piece* pieces = tap->pieces + d.scene_piece_first;
+    // the draw's identity: its packets and where the first lies (the level's chunks do not move; a model's draw that moves
+    // is looked at again)
+    uint64_t key = 0x2545F4914F6CDD1Dull ^ d.scene_piece_count;
+    for (uint32_t k = 0; k < d.scene_piece_count; k++) {
+        key = mix64(key ^ pieces[k].mesh ^ ((uint64_t)pieces[k].full_count << 40) ^ ((uint64_t)pieces[k].kind << 60));
+        if (pieces[k].full_count && pieces[k].full_first < tap->full_count) {
+            const rtag_scene_full& v = tap->full[pieces[k].full_first];
+            key = mix64(key ^ (uint64_t)(int64_t)std::lround(v.x * 2) ^ ((uint64_t)(int64_t)std::lround(v.y * 2) << 21) ^
+                        ((uint64_t)(int64_t)std::lround(v.z * 2) << 42));
+        }
+    }
+    int found = -1;
+    auto cached = world_hide_cache.find(key);
+    if (cached != world_hide_cache.end()) found = cached->second;
+    else {
+        for (size_t vi = 0; vi < world_hide.size() && found < 0; vi++) {
+            const WorldHide& h = world_hide[vi];
+            bool all = true, any = false;
+            for (uint32_t k = 0; k < d.scene_piece_count && all; k++) {
+                const rtag_scene_piece& pc = pieces[k];
+                if (!((pc.kind == 1 && (h.kinds & 1)) || (pc.kind == 2 && (h.kinds & 2)))) { all = false; break; }
+                if (pc.full_first + pc.full_count > tap->full_count) { all = false; break; }
+                const rtag_scene_full* v = tap->full + pc.full_first;
+                for (uint32_t n = 0; n < pc.full_count; n++) {
+                    const float dx = v[n].x - h.c[0], dy = v[n].y - h.c[1], dz = v[n].z - h.c[2];
+                    if (std::fabs(dz) > h.h[2]) { all = false; break; }
+                    if (h.cylinder) {
+                        if (dx * dx + dy * dy > h.h[0] * h.h[0]) { all = false; break; }
+                    } else {
+                        const float lx = dx * h.cos_yaw + dy * h.sin_yaw, ly = -dx * h.sin_yaw + dy * h.cos_yaw;
+                        if (std::fabs(lx) > h.h[0] || std::fabs(ly) > h.h[1]) { all = false; break; }
+                    }
+                    any = true;
+                }
+            }
+            if (all && any) found = (int)vi;
+        }
+        world_hide_cache[key] = found;
+    }
+    if (found < 0) return -1;
+    WorldHide& h = world_hide[found];
+    if (h.order < 0 || order < h.order) h.order = order;
+    h.draws++;
+    world_hide_colour(found, d);
+    return found;
+}
+
+// the colour a draw left out was drawn with (its texture's mean, with the game's vertex light): the piece over it takes it on
+void RtaDrawer::world_hide_colour(int vi, const rtag_draw& d) {
+    if (vi < 0 || vi >= (int)world_hide.size()) return;
+    WorldHide& h = world_hide[vi];
+    auto wt = world_tex.find(d.texture);
+    if (wt != world_tex.end() && !wt->second.pending && wt->second.opaque > 0.5f && d.depth_write && h.weight < 1e6) {
+        for (int k = 0; k < 3; k++) h.rgb[k] += wt->second.mean[k];
+        h.weight += 1;
+    }
+}
+
+// ---- dump: the next list's packets, world space, as an OBJ file (app er world dump FILE) ------------------------------------
+
+void RtaDrawer::world_dump(const String& path) {
+    if (world_dump_file) { fclose((FILE*)world_dump_file); world_dump_file = nullptr; }
+    world_dump_path = path.utf8().get_data();
+    world_dump_frame = 0;
+}
+
+void RtaDrawer::world_dump_take(const rtag_draw& d, const rtag_scene* tap, size_t index) {
+    if (!world_dump_file) {
+        world_dump_file = fopen(world_dump_path.c_str(), "w");
+        if (!world_dump_file) { world_dump_path.clear(); return; }
+        world_dump_frame = frames;
+        world_dump_vertices = 0;
+        fprintf((FILE*)world_dump_file, "# the scene tap's packets of one list, world space (z up); g d<draw>_k<kind>_o<object>_m<packet>_t<texture>_z<depth write>_b<blend>\n");
+    } else if (frames != world_dump_frame) {
+        fclose((FILE*)world_dump_file);
+        world_dump_file = nullptr;
+        UtilityFunctions::print(vformat("rta_godot: er world: dump written to %s", String(world_dump_path.c_str())));
+        world_dump_path.clear();
+        return;
+    }
+    if (!tap || !d.scene_piece_count || d.scene_piece_first + d.scene_piece_count > tap->piece_count || !tap->full) return;
+    FILE* f = (FILE*)world_dump_file;
+    for (uint32_t k = 0; k < d.scene_piece_count; k++) {
+        const rtag_scene_piece& pc = tap->pieces[d.scene_piece_first + k];
+        if (!pc.full_count || pc.full_first + pc.full_count > tap->full_count) continue;
+        auto wt = world_tex.find(d.texture);
+        fprintf(f, "g d%zu_k%d_o%u_m%016llx_t%s_z%d_b%d\n", index, (int)pc.kind, pc.object, (unsigned long long)pc.mesh,
+                wt != world_tex.end() && !wt->second.name.empty() ? wt->second.name.c_str() : std::to_string(d.texture).c_str(), (int)d.depth_write, (int)d.blend);
+        const rtag_scene_full* v = tap->full + pc.full_first;
+        for (uint32_t n = 0; n < pc.full_count; n++) fprintf(f, "v %.3f %.3f %.3f %d %d %d\n", v[n].x, v[n].y, v[n].z, v[n].r, v[n].g, v[n].b);
+        for (uint32_t n = 0; n + 2 < pc.full_count; n += 3)
+            fprintf(f, "f %llu %llu %llu\n", (unsigned long long)(world_dump_vertices + n + 1), (unsigned long long)(world_dump_vertices + n + 2),
+                    (unsigned long long)(world_dump_vertices + n + 3));
+        world_dump_vertices += pc.full_count;
+    }
 }

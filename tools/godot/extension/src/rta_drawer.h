@@ -122,6 +122,12 @@ class RtaDrawer : public RefCounted {
     Dictionary get_world_info(int64_t frames_back) const;
     PackedFloat32Array get_grass(const Vector3& eye, double radius, int64_t max_points);
     void world_reset();
+    // ... the rebuild (er_world.gd): shapes of the level drawn by Elden Ring pieces fitted over them; a draw lying wholly
+    // inside one of these volumes is left out (drawing only: nothing of the game's changes).  volumes: [[cx, cy, cz, hx,
+    // hy, hz, yaw degrees, cylinder 0/1, kinds (1 level chunks, 2 models, 3 both)], ...]
+    void set_world_hide(const Array& volumes);
+    Array get_world_hide() const;           // per volume: [order of its first draw left out this frame (-1 none), draws, mean colour, draws in it]
+    void world_dump(const String& path);    // the next list's pieces (every draw's packets, world space) as an OBJ file
 
   protected:
     static void _bind_methods();
@@ -264,6 +270,9 @@ class RtaDrawer : public RefCounted {
         float mean[3] = {0, 0, 0};
         float frac[9] = {0};
         float edge = 0, aniso = 0, opaque = 0;
+        float coherence = 0;                        // how much its edges run one way (0 every way .. 1 one way: grain, boards)
+        float sat = 0, contrast = 0, glint = 0;     // mean saturation; spread of brightness over its mean; share of glints
+        float cool = 0;                             // share of its coloured texels that are blue-grey (180..260 degrees)
         uint64_t draws = 0;
         bool pending = false;                       // not read yet (at its first draw: world_scan)
         float tint[3] = {1, 1, 1};                  // the mean of the game's vertex light on it (1 = 128)
@@ -273,7 +282,10 @@ class RtaDrawer : public RefCounted {
     std::unordered_map<std::string, int> world_overrides;
     int world_remap[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
     bool world_on = false;
-    float world_cobble_edge = 0.85f, world_wood_aniso = 1.7f, world_wood_edge = 0.25f, world_grass_density = 0.0f;
+    float world_cobble_edge = 0.85f, world_wood_aniso = 1.45f, world_wood_edge = 0.25f, world_grass_density = 0.0f;
+    float world_wood_coherence = 0.6f, world_metal_glint = 0.1f, world_metal_contrast = 0.85f;
+    float world_grass_ground = 0.3f;              // the share of a piece's area that must face up for grass to grow on it
+    float world_grass_clear = 10.0f;              // units around a point looked at for a painted feature (0: only under it)
     std::vector<rtag_texture_name> world_names;
     void world_classify(const rtag_texture& t, const rtag_texture_name* name);
     void world_read(uint32_t id, const float tint[3]);
@@ -288,6 +300,35 @@ class RtaDrawer : public RefCounted {
     std::unordered_map<uint64_t, WallCell> wall_cells;
     uint64_t grass_total = 0;
     bool grass_near_wall(float x, float y, float z) const;
+    // grass is not grown under the level's painted decals (flower patches, paths: blended chunks drawn over the ground)
+    static constexpr float DECAL_CELL = 4.0f;
+    std::unordered_set<uint64_t> decal_pieces;
+    std::unordered_map<uint64_t, WallCell> decal_cells;     // cells a decal covers, with the height span it covers them at
+    std::unordered_map<uint32_t, bool> decal_textures;      // per texture: see-through somewhere (a decal's)
+    void world_decal(const rtag_draw& d, const rtag_scene* tap);
+    bool grass_under_decal(float x, float y, float z) const;
+    // the rebuild's volumes (set_world_hide)
+    struct WorldHide {
+        float c[3] = {0, 0, 0}, h[3] = {0, 0, 0}, cos_yaw = 1, sin_yaw = 0;
+        bool cylinder = false;
+        int kinds = 1;
+        float order = -1;
+        uint64_t draws = 0;
+        double rgb[3] = {0, 0, 0}, weight = 0;
+    };
+    std::vector<WorldHide> world_hide;
+    std::unordered_map<uint64_t, int> world_hide_cache;     // per draw (its packets and where they lie): the volume holding it, -1 none
+    uint64_t world_hide_frame = 0;
+    int world_hidden(const rtag_draw& d, const rtag_scene* tap, float order);
+    uint64_t world_hide_gen = 0;                            // changes with the volumes (kept meshes of models made again)
+    bool world_hide_models = false;                         // a volume takes models' triangles
+    int world_tri_hidden(const rtag_scene_full* corners, float order);     // the volume, -1 none
+    void world_hide_colour(int volume, const rtag_draw& d);
+    bool world_model_taken(const rtag_draw& d, const rtag_scene* tap);    // a model draw whose middle is in a volume for models
+    std::string world_dump_path;
+    void* world_dump_file = nullptr;
+    uint64_t world_dump_frame = 0, world_dump_vertices = 0;
+    void world_dump_take(const rtag_draw& d, const rtag_scene* tap, size_t index);
 
     struct Fill;
     Fill* fill = nullptr;
