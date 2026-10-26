@@ -300,20 +300,33 @@ Dictionary RtaMachine::get_skeletons(bool with_mesh) const {
         PackedFloat32Array weights;
         PackedVector2Array full_uv;
         PackedColorArray full_colour;
+        position.resize(k.source_count); normal.resize(k.source_count);
+        joints.resize((int64_t)k.source_count * 4); weights.resize((int64_t)k.source_count * 4);
+        Vector3* positions_out = position.ptrw();
+        Vector3* normals_out = normal.ptrw();
+        int32_t* joints_out = joints.ptrw();
+        float* weights_out = weights.ptrw();
         for (uint32_t i = 0; i < k.source_count; i++) {
             const rtag_skin_source& v = k.sources[i];
-            position.push_back(Vector3(v.position[0], v.position[1], v.position[2]));
-            normal.push_back(Vector3(v.normal[0], v.normal[1], v.normal[2]));
-            for (int c = 0; c < 4; c++) { joints.push_back(v.joint[c]); weights.push_back(v.weight[c] / 255.0f); }
+            positions_out[i] = Vector3(v.position[0], v.position[1], v.position[2]);
+            normals_out[i] = Vector3(v.normal[0], v.normal[1], v.normal[2]);
+            for (int c = 0; c < 4; c++) { joints_out[i * 4 + c] = v.joint[c]; weights_out[i * 4 + c] = v.weight[c] / 255.0f; }
         }
         const uint32_t corners = std::min(k.full_count, sc.full_count);
+        full_position.resize(corners); full_normal.resize(corners); full_uv.resize(corners);
+        full_colour.resize(corners); full_source.resize(corners);
+        Vector3* full_positions_out = full_position.ptrw();
+        Vector3* full_normals_out = full_normal.ptrw();
+        Vector2* full_uv_out = full_uv.ptrw();
+        Color* full_colours_out = full_colour.ptrw();
+        int32_t* full_sources_out = full_source.ptrw();
         for (uint32_t i = 0; i < corners; i++) {
             const rtag_scene_full& f = sc.full[i];
-            full_position.push_back(Vector3(f.x, f.y, f.z));
-            full_normal.push_back(Vector3(f.nx, f.ny, f.nz));
-            full_uv.push_back(Vector2(f.u, f.v));
-            full_colour.push_back(Color(f.r / 128.0f, f.g / 128.0f, f.b / 128.0f, f.a / 128.0f));
-            full_source.push_back(k.full_source[i]);
+            full_positions_out[i] = Vector3(f.x, f.y, f.z);
+            full_normals_out[i] = Vector3(f.nx, f.ny, f.nz);
+            full_uv_out[i] = Vector2(f.u, f.v);
+            full_colours_out[i] = Color(f.r / 128.0f, f.g / 128.0f, f.b / 128.0f, f.a / 128.0f);
+            full_sources_out[i] = k.full_source[i];
         }
         d["source_position"] = position;
         d["source_normal"] = normal;

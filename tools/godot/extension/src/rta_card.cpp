@@ -48,6 +48,7 @@ struct RtaDrawer::Card {
     Vector3 feet;
     std::vector<Draw> taking;           // this frame's
     std::vector<Held> held;             // what the card shows
+    std::unordered_map<uint32_t, RID> textures;  // one private copy per game texture, shared by its packets
     double turn = 0;
     uint64_t captures = 0, frame_taken = 0;
     int corners_held = 0;
@@ -94,8 +95,9 @@ void RtaDrawer::card_clear() {
         for (auto& h : card->held) {
             s->free_rid(h.instance);
             s->free_rid(h.mesh);
-            if (h.texture.is_valid()) s->free_rid(h.texture);
         }
+    if (s) for (auto& t : card->textures) s->free_rid(t.second);
+    card->textures.clear();
     card->held.clear();
     card->corners_held = 0;
 }
@@ -159,10 +161,15 @@ void RtaDrawer::card_end(const Target& world) {
             if (d.state.texture && !d.state.tex_is_target) {
                 auto cpu = cpu_textures.find(d.state.texture);
                 if (cpu == cpu_textures.end()) continue;            // its pixels are not known: left out
-                PackedByteArray bytes;
-                bytes.resize((int64_t)cpu->second.rgba.size());
-                memcpy(bytes.ptrw(), cpu->second.rgba.data(), cpu->second.rgba.size());
-                h.texture = s->texture_2d_create(Image::create_from_data(cpu->second.w, cpu->second.h, false, Image::FORMAT_RGBA8, bytes));
+                auto shared = c.textures.find(d.state.texture);
+                if (shared == c.textures.end()) {
+                    PackedByteArray bytes;
+                    bytes.resize((int64_t)cpu->second.rgba.size());
+                    memcpy(bytes.ptrw(), cpu->second.rgba.data(), cpu->second.rgba.size());
+                    RID texture = s->texture_2d_create(Image::create_from_data(cpu->second.w, cpu->second.h, false, Image::FORMAT_RGBA8, bytes));
+                    shared = c.textures.emplace(d.state.texture, texture).first;
+                }
+                h.texture = shared->second;
                 h.textured = true;
             } else if (d.state.texture) continue;                   // a surface (a ground shadow, an effect): not the figure
             AABB box(Vector3(d.lo[0], d.lo[1], d.lo[2]), Vector3(d.hi[0] - d.lo[0] + 0.01f, d.hi[1] - d.lo[1] + 0.01f, d.hi[2] - d.lo[2] + 0.01f));

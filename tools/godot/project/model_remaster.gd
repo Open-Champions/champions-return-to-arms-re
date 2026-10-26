@@ -134,6 +134,7 @@ func _name_of(f: Dictionary) -> String:
 func before_frame() -> void:
 	var started := Time.get_ticks_usec()
 	frame_no += 1
+	_poll_merges()
 	var er_hide: PackedInt64Array = er.get("last_hide") if er != null and er.get("last_hide") != null else PackedInt64Array()
 	on = rm != null and view != null and String(view.look.get("remaster_models", "on")) == "on" and not forced_off
 	targets = []
@@ -423,6 +424,8 @@ func frame(to_scenario: RID) -> void:
 	# figures is thousands of packets: going through them every frame was most of this layer's time)
 	var todo: Array = []
 	for f in scan_now.get("figures", []):
+		if not f.has("name"):
+			continue                    # before_frame left this whole figure to the ER layer
 		var sk := "%s|%s" % [String(f.get("id", "")), String(f.key)]
 		if not (settled.has(sk) and frame_no - int(settled[sk]) < 30):
 			todo.append(f)
@@ -480,8 +483,13 @@ func frame(to_scenario: RID) -> void:
 			var both := tex_id * 1000003 + ((tu[0] as RID).get_id() if not tu.is_empty() else 0) + ((te[0] as RID).get_id() * 7919 if not te.is_empty() else 0)
 			if int(packet_tex.get(pkn, -1)) == both and packets.has(pkn) and templates.has(packets[pkn]):
 				continue
+			var packet_started := ResourceBudget.begin()
+			if packet_started < 0:
+				all_set = false
+				break
 			packet_tex[pkn] = both
 			_packet(pkn, t, o, n, int(ordinal[tex_id]), shiny.has(n), tu, te, decal.has(n))
+			ResourceBudget.end(packet_started)
 			all_set = false
 		if debug and not said.has("env " + String(f.get("name", ""))):
 			said["env " + String(f.get("name", ""))] = true
@@ -653,6 +661,28 @@ func _figure_material(g: Dictionary, sig: String) -> RID:
 
 
 # the model's levels with its packets gathered by signature (one surface each), made once per grouping
+func _merge_ready(job: Dictionary) -> bool:
+	if job.has("task"):
+		if not WorkerThreadPool.is_task_completed(int(job.task)):
+			return false
+		WorkerThreadPool.wait_for_task_completion(int(job.task))
+		job.erase("task")
+		merges_running -= 1
+		job["meshes"] = []
+		job["surface"] = 0
+		job["mesh"] = null
+		job["groups_made"] = PackedInt32Array()
+	return true
+
+
+func _poll_merges() -> void:
+	# A model can leave the view or the level while its merge runs. Release its CPU slot even when nobody
+	# asks for that model again; its exact result waits here for a budgeted upload if the model returns.
+	for key in bakes:
+		if bakes[key].has("merge_job"):
+			_merge_ready(bakes[key].merge_job)
+
+
 func _merged(b: Dictionary, name: String) -> Dictionary:
 	# The model's packets gathered by material signature into surfaces, per level.  The worker merges only arrays;
 	# their render meshes are made here, a surface at a time within the frame's resource budget.
@@ -690,16 +720,8 @@ func _merged(b: Dictionary, name: String) -> Dictionary:
 		merges_running += 1
 		b["merge_job"] = job
 		return mine.last
-	if job.has("task"):
-		if not WorkerThreadPool.is_task_completed(int(job.task)):
-			return mine.last
-		WorkerThreadPool.wait_for_task_completion(int(job.task))
-		job.erase("task")
-		merges_running -= 1
-		job["meshes"] = []
-		job["surface"] = 0
-		job["mesh"] = null
-		job["groups_made"] = PackedInt32Array()
+	if not _merge_ready(job):
+		return mine.last
 	while (job.meshes as Array).size() < (job.out as Array).size():
 		var started := ResourceBudget.begin()
 		if started < 0:

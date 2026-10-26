@@ -24,6 +24,7 @@ const Cat := preload("res://gameart/catalogue.gd")
 const CACHE := "user://gameart/cache"
 const SETTINGS := "user://gameart.cfg"
 const CACHE_VERSION := 3
+const ResourceBudget := preload("res://resource_budget.gd")
 
 static var _started := false
 static var _ready := false
@@ -41,6 +42,81 @@ static var _glyphs := {}                 # font id -> {glyphs: [[code,u0,u1,v0,v
 static var _mutex := Mutex.new()
 static var _task := -1
 static var _listeners: Array[Callable] = []
+static var _warm := {}                   # private CPU images from a worker; adopted only after it completes
+static var _warm_scaled := {}            # exact Lanczos copies awaiting a main-thread texture upload
+static var _warm_queue: Array = []
+static var _warm_ids := {}
+
+
+# Prepare a skin's pictures while the player is in the menus. Reading/decompressing the cache and resizing
+# private Images are CPU work; ImageTexture creation stays on the main thread, within the shared frame budget.
+static func prewarm(ids: PackedStringArray) -> void:
+	if not _warm.is_empty() or not _warm_queue.is_empty():
+		return
+	var wanted := PackedStringArray()
+	for id in ids:
+		if not _warm_ids.has(id) and has(id):
+			wanted.append(id)
+			_warm_ids[id] = true
+	if wanted.is_empty():
+		return
+	var tree := Engine.get_main_loop() as SceneTree
+	if tree == null:
+		return
+	var out := {"images": {}, "scaled": {}}
+	var task := WorkerThreadPool.add_task(func() -> void:
+		for id in wanted:
+			var img := _read(id)       # a private copy, never a texture readback or an Image in use by a skin
+			if img == null:
+				continue
+			out.images[id] = img
+			out.scaled[[id, 0]] = img
+			for level in range(1, 5):
+				if img.get_width() >> level < 8 or img.get_height() >> level < 4:
+					break
+				var copy := img.duplicate()
+				copy.resize(maxi(1, img.get_width() >> level), maxi(1, img.get_height() >> level), Image.INTERPOLATE_LANCZOS)
+				out.scaled[[id, level]] = copy,
+		false, "HUD pictures")
+	_warm = {"task": task, "out": out}
+	if not tree.process_frame.is_connected(_warm_tick):
+		tree.process_frame.connect(_warm_tick)
+	if not tree.root.tree_exiting.is_connected(_warm_stop):
+		tree.root.tree_exiting.connect(_warm_stop, CONNECT_ONE_SHOT)
+
+
+static func _warm_tick() -> void:
+	if _warm.has("task"):
+		if not WorkerThreadPool.is_task_completed(int(_warm.task)):
+			return
+		WorkerThreadPool.wait_for_task_completion(int(_warm.task))
+		for id in _warm.out.images:
+			if not _images.has(id):
+				_images[id] = _warm.out.images[id]
+			_lazy.erase(id)
+		_warm_scaled = _warm.out.scaled
+		_warm_queue = _warm_scaled.keys()
+		_warm.clear()
+	while not _warm_queue.is_empty():
+		var started := ResourceBudget.begin()
+		if started < 0:
+			return
+		var key: Array = _warm_queue.pop_back()
+		if not _textures.has(key):
+			_textures[key] = ImageTexture.create_from_image(_warm_scaled[key])
+		_warm_scaled.erase(key)
+		ResourceBudget.end(started)
+	var tree := Engine.get_main_loop() as SceneTree
+	if tree != null and tree.process_frame.is_connected(_warm_tick):
+		tree.process_frame.disconnect(_warm_tick)
+
+
+static func _warm_stop() -> void:
+	if _warm.has("task"):
+		WorkerThreadPool.wait_for_task_completion(int(_warm.task))
+	_warm.clear()
+	_warm_scaled.clear()
+	_warm_queue.clear()
 
 
 # ---- the switch -----------------------------------------------------------------------------------------
@@ -430,8 +506,8 @@ static func tex(id: String, scale := 1.0) -> Texture2D:
 	var key := [id, level]
 	var t: ImageTexture = _textures.get(key)
 	if t == null:
-		var copy := img
-		if level > 0:
+		var copy: Image = _warm_scaled.get(key, img)
+		if level > 0 and not _warm_scaled.has(key):
 			copy = img.duplicate()
 			copy.resize(maxi(1, img.get_width() >> level), maxi(1, img.get_height() >> level), Image.INTERPOLATE_LANCZOS)
 		t = ImageTexture.create_from_image(copy)

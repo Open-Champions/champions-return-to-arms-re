@@ -130,6 +130,7 @@ var scale_set := -1.0
 var frames_taken := 0                   # lists taken (er_layer.gd: which figures were drawn in the last one)
 var er: Node                            # er_layer.gd: figures posed by the game's skeletons (look.er_models)
 var remaster: Node                      # model_remaster.gd: the game's own figures remastered (look.remaster_models)
+var material_warmup := preload("res://material_warmup.gd").new()
 var world_layer: Node                   # er_world.gd: the Elden Ring world layer (look.er_world)
 var torches: Array = []                 # [{light, instance, address, shadow}] Godot's lights at the game's
 var torch_clock := 0.0
@@ -368,6 +369,7 @@ func _free_torches() -> void:
 
 
 func release() -> void:
+	material_warmup.release()
 	if er != null:
 		er.call("release")
 	if remaster != null:
@@ -463,6 +465,7 @@ func frame() -> void:
 		return
 	if world != scenario:
 		_make(world)
+	material_warmup.tick(scenario, look)
 	_level()
 	var info: Dictionary = drawer.call("get_sky_info")
 	_sun_from_level(info)

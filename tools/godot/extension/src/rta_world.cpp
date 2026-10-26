@@ -23,6 +23,7 @@
 #include "rta_variant.h"
 
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/classes/worker_thread_pool.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -58,7 +59,7 @@ float grass_hue = 64.0f;
 //  - lava: a saturated red to orange that glows (bright); a dark rock under an orange light is not lava
 //  - water: a saturated cyan to blue
 //  - ice: a pale, faintly blue white (a snow is colourless; a blue-grey rock is darker or rougher: world_read)
-void member(float r, float g, float b, float m[C_COUNT]) {
+void member(float r, float g, float b, float m[C_COUNT], float hue_start = grass_hue) {
     const float mx = std::max(r, std::max(g, b)), mn = std::min(r, std::min(g, b));
     const float lum = 0.3f * r + 0.59f * g + 0.11f * b;
     const float sat = (mx - mn) / std::max(mx, 0.04f);
@@ -73,7 +74,7 @@ void member(float r, float g, float b, float m[C_COUNT]) {
     m[C_LAVA] = 0.0f;           // (lava glows whatever the light: lava_member, from the texel itself)
     m[C_WATER] = band(h, 172, 250, 12) * smooth(0.25f, 0.4f, sat);
     m[C_ICE] = band(h, 172, 245, 12) * smooth(0.05f, 0.1f, sat) * (1.0f - smooth(0.24f, 0.34f, sat)) * smooth(0.58f, 0.72f, lum);
-    m[C_GRASS] = band(h, grass_hue, 160, 12) * smooth(0.08f, 0.18f, sat);
+    m[C_GRASS] = band(h, hue_start, 160, 12) * smooth(0.08f, 0.18f, sat);
     m[C_SAND] = band(h, 26, 58, 10) * coloured * (1.0f - smooth(0.55f, 0.75f, sat)) * smooth(0.42f, 0.56f, lum) * (1.0f - m[C_LAVA]);
     m[C_DIRT] = band(h, 6, 56, 10) * coloured * (1.0f - m[C_SAND]) * (1.0f - m[C_LAVA]);
     m[C_SNOW] = smooth(0.62f, 0.78f, lum) * (1.0f - smooth(0.10f, 0.22f, sat)) * (1.0f - m[C_ICE]);
@@ -109,6 +110,7 @@ uint64_t mix64(uint64_t x) {
 
 // a texture as it arrives (scene mode): what it is made of
 void RtaDrawer::world_classify(const rtag_texture& t, const rtag_texture_name* name) {
+    world_prepared.erase(t.id);
     WorldTex& w = world_tex[t.id];
     w = WorldTex();
     if (name && name->named) {
@@ -125,11 +127,30 @@ void RtaDrawer::world_read(uint32_t id, const float tint[3]) {
     auto wt = world_tex.find(id);
     if (wt == world_tex.end()) return;
     WorldTex& w = wt->second;
+    std::copy(tint, tint + 3, w.tint);
+    auto ready = world_prepared.find(id);
+    if (ready != world_prepared.end()) {
+        const WorldTex& result = ready->second;
+        // The speculative first draw can be skipped by fusion or hiding. Only reuse its exact inputs.
+        if (world_same_inputs(w, result)) { w = result; world_prepared.erase(ready); world_apply(w); return; }
+    }
+    auto pixels = cpu_textures.find(id);
+    if (pixels != cpu_textures.end()) world_read_pixels(w, pixels->second);
+    else w.pending = false;
+    world_apply(w);
+}
+
+// Worker input/output are plain CPU records. No scene, render resource, dictionary, or gameplay memory is touched.
+void RtaDrawer::world_read_pixels(WorldTex& w, const CpuTexture& pixels) {
+    const WorldReadOptions& options = w.read_options;
+    const bool world_lava_read = options.lava, world_water_read = options.water;
+    const float world_lava_hot = options.lava_hot, world_wood_aniso = options.wood_aniso;
+    const float world_wood_coherence = options.wood_coherence, world_wood_edge = options.wood_edge;
+    const float world_metal_glint = options.metal_glint, world_metal_contrast = options.metal_contrast;
+    const float world_cobble_edge = options.cobble_edge, world_ice_edge = options.ice_edge;
     w.pending = false;
-    for (int k = 0; k < 3; k++) w.tint[k] = tint[k];
-    auto ct = cpu_textures.find(id);
-    if (ct == cpu_textures.end()) return;
-    struct { int width, height; const uint8_t* rgba; } t = {ct->second.w, ct->second.h, ct->second.rgba.data()};
+    const float* tint = w.tint;
+    struct { int width, height; const uint8_t* rgba; } t = {pixels.w, pixels.h, pixels.rgba.data()};
     if (t.width < 8 || t.height < 8 || !t.rgba) return;
     // at most 64 x 64 texels looked at
     const int step_x = std::max(1, t.width / 64), step_y = std::max(1, t.height / 64);
@@ -154,7 +175,7 @@ void RtaDrawer::world_read(uint32_t id, const float tint[3]) {
             opaque++;
             const float r = std::min(1.0f, p[0] / 255.0f * tint[0]), g = std::min(1.0f, p[1] / 255.0f * tint[1]), b = std::min(1.0f, p[2] / 255.0f * tint[2]);
             float m[C_COUNT];
-            member(r, g, b, m);
+            member(r, g, b, m, options.hue);
             {
                 // lava, from the texel itself: what it takes is taken from the others
                 // (only where the level's section says it has lava: a lamp-lit red wall glows in its texture too)
@@ -174,7 +195,7 @@ void RtaDrawer::world_read(uint32_t id, const float tint[3]) {
             // light has (a snowfield under a deep blue night light reads as nothing - or as water - under its own)
             {
                 float mg[C_COUNT];
-                member(p[0] / 255.0f, p[1] / 255.0f, p[2] / 255.0f, mg);
+                member(p[0] / 255.0f, p[1] / 255.0f, p[2] / 255.0f, mg, options.hue);
                 for (int k = 0; k < C_COUNT; k++) sum_grey[k] += mg[k];
             }
             rgb[0] += r; rgb[1] += g; rgb[2] += b;
@@ -275,7 +296,78 @@ void RtaDrawer::world_read(uint32_t id, const float tint[3]) {
     if (b == C_STONE && w.edge > world_cobble_edge) b = C_COBBLE;
     w.guess = (uint8_t)a;
     w.guess_b = (uint8_t)b;
-    world_apply(w);
+}
+
+void RtaDrawer::world_read_task(void* opaque, uint32_t index) {
+    auto& jobs = *static_cast<std::vector<WorldReadJob>*>(opaque);
+    WorldReadJob& job = jobs[index];
+    world_read_pixels(job.result, *job.pixels);
+}
+
+bool RtaDrawer::world_same_inputs(const WorldTex& a, const WorldTex& b) {
+    const WorldReadOptions &x = a.read_options, &y = b.read_options;
+    return std::equal(a.tint, a.tint + 3, b.tint) && x.hue == y.hue && x.wood_aniso == y.wood_aniso &&
+           x.wood_coherence == y.wood_coherence && x.wood_edge == y.wood_edge && x.metal_glint == y.metal_glint &&
+           x.metal_contrast == y.metal_contrast && x.cobble_edge == y.cobble_edge && x.ice_edge == y.ice_edge &&
+           x.lava_hot == y.lava_hot && x.lava == y.lava && x.water == y.water;
+}
+
+void RtaDrawer::world_prepare(const rtag_frame& f, uint32_t target) {
+    world_jobs.clear();
+    if (!world_on || !f.scene || !f.scene->valid || !f.scene->full || !f.scene->normals) return;
+    const rtag_scene& tap = *f.scene;
+    std::unordered_map<uint32_t, WorldTex> inputs;
+    std::unordered_set<uint32_t> needed;
+    for (uint32_t i = 0; i < f.draw_count; i++) {
+        const rtag_draw& d = f.draws[i];
+        if (d.target != target || d.kind != RTAG_DRAW || !d.depth_write || d.scene_kind != RTAG_SCENE_EXACT ||
+            d.scene_first < 0 || !d.count || (uint32_t)d.scene_first + d.count > tap.vertex_count || d.first + d.count > f.vertex_count ||
+            !d.scene_piece_count || d.scene_piece_first + d.scene_piece_count > tap.piece_count) continue;
+        auto wt = world_tex.find(d.texture);
+        if (wt == world_tex.end() || !wt->second.pending) continue;
+        bool level_piece = false;
+        for (uint32_t k = 0; k < d.scene_piece_count; k++)
+            if (tap.pieces[d.scene_piece_first + k].kind == 1) { level_piece = true; break; }
+        if (level_piece) needed.insert(d.texture);
+        if (inputs.count(d.texture)) continue;
+        WorldTex input = wt->second;
+        if (!input.tinted) {
+            double sum[3] = {0, 0, 0};
+            int n = 0;
+            for (uint32_t k = 0; k < d.scene_piece_count && n < 600; k++) {
+                const rtag_scene_piece& pc = tap.pieces[d.scene_piece_first + k];
+                if (pc.full_first + pc.full_count > tap.full_count) continue;
+                for (uint32_t j = 0; j < pc.full_count && n < 600; j += 3, n++) {
+                    const rtag_scene_full& v = tap.full[pc.full_first + j];
+                    sum[0] += v.r; sum[1] += v.g; sum[2] += v.b;
+                }
+            }
+            if (n) for (int k = 0; k < 3; k++) input.tint[k] = (float)(sum[k] / n / 128.0);
+            input.read_options = {grass_hue, world_wood_aniso, world_wood_coherence, world_wood_edge, world_metal_glint,
+                                  world_metal_contrast, world_cobble_edge, world_ice_edge, world_lava_hot, world_lava_read, world_water_read};
+            input.tinted = true;
+        }
+        inputs.emplace(d.texture, std::move(input));
+    }
+    for (uint32_t id : needed) {
+        auto pixels = cpu_textures.find(id);
+        if (pixels == cpu_textures.end()) continue;
+        auto ready = world_prepared.find(id);
+        if (ready != world_prepared.end() && world_same_inputs(inputs[id], ready->second)) continue;
+        world_jobs.push_back({id, std::move(inputs[id]), &pixels->second});
+    }
+    if (!world_jobs.empty()) {
+        // CPU texture storage is immutable until this group is joined in submit(), before any draw consumes a class.
+        world_task = WorkerThreadPool::get_singleton()->add_native_group_task(world_read_task, &world_jobs,
+                (int)world_jobs.size(), std::min<int>(4, world_jobs.size()), false, "world texture classes");
+    }
+}
+
+void RtaDrawer::world_finish() {
+    if (world_task < 0) return;
+    WorkerThreadPool::get_singleton()->wait_for_group_task_completion(world_task);
+    world_task = -1;
+    for (auto& job : world_jobs) world_prepared[job.texture] = std::move(job.result);
 }
 
 // the host's table over what was read: by the texture's name, else the class remapped for the level
@@ -403,7 +495,10 @@ void RtaDrawer::world_scan(const rtag_draw& d, const rtag_scene* tap) {
     if (!world_on || !tap) return;
     if (!d.scene_piece_count || d.scene_piece_first + d.scene_piece_count > tap->piece_count || !tap->full) return;
     auto wt = world_tex.find(d.texture);
-    if (wt != world_tex.end() && wt->second.pending) {
+    bool level_piece = false;
+    for (uint32_t k = 0; k < d.scene_piece_count; k++)
+        if (tap->pieces[d.scene_piece_first + k].kind == 1) { level_piece = true; break; }
+    if (wt != world_tex.end() && wt->second.pending && !wt->second.tinted) {
         // its first draw: the mean of the game's vertex light over its pieces (128 = 1), then its texels read with it
         double sum[3] = {0, 0, 0};
         int n = 0;
@@ -417,8 +512,15 @@ void RtaDrawer::world_scan(const rtag_draw& d, const rtag_scene* tap) {
         }
         float tint[3] = {1, 1, 1};
         if (n) for (int k = 0; k < 3; k++) tint[k] = (float)(sum[k] / n / 128.0);
-        world_read(d.texture, tint);
+        std::copy(tint, tint + 3, wt->second.tint);
+        wt->second.read_options = {grass_hue, world_wood_aniso, world_wood_coherence, world_wood_edge, world_metal_glint,
+                                  world_metal_contrast, world_cobble_edge, world_ice_edge, world_lava_hot, world_lava_read, world_water_read};
+        wt->second.tinted = true;
     }
+    // Model textures never take the world material and have no grass/wall pieces. Their 64x64 classification
+    // is unnecessary. Retain the original first-draw tint in case a level piece shares one.
+    if (!level_piece) return;
+    if (wt != world_tex.end() && wt->second.pending) world_read(d.texture, wt->second.tint);
     if (world_grass_density <= 0.0f || (d.alpha_test && d.atst != 1)) return;     // (no grass on a cut-out card: a tree's crown)
     const bool grassy = wt != world_tex.end() && (wt->second.cls == C_GRASS || wt->second.cls_b == C_GRASS);
     // a surface that is not grass (read, solid): what faces up on it keeps the tufts off (a path laid on the ground, a kerb)

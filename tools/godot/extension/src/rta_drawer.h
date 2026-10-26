@@ -43,6 +43,7 @@
 #include <godot_cpp/variant/vector2i.hpp>
 
 #include <cstdint>
+#include <deque>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -188,10 +189,15 @@ class RtaDrawer : public RefCounted {
     bool warm_loaded = false;
     RID warm_scenario;
     std::vector<RID> warm_rids;                 // the warm-up's meshes, materials and instances, freed some frames later
+    std::vector<uint32_t> warm_todo;
+    size_t warm_next = 0;
     uint64_t warm_frame = 0;
     void warm_note(uint32_t variant);
     void warm_up(RID scenario);
     void warm_free();
+    std::deque<RID> retired;                    // unused resources: destruction is also main-thread work
+    void retire(RID rid);
+    void collect_retired();
     struct Material { RID rid; uint64_t last_used = 0; };
     std::unordered_map<std::string, Material> materials;
     std::vector<Pass*> all_passes;
@@ -279,7 +285,14 @@ private:
 
     // ---- the fill (rta_fill.cpp) ----
     // the Elden Ring world layer (rta_world.cpp): per texture what it reads as, and the grass scattered on the level
+    struct WorldReadOptions {
+        float hue = 64, wood_aniso = 0, wood_coherence = 0, wood_edge = 0, metal_glint = 0;
+        float metal_contrast = 0, cobble_edge = 0, ice_edge = 0, lava_hot = 0;
+        bool lava = false, water = false;
+    };
     struct WorldTex {
+        bool tinted = false;                       // first draw's light retained even when only a model uses it
+        WorldReadOptions read_options;              // classification inputs at that first draw, across level changes
         std::string name;                           // figure-palette, as the art pack names it ("" not named)
         uint8_t cls = 0, cls_b = 0;                 // what is drawn: the class, and a second one decided per pixel
         uint8_t guess = 0, guess_b = 0;             // what its texels read as
@@ -297,6 +310,16 @@ private:
         bool lit_grey = false;                      // read as under a colourless light (its own left it in no family)
     };
     std::unordered_map<uint32_t, WorldTex> world_tex;
+    struct CpuTexture;
+    struct WorldReadJob { uint32_t texture; WorldTex result; const CpuTexture* pixels; };
+    std::vector<WorldReadJob> world_jobs;
+    std::unordered_map<uint32_t, WorldTex> world_prepared;  // speculative results; committed only at the original first draw
+    int64_t world_task = -1;
+    static void world_read_pixels(WorldTex& result, const CpuTexture& pixels);
+    static bool world_same_inputs(const WorldTex& a, const WorldTex& b);
+    static void world_read_task(void* jobs, uint32_t index);
+    void world_prepare(const rtag_frame& frame, uint32_t target);
+    void world_finish();
     std::unordered_map<uint32_t, uint64_t> world_seen_frame;
     std::unordered_map<std::string, int> world_overrides;
     int world_remap[16] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};

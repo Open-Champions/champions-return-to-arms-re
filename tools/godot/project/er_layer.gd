@@ -705,6 +705,8 @@ func _weapon_model(cls: String) -> Dictionary:
 # stays visible until the whole replacement is ready.  Each engine call is indivisible; do not drain a batch at once.
 var loads := {}                     # path -> {task, out: {doc, state, ok}, mesh: next mesh to upload, materials}
 var ordered_materials := {}         # mesh -> armour materials, prepared a surface at a time before its scene is returned
+var surface_arrays := {}            # mesh -> surface arrays already read for winding; also used by the fit job
+var array_writes: Array[int] = []    # private CPU cache writes, joined before this script leaves the tree
 func _gltf(path: String) -> Variant:
 	if loads.has(path):
 		var l: Dictionary = loads[path]
@@ -725,6 +727,15 @@ func _gltf(path: String) -> Variant:
 					return null
 				var mesh: ImporterMesh = (meshes[int(l.mesh)] as GLTFMesh).mesh
 				l["render_mesh"] = mesh.get_mesh() if mesh != null else null    # generate_scene reuses this cache
+				var cached: Array = l.out.arrays
+				if l.render_mesh != null and int(l.mesh) < cached.size() and cached[int(l.mesh)] is Array:
+					var surfaces: Array = cached[int(l.mesh)]
+					if surfaces.size() == (l.render_mesh as Mesh).get_surface_count():
+						var saved := {}
+						for i in surfaces.size():
+							if surfaces[i] is Array and surfaces[i].size() == Mesh.ARRAY_MAX:
+								saved[i] = surfaces[i]
+						surface_arrays[l.render_mesh] = saved
 				ResourceBudget.end(started)
 				return null
 			var mesh: Mesh = l.render_mesh
@@ -748,14 +759,44 @@ func _gltf(path: String) -> Variant:
 			return null
 		var root: Node = (l.out.doc as GLTFDocument).generate_scene(state)
 		ResourceBudget.end(started)
+		if (l.out.arrays as Array).is_empty() and String(l.out.cache) != "":
+			var kept: Array = []
+			for gltf_mesh in meshes:
+				var imported: ImporterMesh = (gltf_mesh as GLTFMesh).mesh
+				var mesh: Mesh = imported.get_mesh() if imported != null else null
+				var surfaces: Array = []
+				if mesh != null:
+					for i in mesh.get_surface_count():
+						surfaces.append(_surface_arrays(mesh, i))
+				kept.append(surfaces)
+			var cache_path := String(l.out.cache)
+			var temp := cache_path + ".%d-%d.tmp" % [OS.get_process_id(), array_writes.size()]
+			array_writes.append(WorkerThreadPool.add_task(func() -> void:
+				DirAccess.make_dir_recursive_absolute(cache_path.get_base_dir())
+				# Atomic replacement: another process sees a complete cache or falls back to the original readback.
+				var file := FileAccess.open_compressed(temp, FileAccess.WRITE, FileAccess.COMPRESSION_ZSTD)
+				if file != null:
+					file.store_var(kept)
+					file.close()
+					DirAccess.rename_absolute(temp, cache_path)))
 		loads.erase(path)
 		return root if root != null else false
 	# Resource loading is supported on a worker when the resources are private to it.  Only the completed task's
 	# state is handed to the main thread; generate_scene (including skeletons/nodes) must never run on the worker.
-	var out := {"doc": null, "state": null, "ok": false}
+	var out := {"doc": null, "state": null, "ok": false, "arrays": [], "cache": ""}
+	var cache_version := "1-" + String(Engine.get_version_info().string)
 	var task := WorkerThreadPool.add_task(func() -> void:
 		var doc := GLTFDocument.new()
 		var state := GLTFState.new()
+		var hash := FileAccess.get_sha256(path)
+		if hash != "":
+			out.cache = "user://er-arrays/" + (cache_version + hash).sha256_text() + ".bin"
+			if FileAccess.file_exists(out.cache):
+				var file := FileAccess.open_compressed(out.cache, FileAccess.READ, FileAccess.COMPRESSION_ZSTD)
+				if file != null:
+					var value: Variant = file.get_var(false)
+					if value is Array:
+						out.arrays = value
 		out["ok"] = doc.append_from_file(path, state) == OK
 		out["doc"] = doc
 		out["state"] = state)
@@ -767,6 +808,9 @@ func _gltf(path: String) -> Variant:
 # changed, the program is ending) keeps this script's lambda in the pool, and the pool then destroys it after the
 # script is gone - a crash when the program ends (signal 11 in WorkerThreadPool::finish, seen after a recording).
 func _exit_tree() -> void:
+	for task in array_writes:
+		WorkerThreadPool.wait_for_task_completion(task)
+	array_writes.clear()
 	for key in fits:
 		if (fits[key] as Dictionary).has("task"):
 			WorkerThreadPool.wait_for_task_completion(int(fits[key].task))
@@ -777,6 +821,8 @@ func _exit_tree() -> void:
 			WorkerThreadPool.wait_for_task_completion(int(l.task))
 	loads.clear()
 	release()
+	ordered_materials.clear()
+	surface_arrays.clear()
 
 
 func _loading(set_name: String) -> bool:
@@ -2154,13 +2200,19 @@ func _fit_for(t: Dictionary, m: Dictionary, p: Dictionary, cls_name: String) -> 
 		if not WorkerThreadPool.is_task_completed(int(f.task)):
 			return {}
 		WorkerThreadPool.wait_for_task_completion(int(f.task))
+		f.erase("task")
 		var out: Dictionary = (f.out as Dictionary).get("result", {})
 		if out.is_empty() or out.has("failed"):
 			fits[key] = {"failed": String(out.get("failed", "no result"))}
 			print("rta_godot: er fit: %s could not be fitted: %s" % [key, fits[key].failed])
 			return {}
-		fits[key] = _fit_made(out, f.src_materials, key, float(f.upm))
-		return fits[key]
+		f["result"] = out
+		f["upload"] = {"mesh": ArrayMesh.new(), "materials": [], "names": PackedStringArray()}
+	if f.has("upload"):
+		var made := _fit_made(f.result, f.src_materials, key, float(f.upm), f.upload)
+		if not made.is_empty():
+			fits[key] = made
+		return made
 	# the body's bind-pose vertices are needed: asked for with the next frame's skeletons
 	if not data.has("source_position"):
 		want_mesh = true
@@ -2223,7 +2275,7 @@ func _fit_job(m: Dictionary, p: Dictionary, cls_name: String) -> Dictionary:
 			if name == "" and mesh is ArrayMesh:
 				name = (mesh as ArrayMesh).surface_get_name(si)
 			var part := name.substr(0, 2) if name.length() > 3 and name[2] == "_" else ""
-			surfaces.append({"arrays": mesh.surface_get_arrays(si), "name": name, "part": part})
+			surfaces.append({"arrays": _surface_arrays(mesh, si), "name": name, "part": part})
 			bind_mats.append(mats)
 			bind_bones.append(binds)
 			src_materials.append(mat)
@@ -2243,15 +2295,21 @@ func _fit_job(m: Dictionary, p: Dictionary, cls_name: String) -> Dictionary:
 		"keep_hands": bool(_fit_table().get_value("hands", cls_name, false)), "variants": _fit_table().get_value("variants", "groups", []), "label": "%s on %s" % [m.name, cls_name], "src_materials": src_materials}
 
 
-func _fit_made(out: Dictionary, src_materials: Array, key: String, upm: float) -> Dictionary:
-	var mesh := ArrayMesh.new()
-	var mats: Array = []
-	var names := PackedStringArray()
-	for s in out.surfaces:
+func _fit_made(out: Dictionary, src_materials: Array, key: String, upm: float, upload: Dictionary) -> Dictionary:
+	var mesh: ArrayMesh = upload.mesh
+	var mats: Array = upload.materials
+	var names: PackedStringArray = upload.names
+	while mats.size() < out.surfaces.size():
+		var started := ResourceBudget.begin()
+		if started < 0:
+			return {}
+		var s: Dictionary = out.surfaces[mats.size()]
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, s.arrays)
 		var src: Material = src_materials[int(s.surface)]
 		mats.append(_armour_material(src, String(s.name), false))
 		names.append(String(s.name))
+		upload.names = names
+		ResourceBudget.end(started)
 	print("rta_godot: er fit: %s in %d ms: %d meshes drawn, left out: [%s], %d hand triangles left out, %d slit round the tail; widening per region: %s; own chains: %s" % [out.label, int(out.ms),
 		names.size(), ", ".join(out.left_out), int(out.dropped_hands), int(out.get("slit", 0)), out.summary, String(out.get("chains", ""))])
 	return {"ready": true, "key": key, "mesh": mesh, "materials": mats, "cloth": out.cloth, "n": int(out.n), "reach": out.reach, "upm": upm, "names": names}
@@ -2513,13 +2571,14 @@ func _armour_material(src: Material, name: String, flip: bool) -> ShaderMaterial
 			sm.set_shader_parameter("has_mr", true)
 		if b.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR or b.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA_HASH:
 			cut = maxf(b.alpha_scissor_threshold, 0.3)
-		elif tex != null and _has_alpha(tex):
+		elif tex != null:
 			# a texture's alpha is a card's outline only on cards (hair, fur, feathers, tatters); elsewhere it is not used
 			# (the first rounds blended every part by it: see-through patches)
 			var low := name.to_lower()
 			for w in CARD_WORDS:
 				if low.contains(w):
-					cut = 0.5
+					if _has_alpha(tex):
+						cut = 0.5
 					break
 	sm.set_shader_parameter("cut", cut)
 	# fabric and leather (by the material's name): the soft light along a cape's outline
@@ -2555,8 +2614,17 @@ func _has_alpha(tex: Texture2D) -> bool:
 
 # whether a surface's triangles are wound with the outside at the back (Godot's front faces are clockwise): its shading
 # then turns the normal back
+func _surface_arrays(mesh: Mesh, i: int) -> Array:
+	if not surface_arrays.has(mesh):
+		surface_arrays[mesh] = {}
+	var cached: Dictionary = surface_arrays[mesh]
+	if not cached.has(i):
+		cached[i] = mesh.surface_get_arrays(i)
+	return cached[i]
+
+
 func _surface_turned(mesh: Mesh, i: int) -> bool:
-	var arrays := mesh.surface_get_arrays(i)
+	var arrays := _surface_arrays(mesh, i)
 	var pos: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
 	var nrm = arrays[Mesh.ARRAY_NORMAL]
 	if nrm == null or pos.is_empty():

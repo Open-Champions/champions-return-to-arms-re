@@ -184,15 +184,21 @@ void RtaDrawer::warm_note(uint32_t variant) {
 // Each listed variant drawn once in the world's scenario, in each vertex layout the scene gives it (the game's normals,
 // and with them the corners of the frame before), as one triangle of no area that is never culled
 void RtaDrawer::warm_up(RID scenario) {
-    if (scenario == warm_scenario) return;
-    warm_free();
-    warm_scenario = scenario;
-    if (!warm_loaded) { warm_loaded = true; warm_load(warm_known); }
+    if (scenario != warm_scenario) {
+        warm_free();
+        warm_scenario = scenario;
+        if (!warm_loaded) { warm_loaded = true; warm_load(warm_known); }
+        warm_todo.assign(warm_known.begin(), warm_known.end());
+        std::sort(warm_todo.begin(), warm_todo.end());
+        warm_next = 0;
+    }
     if (getenv("RTA_WARM") && atoi(getenv("RTA_WARM")) == 0) return;     // test aid: off
     RenderingServer* s = rs();
     const uint64_t t0 = Time::get_singleton()->get_ticks_usec();
     int made = 0;
-    for (uint32_t variant : warm_known) {
+    // Shader::set_code and each mesh upload are indivisible. Do not compile the entire history in one turn.
+    while (warm_next < warm_todo.size() && Time::get_singleton()->get_ticks_usec() - t0 < 1000) {
+        const uint32_t variant = warm_todo[warm_next++];
         RID material = s->material_create();
         s->material_set_shader(material, shader_for(variant));
         warm_rids.push_back(material);
@@ -219,15 +225,27 @@ void RtaDrawer::warm_up(RID scenario) {
             made++;
         }
     }
-    warm_frame = frames;
-    if (made) UtilityFunctions::print(vformat("rta_godot: drawer: %d scene variants from earlier sessions drawn once ahead (%d meshes), %.1f ms",
-                                              (int64_t)warm_known.size(), (int64_t)made, (Time::get_singleton()->get_ticks_usec() - t0) / 1000.0));
+    if (made) warm_frame = frames;
+    if (made && warm_next == warm_todo.size())
+        UtilityFunctions::print(vformat("rta_godot: drawer: %d earlier scene variants warmed incrementally", (int64_t)warm_todo.size()));
 }
 
 void RtaDrawer::warm_free() {
     if (!RenderingServer::get_singleton()) return;
     for (auto it = warm_rids.rbegin(); it != warm_rids.rend(); ++it) rs()->free_rid(*it);
     warm_rids.clear();
+}
+
+void RtaDrawer::retire(RID rid) {
+    if (rid.is_valid()) retired.push_back(rid);
+}
+
+void RtaDrawer::collect_retired() {
+    const uint64_t start = Time::get_singleton()->get_ticks_usec();
+    while (!retired.empty() && Time::get_singleton()->get_ticks_usec() - start < 1000) {
+        rs()->free_rid(retired.front());
+        retired.pop_front();
+    }
 }
 
 // the blend: colour = (A - B) * C + D, as tools/recomp/render/backend_gl.cpp sets it up; returns false where it is drawn as
@@ -817,6 +835,7 @@ void RtaDrawer::submit() {
     Target* world = scene_mode ? world_target() : nullptr;
     frame_texture_of = &texture_of;
     if (scene_mode) scene_begin(f);
+    world_finish();
     for (uint32_t i = 0; i < f.draw_count; i++) {
         if (node_of[i] < 0 || skip[node_of[i]]) continue;
         const rtag_draw& d = f.draws[i];
@@ -883,6 +902,7 @@ void RtaDrawer::submit() {
         thumbs.erase(f.dead_textures[k]);
         cpu_textures.erase(f.dead_textures[k]);
         world_tex.erase(f.dead_textures[k]);
+        world_prepared.erase(f.dead_textures[k]);
         world_seen_frame.erase(f.dead_textures[k]);
     }
     for (uint32_t k = 0; k < f.dead_target_count; k++) {
@@ -895,13 +915,14 @@ void RtaDrawer::submit() {
     // materials nothing used for two seconds (their textures may be gone)
     if ((frames & 63) == 0)
         for (auto m = materials.begin(); m != materials.end();) {
-            if (frames - m->second.last_used > 120) { s->free_rid(m->second.rid); m = materials.erase(m); }
+            if (frames - m->second.last_used > 120) { retire(m->second.rid); m = materials.erase(m); }
             else ++m;
         }
 
     auto show = targets.find(f.show_target);
     shown = show == targets.end() ? nullptr : &show->second;
     memcpy(shown_rect, f.show_rect, sizeof shown_rect);
+    collect_retired();
     const uint64_t t1 = Time::get_singleton()->get_ticks_usec();
     submit_usec += (double)(t1 - t0);
     if (slow_log && t1 - t0 > (uint64_t)slow_log * 1000)
@@ -1005,7 +1026,8 @@ Dictionary RtaDrawer::get_pack_info() const {
 }
 
 // Each frame: the new textures are handed to the pack's threads; what they finished replaces its texture's picture
-// (the RID stays: materials keep pointing at it).  At most ~48 MB of pictures a frame go to the card.
+// (the RID stays: materials keep pointing at it). Stop after 2 ms or ~48 MB; a burst of ready images must not
+// consume a whole game frame. A single texture upload is indivisible. Pixels and mipmaps are unchanged.
 void RtaDrawer::pack_frame(const rtag_frame& f) {
     if (!pack) return;
     RenderingServer* s = rs();
@@ -1033,8 +1055,9 @@ void RtaDrawer::pack_frame(const rtag_frame& f) {
         }
     }
     size_t handed = 0;
+    const uint64_t upload_start = Time::get_singleton()->get_ticks_usec();
     RtaPack::Done done;
-    while (handed < (48u << 20) && pack->take(done)) {
+    while (handed < (48u << 20) && Time::get_singleton()->get_ticks_usec() - upload_start < 2000 && pack->take(done)) {
         auto want = texture_serial.find(done.texture);
         if (want == texture_serial.end() || want->second != done.serial || done.image.is_null()) continue;
         auto t = textures.find(done.texture);
@@ -1051,6 +1074,9 @@ void RtaDrawer::pack_frame(const rtag_frame& f) {
 void RtaDrawer::release() {
     if (!RenderingServer::get_singleton()) return;
     RenderingServer* s = rs();
+    for (RID rid : retired) s->free_rid(rid);
+    retired.clear();
+    world_prepared.clear();
     warm_free();
     warm_scenario = RID();
     if (pack) { delete pack; pack = nullptr; }

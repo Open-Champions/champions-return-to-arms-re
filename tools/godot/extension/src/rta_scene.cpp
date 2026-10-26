@@ -800,7 +800,10 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
     else { sc.weld.clear(); sc.contacts.clear(); }
     Pass* pass = world->passes[0];
     warm_up(pass->scenario);                            // the variants of earlier sessions, built before they are needed
-    if (!warm_rids.empty() && frames > warm_frame + 3) warm_free();
+    if (!warm_rids.empty() && warm_next == warm_todo.size() && frames > warm_frame + 3) {
+        for (auto it = warm_rids.rbegin(); it != warm_rids.rend(); ++it) retire(*it);
+        warm_rids.clear();
+    }
     // The game's camera space is x right, y down, z forward; Godot's is x right, y up, z back.  world_to_view's
     // rows are the camera's axes in the world.
     const float* m = f.scene->world_to_view;
@@ -849,6 +852,7 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
     sc.near_now = f.scene->near_plane;
     sc.far_now = far_plane;
     s->camera_set_perspective(pass->camera, (float)sc.fov_y, f.scene->near_plane, (float)far_plane);
+    world_prepare(f, world->id);                         // private CPU classification jobs; joined before drawing
     fill_frame(f, camera.origin, pass->scenario);           // the level's generated ceilings and skirts (rta_fill.cpp)
     if (sc.lit) s->environment_set_ambient_light(pass->environment, Color(1, 1, 1), RenderingServer::ENV_AMBIENT_SOURCE_COLOR, (float)sc.ambient);
     // a camera that is not the game's sees past what the game drew: black there, not last frame's picture; and a list
@@ -1479,7 +1483,7 @@ void RtaDrawer::batch_flush(Pass& pass) {
     // batches no list gathered for half a second go
     if ((frames & 15) == 0)
         for (auto k = sc.batches.begin(); k != sc.batches.end();) {
-            if (frames - k->second.used > 30) { s->free_rid(k->second.mesh); k = sc.batches.erase(k); }
+            if (frames - k->second.used > 30) { retire(k->second.mesh); k = sc.batches.erase(k); }
             else ++k;
         }
 }
@@ -1494,7 +1498,7 @@ void RtaDrawer::scene_end(const rtag_frame&) {
     // kept meshes nothing drew for half a second go
     if ((frames & 15) == 0)
         for (auto k = sc.kept.begin(); k != sc.kept.end();) {
-            if (frames - k->second.used > 30) { s->free_rid(k->second.mesh); k = sc.kept.erase(k); }
+            if (frames - k->second.used > 30) { retire(k->second.mesh); k = sc.kept.erase(k); }
             else ++k;
         }
 }

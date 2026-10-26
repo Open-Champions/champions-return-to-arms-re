@@ -39,6 +39,11 @@ func setup(s: Script) -> void:
 
 
 func _arrive() -> void:
+	var ids := PackedStringArray(["bar_red", "bar_blue", "bar_green", "bar_yellow", "gold", "socket"])
+	for id in Cat.ENTRIES:
+		if String(id).begins_with("frame_") or String(id).begins_with("icon_"):
+			ids.append(id)
+	GA.prewarm(ids)
 	_font = GA.font("font_med", 0.70)
 	if _font != null:
 		style._font = _font
