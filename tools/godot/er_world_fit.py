@@ -31,9 +31,15 @@ The recipe (a local file; numbers of the level's shapes and names of Elden Ring 
         the game's own triangles in the target in an Elden Ring material (what lies flat laid in world space, what stands a
         band of the texture run along it); with "overlay": true on the target and "offset", laid in front of the game's own
         surface, which stays drawn (no volume is left out)
+        "inlay": {"bands": [[d0, d1, "<key>"], ...], "offset", "band": {"<key>": [v0, v1]}, "above": z, "radial": bool} on a surface part - a worn inlay
+        laid in the tops along their rims, each band d0..d1 units in from the rim in the material the part names by <key>
+  loft: {"fit": "loft", "rings": [[z, half], ...], "spans": ["<key>", ...], "cap": "<key>", "turn": degrees, "sides": 4,
+        "cx", "cy"} - a turned, tapered base made to a profile (the game's own, read from its triangles), each span in the
+        material the part names by <key> (a "band" in it runs a frieze up the span, else "scale" lays it in world units)
   any surface entry or part: "relief": {"mode": "panels", "what": "panels" | "frames" | "figures", "z": [lo, hi], "cavity"}
         (or the smoothed-height measure) - a relief mask per vertex for the shader's gilding; "smooth_normals": degrees;
         "colour": [r, g, b] - the colour of a model the game draws in several passes, its vertex light kept round it
+  "borrow": [{"volume": [...], "shift": [dx, dy, dz]}] on a target - its reference completed from a twin shape elsewhere
   "dump" may be a list (merged); "texture_means": `app er world info` reports - every corner of a piece carries the colour
         the game gave the surface nearest it (texture mean x vertex light), which the shader lights as the level's own
   "budget": triangles per surface; the meshes and pictures are baked by er_mesh_bake.gd (Godot, headless; --no-bake: not)
@@ -365,6 +371,16 @@ def part_shape_inside(p, part):
     if part['fit'] == 'disc':
         r = np.hypot(p[:, 0] - part['_cx'], p[:, 1] - part['_cy'])
         return (r < part['r'] - 0.5) & (p[:, 2] > part['z0'] - 0.5) & (p[:, 2] < part['z1'] - 0.3)
+    if part['fit'] == 'loft':
+        # within the profile's half width at that height (in its turned frame; across the flats of a square)
+        a = math.radians(float(part.get('turn', 0.0)))
+        dx, dy = p[:, 0] - part['_cx'], p[:, 1] - part['_cy']
+        x, y = dx * math.cos(a) + dy * math.sin(a), -dx * math.sin(a) + dy * math.cos(a)
+        zs = np.array([r[0] for r in part['rings']], float)
+        hs = np.array([r[1] for r in part['rings']], float)
+        order = np.argsort(zs, kind='stable')
+        half = np.interp(p[:, 2], zs[order], hs[order])
+        return (np.maximum(np.abs(x), np.abs(y)) < half - 0.5) & (p[:, 2] > zs.min() + 0.5) & (p[:, 2] < zs.max() - 0.3)
     b = part['_box']
     return np.all((p > np.array(b[:3]) + 0.5) & (p < np.array(b[3:]) - 0.5), axis=1)
 
@@ -498,7 +514,7 @@ def ray_up_hits(p, t, fn):
     return hit
 
 
-def surface_meshes(part, ref, ref_tex, centre):
+def surface_meshes(part, ref, ref_tex, centre, ground=None):
     """fit "surface": the game's own triangles inside the target, in an Elden Ring material - what faces up (a floor, a step's
     tread) in `top` (laid flat in world space, `scale` units a repeat), what stands (a step's riser, a rim) in `side` (a band of
     the texture, `band` [v0, v1], run along the riser and as tall as it), the textures named in `plain` (a tuft of the ground
@@ -557,6 +573,9 @@ def surface_meshes(part, ref, ref_tex, centre):
         p = p + n * float(part.get('offset', 0.0))
         meshes.append({'p': p, 'n': n, 'uv': uv, 'i': np.arange(len(p)).reshape(-1, 3), 'k': role,
                        'mat': {'name': role, 'textures': []}, 'role': role, 'relief': relief})
+    if part.get('inlay') and groups['top'].any():
+        # a worn inlay in the tops along their rims, the game's own engraving further in left as it is
+        meshes += inlay_meshes(part['inlay'], t[groups['top']], float(part['inlay'].get('offset', 0.6)), ground, centre)
     return meshes
 
 
@@ -619,6 +638,253 @@ def band_uv(tt, nf, band, repeat):
     v = v0 + (v1 - v0) * (top_z - wp[:, 2]) / h
     u = u_w / h * (v1 - v0) * repeat
     return np.stack([u, v], 1)[wid]
+
+
+def _levels_at(q, tt):
+    """per point q (x, y, z): is there a flat triangle of tt over its (x, y) at about its height (same), one above it
+    (higher), any at all?"""
+    same = np.zeros(len(q), bool)
+    higher = np.zeros(len(q), bool)
+    anyz = np.zeros(len(q), bool)
+    if not len(tt):
+        return same, higher, anyz
+    a, b, c = tt[:, 0], tt[:, 1], tt[:, 2]
+    d = (b[:, 1] - c[:, 1]) * (a[:, 0] - c[:, 0]) + (c[:, 0] - b[:, 0]) * (a[:, 1] - c[:, 1])
+    d = np.where(np.abs(d) < 1e-9, 1e-9, d)
+    for s in range(0, len(q), 256):
+        p = q[s:s + 256][:, None, :]
+        l0 = ((b[:, 1] - c[:, 1]) * (p[..., 0] - c[:, 0]) + (c[:, 0] - b[:, 0]) * (p[..., 1] - c[:, 1])) / d
+        l1 = ((c[:, 1] - a[:, 1]) * (p[..., 0] - c[:, 0]) + (a[:, 0] - c[:, 0]) * (p[..., 1] - c[:, 1])) / d
+        l2 = 1 - l0 - l1
+        inside = (l0 >= -1e-4) & (l1 >= -1e-4) & (l2 >= -1e-4)
+        z = l0 * a[:, 2] + l1 * b[:, 2] + l2 * c[:, 2]
+        same[s:s + 256] = (inside & (np.abs(z - p[..., 2]) < 0.6)).any(1)
+        higher[s:s + 256] = (inside & (z > p[..., 2] + 0.6)).any(1)
+        anyz[s:s + 256] = inside.any(1)
+    return same, higher, anyz
+
+
+def inlay_meshes(spec, tt, offset, ground=None, centre=None):
+    """a worn inlay laid in the tops along their rims (gate 6): for every edge of a top that falls away outside it (a step's
+    or a platform's rim; not where a higher step rises, not inside a top), bands at set distances in from the rim -
+    `bands`: [[d0, d1, "<material key>"], ...] - mitred round the rim's corners and curves, laid `offset` over the top.  A
+    top (a connected tread) too narrow for the bands along most of its rim (a higher step or the fall within the last band)
+    gets none at all, so a narrow step carries no broken pieces of it; the game's engraving further in is never covered."""
+    bands = spec.get('bands', [])
+    if not bands or not len(tt):
+        return []
+    deep = max(b[1] for b in bands)
+    # only what lies level (a bevel down from a top is part of its fall, not of a tread)
+    lvl = np.abs(np.cross(tt[:, 1] - tt[:, 0], tt[:, 2] - tt[:, 0]))
+    lvl = lvl[:, 2] > 0.98 * np.linalg.norm(lvl, axis=1)
+    tt = tt[lvl]
+    if not len(tt):
+        return []
+    # every edge of every top, and its outward direction (in plane, away from its own triangle)
+    e0 = np.concatenate([tt[:, 0], tt[:, 1], tt[:, 2]])
+    e1 = np.concatenate([tt[:, 1], tt[:, 2], tt[:, 0]])
+    opp = np.concatenate([tt[:, 2], tt[:, 0], tt[:, 1]])
+    # the tops' connected parts (a tread, a platform, a raised disc): triangles sharing a corner
+    cw, _ = weld(tt.reshape(-1, 3), 0.1)
+    parent = np.arange(cw.max() + 1)
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+    for a, b, c in cw.reshape(-1, 3):
+        ra = find(a)
+        parent[find(b)] = ra
+        parent[find(c)] = ra
+    comp_tri = np.array([find(a) for a in cw.reshape(-1, 3)[:, 0]])
+    comp = np.tile(comp_tri, 3)
+    dvec = e1 - e0
+    length = np.linalg.norm(dvec[:, :2], axis=1)
+    ok = length > 0.2
+    e0, e1, opp, dvec, length, comp = e0[ok], e1[ok], opp[ok], dvec[ok], length[ok], comp[ok]
+    perp = np.stack([dvec[:, 1], -dvec[:, 0]], 1) / length[:, None]
+    mid = (e0 + e1) / 2.0
+    side = ((opp[:, :2] - mid[:, :2]) * perp).sum(1)
+    perp *= np.where(side > 0, -1.0, 1.0)[:, None]          # (now pointing out, away from the triangle)
+    out_pt = np.concatenate([mid[:, :2] + perp * 1.5, mid[:, 2:]], 1)
+    same_out, higher_out, any_out = _levels_at(out_pt, tt)
+    rim = ~same_out & ~higher_out                            # the top falls away outside this edge
+    if ground is not None:
+        # (where the game drew nothing of the target outside the edge - a draw the dump did not hold - the collision says
+        # whether it falls away there or goes on at the same height)
+        far = mid[:, :2] + perp * 6.0                      # (the collision's highest sample within 4 units: past the edge)
+        g = ground.at(far[:, 0], far[:, 1])
+        rim &= any_out | (g < out_pt[:, 2] - 0.6)
+    if spec.get('above') is not None:
+        rim &= mid[:, 2] > float(spec['above'])                # (only the tops over this height: not a ragged foot tier)
+    if spec.get('radial') and centre is not None:
+        # a round target (a dais): only edges facing out from its centre (an edge where the dump lacks a draw is not a rim)
+        away = mid[:, :2] - np.asarray(centre)[None, :2]
+        rim &= (away * perp).sum(1) > 0.7 * np.linalg.norm(away, axis=1)
+    # the tread must hold the bands: at the deepest band (and a little more) still the same top, nothing higher - judged
+    # per top: one that holds them along 80% of its rim's length carries them all round, else none
+    fits = np.ones(len(e0), bool)
+    for frac in (0.5, 1.0):
+        in_pt = np.concatenate([mid[:, :2] - perp * (deep * frac + 0.75), mid[:, 2:]], 1)
+        same_in, higher_in, _ = _levels_at(in_pt, tt)
+        fits &= same_in & ~higher_in
+    for c in np.unique(comp[rim]):
+        sel = rim & (comp == c)
+        if length[sel & fits].sum() < 0.8 * length[sel].sum():
+            rim &= comp != c
+    e0, e1, perp, length = e0[rim], e1[rim], perp[rim], length[rim]
+    if not len(e0):
+        return []
+    # weld the rim's corners; per corner the inward direction mitred from its edges' (corners shared by two rim edges); an
+    # edge drawn twice (a decal over the top) once
+    wid, wp = weld(np.concatenate([e0, e1]), 0.1)
+    a_id, b_id = wid[:len(e0)], wid[len(e0):]
+    _, first = np.unique(np.stack([np.minimum(a_id, b_id), np.maximum(a_id, b_id)], 1), axis=0, return_index=True)
+    first = np.sort(first)
+    e0, e1, perp, length, a_id, b_id = e0[first], e1[first], perp[first], length[first], a_id[first], b_id[first]
+    acc = np.zeros((len(wp), 2))
+    np.add.at(acc, a_id, -perp)
+    np.add.at(acc, b_id, -perp)
+    cnt = np.bincount(np.concatenate([a_id, b_id]), minlength=len(wp))
+    nrm = np.linalg.norm(acc, axis=1)
+    inward = acc / np.maximum(nrm, 1e-9)[:, None]
+    # mitre: 1 / cos(half the turn) (the mean of two unit vectors has length cos(half the turn)), clamped
+    miter = np.where(cnt >= 2, 1.0 / np.clip(nrm / np.maximum(cnt, 1), 0.4, 1.0), 1.0)
+    # u along the rim: each edge's own length, continued from a corner's running distance (a chain walked from its start)
+    nxt = {}
+    for k, (a, b) in enumerate(zip(a_id, b_id)):
+        nxt.setdefault(int(a), []).append(k)
+    u_at = {}
+    has_prev = set(int(b) for b in b_id)
+    starts = [int(a) for a in a_id if int(a) not in has_prev] + [int(a) for a in a_id]
+    edge_u0 = np.zeros(len(e0))
+    done = np.zeros(len(e0), bool)
+    for s in starts:
+        if s in u_at and all(done[k] for k in nxt.get(s, [])):
+            continue
+        u = u_at.get(s, 0.0)
+        cur = s
+        while True:
+            ks = [k for k in nxt.get(cur, []) if not done[k]]
+            if not ks:
+                break
+            k = ks[0]
+            done[k] = True
+            edge_u0[k] = u
+            u += length[k]
+            cur = int(b_id[k])
+            u_at[cur] = u
+    meshes = []
+    up = np.array([0.0, 0.0, 1.0])
+    for d0, d1, key in bands:
+        p, uv = [], []
+        band = spec.get('band', {}).get(key) if isinstance(spec.get('band'), dict) else None
+        # u: a texture's repeat along the rim - a frieze's band keeps the texture's aspect (as band_uv), else 4 widths
+        rep = (d1 - d0) / max(band[1] - band[0], 1e-6) if band else max(d1 - d0, 0.5) * 4.0
+        for k in range(len(e0)):
+            ia, ib = a_id[k], b_id[k]
+            pa, pb = wp[ia], wp[ib]
+            qa0 = pa[:2] + inward[ia] * d0 * miter[ia]
+            qa1 = pa[:2] + inward[ia] * d1 * miter[ia]
+            qb0 = pb[:2] + inward[ib] * d0 * miter[ib]
+            qb1 = pb[:2] + inward[ib] * d1 * miter[ib]
+            za, zb = pa[2] + offset, pb[2] + offset
+            quad = [np.r_[qa0, za], np.r_[qb0, zb], np.r_[qb1, zb], np.r_[qa1, za]]
+            ua, ub = edge_u0[k] / rep, (edge_u0[k] + length[k]) / rep
+            quv = [(ua, 0.0), (ub, 0.0), (ub, 1.0), (ua, 1.0)]
+            for tri in ((0, 1, 2), (0, 2, 3)):
+                p += [quad[j] for j in tri]
+                uv += [quv[j] for j in tri]
+        p = np.array(p, float)
+        uv = np.array(uv, float)
+        # wind up
+        t3 = p.reshape(-1, 3, 3)
+        raw = np.cross(t3[:, 1] - t3[:, 0], t3[:, 2] - t3[:, 0])
+        flip = raw[:, 2] < 0
+        t3[flip] = t3[flip][:, [0, 2, 1]]
+        uv3 = uv.reshape(-1, 3, 2)
+        uv3[flip] = uv3[flip][:, [0, 2, 1]]
+        p, uv = t3.reshape(-1, 3), uv3.reshape(-1, 2)
+        if band:
+            uv = np.stack([uv[:, 0], band[0] + (band[1] - band[0]) * uv[:, 1]], 1)
+        meshes.append({'p': p, 'n': np.repeat(up[None], len(p), 0), 'uv': uv, 'i': np.arange(len(p)).reshape(-1, 3), 'k': key,
+                       'mat': {'name': key, 'textures': []}, 'role': key,
+                       'relief': np.clip(1.0 - np.abs(uv[:, 1] * 2.0 - 1.0) if not band else np.zeros(len(p)), 0.0, 1.0)})
+    return meshes
+
+
+def loft_meshes(part, vol):
+    """fit "loft" (gate 6): a turned square (or `sides`-sided) base made from a profile - `rings`: [[z, half], ...] bottom to
+    top, half the width across the flats, in the frame turned by `turn` - each span between two rings in the material named
+    by `spans` (a key of the part, as a surface fit's top/side), hard edges at the corners; a cap on the last ring.  So a
+    tapered, trimmed plinth is made to the game's own profile (read from its triangles), in the set's stone and gold."""
+    cx, cy = part.get('cx', vol[0]), part.get('cy', vol[1])
+    sides = int(part.get('sides', 4))
+    rings = [(float(z), float(h)) for z, h in part['rings']]
+    spans = part['spans']
+    deg = float(part.get('turn', 0.0))
+    # the corners of a ring of half width h across the flats
+    ang = [math.radians(deg + 180.0 / sides + k * 360.0 / sides) for k in range(sides)]
+    rad = 1.0 / math.cos(math.pi / sides)
+    corner = lambda z, h, k: np.array([cx + h * rad * math.cos(ang[k % sides]), cy + h * rad * math.sin(ang[k % sides]), z])
+    side_len = lambda h: 2.0 * h * math.tan(math.pi / sides)
+    groups = {}
+    slant = 0.0
+    for s in range(len(rings) - 1):
+        (z0, h0), (z1, h1) = rings[s], rings[s + 1]
+        key = spans[s]
+        mat = part.get(key, {})
+        span_len = math.hypot(z1 - z0, h1 - h0)
+        g = groups.setdefault(key, {'p': [], 'n': [], 'uv': [], 'r': []})
+        for k in range(sides):
+            a0, b0, a1, b1 = corner(z0, h0, k), corner(z0, h0, k + 1), corner(z1, h1, k), corner(z1, h1, k + 1)
+            mid_ang = math.radians(deg + (k + 1) * 360.0 / sides)
+            out = np.array([math.cos(mid_ang), math.sin(mid_ang), 0.0])
+            # the face's normal: out, tilted by the taper (a ledge faces up)
+            nrm = out * (z1 - z0) + np.array([0.0, 0.0, 1.0]) * (h0 - h1)
+            nrm /= max(np.linalg.norm(nrm), 1e-9)
+            if 'band' in mat:
+                v0b, v1b = mat['band']
+                hgt = max(span_len, 0.5)
+                w0, w1 = side_len(h0), side_len(h1)
+                u_a0, u_b0 = -w0 / 2 / hgt * (v1b - v0b), w0 / 2 / hgt * (v1b - v0b)
+                u_a1, u_b1 = -w1 / 2 / hgt * (v1b - v0b), w1 / 2 / hgt * (v1b - v0b)
+                quv = [(u_a0, v1b), (u_b0, v1b), (u_b1, v0b), (u_a1, v0b)]
+            else:
+                sc = float(mat.get('scale', 48.0))
+                w0, w1 = side_len(h0), side_len(h1)
+                quv = [(-w0 / 2 / sc, -slant / sc), (w0 / 2 / sc, -slant / sc), (w1 / 2 / sc, -(slant + span_len) / sc), (-w1 / 2 / sc, -(slant + span_len) / sc)]
+            quad = [a0, b0, b1, a1]
+            for tri in ((0, 1, 2), (0, 2, 3)):
+                for j in tri:
+                    g['p'].append(quad[j]); g['n'].append(nrm); g['uv'].append(quv[j]); g['r'].append(1.0 if j < 2 else 0.0)
+        slant += span_len
+    # the cap
+    zc, hc = rings[-1]
+    key = part.get('cap', spans[-1])
+    g = groups.setdefault(key, {'p': [], 'n': [], 'uv': [], 'r': []})
+    sc = float(part.get(key, {}).get('scale', 48.0))
+    centre = np.array([cx, cy, zc])
+    for k in range(sides):
+        for q in (centre, corner(zc, hc, k), corner(zc, hc, k + 1)):
+            g['p'].append(q); g['n'].append(np.array([0.0, 0.0, 1.0])); g['uv'].append(((q[0] - cx) / sc, (q[1] - cy) / sc)); g['r'].append(0.5)
+    meshes = []
+    for key, g in groups.items():
+        p = np.array(g['p'], float)
+        n = np.array(g['n'], float)
+        uv = np.array(g['uv'], float)
+        t3 = p.reshape(-1, 3, 3)
+        raw = np.cross(t3[:, 1] - t3[:, 0], t3[:, 2] - t3[:, 0])
+        flip = (raw * n.reshape(-1, 3, 3)[:, 0]).sum(1) < 0
+        t3[flip] = t3[flip][:, [0, 2, 1]]
+        uv3 = uv.reshape(-1, 3, 2)
+        uv3[flip] = uv3[flip][:, [0, 2, 1]]
+        r3 = np.array(g['r'], float).reshape(-1, 3)
+        r3[flip] = r3[flip][:, [0, 2, 1]]
+        meshes.append({'p': t3.reshape(-1, 3), 'n': n, 'uv': uv3.reshape(-1, 2), 'i': np.arange(len(p)).reshape(-1, 3), 'k': key,
+                       'mat': {'name': key, 'textures': []}, 'role': key, 'relief': r3.reshape(-1)})
+    return meshes
 
 
 def closest_on_triangles(p, tris, pn=None, chunk=1024):
@@ -880,13 +1146,23 @@ def main():
         ref = np.concatenate([g[0] for g in got])
         ref_col = np.concatenate([g[1] for g in got])
         ref_tex = sum([g[2] for g in got], [])
+        for b in target.get('borrow', []):
+            # a shape the dump holds only in part, taken whole from its twin elsewhere in the level (shifted): the east dais
+            # from the west one (every corner of the east dais's own draws lies on the west's moved over)
+            br, bc, bt = reference(dump, b['volume'], target.get('object'), means, True)
+            ref = np.concatenate([ref, br + np.asarray(b['shift'], float)[None, None]])
+            ref_col = np.concatenate([ref_col, bc])
+            ref_tex = ref_tex + bt
         ref, ref_col, ref_tex = dedupe(ref, ref_col, ref_tex)
         centre = ref.reshape(-1, 3).mean(0) if len(ref) else np.array(vol[:3], float)
         fitted, fits = [], []
         for part in target['parts']:
             if part['fit'] == 'surface':
-                f = surface_meshes(part, ref, ref_tex, centre)
+                f = surface_meshes(part, ref, ref_tex, centre, ground)
                 info = {'surface': len(ref)}
+            elif part['fit'] == 'loft':
+                f = loft_meshes(part, vol)
+                info = {'loft': len(part['rings'])}
             else:
                 meshes = load_model(os.path.join(recipe['models'], part['model']))
                 if part.get('meshes'):

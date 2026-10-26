@@ -28,6 +28,7 @@ uniform vec3 tint = vec3(1.0);          // (without game_light) the game's shape
 uniform float gain = 1.0;
 uniform float bump = 1.0;
 uniform float sun_wrap = 0.72;          // as the level's pieces (gs_draw.gdshaderinc light(), GS_NORMALS)
+uniform float direct_gain = 1.0;        // the scene's lights only (a frieze as pale as the game's step in front light, as dark in shade)
 // the piece's own carving over the game's colour: its texture's light and dark round its local mean (contrast), and as much
 // of its own hue as own_hue says (0: the game's hue, 1: the texture's colour as it is)
 uniform float contrast = 1.0;
@@ -55,6 +56,7 @@ uniform vec2 metal_range = vec2(0.0, 1.0);
 uniform sampler2D mask_tex : hint_default_black, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform bool has_mask = false;
 uniform float mask_polish = 0.0;
+uniform float metal_wear = 0.0;        // a worn inlay: patches where the gold has gone and the stone under it shows
 uniform float gild = 0.0;               // the relief's raised parts in metal (COLOR.a over gild_at)
 uniform float gild_at = 0.5;
 uniform float gild_soft = 0.08;         // the edge's half width at least (it widens with the footprint)
@@ -151,6 +153,10 @@ void fragment() {
 		metal = max(metal, gild * smoothstep(gild_at - w, gild_at + w, relief));
 	}
 	metal *= 1.0 - mossy;
+	if (metal_wear > 0.0) {
+		float wn = vnoise(v_world.xy * 0.35 + vec2(v_world.z * 0.2, 1.7)) * 0.65 + vnoise(v_world.xy * 1.4) * 0.35;
+		metal *= 1.0 - metal_wear * smoothstep(0.52, 0.68, wn);
+	}
 	float lit_here = game_light ? clamp(lum(v_game.rgb) / max(lum(light_ref), 0.02), 0.2, 2.5) : 1.0;
 	vec3 gold = metal_colour * metal_gain * lit_here * clamp(mix(1.0, rel_grey.x, 0.35 * detail), 0.75, 1.25);
 	// the brushing: round the piece (horizontal on what stands), for the highlight in light(); its fine streaks along it
@@ -193,7 +199,7 @@ void light() {
 	// a face turned from the sun lies in its own shadow, as the level's do (their twins throw it on them; a piece laid a
 	// little in front of the game's own face is not reached by that shadow)
 	float self_shade = LIGHT_IS_DIRECTIONAL ? smoothstep(-0.1, 0.15, facing) : 1.0;
-	DIFFUSE_LIGHT += ATTENUATION * self_shade * LIGHT_COLOR / PI * wrap;
+	DIFFUSE_LIGHT += ATTENUATION * self_shade * LIGHT_COLOR / PI * wrap * direct_gain;
 	if (v_metal > 0.0 && facing > 0.0) {
 		// a brushed metal's highlight (anisotropic GGX, Burley), soft and in its own colour; none in the piece's shadow
 		vec3 hv = normalize(VIEW + LIGHT);

@@ -7,24 +7,25 @@ nothing changes.
 
 Everything below says **Ran** (with what was seen) or **Read**.
 
-## STATE (2026-10-26, fifth session: gate 5)
+## STATE (2026-10-26, sixth session: gate 6)
 
-Phase 1 steps 1-3 are **working, Ran**. Step 4, the hub's rebuild: the owner's three asks of gate 4 are **done, Ran** - the
-gilding is clean (no faceted shards), the pieces are lit as the level's own surfaces are (they darken in side and back light
-with it, measured), and the trefoil platform, its stairs and both daises are rebuilt in the same set (carved friezes on every
-riser), the whole area about 20k triangles read on worker threads. The gate **refused it on review again** (Gate 5: matches
-and is richer close up, but not clearly better as a whole at play distance). The hub draws the game's own shapes.
+Phase 1 steps 1-3 are **working, Ran**. Step 4, the hub's rebuild: gate 6 did the owner's three asks of gate 5 - the
+obelisk's bulky podium box is replaced by a slim tapered base made to the game's own profile with gold trims; the stair
+friezes are as light as the game's pale steps (0.97 where gate 5 was 0.74 on the same boxes); the platform tops carry a
+worn gold-and-braid inlay along their rims and along every raised ring, the game's engraving left inside. The gate **refused
+it on review again** (Gate 6): richer and matched in brightness, but not clearly better at play distance, and a regression
+was found that gate 5 had too - the overlays are drawn where the game culls the far platform, so friezes and rings float in
+the haze. The hub draws the game's own shapes.
 
 | Step | State |
 |---|---|
 | 1. Materials by class, ER albedo + normal, world scale, triplanar, blended | **done, Ran**: 8 classes; reader + our own table (`er_world.cfg`); wood now read on its own (a mine's beams), metal only by a strict rule (none read on the four levels tried) |
 | 2. Grass (MultiMesh, swaying, density by distance, no collision, not on paths / against walls) | **done, Ran**: clears painted flower patches and stones; no tufts in the air; valor 3,509 points |
 | 3. Skies: ER cloud layer tinted by the level's own sky | **done, Ran** |
-| 4. Hub fitted rebuild (ruin pieces fitted to the Champions shapes, a hand's-width check) | **refused on review** (gate 5, see Gate 5; gates 3 and 4 before it); arch **refused** by the check (max 13.4 units off), not retried |
-| Sweep of all 111 levels (classes, grass, sky, per-level table) | **done, Ran** (see "Sweep of all 111 levels"): water, lava, ice classes; grass kept off paths, flagstones, water and pieces the game leaves out; 66 levels with a section of their own; 60+ fps **not verified** (machine loaded by other programs; layer on = off within the noise) |
-| Gate: before/after pictures, 60+ fps, room in step | **Ran**: pictures in `local/er-world/gate5/final/`; room in step (1,858 ticks, A drawing the gate-5 pieces); fps see Gate 5 (the machine was too loaded for a clean number) |
+| 4. Hub fitted rebuild (ruin pieces fitted to the Champions shapes, a hand's-width check) | **refused on review** (gate 6, see Gate 6; gates 3-5 before it); arch **refused** by the check (max 13.4 units off), not retried |
+| Gate: before/after pictures, 60+ fps, room in step | **Ran**: pictures in `local/er-world/gate6/final/`; 60+ fps with the rebuild on (median frame 8.6-9.1 ms); room in step (1,854 ticks, A drawing the gate-6 pieces) |
 
-Built into `local/godot-r34/` (extension and project). Not committed.
+Built into `local/godot-r35/` (extension and project). Not committed.
 
 ## How it works
 
@@ -338,10 +339,17 @@ Pictures in `local/er-world/gate/`; 106.8 / 107.3 fps; room in step over 1,854 t
 - The same fitting on other levels' landmarks: a recipe per level, a dump of the level (`app er world dump`).
 - The rebuild's loading (about 210 ms at the hub's start): read the pieces ahead, or on a worker.
 - Metal: try the strict rule on a level that has real metal (the gnome levels).
-- The hub rebuild back on only with pieces that beat the game's (Gates 3-5). After gate 5 (gold, light, surroundings done):
-  a slimmer, tapered base under the monument in place of the podium box, in the game's colours; the stairs' frieze as light
-  as the game's steps; something at play distance on the platforms (a carved border inlaid in the tops along the rims, kept
-  to the game's own engraving); an fps run on a quiet machine. Gate 4's list, for the record:
+- The hub rebuild back on only with pieces that beat the game's (Gates 3-6). After gate 6:
+  - **overlays only where the game draws**: an overlay (no volume left out) is drawn always, so where the game culls the far
+    platform or stairs its friezes and inlays float in the haze (`gate6/final/float-west-o270.png`; gate 5 had it too). Needs
+    a watch-only volume kind in `rta_world.cpp` (`world_hidden`: note the order and draws, leave the draw in) and the loader
+    showing a piece only on frames its volume had draws; the hidden pieces (the obelisk) the same when the game culls them;
+  - the daises: keep the game's crisp step contrast (the pale tread against its shaded riser): the rebuilt steps read greyer
+    and softer at play distance (contrast std 45 against 51);
+  - the obelisk at play distance: one broad gold band at the foot and a large gold panel per face (the game's focal points)
+    read as strongly as our thin trims and gilt panels; the shaft stays brighter in side light (0.79 / 0.83).
+- Gate 5's asks (done in gate 6): the tapered base, the stairs' frieze as light as the game's steps, something at play
+  distance on the platforms, an fps run on a quiet machine. Gate 4's list, for the record:
   - the daises: a stepped round piece whose risers stand (the engraved floor's rim is a low band; fitted to a 7-unit step it
     reads flat), drawn with the trefoil platform and the stairs beside it in the same stone, or not at all;
   - the obelisk: one large gold panel per face (the game's focal point) rather than gilt relief; a gold mask made per
@@ -871,3 +879,88 @@ noise). "Bright" is the lower two thirds' brightness, layer on / off, at stop a.
 - this file
 - Local: `local/er-world/sweep/` (scripts, walks v0-v4, fps), `local/er-world/work/make_world2.py`, the three materials in
   `local/souls-ref/er-world/materials/{water,lava,ice}`, `local/godot-r32/`
+
+## Gate 6 (Ran, sixth session)
+
+The owner's review of gate 5: a slimmer, tapered base under the monument instead of the bulky, bluish podium box (gold
+trimmed like the game's, but richer); stair friezes as light as the game's pale steps (gate 5: 0.85); something visible at
+play distance on the trefoil's and the daises' tops that keeps the game's engraved rings. Recipe
+`local/er-world/gate6/recipe6.py`, fits `gate6/fit/`, route `gate5/route5.py` + `gate6/run6.sh` (game | on), stops
+`gate6/stops.txt` (gate 5's), region luma `gate6/regions.py`, tries `gate6/t1..t6`, final run `gate6/g1`.
+
+**1. The podium (`er_world_fit.py` `fit: loft`, Ran).** A turned square base made from a profile: rings `[z, half]` bottom to
+top, each span in a material the part names (`gold`, `stone`, `frieze`: a band of the set's carved braid run up the span),
+hard corners, a cap. The profile is the game's own, read from its triangles in the 45-degree frame (half 26.2 at the foot,
+25.4, 20.6, 18.2, 13.6, 13.3 under the shaft), with a gold foot from the dais top up, a gold bead, a stone slope, the taper in
+the braid, a gold moulding and the stepped top in stone. 92 triangles. Its colour is the game's mean (grey-lavender, no
+texture hue), gain 0.85 with the scene's light 1.35 (`direct_gain`, below). The check: max 10.4 (the monument above it), p99
+2.8; for the loft, a sample is "inside" by the profile itself, not its box.
+
+**2. The stair friezes (Ran).** `er_ruin.gdshader` `direct_gain`: the scene's lights alone made stronger, so a frieze is as
+pale as the game's step in front light without lifting it in shade (raising `gain` alone did both: side light went to 0.72).
+Stairs: gain 1.85, direct 2.4, contrast 1.2. Luma on/game where the rebuild differs, on the stairs' box: **0.97** (start
+chase) and **0.96** (start shoulder); gate 5's pictures on the same boxes 0.74 / 0.73 (the 0.85 of gate 5 was taken over a
+larger area).
+
+**3. The platform tops (`inlay`, Ran).** On a surface part, bands laid 0.6 units over the tops at set distances in from every
+rim: a worn gold line (1.0-1.9 units in; `metal_wear`: patches where the gold has gone), the carved braid (1.9-5.6) and a
+second gold line (5.6-6.4). A rim is an edge of a level top beyond which the top falls away: nothing at its height or above it
+1.5 units out; where the dump holds nothing of the target there, the collision 6 units out must be lower. A tread too narrow
+for the bands along most of its rim (80%) gets none, so a narrow step carries no broken pieces. So on the trefoil the inlay
+runs round the raised rings (the large discs, the small ones, the half discs) and the main top's rim; the game's engraving
+inside each ring stays drawn (`gate6/final/inlay-top.png`). Options: `above` (only rims over a height: the trefoil's ragged
+foot tier left out), `radial` (a dais: only edges facing out from its centre). Targets may `borrow` a twin's reference: the
+dumps held three quarters of the east dais; its corners all lie on the west dais moved 720 units, so it is taken whole from
+there.
+
+**Weight.** The whole area 9,671 triangles (gate 5: 19,989: the podium box went), read on worker threads in 148-334 ms.
+
+**Brightness (Ran, `gate6/final/measure.txt`, game / on where they differ, the same pixels).**
+
+| Light | Views | game / on |
+|---|---|---|
+| front (0) | start, west, east, north, obelisk | 0.98 - 1.09 |
+| side (90, 270) | start, west, east, north | 0.94 - 1.13 |
+| side, the obelisk close | 90, 270 | 0.79, 0.83 (ours brighter: the shaft) |
+| back (180) | start, west, east, north, obelisk | 0.93 - 1.05 |
+
+By region (`regions.txt`, on / game): stairs 0.97 / 0.96, trefoil top 1.04 (front) / 1.08 (back), west dais 0.93, east dais
+0.90, the podium close 0.95, at play distance 1.08.
+
+**Frame rate (Ran, `gate6/fps6.sh`, `fpsstat6.py`; paced, 3024x1964, both copies at `nice -n 10`).** The machine was far
+quieter than in gate 5 (load average 6-16 against 400-500), still shared, so the medians are the measure:
+
+| Run | Rebuild on | Layer on, rebuild off |
+|---|---|---|
+| hub + valor | median frame 9.12 ms (110 fps), mean 72.8 fps, p99 33.6 ms; median draw 7.69 ms | 11.98 ms (83 fps), 57.3, 42.7 ms; 8.70 ms |
+| hub only (run in the other order) | 8.56 ms (117 fps), mean 93.0 fps, p99 15.6 ms; median draw 7.92 ms | 11.16 ms (90 fps), 69.5, 38.4 ms; 8.28 ms |
+
+Whichever ran later was faster (the load fell during the runs), so the difference is the machine, not the rebuild: its cost
+is not measurable, and with it on the hub runs at **60+ fps** (median frame under 9.2 ms).
+
+**Room (Ran).** `local/godot-r35/test/room35.py g6 --level valor` (port 41996), both copies Remastered, A drawing the gate-6
+pieces (`RTA_ER_WORLD_DIR` = `gate6/world`; A's log: `rebuild for hub, 6 pieces (9671 triangles)`), B with
+`RTA_ER_WORLD=off`: **1,854 ticks compared, no shared column differs.**
+
+**The window fix (a9dfed1).** The gate's pictures are the drawer's own (`app shot`: `get_shown_image`, "Godot's own drawing"),
+not the window, and both sides of each pair are taken the same way: the view.gd brightness fix does not touch them.
+
+**Review** (`gate6/final/`: game | rebuild; front, side and back light, close and at play distance):
+
+| Target | Check | Seen | Verdict |
+|---|---|---|---|
+| obelisk | passed, max 10.4 | the box is gone: a slim tapered base to the game's profile, gold foot and moulding, braid taper (`obelisk-chase-o0.jpg`, `west-chase-o0.jpg`, `dais-close.png`); at play distance it reads like the game's tapered gold-trimmed base, not clearly better (the game's broad gold band and single gold panel read as strongly); the shaft stays brighter in side light | **refused on review** |
+| trefoil | passed, 0.6 | gold-framed braid inlays round every raised ring and the rim, the engraving inside kept; visible at play distance (`start-chase-o0.jpg`), light matched; **but drawn where the game culls the far platform: rings and friezes float in the haze** (`float-west-o270.png`; gate 5's risers did the same, `float-west-o270-gate5.png`; `start-chase-o180.jpg`, far left) | **refused on review** |
+| stairs | passed, 0.5 | no darker stripes: the risers as pale as the game's (0.97 / 0.96, `north-chase-o0.jpg`); level with the game rather than better; float with the platform when culled | **refused on review** |
+| daises | passed, 0.6 | richer (an inlay on each tread, braid risers); at play distance greyer and the steps softer than the game's pale, crisp ones (0.93 / 0.90, contrast std 45 against 51) | **refused on review** |
+
+The reasons are in `local/er-world/hubfit/hub-gate6.json` and the live `rebuild/hub/rebuild.json` (0 pieces). The gate-6
+pieces stay in `local/er-world/gate6/world/` (`RTA_ER_WORLD_DIR` to see them).
+
+**Sixth session changed:**
+
+- Modified (tracked): `tools/godot/er_world_fit.py` (`fit: loft` and its inside test, `inlay` with `above` / `radial`, the
+  rim test with the collision, `borrow`), `tools/godot/project/shaders/er_ruin.gdshader` (`direct_gain`, `metal_wear`), this
+  file. `er_world.gd` and `er_mesh_bake.gd` unchanged (the loader passes any value the recipe names).
+- Local: `local/er-world/gate6/` (recipe, fits, tries, `g1`, `final/`, fps, `world/`), `local/er-world/hubfit/hub-gate6.json`,
+  `local/godot-r35/` (r34's library, the extension and project built again, `test/room35.py`).
