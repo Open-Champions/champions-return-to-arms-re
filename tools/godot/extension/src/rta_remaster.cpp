@@ -11,9 +11,11 @@
 #include <godot_cpp/variant/packed_string_array.hpp>
 #include <godot_cpp/variant/packed_vector2_array.hpp>
 #include <godot_cpp/variant/packed_vector3_array.hpp>
+#include <godot_cpp/variant/packed_vector4_array.hpp>
 #include <godot_cpp/variant/transform3d.hpp>
 #include <godot_cpp/variant/vector2.hpp>
 #include <godot_cpp/variant/vector3.hpp>
+#include <godot_cpp/variant/vector3i.hpp>
 
 #include <algorithm>
 #include <array>
@@ -33,6 +35,23 @@ uint64_t fnv(uint64_t h, const void* data, size_t n) {
     return h;
 }
 const uint64_t FNV0 = 1469598103934665603ull;
+
+// eight bytes at a step (the byte-wise FNV above over every packet's data each frame was most of the scan's time)
+uint64_t mix64(uint64_t h, const void* data, size_t n) {
+    const uint8_t* p = (const uint8_t*)data;
+    while (n >= 8) {
+        uint64_t w;
+        memcpy(&w, p, 8);
+        h = (h ^ w) * 0x9E3779B97F4A7C15ull;
+        h ^= h >> 29;
+        p += 8;
+        n -= 8;
+    }
+    uint64_t w = 0;
+    memcpy(&w, p, n);
+    h = (h ^ w ^ (n << 56)) * 0x9E3779B97F4A7C15ull;
+    return h ^ (h >> 31);
+}
 
 std::string hex(uint64_t v) {
     char b[24];
@@ -60,22 +79,30 @@ struct Group {
     int first_skeleton = -1;
     std::vector<uint32_t> pieces;
     std::vector<uint64_t> hashes;
+    std::vector<char> shiny;
+    std::vector<int> under;                 // the first pass of a two-pass packet laid under it (its own texture), -1: none
+    std::vector<int> env_pass;              // the first pass of a two-pass packet that is an environment map, -1: none
     uint64_t key = 0;
     uint32_t corners = 0;
 };
 
+// A packet's identity: its counts, and every third source and corner (all of them took most of a frame's scan in a
+// crowd; a packet of another model that agrees with this one in its counts and a third of its data is not met)
 uint64_t piece_hash(const rtag_skeletons& k, const rtag_scene& sc, uint32_t i, uint32_t& corners) {
     const rtag_skin_piece& p = k.pieces[i];
     const rtag_scene_piece& q = sc.pieces[i];
     uint64_t h = FNV0;
-    if (p.source_first + p.source_count <= k.source_count) h = fnv(h, k.sources + p.source_first, sizeof(rtag_skin_source) * p.source_count);
+    h = mix64(h, &p.source_count, sizeof p.source_count);
+    h = mix64(h, &q.full_count, sizeof q.full_count);
+    if (p.source_first + p.source_count <= k.source_count)
+        for (uint32_t v = 0; v < p.source_count; v += 3) h = mix64(h, k.sources + p.source_first + v, sizeof(rtag_skin_source));
     const uint32_t full = std::min(k.full_count, sc.full_count);
-    corners = 0;
-    for (uint32_t c = q.full_first; c < q.full_first + q.full_count && c < full; c++) {
-        h = fnv(h, &k.full_source[c], 2);
-        h = fnv(h, &sc.full[c].u, 4);
-        h = fnv(h, &sc.full[c].v, 4);
-        corners++;
+    const uint32_t end = std::min(q.full_first + q.full_count, full);
+    corners = end > q.full_first ? end - q.full_first : 0;
+    for (uint32_t c = q.full_first; c < end; c += 3) {
+        h = mix64(h, &k.full_source[c], 2);
+        h = mix64(h, &sc.full[c].u, 4);
+        h = mix64(h, &sc.full[c].v, 4);
     }
     return h;
 }
@@ -83,6 +110,12 @@ uint64_t piece_hash(const rtag_skeletons& k, const rtag_scene& sc, uint32_t i, u
 // the figures of the frame: per object, its skinned packets (an object posed by two skeletons is left to the game)
 void groups(const rtag_skeletons& k, const rtag_scene& sc, std::vector<Group>& out, std::vector<Group>* rejected = nullptr) {
     std::map<uint32_t, Group> by;
+    // the first passes of two-pass packets, by object and source: the second pass is the same vertices
+    std::map<std::pair<uint32_t, uint32_t>, uint32_t> first_pass;
+    for (uint32_t i = 0; i < k.piece_count; i++) {
+        const rtag_scene_piece& q = sc.pieces[i];
+        if (q.kind == 2 && (q.flags & 4) && (q.flags & 2) && k.pieces[i].skeleton >= 0) first_pass[{q.object, k.pieces[i].source_first}] = i;
+    }
     for (uint32_t i = 0; i < k.piece_count; i++) {
         const rtag_scene_piece& q = sc.pieces[i];
         if (q.kind != 2) continue;
@@ -110,8 +143,55 @@ void groups(const rtag_skeletons& k, const rtag_scene& sc, std::vector<Group>& o
         }
         std::sort(order.begin(), order.end());
         g.pieces.clear();
+        g.shiny.clear();
+        g.under.clear();
+        g.env_pass.clear();
         uint64_t key = FNV0;
-        for (auto& o : order) { g.pieces.push_back(o.second); g.hashes.push_back(o.first); key = fnv(key, &o.first, 8); }
+        for (auto& o : order) {
+            g.pieces.push_back(o.second);
+            g.hashes.push_back(o.first);
+            // the second pass of a two-pass packet: the game lays an environment map over it (chrome, polished armour) in
+            // a first pass that is left out with the body - its material is told it shines
+            // A two-pass packet: its first pass is either an environment map (chrome: the texture coordinates are made
+            // from the view, they differ from the second pass's) or the packet's own colour under a blended second pass
+            // (a face under its paint: the same coordinates).  The first: the material shines; the second: drawn under.
+            int under = -1, env = -1;
+            bool shiny = false;
+            if (sc.pieces[o.second].flags & 1) {
+                auto fp = first_pass.find({g.object, k.pieces[o.second].source_first});
+                uint32_t first = fp != first_pass.end() ? fp->second : UINT32_MAX;
+                // (else the packet the list has just before it: the first kick of the two)
+                for (uint32_t back = 1; first == UINT32_MAX && back <= 2 && o.second >= back; back++) {
+                    const rtag_scene_piece& c = sc.pieces[o.second - back];
+                    if (c.kind == 2 && (c.flags & 2) && c.object == g.object && c.full_count == sc.pieces[o.second].full_count) first = o.second - back;
+                }
+                if (first != UINT32_MAX) {
+                    const rtag_scene_piece& a = sc.pieces[first];
+                    const rtag_scene_piece& b = sc.pieces[o.second];
+                    // (texels of each pass's own texture: the same mapping on textures of two sizes differs by a
+                    // factor in u and one in v)
+                    bool same = a.full_count == b.full_count && a.full_count > 0;
+                    const uint32_t full = std::min(k.full_count, sc.full_count);
+                    float ku = 0.0f, kv = 0.0f;
+                    for (uint32_t c = 0; same && c < a.full_count && c < 64; c++) {
+                        if (a.full_first + c >= full || b.full_first + c >= full) { same = false; break; }
+                        const rtag_scene_full& x = sc.full[a.full_first + c];
+                        const rtag_scene_full& y = sc.full[b.full_first + c];
+                        if (ku == 0.0f && std::fabs(y.u) > 0.5f) ku = x.u / y.u;
+                        if (kv == 0.0f && std::fabs(y.v) > 0.5f) kv = x.v / y.v;
+                        if (ku != 0.0f && std::fabs(x.u - y.u * ku) > 0.02f * (1.0f + std::fabs(x.u))) same = false;
+                        if (kv != 0.0f && std::fabs(x.v - y.v * kv) > 0.02f * (1.0f + std::fabs(x.v))) same = false;
+                    }
+                    if (ku <= 0.0f || kv <= 0.0f) same = false;
+                    if (same) under = (int)first;
+                    else { shiny = true; env = (int)first; }
+                } else shiny = true;
+            }
+            g.shiny.push_back(shiny ? 1 : 0);
+            g.under.push_back(under);
+            g.env_pass.push_back(env);
+            key = fnv(key, &o.first, 8);
+        }
         g.key = key;
         out.push_back(std::move(g));
     }
@@ -123,7 +203,7 @@ Transform3D rows34(const float* m) {
 
 // ---- subdivision ------------------------------------------------------------------------------------------------------
 struct Skin { int j[4]; float w[4]; };
-struct Tri { int v[3]; Vector2 uv[3]; Vector3 rn[3]; int piece; };
+struct Tri { int v[3]; Vector2 uv[3]; Vector3 rn[3]; int piece; bool decal = false; };
 struct Row { std::vector<std::pair<int, float>> w; };
 struct Level { std::vector<Row> rows; std::vector<std::array<int, 3>> mids; };
 
@@ -137,6 +217,7 @@ void build_edges(const std::vector<Tri>& tris, std::vector<Edge>& edges, std::un
     eid.reserve(tris.size() * 2);
     for (size_t t = 0; t < tris.size(); t++)
         for (int c = 0; c < 3; c++) {
+            if (tris[t].decal) break;          // a decal lies on the surface: no part of its shape
             const int a = tris[t].v[c], b = tris[t].v[(c + 1) % 3], o = tris[t].v[(c + 2) % 3];
             auto it = eid.find(ekey(a, b));
             int e;
@@ -194,13 +275,17 @@ void step(int nv, const std::vector<Tri>& tris, std::unordered_set<uint64_t>& cr
         int m[3];
         Vector2 muv[3];
         Vector3 mrn[3];
-        for (int c = 0; c < 3; c++) {
+        bool lost = false;
+        for (int c = 0; c < 3 && !lost; c++) {
             const int d = (c + 1) % 3;
-            m[c] = nv + eid[ekey(t.v[c], t.v[d])];
+            auto it = eid.find(ekey(t.v[c], t.v[d]));
+            if (it == eid.end()) { lost = true; break; }      // (a decal off the surface's own edges: not carried on)
+            m[c] = nv + it->second;
             muv[c] = (t.uv[c] + t.uv[d]) * 0.5f;
             Vector3 s = t.rn[c] + t.rn[d];
             mrn[c] = s.length_squared() > 1e-12f ? s.normalized() : t.rn[c];
         }
+        if (lost) continue;
         // m[0] = (v0 v1), m[1] = (v1 v2), m[2] = (v2 v0)
         Tri a = t, b = t, c = t, d = t;
         a.v[0] = t.v[0]; a.uv[0] = t.uv[0]; a.rn[0] = t.rn[0]; a.v[1] = m[0]; a.uv[1] = muv[0]; a.rn[1] = mrn[0]; a.v[2] = m[2]; a.uv[2] = muv[2]; a.rn[2] = mrn[2];
@@ -337,14 +422,104 @@ OutLevel emit(const std::vector<Tri>& tris, const std::vector<Vector3>& p, const
     return out;
 }
 
+// Layers: where the model has a second surface just outside a vertex (a skirt over the hips, a pauldron over the
+// shoulder, a belt over the waist - the game's own layered clothing, a fraction of a unit apart), the vertex is covered.
+// A smooth surface leaves its control points by up to a few tenths of a unit between them, which is enough for the inner
+// layer to come through the outer one (a hip through a skirt): covered vertices of the finer levels are drawn `gap`
+// units inside.  A surface counts only when it is no near neighbour of the vertex in the mesh (its own fold, the thigh
+// next to it, is not a layer over it): no corner of the triangle within two edges of the vertex.
+std::vector<float> covered_by_layers(const std::vector<Vector3>& p, const std::vector<Tri>& tris, float reach) {
+    const size_t nv = p.size();
+    std::vector<float> cov(nv, 0.0f);
+    if (tris.empty() || reach <= 0.0f) return cov;
+    std::vector<Vector3> vn(nv);
+    std::vector<std::vector<int>> nb(nv);
+    for (const Tri& t : tris) {
+        if (t.decal) continue;
+        const Vector3 n = (p[t.v[1]] - p[t.v[0]]).cross(p[t.v[2]] - p[t.v[0]]);
+        for (int c = 0; c < 3; c++) {
+            vn[t.v[c]] += n;
+            nb[t.v[c]].push_back(t.v[(c + 1) % 3]);
+            nb[t.v[c]].push_back(t.v[(c + 2) % 3]);
+        }
+    }
+    // the triangles in a grid of cells `reach` wide
+    const float cell = std::max(reach, 0.5f);
+    auto key = [&](int x, int y, int z) { return ((uint64_t)(uint32_t)(x + 100000) << 42) ^ ((uint64_t)(uint32_t)(y + 100000) << 21) ^ (uint64_t)(uint32_t)(z + 100000); };
+    std::unordered_map<uint64_t, std::vector<int>> grid;
+    for (size_t t = 0; t < tris.size(); t++) {
+        if (tris[t].decal) continue;
+        Vector3 lo = p[tris[t].v[0]], hi = lo;
+        for (int c = 1; c < 3; c++) {
+            const Vector3 q = p[tris[t].v[c]];
+            lo = Vector3(std::min(lo.x, q.x), std::min(lo.y, q.y), std::min(lo.z, q.z));
+            hi = Vector3(std::max(hi.x, q.x), std::max(hi.y, q.y), std::max(hi.z, q.z));
+        }
+        for (int x = (int)std::floor(lo.x / cell); x <= (int)std::floor(hi.x / cell); x++)
+            for (int y = (int)std::floor(lo.y / cell); y <= (int)std::floor(hi.y / cell); y++)
+                for (int z = (int)std::floor(lo.z / cell); z <= (int)std::floor(hi.z / cell); z++) grid[key(x, y, z)].push_back((int)t);
+    }
+    std::vector<int> mark(nv, -1);
+    for (size_t v = 0; v < nv; v++) {
+        if (vn[v].length_squared() < 1e-12f) continue;
+        const Vector3 n = vn[v].normalized(), o = p[v];
+        // the vertices within two edges of v
+        mark[v] = (int)v;
+        for (int a : nb[v]) {
+            mark[a] = (int)v;
+            for (int b : nb[a]) mark[b] = (int)v;
+        }
+        bool hit = false;
+        std::unordered_set<int> tried;
+        for (int step = 0; step <= 2 && !hit; step++) {
+            const Vector3 q = o + n * (reach * step * 0.5f);
+            const int cx = (int)std::floor(q.x / cell), cy = (int)std::floor(q.y / cell), cz = (int)std::floor(q.z / cell);
+            auto it = grid.find(key(cx, cy, cz));
+            if (it == grid.end()) continue;
+            for (int t : it->second) {
+                if (!tried.insert(t).second) continue;
+                const Tri& tr = tris[t];
+                if (mark[tr.v[0]] == (int)v || mark[tr.v[1]] == (int)v || mark[tr.v[2]] == (int)v) continue;
+                // the ray o + n s, 0 < s <= reach, against the triangle (Moller-Trumbore)
+                const Vector3 e1 = p[tr.v[1]] - p[tr.v[0]], e2 = p[tr.v[2]] - p[tr.v[0]];
+                const Vector3 h = n.cross(e2);
+                const float det = e1.dot(h);
+                if (std::fabs(det) < 1e-9f) continue;
+                const float inv = 1.0f / det;
+                const Vector3 sv = o - p[tr.v[0]];
+                const float u = sv.dot(h) * inv;
+                if (u < 0.0f || u > 1.0f) continue;
+                const Vector3 qv = sv.cross(e1);
+                const float w = n.dot(qv) * inv;
+                if (w < 0.0f || u + w > 1.0f) continue;
+                const float s = e2.dot(qv) * inv;
+                if (s > 1e-4f && s <= reach) { hit = true; break; }
+            }
+        }
+        if (hit) cov[v] = 1.0f;
+    }
+    return cov;
+}
+
 }  // namespace
+
+// two vertices skinned alike: the same joints with weights within 2/255
+bool same_skin(const Skin& k, const rtag_skin_source& s) {
+    float w[64] = {};
+    bool used[64] = {};
+    for (int c = 0; c < 4; c++) if (s.weight[c] && s.joint[c] < 64) { w[s.joint[c]] += s.weight[c] / 255.0f; used[s.joint[c]] = true; }
+    for (int c = 0; c < 4; c++) if (k.w[c] > 0.0f && k.j[c] >= 0 && k.j[c] < 64) { w[k.j[c]] -= k.w[c]; used[k.j[c]] = true; }
+    for (int j = 0; j < 64; j++) if (used[j] && std::fabs(w[j]) > 2.5f / 255.0f) return false;
+    return true;
+}
 
 struct RtaRemaster::Job {
     struct Piece { std::vector<rtag_skin_source> sources; std::vector<std::array<float, 3>> corners; /* source, u, v */ };
     std::vector<Piece> pieces;
     std::vector<std::string> piece_keys;
+    std::vector<char> decal_piece;          // packets drawn over others' triangles (decals)
     int levels = 2, fit = 4, max_tris = 80000;
-    float crease = 0.5f, keep = 0.8f;
+    float crease = 0.5f, keep = 0.8f, layer_reach = 2.0f, layer_gap = 0.3f;
     std::atomic<bool> done{false};
     std::string failed, stats;
     std::vector<OutLevel> out;
@@ -352,8 +527,10 @@ struct RtaRemaster::Job {
 
     void run() {
         const auto t0 = std::chrono::steady_clock::now();
-        // weld by position (a packet seam is one edge of the surface)
-        std::map<std::array<int, 3>, int> weld;
+        // weld by position (a packet seam is one edge of the surface): within WELD of each other, whatever grid cell the
+        // two fall in (a packet's copy of a seam vertex can differ from its neighbour's in the last bits)
+        const float WELD = 0.0025f;
+        std::map<std::array<int, 3>, std::vector<int>> weld;
         std::vector<Vector3> p0;
         std::vector<Skin> s0;
         std::vector<Tri> tris;
@@ -363,12 +540,23 @@ struct RtaRemaster::Job {
             std::vector<int> id(pc.sources.size());
             for (size_t v = 0; v < pc.sources.size(); v++) {
                 const rtag_skin_source& s = pc.sources[v];
-                std::array<int, 3> q{(int)std::lround(s.position[0] * 1000.0f), (int)std::lround(s.position[1] * 1000.0f), (int)std::lround(s.position[2] * 1000.0f)};
-                auto it = weld.find(q);
-                if (it != weld.end()) { id[v] = it->second; continue; }
+                const Vector3 pos(s.position[0], s.position[1], s.position[2]);
+                std::array<int, 3> q{(int)std::floor(pos.x / WELD), (int)std::floor(pos.y / WELD), (int)std::floor(pos.z / WELD)};
+                int found = -1;
+                for (int dx = -1; dx <= 1 && found < 0; dx++)
+                    for (int dy = -1; dy <= 1 && found < 0; dy++)
+                        for (int dz = -1; dz <= 1 && found < 0; dz++) {
+                            auto it = weld.find({q[0] + dx, q[1] + dy, q[2] + dz});
+                            if (it == weld.end()) continue;
+                            // (and only one moved the same way: an upper lip and the lower one, an eyelid and the eye,
+                            // meet in the bind pose but follow different joints - welded, the mouth was torn open)
+                            for (int k : it->second)
+                                if (p0[k].distance_to(pos) <= WELD && same_skin(s0[k], s)) { found = k; break; }
+                        }
+                if (found >= 0) { id[v] = found; continue; }
                 id[v] = (int)p0.size();
-                weld[q] = id[v];
-                p0.push_back(Vector3(s.position[0], s.position[1], s.position[2]));
+                weld[q].push_back(id[v]);
+                p0.push_back(pos);
                 Skin k;
                 for (int c = 0; c < 4; c++) { k.j[c] = s.joint[c]; k.w[c] = s.weight[c] / 255.0f; }
                 s0.push_back(k);
@@ -395,17 +583,90 @@ struct RtaRemaster::Job {
             }
         }
         if (tris.empty()) { failed = "no triangles"; done = true; return; }
-        // the same triangle twice (a packet's strip and its neighbour's) once
+        // the same triangle twice in one packet (its strip's own overlap) once.  The same triangle in a later packet is a
+        // DECAL: the game draws a second picture on the same vertices over the first (the eyes, brows and lips on a
+        // face, the paint on a shield) - kept, as no part of the surface's shape, and drawn a hair above it
+        std::vector<int> decal_tris(pieces.size(), 0), all_tris(pieces.size(), 0);
         {
-            std::unordered_set<std::string> once;
+            std::unordered_map<std::string, int> once;
             std::vector<Tri> kept;
-            for (const Tri& t : tris) {
+            for (Tri t : tris) {
                 int s[3] = {t.v[0], t.v[1], t.v[2]};
                 std::sort(s, s + 3);
                 std::string k((const char*)s, sizeof s);
-                if (once.insert(k).second) kept.push_back(t); else dropped++;
+                all_tris[t.piece]++;
+                auto it = once.find(k);
+                if (it == once.end()) { once[k] = t.piece; kept.push_back(t); continue; }
+                if (it->second == t.piece) { dropped++; continue; }
+                t.decal = true;
+                decal_tris[t.piece]++;
+                kept.push_back(t);
             }
             tris.swap(kept);
+        }
+        decal_piece.assign(pieces.size(), 0);
+        size_t decals = 0;
+        for (size_t pi = 0; pi < pieces.size(); pi++)
+            if (all_tris[pi] > 0 && decal_tris[pi] * 2 > all_tris[pi]) { decal_piece[pi] = 1; decals++; }
+        // (a packet only partly over another keeps its own shape: only its overlapping triangles are decals)
+        // T-junctions: a packet's border edge with a vertex of the neighbouring packet lying on it (the two packets were
+        // cut differently along their seam).  Each side would be subdivided as a curve of its own and part: a crack.  The
+        // triangle is split at that vertex, so the seam is shared edges, and the surface runs smoothly across it.
+        size_t tsplit = 0;
+        for (int pass = 0; pass < 4; pass++) {
+            std::vector<Edge> edges;
+            std::unordered_map<uint64_t, int> eid;
+            build_edges(tris, edges, eid);
+            std::vector<char> on_border(p0.size(), 0);
+            for (const Edge& e : edges) if (e.nf == 1) { on_border[e.a] = 1; on_border[e.b] = 1; }
+            std::vector<int> border;
+            for (size_t v = 0; v < p0.size(); v++) if (on_border[v]) border.push_back((int)v);
+            if (border.empty()) break;
+            std::vector<std::pair<int, int>> splits;     // (triangle, vertex)
+            std::vector<char> taken(tris.size(), 0);
+            for (const Edge& e : edges) {
+                if (e.nf != 1 || taken[e.face[0]]) continue;
+                const Vector3 A = p0[e.a], B = p0[e.b], AB = B - A;
+                const float len2 = AB.length_squared();
+                if (len2 < 1e-8f) continue;
+                const float tol = std::max(WELD * 2.0f, std::sqrt(len2) * 0.01f);
+                int best = -1;
+                float best_d = tol;
+                for (int v : border) {
+                    if (v == e.a || v == e.b) continue;
+                    const Vector3 P = p0[v];
+                    const float t = (P - A).dot(AB) / len2;
+                    if (t <= 0.02f || t >= 0.98f) continue;
+                    const float d = (A + AB * t).distance_to(P);
+                    if (d < best_d) { best_d = d; best = v; }
+                }
+                if (best >= 0) { splits.push_back({e.face[0], best}); taken[e.face[0]] = 1; }
+            }
+            if (splits.empty()) break;
+            for (const auto& sp : splits) {
+                const Tri t = tris[sp.first];
+                const int v = sp.second;
+                // which edge of the triangle the vertex lies on: the nearest
+                int c = 0;
+                float bd = 1e30f;
+                for (int k = 0; k < 3; k++) {
+                    const Vector3 A = p0[t.v[k]], AB = p0[t.v[(k + 1) % 3]] - A;
+                    const float tt = std::clamp((p0[v] - A).dot(AB) / std::max(AB.length_squared(), 1e-12f), 0.0f, 1.0f);
+                    const float d = (A + AB * tt).distance_to(p0[v]);
+                    if (d < bd) { bd = d; c = k; }
+                }
+                const int a = c, b = (c + 1) % 3, o = (c + 2) % 3;
+                const Vector3 A = p0[t.v[a]], AB = p0[t.v[b]] - A;
+                const float u = std::clamp((p0[v] - A).dot(AB) / std::max(AB.length_squared(), 1e-12f), 0.0f, 1.0f);
+                Tri t1 = t, t2 = t;
+                // t1 = (a, v, o), t2 = (v, b, o)
+                t1.v[b] = v; t1.uv[b] = t.uv[a].lerp(t.uv[b], u); t1.rn[b] = t.rn[a].lerp(t.rn[b], u).normalized();
+                t2.v[a] = v; t2.uv[a] = t1.uv[b]; t2.rn[a] = t1.rn[b];
+                (void)o;
+                tris[sp.first] = t1;
+                tris.push_back(t2);
+                tsplit++;
+            }
         }
         // the creases of level 0: the game's normals part across the edge (a hard edge), or the faces fold back on each other
         std::unordered_set<uint64_t> crease0;
@@ -425,6 +686,9 @@ struct RtaRemaster::Job {
             }
         }
         const size_t creases = crease0.size();
+        const std::vector<float> covered0 = covered_by_layers(p0, tris, layer_reach);
+        size_t covered_count = 0;
+        for (float c : covered0) covered_count += c > 0.0f ? 1 : 0;
         // a dense model is split fewer times (each level is four times the triangles of the one before)
         while (levels > 1 && tris.size() * ((size_t)1 << (2 * levels)) > (size_t)max_tris) levels--;
         std::vector<Level> lv;
@@ -458,6 +722,19 @@ struct RtaRemaster::Job {
             std::vector<Vector3> p = apply(lv, l, P);
             float after = 0.0f;
             for (size_t i = 0; i < p0.size(); i++) after = std::max(after, (p0[i] - p[i]).length());
+            if (covered_count > 0 && layer_gap > 0.0f) {
+                // the covered vertices drawn `gap` inside (the covered share subdivided as the positions are)
+                std::vector<Vector3> c3(covered0.size());
+                for (size_t i = 0; i < covered0.size(); i++) c3[i] = Vector3(covered0[i], 0, 0);
+                c3 = apply(lv, l, c3);
+                std::vector<Vector3> vn(p.size());
+                for (const Tri& t : tris_at[l]) {
+                    const Vector3 fn = (p[t.v[1]] - p[t.v[0]]).cross(p[t.v[2]] - p[t.v[0]]);
+                    for (int c = 0; c < 3; c++) vn[t.v[c]] += fn;
+                }
+                for (size_t i = 0; i < p.size(); i++)
+                    if (c3[i].x > 0.0f && vn[i].length_squared() > 1e-12f) p[i] -= vn[i].normalized() * (layer_gap * std::min(1.0f, c3[i].x));
+            }
             std::vector<Skin> s = apply_skin(lv, l, s0);
             out.push_back(emit(tris_at[l], p, s, (int)pieces.size(), crease));
             char b[96];
@@ -465,9 +742,9 @@ struct RtaRemaster::Job {
             fit_text += b;
         }
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-        char b[256];
-        snprintf(b, sizeof b, "%zu packets, %zu vertices welded, %zu triangles (%zu dropped), %zu crease edges;%s; %.0f ms", pieces.size(), p0.size(),
-                 tris.size(), dropped, creases, fit_text.c_str(), ms);
+        char b[512];
+        snprintf(b, sizeof b, "%zu packets, %zu vertices welded, %zu triangles (%zu dropped, %zu split at T-junctions), %zu crease edges, %zu vertices under a layer, %zu decal packets;%s; %.0f ms",
+                 pieces.size(), p0.size(), tris.size(), dropped, tsplit, creases, covered_count, decals, fit_text.c_str(), ms);
         stats = b;
         done = true;
     }
@@ -508,10 +785,36 @@ Dictionary RtaRemaster::scan(const Ref<RtaMachine>& machine) {
         e["key"] = String(hex(g.key).c_str());
         PackedInt32Array pieces;
         PackedStringArray keys;
-        for (size_t i = 0; i < g.pieces.size(); i++) { pieces.push_back((int32_t)g.pieces[i]); keys.push_back(String(hex(g.hashes[i]).c_str())); }
+        for (size_t i = 0; i < g.pieces.size(); i++) {
+            pieces.push_back((int32_t)g.pieces[i]);
+            auto it = hex_cache.find(g.hashes[i]);
+            if (it == hex_cache.end()) {
+                if (hex_cache.size() > 200000) hex_cache.clear();
+                it = hex_cache.emplace(g.hashes[i], String(hex(g.hashes[i]).c_str())).first;
+            }
+            keys.push_back(it->second);
+        }
         e["pieces"] = pieces;
         e["piece_keys"] = keys;
+        PackedInt32Array shiny, under;
+        for (size_t i = 0; i < g.shiny.size(); i++) if (g.shiny[i]) shiny.push_back((int32_t)i);
+        for (size_t i = 0; i < g.under.size(); i++) under.push_back((int32_t)g.under[i]);
+        PackedInt32Array env;
+        for (size_t i = 0; i < g.env_pass.size(); i++) env.push_back((int32_t)g.env_pass[i]);
+        e["env"] = env;
+        e["shiny"] = shiny;
+        e["under"] = under;
+        e["passes"] = Vector3i((int32_t)g.rigid, (int32_t)g.unskinned, (int32_t)g.env);     // (debugging) left to the game
         e["root"] = Vector3(s.joint[0][3], s.joint[0][7], s.joint[0][11]);
+        // the box of its joints (the camera of the tests aims at its middle)
+        Vector3 lo(s.joint[0][3], s.joint[0][7], s.joint[0][11]), hi = lo;
+        for (int j = 1; j < (int)s.joint_count && j < 64; j++) {
+            const Vector3 v(s.joint[j][3], s.joint[j][7], s.joint[j][11]);
+            lo = Vector3(std::min(lo.x, v.x), std::min(lo.y, v.y), std::min(lo.z, v.z));
+            hi = Vector3(std::max(hi.x, v.x), std::max(hi.y, v.y), std::max(hi.z, v.z));
+        }
+        e["low"] = lo;
+        e["high"] = hi;
         e["corners"] = (int64_t)g.corners;
         figures.push_back(e);
     }
@@ -545,6 +848,8 @@ String RtaRemaster::bake_start(const Ref<RtaMachine>& machine, int64_t object, c
         job->crease = (float)(double)options.get("crease", 0.5);
         job->keep = (float)(double)options.get("keep", 0.8);
         job->max_tris = std::max(1000, (int)options.get("max_tris", 80000));
+        job->layer_reach = (float)(double)options.get("layer_reach", 2.0);
+        job->layer_gap = (float)(double)options.get("layer_gap", 0.3);
         const uint32_t full = std::min(k.full_count, sc->full_count);
         for (size_t n = 0; n < g.pieces.size(); n++) {
             const uint32_t i = g.pieces[n];
@@ -616,6 +921,9 @@ Dictionary RtaRemaster::bake_take(const String& key) {
     PackedStringArray keys;
     for (const std::string& s : j.piece_keys) keys.push_back(String(s.c_str()));
     d["piece_keys"] = keys;
+    PackedInt32Array decals;
+    for (size_t i = 0; i < j.decal_piece.size(); i++) if (j.decal_piece[i]) decals.push_back((int32_t)i);
+    d["decals"] = decals;
     d["stats"] = String(j.stats.c_str());
     j.out.clear();                      // handed over: the job stays as the record that this key was baked
     j.out.shrink_to_fit();
@@ -698,10 +1006,71 @@ void RtaRemaster::tween(const RID& rid, double t) {
 
 void RtaRemaster::forget(const RID& rid) { poses.erase(rid.get_id()); }
 
-// ---- maps ---------------------------------------------------------------------------------------------------------------
-namespace {
+// The game's own light on a figure this frame, as a function of the surface's direction: its vertex program's colour at
+// every corner of the figure's packets (rtag_scene_full r, g, b: ambient + sun + fill + two point lights, the poison's and
+// the hit flash's tints, clamped at 255 - all of it) against the corner's normal, fitted by second-order spherical
+// harmonics (nine coefficients a channel; a sum of Lambert lobes is within a few percent of its fit).  The remastered
+// surface takes its light from this at its own normal: exactly as bright as the game's figure, from every light the game
+// has, without modelling any of them.  [] when the figure has too few corners this frame.
+PackedVector4Array RtaRemaster::light_sh(const Ref<RtaMachine>& machine, const PackedInt32Array& pieces) {
+    PackedVector4Array out;
+    rtag_skeletons k;
+    const rtag_scene* sc = nullptr;
+    if (!frame_skeletons(machine, k, sc) || !sc->full) return out;
+    double A[9][9] = {}, B[9][3] = {};
+    size_t n = 0;
+    for (int64_t pi = 0; pi < pieces.size(); pi++) {
+        const uint32_t i = (uint32_t)pieces[pi];
+        if (i >= sc->piece_count) continue;
+        const rtag_scene_piece& q = sc->pieces[i];
+        const uint32_t end = std::min(q.full_first + q.full_count, sc->full_count);
+        for (uint32_t c = q.full_first; c < end; c += 2) {
+            const rtag_scene_full& f = sc->full[c];
+            const float l = std::sqrt(f.nx * f.nx + f.ny * f.ny + f.nz * f.nz);
+            if (l < 0.5f) continue;
+            const double x = f.nx / l, y = f.ny / l, z = f.nz / l;
+            const double Y[9] = {1.0, y, z, x, x * y, y * z, 3.0 * z * z - 1.0, x * z, x * x - y * y};
+            const double col[3] = {f.r / 128.0, f.g / 128.0, f.b / 128.0};
+            for (int a = 0; a < 9; a++) {
+                for (int b = 0; b < 9; b++) A[a][b] += Y[a] * Y[b];
+                for (int ch = 0; ch < 3; ch++) B[a][ch] += Y[a] * col[ch];
+            }
+            n++;
+        }
+    }
+    if (n < 24) return out;
+    // ridge (the bands of directions a figure's normals do not cover stay near the mean) and Gauss-Jordan
+    for (int a = 0; a < 9; a++) A[a][a] += (a == 0 ? 1e-6 : 0.02) * (double)n;
+    for (int col = 0; col < 9; col++) {
+        int piv = col;
+        for (int r = col + 1; r < 9; r++) if (std::fabs(A[r][col]) > std::fabs(A[piv][col])) piv = r;
+        if (std::fabs(A[piv][col]) < 1e-12) return out;
+        if (piv != col) { for (int c2 = 0; c2 < 9; c2++) std::swap(A[col][c2], A[piv][c2]); for (int ch = 0; ch < 3; ch++) std::swap(B[col][ch], B[piv][ch]); }
+        const double d = A[col][col];
+        for (int c2 = 0; c2 < 9; c2++) A[col][c2] /= d;
+        for (int ch = 0; ch < 3; ch++) B[col][ch] /= d;
+        for (int r = 0; r < 9; r++) {
+            if (r == col) continue;
+            const double f = A[r][col];
+            if (f == 0.0) continue;
+            for (int c2 = 0; c2 < 9; c2++) A[r][c2] -= f * A[col][c2];
+            for (int ch = 0; ch < 3; ch++) B[r][ch] -= f * B[col][ch];
+        }
+    }
+    out.resize(9);
+    for (int a = 0; a < 9; a++) out.set(a, Vector4((real_t)B[a][0], (real_t)B[a][1], (real_t)B[a][2], 0));
+    return out;
+}
 
-void box_blur(std::vector<float>& a, int w, int h, int r) {
+// ---- maps ---------------------------------------------------------------------------------------------------------------
+// RM_TEXELS_BEGIN - plain C++ (no Godot types): the texel analysis and classes, also built by the local tuning tool
+// (local/model-remaster/texels: the same code run over the pictures a session dumped, RTA_REMASTER_DUMP)
+namespace rmt {
+
+enum Cls { SKIN = 0, LEATHER, METAL, CLOTH, HAIR, FUR, STONE, NCLS };
+static const char* const NAMES[NCLS] = {"skin", "leather", "metal", "cloth", "hair", "fur", "stone"};
+
+inline void box_blur(std::vector<float>& a, int w, int h, int r) {
     if (r <= 0) return;
     std::vector<float> t(a.size());
     for (int y = 0; y < h; y++) {
@@ -726,10 +1095,250 @@ void box_blur(std::vector<float>& a, int w, int h, int r) {
     }
 }
 
-enum Cls { SKIN = 0, LEATHER = 1, METAL = 2, CLOTH = 3 };
-const char* CLS_NAMES[4] = {"skin", "leather", "metal", "cloth"};
+struct Settings {
+    float scale = 1.0f;         // picture pixels per game texel (the art pack's pictures are 4x)
+    int forced = -1;            // every texel this class
+    int strands = HAIR;         // what streaked texels are: HAIR (a person's) or FUR (a beast's)
+    bool grey_metal = true;     // grey, worked, shaded texels may be metal (off: a figure in grey cloth)
+    bool gold = true;           // ochre and yellow texels may be gold (off: a beast with an ochre hide)
+    int prefer = -1;            // what would be leather, cloth or strands is this instead (a picture of a body: skin)
+    struct Rule { int cls; float h0, h1, s0, s1, v0, v1; };
+    std::vector<Rule> rules;    // a figure's own: texels of this hue (h0 > h1: wraps past red), saturation, value are this class
+    bool stone = false;         // grey grainy texels may be stone (a creature's)
+    float skin_hue_lo = -0.03f, skin_hue_hi = 0.105f;   // the hue band of skin (0..1; red at 0); a green or blue people's own
+    float skin_v_lo = 0.42f, skin_s_hi = 0.7f;         // skin is at least this bright and at most this saturated (a dark people's own)
+};
 
-}  // namespace
+struct Texels {
+    int w = 0, h = 0;
+    std::vector<float> lum, hue, sat, val, lb, broad, height, contrast, grain, coh, energy, dir_c, dir_s, stripes, density, spread;
+    std::vector<uint8_t> cls;
+    double share[NCLS] = {};
+};
+
+inline float hue_in(float h, float lo, float hi) {        // inside the band [lo, hi] (lo may be below 0: wraps)
+    if (lo < 0.0f) return (h >= 1.0f + lo || h <= hi) ? 1.0f : 0.0f;
+    return (h >= lo && h <= hi) ? 1.0f : 0.0f;
+}
+
+// rgba: w*h*4 bytes
+inline void analyse(const uint8_t* src, int w, int h, const Settings& st, Texels& t) {
+    const size_t n = (size_t)w * h;
+    t.w = w; t.h = h;
+    t.lum.assign(n, 0); t.hue.assign(n, 0); t.sat.assign(n, 0); t.val.assign(n, 0);
+    for (size_t i = 0; i < n; i++) {
+        const float r = src[i * 4] / 255.0f, g = src[i * 4 + 1] / 255.0f, b = src[i * 4 + 2] / 255.0f;
+        t.lum[i] = 0.299f * r + 0.587f * g + 0.114f * b;
+        const float mx = std::max(r, std::max(g, b)), mn = std::min(r, std::min(g, b)), c = mx - mn;
+        t.val[i] = mx;
+        t.sat[i] = mx > 1e-4f ? c / mx : 0.0f;
+        float hh = 0.0f;
+        if (c > 1e-4f) {
+            if (mx == r) hh = std::fmod((g - b) / c + 6.0f, 6.0f);
+            else if (mx == g) hh = (b - r) / c + 2.0f;
+            else hh = (r - g) / c + 4.0f;
+        }
+        t.hue[i] = hh / 6.0f;
+    }
+    const float scale = st.scale;
+    // edge-aware: a bilateral filter of the luminance (a painted edge stays, the noise of the upscale goes)
+    const int R = std::max(1, (int)std::lround(scale * 0.6f));
+    t.lb.assign(n, 0);
+    {
+        const float ss = 2.0f * (R * 0.75f) * (R * 0.75f), sr = 2.0f * 0.1f * 0.1f;
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) {
+                const float c = t.lum[y * w + x];
+                float s = 0, ws = 0;
+                for (int dy = -R; dy <= R; dy++) {
+                    const int yy = std::clamp(y + dy, 0, h - 1);
+                    for (int dx = -R; dx <= R; dx++) {
+                        const int xx = std::clamp(x + dx, 0, w - 1);
+                        const float v = t.lum[yy * w + xx], dv = v - c;
+                        const float k = std::exp(-(dx * dx + dy * dy) / ss - dv * dv / sr);
+                        s += v * k;
+                        ws += k;
+                    }
+                }
+                t.lb[y * w + x] = s / ws;
+            }
+    }
+    // the broad shading painted into the texture taken off: what is left is the relief
+    t.broad = t.lb;
+    box_blur(t.broad, w, h, std::max(2, (int)std::lround(scale * 3.0f)));
+    t.height.assign(n, 0);
+    for (size_t i = 0; i < n; i++) t.height[i] = t.lb[i] - 0.75f * t.broad[i];
+    // local contrast at the texel's own size (metal: worn bright edges; skin: smooth) and the grain under it (stone, cloth weave)
+    t.contrast.assign(n, 0);
+    t.grain.assign(n, 0);
+    {
+        std::vector<float> m = t.lum;
+        box_blur(m, w, h, std::max(1, (int)std::lround(scale)));
+        for (size_t i = 0; i < n; i++) t.contrast[i] = std::fabs(t.lum[i] - m[i]);
+        t.grain = t.contrast;
+        box_blur(t.contrast, w, h, std::max(1, (int)std::lround(scale * 1.5f)));
+        std::vector<float> m2 = t.lum;
+        box_blur(m2, w, h, std::max(1, (int)std::lround(scale * 0.5f)));
+        for (size_t i = 0; i < n; i++) t.grain[i] = std::fabs(t.lum[i] - m2[i]);
+        box_blur(t.grain, w, h, std::max(1, (int)std::lround(scale * 2.0f)));
+    }
+    // streaks (hair, fur): the structure tensor of the luminance - how much of its change runs across one direction
+    // (coherence) and which; a strand runs across its gradient
+    t.coh.assign(n, 0); t.energy.assign(n, 0); t.dir_c.assign(n, 1); t.dir_s.assign(n, 0); t.stripes.assign(n, 0);
+    {
+        // stripes: many parallel lines, not one edge - the gradients across a run of strands point both ways and cancel
+        // (|mean gradient| small against the mean of |gradient|); across a single edge they all point one way
+        std::vector<float> jxx(n), jxy(n), jyy(n), sgx(n), sgy(n), mag(n);
+        auto L = [&](int xx, int yy) { return t.lum[std::clamp(yy, 0, h - 1) * w + std::clamp(xx, 0, w - 1)]; };
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) {
+                const float gx = (L(x + 1, y - 1) + 2 * L(x + 1, y) + L(x + 1, y + 1) - L(x - 1, y - 1) - 2 * L(x - 1, y) - L(x - 1, y + 1)) / 8.0f;
+                const float gy = (L(x - 1, y + 1) + 2 * L(x, y + 1) + L(x + 1, y + 1) - L(x - 1, y - 1) - 2 * L(x, y - 1) - L(x + 1, y - 1)) / 8.0f;
+                const size_t i = (size_t)y * w + x;
+                jxx[i] = gx * gx; jxy[i] = gx * gy; jyy[i] = gy * gy;
+                sgx[i] = gx; sgy[i] = gy; mag[i] = std::sqrt(gx * gx + gy * gy);
+            }
+        const int r = std::max(1, (int)std::lround(scale * 2.0f));
+        box_blur(jxx, w, h, r); box_blur(jxy, w, h, r); box_blur(jyy, w, h, r);
+        box_blur(sgx, w, h, r); box_blur(sgy, w, h, r); box_blur(mag, w, h, r);
+        for (size_t i = 0; i < n; i++) t.stripes[i] = mag[i] > 1e-6f ? 1.0f - std::sqrt(sgx[i] * sgx[i] + sgy[i] * sgy[i]) / mag[i] : 0.0f;
+        // density: the share of a wider window (4 game texels round) that is edge - a run of strands fills it, one painted
+        // line or ridge (whose two sides cancel as strands do) does not
+        t.density.assign(n, 0.0f);
+        std::vector<float> raw(n);
+        {
+            auto L2 = [&](int xx, int yy) { return t.lb[std::clamp(yy, 0, h - 1) * w + std::clamp(xx, 0, w - 1)]; };
+            const int d = std::max(1, (int)std::lround(scale * 0.5f));
+            for (int y = 0; y < h; y++)
+                for (int x = 0; x < w; x++) {
+                    const float gx = L2(x + d, y) - L2(x - d, y), gy = L2(x, y + d) - L2(x, y - d);
+                    raw[(size_t)y * w + x] = std::sqrt(gx * gx + gy * gy) > 0.045f ? 1.0f : 0.0f;
+                }
+        }
+        t.density = raw;
+        box_blur(t.density, w, h, std::max(2, (int)std::lround(scale * 4.0f)));
+        // spread: the luminance's spread over the same window (skin and plain leather: small; trims, studs, mail: large)
+        t.spread.assign(n, 0.0f);
+        {
+            // over the painted texels only: the empty (near black) space between a picture's islands is no part of it
+            std::vector<float> m(n), m2(n), mk(n);
+            for (size_t i = 0; i < n; i++) {
+                mk[i] = t.val[i] > 0.06f ? 1.0f : 0.0f;
+                m[i] = t.lum[i] * mk[i];
+                m2[i] = t.lum[i] * t.lum[i] * mk[i];
+            }
+            const int r2 = std::max(2, (int)std::lround(scale * 3.0f));
+            box_blur(m, w, h, r2);
+            box_blur(m2, w, h, r2);
+            box_blur(mk, w, h, r2);
+            for (size_t i = 0; i < n; i++) {
+                const float a = m[i] / std::max(mk[i], 1e-4f), b = m2[i] / std::max(mk[i], 1e-4f);
+                t.spread[i] = mk[i] > 1e-4f ? std::sqrt(std::max(0.0f, b - a * a)) : 0.0f;
+            }
+        }
+        for (size_t i = 0; i < n; i++) {
+            const float a = jxx[i] - jyy[i], b = 2.0f * jxy[i], e = jxx[i] + jyy[i];
+            const float d = std::sqrt(a * a + b * b);
+            t.coh[i] = e > 1e-7f ? d / e : 0.0f;
+            t.energy[i] = std::sqrt(std::max(e, 0.0f)) * scale;      // per game texel
+            // the gradient's doubled angle is (a, b) / d; the strand's is opposite
+            if (d > 1e-9f) { t.dir_c[i] = -a / d; t.dir_s[i] = -b / d; }
+        }
+    }
+    // classes per texel, then the majority round each
+    std::vector<float> share[NCLS];
+    for (int c = 0; c < NCLS; c++) share[c].assign(n, 0.0f);
+    for (size_t i = 0; i < n; i++) {
+        int c = CLOTH;
+        const float hh = t.hue[i], s = t.sat[i], v = t.val[i], k = t.contrast[i], gr = t.grain[i], co = t.coh[i], en = t.energy[i];
+        const bool skin_hue = hue_in(hh, st.skin_hue_lo, st.skin_hue_hi) > 0.5f;
+        const bool streaked = co > 0.5f && t.stripes[i] > 0.55f && t.density[i] > 0.45f && en > 0.03f;
+        const float sp = t.spread[i];
+        // gold: a saturated ochre (dark, as the painters shade it) or a bright yellow; silver, iron, mail: grey and shaded
+        const bool gold = st.gold && hh > 0.098f && hh < 0.16f && ((s > 0.68f && v > 0.14f) || (s > 0.52f && v > 0.55f));     // (gold before strands)
+        // (a single painted edge in grey cloth is no metal: worked metal - mail, engraving - is edges all over, bright
+        // silver is shaded and light)
+        const bool grey_metal = st.grey_metal && st.prefer != SKIN && s < 0.32f && v > 0.18f && sp > 0.045f && (t.density[i] > 0.33f || (s < 0.26f && v > 0.42f && sp > 0.05f));
+        (void)k;
+        int ruled = -1;
+        for (const Settings::Rule& r : st.rules) {
+            const bool hue_ok = r.h0 <= r.h1 ? (hh >= r.h0 && hh <= r.h1) : (hh >= r.h0 || hh <= r.h1);
+            if (hue_ok && s >= r.s0 && s <= r.s1 && v >= r.v0 && v <= r.v1) { ruled = r.cls; break; }
+        }
+        if (st.forced >= 0) c = st.forced;
+        else if (ruled >= 0) c = ruled;
+        else if (gold && s > 0.6f) c = METAL;           // (a gold trim's edges look like strands)
+        else if (streaked && skin_hue && s > 0.14f && s < st.skin_s_hi && v > st.skin_v_lo) c = SKIN;   // brows, lashes, lips painted on a face
+        else if (streaked && v > 0.08f) c = st.strands;
+        else if (gold || grey_metal) c = METAL;
+        else if (skin_hue && s > 0.14f && s < st.skin_s_hi && v > st.skin_v_lo && sp < 0.09f) c = SKIN;
+        else if (st.stone && s < 0.14f && v > 0.15f && v < 0.7f && gr > 0.02f) c = STONE;
+        else if (hh > 0.02f && hh < 0.15f && s > 0.3f && v > 0.05f && v <= 0.62f) c = LEATHER;
+        // a picture declared of one stuff (auto:<class>): what would be leather, cloth or strands is that stuff (its gold,
+        // its grey metal, its skin stay what they are)
+        if (st.prefer >= 0 && st.forced < 0 && ruled < 0 && (c == LEATHER || c == CLOTH || c == HAIR || c == FUR) && v > 0.1f) c = st.prefer;
+        share[c][i] = 1.0f;
+    }
+    t.cls.assign(n, 0);
+    for (int c = 0; c < NCLS; c++) { box_blur(share[c], w, h, std::max(1, (int)std::lround(scale * 1.5f))); t.share[c] = 0; }
+    for (size_t i = 0; i < n; i++) {
+        int best = 0;
+        for (int c = 1; c < NCLS; c++) if (share[c][i] > share[best][i]) best = c;
+        t.cls[i] = (uint8_t)best;
+        t.share[best] += 1.0 / (double)n;
+    }
+}
+
+// the maps of the analysed texels: normal (rgb), ORM (r cavity, g roughness, b metal, a fur), and AUX (r skin, g hair,
+// b/a the strand's doubled angle in the picture, cos and sin * 0.5 + 0.5), each w*h*4 bytes (normal: rgb + 255)
+inline void maps(const Texels& t, float strength, float scale, float metal_amt, float rough_mul, uint8_t* np, uint8_t* op, uint8_t* ap) {
+    const int w = t.w, h = t.h;
+    const float bump = strength * scale;
+    //                                        skin   leather metal  cloth  hair   fur    stone
+    static const float CLS_ROUGH[NCLS] =     {0.48f, 0.58f,  0.26f, 0.88f, 0.55f, 0.78f, 0.92f};
+    static const float CLS_BUMP[NCLS] =      {0.35f, 0.9f,   0.6f,  1.0f,  0.5f,  0.8f,  1.25f};
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            auto H = [&](int xx, int yy) { return t.height[std::clamp(yy, 0, h - 1) * w + std::clamp(xx, 0, w - 1)]; };
+            const float gx = (H(x + 1, y - 1) + 2 * H(x + 1, y) + H(x + 1, y + 1) - H(x - 1, y - 1) - 2 * H(x - 1, y) - H(x - 1, y + 1)) / 8.0f;
+            const float gy = (H(x - 1, y + 1) + 2 * H(x, y + 1) + H(x + 1, y + 1) - H(x - 1, y - 1) - 2 * H(x, y - 1) - H(x + 1, y - 1)) / 8.0f;
+            const size_t i = (size_t)y * w + x;
+            const int c = t.cls[i];
+            const float b = bump * CLS_BUMP[c];
+            float nx = -gx * b, ny = gy * b, nz = 1.0f;     // +v is down the picture: up (green) is -v, so the slope along up is -gy
+            const float nl = std::sqrt(nx * nx + ny * ny + nz * nz);
+            nx /= nl; ny /= nl; nz /= nl;
+            np[i * 4] = (uint8_t)std::clamp((int)std::lround((nx * 0.5f + 0.5f) * 255.0f), 0, 255);
+            np[i * 4 + 1] = (uint8_t)std::clamp((int)std::lround((ny * 0.5f + 0.5f) * 255.0f), 0, 255);
+            np[i * 4 + 2] = (uint8_t)std::clamp((int)std::lround((nz * 0.5f + 0.5f) * 255.0f), 0, 255);
+            np[i * 4 + 3] = 255;
+            // a cavity where the relief is below its surroundings (stone deeper); roughness by class, worn spots rougher
+            const float cav_k = c == STONE ? 4.5f : (c == SKIN ? 1.5f : 3.0f);
+            const float cav = std::clamp(1.0f - std::max(0.0f, t.broad[i] * 0.25f - t.height[i]) * cav_k, 0.5f, 1.0f);
+            float rough = CLS_ROUGH[c] + (0.5f - t.lb[i]) * 0.1f + t.contrast[i] * 0.35f;
+            if (c == METAL) rough = CLS_ROUGH[c] + (1.0f - t.val[i]) * 0.3f + t.grain[i] * 1.5f;   // polished where bright
+            if (c == SKIN) rough = CLS_ROUGH[c] + t.grain[i] * 0.8f;
+            rough = std::clamp(rough * rough_mul, 0.1f, 1.0f);
+            const float metal = c == METAL ? metal_amt * std::clamp(0.55f + t.val[i] * 0.55f, 0.0f, 1.0f) : 0.0f;
+            op[i * 4] = (uint8_t)std::lround(cav * 255.0f);
+            op[i * 4 + 1] = (uint8_t)std::lround(rough * 255.0f);
+            op[i * 4 + 2] = (uint8_t)std::lround(std::clamp(metal, 0.0f, 1.0f) * 255.0f);
+            op[i * 4 + 3] = c == FUR ? 255 : 0;
+            ap[i * 4] = c == SKIN ? 255 : 0;
+            ap[i * 4 + 1] = c == HAIR ? 255 : 0;
+            ap[i * 4 + 2] = (uint8_t)std::clamp((int)std::lround((t.dir_c[i] * 0.5f + 0.5f) * 255.0f), 0, 255);
+            ap[i * 4 + 3] = (uint8_t)std::clamp((int)std::lround((t.dir_s[i] * 0.5f + 0.5f) * 255.0f), 0, 255);
+        }
+}
+
+// a picture of the classes (for looking at them): one colour a class
+inline void class_picture(const Texels& t, uint8_t* out /* w*h*3 */) {
+    static const uint8_t C[NCLS][3] = {{240, 170, 140}, {130, 80, 40}, {80, 200, 255}, {120, 120, 120}, {250, 230, 60}, {230, 120, 20}, {170, 170, 200}};
+    for (size_t i = 0; i < (size_t)t.w * t.h; i++) for (int k = 0; k < 3; k++) out[i * 3 + k] = C[t.cls[i]][k];
+}
+
+}  // namespace rmt
+// RM_TEXELS_END
 
 Dictionary RtaRemaster::derive_maps(const Ref<Image>& albedo, const Dictionary& options) const {
     Dictionary d;
@@ -741,126 +1350,55 @@ Dictionary RtaRemaster::derive_maps(const Ref<Image>& albedo, const Dictionary& 
     const int w = img->get_width(), h = img->get_height();
     if (w < 2 || h < 2) return d;
     const PackedByteArray px = img->get_data();
-    const uint8_t* src = px.ptr();
-    const float strength = (float)(double)options.get("strength", 1.6);
-    const float scale = std::max(1.0f, (float)(double)options.get("scale", 1.0));
+    rmt::Settings st;
+    st.scale = std::max(1.0f, (float)(double)options.get("scale", 1.0));
     const String force = options.get("class", "");
-    const float metal_amt = (float)(double)options.get("metal", 0.85);
-    const float rough_mul = (float)(double)options.get("rough", 1.0);
+    for (int c = 0; c < rmt::NCLS; c++) if (force == String(rmt::NAMES[c])) st.forced = c;
+    st.strands = String(options.get("strands", "hair")) == "fur" ? rmt::FUR : rmt::HAIR;
+    st.stone = (bool)options.get("stone", false);
+    st.grey_metal = (bool)options.get("grey_metal", true);
+    st.gold = (bool)options.get("gold", true);
+    st.skin_hue_lo = (float)(double)options.get("skin_hue_lo", -0.03);
+    st.skin_hue_hi = (float)(double)options.get("skin_hue_hi", 0.105);
+    st.skin_v_lo = (float)(double)options.get("skin_v_lo", 0.42);
+    st.skin_s_hi = (float)(double)options.get("skin_s_hi", 0.7);
+    // rules: ["fur 0.08 0.16 0.15 0.45 0.4 0.95", ...] (class, hue from-to, saturation from-to, value from-to)
+    const Array rules = options.get("rules", Array());
+    for (int64_t k = 0; k < rules.size(); k++) {
+        const PackedStringArray w = String(rules[k]).split(" ", false);
+        if (w.size() < 7) continue;
+        rmt::Settings::Rule r{-1, (float)w[1].to_float(), (float)w[2].to_float(), (float)w[3].to_float(), (float)w[4].to_float(), (float)w[5].to_float(), (float)w[6].to_float()};
+        for (int c = 0; c < rmt::NCLS; c++) if (w[0] == String(rmt::NAMES[c])) r.cls = c;
+        if (r.cls >= 0) st.rules.push_back(r);
+    }
+    const String prefer = options.get("prefer", "");
+    for (int c = 0; c < rmt::NCLS; c++) if (prefer == String(rmt::NAMES[c])) st.prefer = c;
+    rmt::Texels t;
+    rmt::analyse(px.ptr(), w, h, st, t);
     const size_t n = (size_t)w * h;
-    std::vector<float> lum(n), hue(n), sat(n), val(n);
-    for (size_t i = 0; i < n; i++) {
-        const float r = src[i * 4] / 255.0f, g = src[i * 4 + 1] / 255.0f, b = src[i * 4 + 2] / 255.0f;
-        lum[i] = 0.299f * r + 0.587f * g + 0.114f * b;
-        const float mx = std::max(r, std::max(g, b)), mn = std::min(r, std::min(g, b)), c = mx - mn;
-        val[i] = mx;
-        sat[i] = mx > 1e-4f ? c / mx : 0.0f;
-        float hh = 0.0f;
-        if (c > 1e-4f) {
-            if (mx == r) hh = std::fmod((g - b) / c + 6.0f, 6.0f);
-            else if (mx == g) hh = (b - r) / c + 2.0f;
-            else hh = (r - g) / c + 4.0f;
-        }
-        hue[i] = hh / 6.0f;
-    }
-    // edge-aware: a bilateral filter of the luminance (a painted edge stays, the noise of the upscale goes)
-    const int R = std::max(1, (int)std::lround(scale * 0.6f));
-    std::vector<float> lb(n);
-    {
-        const float ss = 2.0f * (R * 0.75f) * (R * 0.75f), sr = 2.0f * 0.1f * 0.1f;
-        for (int y = 0; y < h; y++)
-            for (int x = 0; x < w; x++) {
-                const float c = lum[y * w + x];
-                float s = 0, ws = 0;
-                for (int dy = -R; dy <= R; dy++) {
-                    const int yy = std::clamp(y + dy, 0, h - 1);
-                    for (int dx = -R; dx <= R; dx++) {
-                        const int xx = std::clamp(x + dx, 0, w - 1);
-                        const float v = lum[yy * w + xx], dv = v - c;
-                        const float k = std::exp(-(dx * dx + dy * dy) / ss - dv * dv / sr);
-                        s += v * k;
-                        ws += k;
-                    }
-                }
-                lb[y * w + x] = s / ws;
-            }
-    }
-    // the broad shading painted into the texture taken off: what is left is the relief
-    std::vector<float> broad = lb;
-    box_blur(broad, w, h, std::max(2, (int)std::lround(scale * 3.0f)));
-    std::vector<float> height(n);
-    for (size_t i = 0; i < n; i++) height[i] = lb[i] - 0.75f * broad[i];
-    // local contrast (metal: worn, bright edges; cloth: even)
-    std::vector<float> contrast(n);
-    {
-        std::vector<float> m = lum;
-        box_blur(m, w, h, std::max(1, (int)std::lround(scale)));
-        for (size_t i = 0; i < n; i++) contrast[i] = std::fabs(lum[i] - m[i]);
-        box_blur(contrast, w, h, std::max(1, (int)std::lround(scale * 1.5f)));
-    }
-    // classes per texel, then the majority round each
-    int forced = -1;
-    for (int c = 0; c < 4; c++) if (force == String(CLS_NAMES[c])) forced = c;
-    std::vector<float> share[4];
-    for (int c = 0; c < 4; c++) share[c].assign(n, 0.0f);
-    for (size_t i = 0; i < n; i++) {
-        int c = CLOTH;
-        const float hh = hue[i], s = sat[i], v = val[i], k = contrast[i];
-        const bool warm = hh < 0.115f || hh > 0.97f;
-        if (forced >= 0) c = forced;
-        else if ((s < 0.17f && v > 0.38f && k > 0.035f) || (hh > 0.105f && hh < 0.17f && s > 0.5f && v > 0.62f && k > 0.04f)) c = METAL;
-        else if (warm && s > 0.16f && s < 0.62f && v > 0.34f) c = SKIN;
-        else if (hh > 0.02f && hh < 0.15f && s > 0.3f && v > 0.06f && v <= 0.42f) c = LEATHER;
-        share[c][i] = 1.0f;
-    }
-    double counts[4] = {0, 0, 0, 0};
-    std::vector<uint8_t> cls(n);
-    for (int c = 0; c < 4; c++) box_blur(share[c], w, h, std::max(1, (int)std::lround(scale)));
-    for (size_t i = 0; i < n; i++) {
-        int best = 0;
-        for (int c = 1; c < 4; c++) if (share[c][i] > share[best][i]) best = c;
-        cls[i] = (uint8_t)best;
-        counts[best] += 1;
-    }
-    // normal map from the height (Sobel); green up the picture (-v)
-    PackedByteArray nb, ob;
-    nb.resize(n * 3);
-    ob.resize(n * 3);
-    uint8_t* np = nb.ptrw();
-    uint8_t* op = ob.ptrw();
-    const float bump = strength * scale;
-    static const float CLS_ROUGH[4] = {0.55f, 0.62f, 0.34f, 0.86f};
-    static const float CLS_BUMP[4] = {0.45f, 0.9f, 0.7f, 1.0f};
-    for (int y = 0; y < h; y++)
-        for (int x = 0; x < w; x++) {
-            auto H = [&](int xx, int yy) { return height[std::clamp(yy, 0, h - 1) * w + std::clamp(xx, 0, w - 1)]; };
-            const float gx = (H(x + 1, y - 1) + 2 * H(x + 1, y) + H(x + 1, y + 1) - H(x - 1, y - 1) - 2 * H(x - 1, y) - H(x - 1, y + 1)) / 8.0f;
-            const float gy = (H(x - 1, y + 1) + 2 * H(x, y + 1) + H(x + 1, y + 1) - H(x - 1, y - 1) - 2 * H(x, y - 1) - H(x + 1, y - 1)) / 8.0f;
-            const size_t i = (size_t)y * w + x;
-            const float b = bump * CLS_BUMP[cls[i]];
-            Vector3 nv(-gx * b, gy * b, 1.0f);      // +v is down the picture: up (green) is -v, so the slope along up is -gy
-            nv.normalize();
-            np[i * 3] = (uint8_t)std::clamp((int)std::lround((nv.x * 0.5f + 0.5f) * 255.0f), 0, 255);
-            np[i * 3 + 1] = (uint8_t)std::clamp((int)std::lround((nv.y * 0.5f + 0.5f) * 255.0f), 0, 255);
-            np[i * 3 + 2] = (uint8_t)std::clamp((int)std::lround((nv.z * 0.5f + 0.5f) * 255.0f), 0, 255);
-            // ORM: a cavity where the relief is below its surroundings; roughness by class (worn spots rougher); metal
-            const float cav = std::clamp(1.0f - std::max(0.0f, broad[i] * 0.25f - height[i]) * 3.0f, 0.55f, 1.0f);
-            float rough = CLS_ROUGH[cls[i]] + (0.5f - lb[i]) * 0.12f + contrast[i] * 0.4f;
-            if (cls[i] == METAL) rough += (1.0f - val[i]) * 0.25f;
-            rough = std::clamp(rough * rough_mul, 0.12f, 1.0f);
-            const float metal = cls[i] == METAL ? metal_amt * std::clamp(0.5f + val[i] * 0.6f, 0.0f, 1.0f) : 0.0f;
-            op[i * 3] = (uint8_t)std::lround(cav * 255.0f);
-            op[i * 3 + 1] = (uint8_t)std::lround(rough * 255.0f);
-            op[i * 3 + 2] = (uint8_t)std::lround(std::clamp(metal, 0.0f, 1.0f) * 255.0f);
-        }
-    Ref<Image> ni = Image::create_from_data(w, h, false, Image::FORMAT_RGB8, nb);
-    Ref<Image> oi = Image::create_from_data(w, h, false, Image::FORMAT_RGB8, ob);
+    PackedByteArray nb, ob, ab;
+    nb.resize(n * 4);
+    ob.resize(n * 4);
+    ab.resize(n * 4);
+    rmt::maps(t, (float)(double)options.get("strength", 1.6), st.scale, (float)(double)options.get("metal", 0.85), (float)(double)options.get("rough", 1.0),
+              nb.ptrw(), ob.ptrw(), ab.ptrw());
+    Ref<Image> ni = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, nb);
+    Ref<Image> oi = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, ob);
+    Ref<Image> ai = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, ab);
     ni->generate_mipmaps();
     oi->generate_mipmaps();
+    ai->generate_mipmaps();
     d["normal"] = ni;
     d["orm"] = oi;
+    d["aux"] = ai;
+    if ((bool)options.get("class_picture", false)) {
+        PackedByteArray cb;
+        cb.resize(n * 3);
+        rmt::class_picture(t, cb.ptrw());
+        d["class_picture"] = Image::create_from_data(w, h, false, Image::FORMAT_RGB8, cb);
+    }
     Dictionary shares;
-    for (int c = 0; c < 4; c++) shares[CLS_NAMES[c]] = counts[c] / (double)n;
+    for (int c = 0; c < rmt::NCLS; c++) if (t.share[c] > 0.0) shares[rmt::NAMES[c]] = std::round(t.share[c] * 1000.0) / 1000.0;
     d["classes"] = shares;
     return d;
 }
@@ -874,5 +1412,6 @@ void RtaRemaster::_bind_methods() {
     ClassDB::bind_method(D_METHOD("pose", "machine", "skeleton", "rid"), &RtaRemaster::pose);
     ClassDB::bind_method(D_METHOD("tween", "rid", "t"), &RtaRemaster::tween);
     ClassDB::bind_method(D_METHOD("forget", "rid"), &RtaRemaster::forget);
+    ClassDB::bind_method(D_METHOD("light_sh", "machine", "pieces"), &RtaRemaster::light_sh);
     ClassDB::bind_method(D_METHOD("derive_maps", "albedo", "options"), &RtaRemaster::derive_maps);
 }

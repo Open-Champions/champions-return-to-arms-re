@@ -130,7 +130,7 @@ struct RtaDrawer::Scene {
     std::unordered_map<uint32_t, float> hidden_orders;      // this frame: per object left out, the place of its first draw
     // this frame: per skinned figure packet (rtag_scene::pieces index), the texture and its state it is drawn with
     // (get_piece_textures: model_remaster.gd draws the remastered figure with the game's own, art-pack, texture)
-    struct PieceTex { RID texture; float size[2], offset[2], st[2]; float cut; int alpha_from; float ta0; bool blend; };
+    struct PieceTex { RID texture; float size[2], offset[2], st[2]; float cut; int alpha_from; float ta0; bool blend; int abcd[4]; int fix; };
     std::unordered_map<uint32_t, PieceTex> piece_tex;
     // Meshes kept between frames: a draw whose packets are, byte for byte, those of a mesh made before (the level's chunks
     // where nothing moved and no light changed: most of a frame) takes that mesh instead of being built and sent again.
@@ -704,6 +704,8 @@ Dictionary RtaDrawer::get_piece_textures() const {
         a.push_back(t.alpha_from);
         a.push_back(t.ta0);
         a.push_back(t.blend);
+        a.push_back(Vector4i(t.abcd[0], t.abcd[1], t.abcd[2], t.abcd[3]));     // the GS blend: (A - B) * C + D
+        a.push_back(t.fix);
         out[(int64_t)e.first] = a;
     }
     return out;
@@ -848,7 +850,8 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     if (d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count && d.texture && !d.tex_is_target) {
         for (uint32_t k = 0; k < d.scene_piece_count; k++) {
             const rtag_scene_piece& pc = sc.tap->pieces[d.scene_piece_first + k];
-            if (pc.kind != 2 || !(pc.flags & 4) || (pc.flags & 2)) continue;
+            // (the first pass of a two-pass packet too: a face's own colour is in it, the second blended over it)
+            if (pc.kind != 2 || !(pc.flags & 4)) continue;
             Scene::PieceTex& t = sc.piece_tex[d.scene_piece_first + k];
             t.texture = texture;
             t.size[0] = d.tex_size[0]; t.size[1] = d.tex_size[1];
@@ -858,6 +861,8 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
             t.alpha_from = !d.tcc ? 2 : (d.texa_mode == 1 ? 1 : 0);
             t.ta0 = d.ta0 / 128.0f;
             t.blend = d.blend != 0;
+            t.abcd[0] = d.ba; t.abcd[1] = d.bb; t.abcd[2] = d.bc; t.abcd[3] = d.bd;
+            t.fix = d.fix;
         }
     }
     if ((!sc.hidden.empty() || !sc.hidden_skinned.empty()) && d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count) {

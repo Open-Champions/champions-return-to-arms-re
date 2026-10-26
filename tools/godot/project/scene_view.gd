@@ -918,6 +918,8 @@ func command(w: PackedStringArray) -> void:
 			if file != null:
 				file.store_string(str(drawer.call("describe_frame", w[2].to_int())))
 				file.close()
+	elif w[0] == "remaster" and remaster != null:
+		remaster.call("command", w)
 	elif w[0] == "er" and w.size() >= 2 and w[1] == "world" and world_layer != null:
 		world_layer.call("command", w)
 	elif w[0] == "er" and er != null:

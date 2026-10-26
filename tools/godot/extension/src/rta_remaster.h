@@ -31,6 +31,7 @@
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/packed_int32_array.hpp>
+#include <godot_cpp/variant/packed_vector4_array.hpp>
 #include <godot_cpp/variant/rid.hpp>
 #include <godot_cpp/variant/string.hpp>
 
@@ -68,6 +69,9 @@ class RtaRemaster : public RefCounted {
     // between two game frames (RtaDrawer.redraw): T game frames past the last pose (T < 0: between the last two)
     void tween(const RID& rid, double t);
     void forget(const RID& rid);
+    // The game's own light on a figure this frame (its vertex program's colours against its normals), as nine spherical
+    // harmonic coefficients (rgb in x y z; 1.0 = the game's 128); [] when too few corners
+    PackedVector4Array light_sh(const Ref<RtaMachine>& machine, const PackedInt32Array& pieces);
     // An albedo's normal and ORM maps (above).  options: strength (bump), scale (picture pixels per game texel),
     // class ("" / auto | skin | cloth | leather | metal: every texel that class), metal (0..1), rough (multiplier)
     Dictionary derive_maps(const Ref<Image>& albedo, const Dictionary& options) const;
@@ -81,6 +85,7 @@ class RtaRemaster : public RefCounted {
     std::vector<std::thread> threads;
     struct Pose { int n = 0; std::vector<float> before, now; };
     std::unordered_map<uint64_t, Pose> poses;
+    std::unordered_map<uint64_t, String> hex_cache;     // a packet's key as text, made once
 };
 
 }  // namespace godot
