@@ -1,0 +1,30 @@
+{
+ "note": "Meshy text-to-3D plan within 100 credits: armour meshy-7.1 preview 20 + refine 10 + rig 5; props meshy-6-lite preview 5 + refine 10 each.",
+ "assets": {
+  "armour": {
+   "preview": {"ai_model": "meshy-7.1", "pose_mode": "t-pose", "should_remesh": true, "topology": "triangle", "target_polycount": 30000,
+    "prompt": "A complete suit of dark-fantasy weathered knight armour worn on a plain smooth featureless grey mannequin, full body, standing in a T-pose, facing forward: dented blackened steel breastplate, layered pauldrons, tattered dark cloth half-cape, articulated gauntlets, greaves and sabatons, worn leather straps. No helmet, no weapon, no shield, no base. Game-ready character asset, clean topology."},
+   "refine": {"enable_pbr": true, "texture_resolution": "2k",
+    "texture_prompt": "Blackened weathered steel plates with worn bright edges, scratches and light rust, dark brown leather straps, faded charcoal cloth cape, smooth matte grey mannequin. Even neutral lighting, no baked shadows."},
+   "rig": {"height_meters": 1.8}
+  },
+  "sword": {
+   "preview": {"ai_model": "meshy-6-lite", "should_remesh": true, "target_polycount": 6000,
+    "prompt": "A dark-fantasy weathered knight's longsword, straight double-edged steel blade with small nicks, simple iron crossguard, leather-wrapped grip, round pommel, standing upright point down. Single prop, no scabbard, no stand, no hand. Game-ready, clean topology."},
+   "refine": {"enable_pbr": true, "texture_resolution": "2k",
+    "texture_prompt": "Worn grey steel blade with scratches and faint rust, dark iron crossguard and pommel, brown wrapped leather grip. No baked shadows."}
+  },
+  "arch": {
+   "preview": {"ai_model": "meshy-6-lite", "should_remesh": true, "target_polycount": 15000,
+    "prompt": "A ruined dark-fantasy stone archway, weathered cracked grey stone blocks, one side partly collapsed with fallen blocks, free-standing, no ground plane. Game-ready environment prop, clean topology."},
+   "refine": {"enable_pbr": true, "texture_resolution": "2k",
+    "texture_prompt": "Weathered cracked grey limestone blocks, dark grime in the joints, patches of green moss. Even neutral lighting, no baked shadows."}
+  },
+  "brazier": {
+   "preview": {"ai_model": "meshy-6-lite", "should_remesh": true, "target_polycount": 8000,
+    "prompt": "A dark-fantasy wrought-iron brazier standing on three clawed legs, a wide rusted iron bowl filled with cold black charcoal, weathered. No fire, no flames, no base. Game-ready prop, clean topology."},
+   "refine": {"enable_pbr": true, "texture_resolution": "2k",
+    "texture_prompt": "Dark rusted wrought iron with worn edges, black and grey cold charcoal. No fire, no glow, no baked shadows."}
+  }
+ }
+}
