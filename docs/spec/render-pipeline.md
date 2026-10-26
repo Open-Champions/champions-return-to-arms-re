@@ -549,6 +549,20 @@ Texture binding. `gfx_dmaHandler` patches each packet's `TEX0` just before it is
 base and palette pointers from the texture cache, everything else (size, format, the
 texture function and the RGBA bit) from the texture header. No mip maps anywhere. O
 
+**Native uniform-palette fallback (Ran on Windows).** The recorded Torment
+(`torment0` / `tormenta`) draws include 1x1 PSMT8 textures whose index image is
+absent from the native upload cache. Their complete 256-entry CT32 palette is
+uniform RGBA `0x8000ffff`, so every possible index gives the same texel. HIGHLIGHT2
+with TCC keeps its alpha 128; `TEST` LESS 127 then rejects both colour and depth
+writes. Treating the missing image as untextured instead uses vertex alpha 0
+and wrongly passes that test. `Gs::texture_for` therefore supplies a constant
+1x1 texture only after a complete 16x16 CT32/BW1 palette upload and a matching
+CLD2 `TEX0` load (CSM1, CSA0, CPSM32). Overlapping writes or unsupported loads
+revoke that proof. This does not provide general retained GS video memory.
+The authored `tools/recomp/render/tests/uniform_palette_gif_test.cpp` exercises
+the load, alpha-state and invalidation rules; the bounded scene evidence is in
+[Windows PC qualification](../issues/windows-pc-qualification.md).
+
 **Filtering.** `TEX1_1` is not written by the level or model drawers. The present pass
 ends each frame with `TEX1_1 = 0x61` (bilinear), and that is what layer 0 inherits; the
 2D drawers set 1 (point sampling) and do not restore it, so a model drawn in a UI layer

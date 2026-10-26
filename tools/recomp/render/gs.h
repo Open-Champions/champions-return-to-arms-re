@@ -36,7 +36,7 @@ struct GsStats {
     uint64_t copies = 0, unknown_regs = 0;
     double kick_ms = 0, path3_ms = 0;   // processor time inside xgkick() and gif(2, ...), when Gs::time_paths is set
     uint64_t textures_freed = 0, textures_held = 0, texture_bytes = 0;      // held: now; bytes: RGBA bytes of the held ones
-    uint64_t copies_skipped = 0;        // local-to-local transfers that were not a copy from a surface
+    uint64_t copies_skipped = 0;        // nonempty local-to-local transfers that were not a copy from a surface
     uint64_t surface_uploads = 0;       // rectangles sent straight into a displayed buffer
     uint64_t fogged = 0;                // primitives drawn with fogging
     uint64_t targets_held = 0, targets_freed = 0;
@@ -172,10 +172,22 @@ class Gs {
     bool display_size(uint32_t fbp, int& width, int& height) const;
     uint32_t next_target = 1;
     Target& target_at(uint32_t fbp, int width, int height);
+    Target& target_at(uint32_t fbp, int width, int height, int buffer_width);
     // ---- transfers and textures ----
     struct Rect { uint32_t psm, bw; int x, y, w, h; size_t offset, bytes; uint32_t bw_raw; };
     struct UploadSet { std::vector<Rect> rects; std::vector<uint8_t> data; uint64_t hash = 0, serial = 0; bool used = false; };
     std::map<uint32_t, UploadSet> sets;                 // by destination base pointer
+    // Eligibility is separate from normal upload/cache state.
+    std::unordered_map<uint32_t, uint64_t> uniform_palette_eligible;
+    std::unordered_map<uint32_t, uint32_t> uniform_texture_palettes;
+    uint32_t uniform_clut_cbp = 0x4000;
+    uint64_t uniform_clut_serial = 0;
+    void note_uniform_clut_load(uint32_t address, uint64_t value);
+    uint64_t uniform_renewals = 0, uniform_invalidated[4] = {0, 0, 0, 0};
+    void invalidate_uniform_palette(uint32_t cbp, unsigned reason);
+    void invalidate_uniform_palette_blocks(uint32_t base, const std::vector<uint32_t>& blocks, unsigned reason);
+    void invalidate_uniform_palette_pages(uint32_t base, uint32_t bw, uint32_t psm, int x, int y, int w, int h, unsigned reason);
+
     uint8_t set_at[0x4000] = {0};                       // 1 where `sets` has an entry (start_transfer asks it block by block)
     std::map<std::pair<uint64_t, uint64_t>, std::vector<uint32_t>> written_blocks;     // start_transfer: the blocks a kind of rectangle writes, sorted
     uint64_t serial = 1;

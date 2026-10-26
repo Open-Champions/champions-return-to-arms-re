@@ -6,7 +6,18 @@ ticks compared, and what happens afterwards.  The proof runs of docs/issues/nati
   export RTA_DISC="/path/to/your/disc image.iso"
   python3 -B tools/recomp/net2/n2party.py OUT --players 3 [--launches K] [--play FRAMES]
           [--level NAME --play2 FRAMES] [--scenario plain|drop|hostquit|again] [--relay force|never|mixed]
-          [--service-address 127.0.0.1|<this computer's LAN address>] [--external] [--tls] [--program PATH] [--limit NAME=VALUE]...
+          [--service-address 127.0.0.1|<this computer's LAN address>] [--external] [--tls] [--program PATH]
+          [--kind native|window] [--offscreen] [--limit SECONDS]
+
+Windows loopback (PowerShell; RTA_DISC names your own disc; OUT is private test storage):
+  python -B tools/recomp/net2/n2party.py OUT --players 2 --kind window --offscreen `
+    --program local/recomp-out/win/rta-windows/rta_app.exe --play 600 --limit 120
+Add --relay force for a separate trial through the local service's relay. Both copies use
+fresh individual cards under OUT on a first run; use a new OUT for an independent trial.
+The default service and carrier bind to 127.0.0.1. This tests the native rendezvous/direct
+launch adapter (launch.cpp sets the network tables and calls the game's launch routines),
+then ordinary character-menu and gamepad inputs. It does not test the original lobby.
+Omit --level and --tick-do for a trial without gameplay-memory setup writes.
 
 Starts a rendezvous service of its own (tools/rendezvous/rendezvous.py, on 127.0.0.1 and,
 with --service-address, on this computer's LAN address; nothing else) - or, with --external,
@@ -35,13 +46,16 @@ it); the copies reach it as tls://localhost:PORT and trust that authority only
 Compared: every pair of tick logs (tools/rig/compare.py ticks: seed, level, player count,
 button maps, every player's position, state, hit points, gold, experience, out-of-step
 flags, own sync hash), game by game.  One result line per launch goes to OUT/results.txt.
-Exit code 0: every launch had every copy in the level and no column differing.
+Exit code 0: every requested game launched, every script completed successfully (except
+the deliberately killed copy in a drop scenario), every peer recorded all requested games,
+and every compared pair had positive confirmed-frame coverage with no shared column differing.
 """
 import argparse
 import glob
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -58,8 +72,65 @@ STATUS = ('show g_netFrame:s32 g_numPlayers:s32 g_levelName:str12 g_inFrontend:u
           + ' '.join('%s+0x44d5:u8 %s+0x44d7:u8' % (('g_peers+%d' % (i * 0x44E0),) * 2) for i in range(4)))
 
 
-def own_address():
-    return subprocess.run(['ipconfig', 'getifaddr', 'en0'], capture_output=True, text=True).stdout.strip()
+def own_addresses():
+    """Local IPv4 addresses only; never substitute a public service address."""
+    found = set()
+    try:
+        found.update(row[4][0] for row in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET, socket.SOCK_DGRAM))
+    except OSError:
+        pass
+    if os.name != 'nt':
+        try:
+            address = subprocess.run(['ipconfig', 'getifaddr', 'en0'], capture_output=True, text=True).stdout.strip()
+            if address:
+                found.add(address)
+        except OSError:
+            pass
+    return found
+
+
+def child_options():
+    if os.name == 'nt':
+        return {'creationflags': subprocess.CREATE_NO_WINDOW}
+    return {'preexec_fn': lambda: os.nice(10)}
+
+
+def stop_service(service):
+    if service.poll() is None:
+        if os.name == 'nt':
+            service.terminate()
+        else:
+            service.send_signal(2)
+    try:
+        service.wait(5)
+    except subprocess.TimeoutExpired:
+        service.kill()
+        service.wait()
+
+
+def load_average():
+    try:
+        return '%.0f' % os.getloadavg()[0]
+    except (AttributeError, OSError):
+        return 'unavailable'
+
+
+def comparison_result(output, returncode):
+    found = re.search(r'compared (\d+)', output)
+    count = int(found.group(1)) if found else 0
+    return count, returncode == 0 and count > 0 and 'no shared column differs' in output
+
+
+def copies_finished(roles, done, codes, victim=None, killed=False, ready=False):
+    """Drop scenarios expect one deliberate kill; every other copy must finish normally."""
+    if not all(done.get(r, False) and codes.get(r) == 0 for r in roles if r != victim):
+        return False
+    return victim is None or (killed and ready and codes.get(victim) not in (None, 0))
+
+
+
+def have_expected_games(games, wanted):
+    return wanted > 0 and bool(games) and all(len(paths) >= wanted for paths in games.values())
 
 
 def character_lines():
@@ -136,7 +207,7 @@ def start_service(out, args):
         command += ['--tls-cert', args.pki['localhost'], '--tls-key', args.pki['localhost.key']]
     for item in args.limit_service:
         command += ['--limit', item]
-    process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, preexec_fn=lambda: os.nice(10))
+    process = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, **child_options())
     time.sleep(1.0)
     if process.poll() is not None:
         raise SystemExit('the service did not start: see %s' % os.path.join(out, 'service.log'))
@@ -155,9 +226,21 @@ def start_copy(role, index, out, run, room, n, args):
     symbols = []
     for path in [os.path.join(ROOT, 'names.tsv')] + sorted(glob.glob(os.path.join(ROOT, 'symbols', '*.tsv'))):
         symbols += ['--sym', path]
-    program = args.program or os.environ.get('RTA_NATIVE_NET2', os.path.join(ROOT, 'local', 'recomp-net2', 'bin', 'n2_headless'))
-    command = [program, 'boot', '--elf', os.path.join(ROOT, 'SLUS_209.73'), '--disc', os.environ['RTA_DISC'],
-               '--card', os.path.join(directory, 'card')] + symbols + ['--script', script]
+    if args.kind == 'window':
+        default = os.path.join(ROOT, 'local', 'recomp-out', 'win', 'rta-windows', 'rta_app.exe') if os.name == 'nt' else os.path.join(ROOT, 'local', 'recomp-out', 'bin', 'rta_app')
+        program = args.program or os.environ.get('RTA_NATIVE_APP', default)
+        command = [program, '--test', 'native rendezvous', '--window', '320x240', '--disc', os.environ['RTA_DISC'],
+                   '--elf', os.path.join(ROOT, 'SLUS_209.73'), '--data', directory, '--no-settings', '--no-sound',
+                   '--unpaced', '--script', script]
+        if os.name == 'nt':
+            command += ['--no-log']
+        if args.offscreen:
+            command += ['--offscreen']
+        command += ['--'] + symbols
+    else:
+        program = args.program or os.environ.get('RTA_NATIVE_NET2', os.path.join(ROOT, 'local', 'recomp-net2', 'bin', 'n2_headless'))
+        command = [program, 'boot', '--elf', os.path.join(ROOT, 'SLUS_209.73'), '--disc', os.environ['RTA_DISC'],
+                   '--card', os.path.join(directory, 'card')] + symbols + ['--script', script]
     relay = args.relay if args.relay in ('force', 'never') else ('force' if args.relay == 'mixed' and index == n - 1 else '')
     options = {'net-data': directory, 'net-local-only': '0' if args.external else '1', 'online-person': '0', 'net-pace': str(args.pace),
                'net-log': os.path.join(run, role + '.net.log'), 'tick-log': os.path.join(run, role + '.tick.tsv'),
@@ -166,6 +249,8 @@ def start_copy(role, index, out, run, room, n, args):
                'net2-service': ('tls://localhost:%d' % args.port) if args.tls and not args.external else '%s:%d' % (args.service_address, args.port),
                'net2-name': role.capitalize() + ' of ' + os.path.basename(out)[:12], 'net2-data': directory, 'net2-players': str(n),
                'net2-log': os.path.join(run, role + '.net2.log'), 'net2-again': '1' if args.scenario == 'again' else '0'}
+    if args.service_address == '127.0.0.1' and not args.external:
+        options['net2-bind'] = '127.0.0.1:0'
     if relay:
         options['net2-relay'] = relay
     if args.level_option and role == 'host':
@@ -182,7 +267,7 @@ def start_copy(role, index, out, run, room, n, args):
     env = dict(os.environ)
     if args.tls and not args.external:
         env['RTA_NET2_TLS_CA'] = args.pki['ca']
-    return subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, preexec_fn=lambda: os.nice(10), env=env)
+    return subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, env=env, **child_options())
 
 
 def said(path, word):
@@ -221,6 +306,8 @@ def one_launch(out, number, args):
     processes, codes = {}, {}
     pids = open(os.path.join(out, 'pids'), 'a')
     room = None
+    killed = None
+    victim = {'drop': roles[-1], 'hostquit': 'host'}.get(args.scenario)
     try:
         processes['host'] = start_copy('host', 0, out, run, '', n, args)
         pids.write('%d\n' % processes['host'].pid)
@@ -233,13 +320,13 @@ def one_launch(out, number, args):
             pids.write('%d\n' % processes[role].pid)
             pids.flush()
             time.sleep(args.stagger)
-        victim = {'drop': roles[-1], 'hostquit': 'host'}.get(args.scenario)
         deadline = time.time() + args.limit + 60
         while time.time() < deadline and any(p.poll() is None for p in processes.values()):
             if victim and processes[victim].poll() is None and said(os.path.join(run, victim + '.out'), '] ready-to-be-killed') \
                     and all(said(os.path.join(run, r + '.out'), '] other-about-to-go') for r in roles if r != victim):
                 time.sleep(2.0)
                 processes[victim].kill()
+                killed = victim
                 print('killed %s (pid %d) at %.0f s' % (victim, processes[victim].pid, time.time() - started))
             time.sleep(0.5)
         for role, process in processes.items():
@@ -254,7 +341,7 @@ def one_launch(out, number, args):
         pids.close()
     texts = {r: open(os.path.join(run, r + '.out'), errors='replace').read() if os.path.exists(os.path.join(run, r + '.out')) else '' for r in roles}
     launched = {r: texts[r].count('] launched') for r in roles}
-    done = {r: '] done' in texts[r] or '] survivor-done' in texts[r] for r in roles}
+    done = {r: ('] done' in texts[r] or '] survivor-done' in texts[r]) and 'TIMEOUT' not in texts[r] for r in roles}
     for role in roles:
         whole = args.verbose or not done[role] or not launched[role]
         for line in texts[role].splitlines():
@@ -263,35 +350,37 @@ def one_launch(out, number, args):
                     or 'net2: the launch did not' in line:
                 print('  %s: %s' % (role, lobbyparty.brief(line.rstrip())[:420]))
     games = {r: lobbyparty.split_games(os.path.join(run, r + '.tick.tsv')) for r in roles}
-    ticks, same = [], True
+    wanted = args.rounds if args.scenario == 'again' else 1
+    ticks, same = [], have_expected_games(games, wanted)
     for k in range(max([len(g) for g in games.values()] or [0])):
         for i in range(n):
             for j in range(i + 1, n):
                 if k >= len(games[roles[i]]) or k >= len(games[roles[j]]):
+                    same = False
                     continue
                 result = subprocess.run([sys.executable, '-I', '-B', os.path.join(ROOT, 'tools', 'rig', 'compare.py'), 'ticks', games[roles[i]][k], games[roles[j]][k]],
-                                        capture_output=True, text=True).stdout
-                found = re.search(r'compared (\d+)', result)
-                equal = 'no shared column differs' in result
+                                        capture_output=True, text=True)
+                count, equal = comparison_result(result.stdout, result.returncode)
                 same = same and equal
-                ticks.append('%s%s/%s %s%s' % ('game %d ' % (k + 1) if len(games[roles[i]]) > 1 else '', roles[i], roles[j], found.group(1) if found else '?', '' if equal else ' DIFFER'))
+                ticks.append('%s%s/%s %s%s' % ('game %d ' % (k + 1) if len(games[roles[i]]) > 1 else '', roles[i], roles[j], count, '' if equal else ' DIFFER'))
                 if not equal:
-                    print('--- %s against %s\n%s' % (roles[i], roles[j], result[:1500]))
+                    print('--- %s against %s\n%s' % (roles[i], roles[j], result.stdout[:1500]))
     routes = []
     for role in roles:
         found = re.findall(r'carrier: .*?; (player .*?); \d+ sent \((\d+) by relay\), (\d+) received \((\d+) by relay\)', texts[role])
         if found:
             routes.append('%s[%s | relayed out %s in %s]' % (role, found[-1][0], found[-1][1], found[-1][3]))
-    wanted = args.rounds if args.scenario == 'again' else 1
-    line = '%s launch %d (%d players; %s; relay %s; service %s) room %s load %.0f %.0f s | launched %s | script done %s | ticks in step: %s | %s | routes: %s' % (
-        time.strftime('%H:%M:%S'), number, n, args.scenario, args.relay or 'auto', args.service_address, room, os.getloadavg()[0], time.time() - started,
+    line = '%s launch %d (%d players; %s; relay %s; service %s) room %s load %s %.0f s | launched %s | script done %s | ticks in step: %s | %s | routes: %s' % (
+        time.strftime('%H:%M:%S'), number, n, args.scenario, args.relay or 'auto', args.service_address, room, load_average(), time.time() - started,
         ' '.join('%s=%s' % (r, 'yes' if launched[r] >= wanted else ('%d of %d' % (launched[r], wanted) if launched[r] else 'NO')) for r in roles),
         ' '.join('%s=%s' % (r, 'yes' if done[r] else 'no(exit %s)' % codes.get(r)) for r in roles), '; '.join(ticks) or 'none',
         lobbyparty.story(os.path.join(run, 'host.tick.tsv'), n), ' '.join(routes) or '?')
     print(line)
     with open(os.path.join(out, 'results.txt'), 'a') as sink:
         sink.write(line + '\n')
-    return all(launched[r] >= wanted for r in roles) and same and bool(ticks)
+    finished = copies_finished(roles, done, codes, victim, killed == victim if victim else False,
+                               '] ready-to-be-killed' in texts[victim] if victim else False)
+    return finished and all(launched[r] >= wanted for r in roles) and same and bool(ticks)
 
 
 def main():
@@ -308,6 +397,8 @@ def main():
     parser.add_argument('--tls', action='store_true', help='the service of its own inside TLS, with certificates made for the run')
     parser.add_argument('--limit-service', action='append', default=[], metavar='NAME=VALUE', help='a limit of the service, to hit it')
     parser.add_argument('--program')
+    parser.add_argument('--kind', choices=('native', 'window'), default='native', help='native headless program (default) or the window application')
+    parser.add_argument('--offscreen', action='store_true', help='window kind: never show the test window')
     parser.add_argument('--play', type=int, default=1800)
     parser.add_argument('--level')
     parser.add_argument('--level-tick', type=int)
@@ -327,9 +418,12 @@ def main():
         raise SystemExit('name the disc image with RTA_DISC')
     if not 2 <= args.players <= 8:
         raise SystemExit('two to eight players (five to eight: copies started for rooms of up to eight, --opt party8=1)')
-    mine = own_address()
-    if not args.external and args.service_address not in ('127.0.0.1', mine):
-        raise SystemExit('the service must be on this computer (127.0.0.1 or %s), not %s' % (mine, args.service_address))
+    if args.launches <= 0 or args.rounds <= 0:
+        parser.error('--launches and --rounds must be positive')
+    if args.offscreen and args.kind != 'window':
+        parser.error('--offscreen requires --kind window')
+    if not args.external and args.service_address != '127.0.0.1' and args.service_address not in own_addresses():
+        raise SystemExit('the service must be on this computer (127.0.0.1 or a local IPv4 address), not %s' % args.service_address)
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
     if args.tls and not args.external:
@@ -345,16 +439,11 @@ def main():
         for number in range(1, args.launches + 1):
             good = one_launch(out, number, args) and good
     finally:
-        if not service:
-            return 0 if good else 1
-        service.send_signal(2)
-        try:
-            service.wait(5)
-        except subprocess.TimeoutExpired:
-            service.kill()
-            service.wait()
-        tail = open(os.path.join(out, 'service.log'), errors='replace').read().splitlines()[-1:]
-        print('service: %s' % (tail[0] if tail else '?'))
+        if service:
+            stop_service(service)
+            with open(os.path.join(out, 'service.log'), errors='replace') as source:
+                tail = source.read().splitlines()[-1:]
+            print('service: %s' % (tail[0] if tail else '?'))
     return 0 if good else 1
 
 

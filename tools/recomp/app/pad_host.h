@@ -14,6 +14,13 @@ namespace hostpad {
 // attached and detached.  `log` gets one line per change (it is called on the main thread).
 void start(void (*log)(const std::string& line));
 
+#ifdef _WIN32
+void set_window(void* hwnd);
+// The PS2 small motor is on/off; the large motor is 0..255. Synthetic pads
+// never drive hardware. Focus loss, detach and shutdown release both motors.
+void rumble(uint8_t small, uint8_t large);
+#endif
+
 // Any thread: the first attached controller as a PlayStation 2 pad.  False when none is
 // attached, or when this application is not the one in front (a real controller is only
 // listened to by the application in front; one made by test() is read wherever it is).
