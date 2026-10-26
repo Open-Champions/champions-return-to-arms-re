@@ -19,18 +19,18 @@ Evidence under `local/godot-remaster-check/` (not tracked): the build, routes, l
 | [x] | Every story level loads, in order, to an ending | **Ran**: 54 levels of the good path from `blood1` to `fearboss` and `endgood` (the order of the executable's level and mission tables; runs `c1`, `c2-1`, `c3`), each by the game's own level request; then the evil branch and the bonus and medal levels - drundar boar1 blomedal innpit innmedal wate2a wate2b wate2c watmedal watbonus tormedal torbonus swamp2 dismedal disbonus valmedal honor2 firmedal firbonus stomedal stobonus fay1 faybonus nitmedal nitbonus nitbon2 bossevil endbad (`c4`, `c5`): all 28 load; with the good path every level of the Classic check's list (`classic-complete.md`) plus `fearboss`. Three requests in the long runs brought back a level instead (`honor` -> `fire1`, `nitdung1` -> `nitdung2`, `nitbon2` -> `bossevil`); all three levels loaded and were checked in runs of their own (`c3`, `c5`). `endgood` plays its closing scene and ends on the game's own save screen, as the original does (native program the same, below); two crosses later the portal is back in front ("the session is over (frontend)", `c2-2`); `endbad` the same (`c4-2`) |
 | [x] | Hardcore combat in every level | **Ran**: in each level ten rounds of the mode's test aid (the player beside the nearest living creature), lock-on, light, heavy, dodge, block; over the long run 254 hits on creatures, 1,582 hits taken (155 dodged), 7 staggers, 3 backstabs, 6 guard counters, 392 swings cancelled by a dodge, 3 heavies interrupted, 37 flasks drunk and 23 refills at save points, 9 death drops, 4 picked up again (4,763 gold), 5,747 gold lost by dying again, 5 upgrade materials dropped |
 | [x] | Stats, spellbook, level-ups, weapons, the save point | **Ran** (`s1`, `valor`): 20,000 experience through the game's own `player_giveExp` (level 1 -> 9), the character screen opened at the save point, 5 points spent, 3 spell-slot changes, the weapon upgraded +1 with gold and materials (damage 120 -> 135 %), the save point used and a save written to the card through the game's own card screens. In the long run (`c2-1`) the same screen was refused: the player had walked away from the save point by then (by design: the mode's screen opens at save points) |
-| [~] | Spells and aimed projectiles | **Ran**, not shown: aiming by looking on all through (711 look messages sent and applied in the long run), but the character's skill presses cast no spell in the levels (spells cast 0 there; 4 in the hub), so no projectile was aimed by the look in this check. Aimed projectiles were shown before (`native-first-person-aim.md`) |
-| [x] | All five views | **Ran**: overhead, action, chase, shoulder, first person pictured in every level (`campaign/*/pictures/LEVEL-view-*.png`) |
+| [x] | Spells and aimed projectiles | **Ran** (section 10.3): in Godot with the Remastered options, first person in `valor`: an Erudite Wizard's Shock of Frost cast three times, each bolt leaving at the look's pitch exactly (+13.6, +0.4, +10.3 degrees), 3 spell hits on the boar; a Wood Elf Ranger's four arrows at +13.6, +0.4, -11.1 and +10.3 degrees, each at the look's pitch exactly; the native program the same numbers. The campaign check had cast none: its route pressed only the first skill button, which has no spell for the classes played |
+| [x] | All five views | **Ran**: overhead, action, chase, shoulder, first person pictured in every level (`campaign/*/pictures/LEVEL-view-*.png`). The black pictures in some of them: the game's own blank after a load (not the view change), and a look kept from one level to the next, now started level at every level (section 10.1, 10.2) |
 | [x] | Fitted armour, remastered models, the world layer | **Ran**: the Elden Ring outfit fitted on the player and creatures drawn as Elden Ring enemies in every level (`er info`: demi-humans, trolls, nobles, skeletons, boars, soldiers); 204 of the game's figures baked as remastered models over the long run; the world layer on in all 53 levels it was asked in |
 | [x] | Boss music | **Ran**: the director took the fight over (state playing / leaving, an Elden Ring track, the game's music at 0) in `islsm1`, `islsm3b`, `fire5`, `storm4`, `storm5`, `bossgood` (the last boss's bar up), `fearboss`, `blomedal`, `valmedal`, `honor2`, `nitbon2` and `bossevil`; back to the game's music after |
 | [x] | Cut scenes: wide framing, hold to skip | **Ran**: `blood1`'s, `dis2`'s and `bossevil`'s opening scenes: a 75-tick hold of START skipped them (scenes skipped 1, 2; taps held back); the game's letterbox left out and the scene framed by the host's bars (`blood1-cut-wide.png`); the endings' closing scenes framed the same. Sharp films: not reached in this route (the power-on films are tapped through by the boot script) |
 | [x] | Shops | **Ran**: the hub's shop through the dialogue, the Buy list, a tab, out (`c1/pictures/hub-shop-*.png`) |
-| [~] | Bosses | **Ran**: every boss level loaded with its boss (boss bar in `bossgood`, boss music above) and fought by the route; killing each boss by script was not attempted |
+| [x] | Bosses | **Ran**: every boss level loaded with its boss (boss bar in `bossgood`, boss music above) and fought by the route; the first boss of the good path, `islsm1`'s Broon (1,714 hit points), killed through the portal in Hardcore (boss music on, the kill, the music handed back) and in Godot with Hardcore off; native the same ticks (section 10.5). The other bosses were not killed one by one |
 | [ ] | 60 fps paced, 120 where possible, per level | **Not met**. At load 11-19 (`c3`, paced, 120 Hz display): game frames a second `drunare` 59.1, `valor` 57.2, `fearboss` 56.6 (walking at 119.7 pictures a second), `blood1` 55.8, `nitdung2` 53.4, `storm5` 51.8, `fire1` 37.7, `bossgood` 37.9. At load 40-450 (the long runs) 18-45 in most levels. See bug 2 |
 | [x] | No script or shader errors | **Ran**: no SCRIPT ERROR, SHADER ERROR or Parse Error in any run's output (campaign, rooms); the test window's "unknown option" warnings fixed (bug 8). A later commit (`e1d87ed`) brought one back in rooms - `model_remaster.gd` reading a figure's `name` that is not always there, 3,063 times in a two-copy room - fixed (section 8) |
 | [x] | Pictures per level | **Ran**: about 12 per level (arrival, HUD window picture, five views, end), sheets in `local/godot-remaster-check/` |
 | [x] | Remastered online, 2 copies through the portal | **Ran** (`online/r2a`): two portals, both Remastered by their cards, friends, room, Start; hub -> `drunare` -> `valor` -> `arachna1`, deaths and the reload; **6,467 ticks, no shared column differs** (the cut-scene clock column `cutf` left out: the front end's title fly-over clock, as `native-cutscenes.md` notes); copy A crashed at quit (bug 4) |
-| [x] | Remastered online, 3 and 4 copies | **Ran** (`online/r3a`, `r4a`: Godot copies with the Remastered options on the command line, launched by `n2party.py` through a service on this Mac): 3 copies 6,131 / 6,131 / 6,143 ticks every pair in step, 4 copies 6,038-6,045 ticks every pair in step; hub -> `drunare` -> `valor` -> `arachna1`, 6 and 8 deaths, 2 reloads after everybody died; Hardcore, aiming and hold-to-skip "ON (a room's game)" on every copy |
+| [x] | Remastered online, 3 and 4 copies | **Ran** (`online/r3a`, `r4a`: Godot copies with the Remastered options on the command line, launched by `n2party.py` through a service on this Mac): 3 copies 6,131 / 6,131 / 6,143 ticks every pair in step, 4 copies 6,038-6,045 ticks every pair in step; hub -> `drunare` -> `valor` -> `arachna1`, 6 and 8 deaths, 2 reloads after everybody died; Hardcore, aiming and hold-to-skip "ON (a room's game)" on every copy. Then **through the portals** (section 10.6): four portals, each Remastered by its card, in one room of a rendezvous service on 127.0.0.1 (friends, an invitation, two in by the room's code, the game's own character screens, Start): 6,344-6,352 ticks, every pair in step through hub -> `drunare` -> `valor` -> `arachna1`; three portals the same |
 | [x] | Long sessions draw cleanly | **Ran** after the fix (section 9): one Remastered session through the portal over 81 levels and both paths to `endgood`, and a Classic session over the 54 levels of the good path - no black build-up (bug 1, fixed) |
 | [ ] | A person playing it through | never done |
 
@@ -75,9 +75,10 @@ session and the portal comes back ("the session is over (frontend)", `c2-2`). No
 | 6 | Minor | The game's picture in the Godot window was darker than the game's own picture - 2-D screens most visibly (the ending's save screen mean 3-4 against 19-22), the 3-D picture too | `view.gd`'s canvas shader multiplied `texture(TEXTURE, UV)` by `COLOR`, which in Godot 4 already holds the texture's colour: every value squared (not the sRGB curve twice) | **fixed** (section 8) |
 | 7 | Minor | The library's room status kept the text "the game runs: level hub" after level changes | `tools/recomp/net2/launch.cpp`: the text was set once at the start; now set again with the level when the presence sees it change | **fixed** (section 8) |
 | 8 | Cosmetic | Every run of the portal test window printed "unknown option" for the test window's own arguments | `main.gd` now knows the test window's and the join test's options (with their values) | **fixed** (section 8) |
+| 10 | Medium | First person black in the levels without a sky (`watg2a/b/c`, `swamp1`, `islc1`; `valor2` in Classic): the look kept from the level before, where the route had looked up | `tools/recomp/app/fpview.cpp` (ours, native and Godot alike): each view's look up or down was kept over level changes, so the view arrived looking 65 degrees up at a black sky | **fixed** (section 10.2): the look starts level at every level |
 | 9 | - | Three level requests in the long runs brought back a level (`honor` -> `fire1`, `nitdung1` -> `nitdung2`, `nitbon2` -> `nitbonus` four times instead of `bossevil`); each level loads when asked for in a run of its own | not found; the route's request may meet the game's own restart or a bonus level's return | noted |
 
-Fixed since: bugs 3 and 5-8 (section 8), bugs 1 and 4 (section 9).
+Fixed since: bugs 3 and 5-8 (section 8), bugs 1 and 4 (section 9), bug 10 (section 10).
 
 ## 4. Online (Ran)
 
@@ -112,10 +113,12 @@ were black (bug 1), so its later figures do not count.
 ## 6. Open items
 
 - Bug 2 (60 / 120 on a quiet machine).
-- Transient black pictures that are the game's own (section 9, "Not build-up"), to be compared with the native program view by view.
-- Spells cast and aimed by the look inside the campaign; weapon arts and two-handing in the campaign; a boss killed.
 - The sharp films seen in this route.
-- Remastered online through the public service with three and four copies, and from two networks.
+- Remastered online with three and four copies through the public service and from two networks (through a service
+  on this Mac: section 10.6).
+- The bosses after the first killed one by one.
+- (Closed in section 10: the transient black pictures, spells and projectiles aimed by the look, weapon arts and
+  two-handing, a boss killed, three and four portals in one room.)
 - Windows and Linux: hold-to-skip is not in their programs or Godot libraries (`native-cutscenes.md`, "Not done").
 - A person playing it.
 
@@ -124,6 +127,9 @@ were black (bug 1), so its later figures do not count.
 - `tools/godot/project/portal/dev/shots.gd`: scenario `solo` (the Remastered or Classic card's Play pressed, the game
   run with the command line's script to its end).
 - `docs/issues/remastered-complete.md` (this file), `docs/PROGRESS.md` (the Remastered row).
+- Section 10: `tools/recomp/app/fpview.cpp` (the look started level at a level start, bug 10);
+  `tools/godot/project/portal/dev/shots.gd` (scenario `room5` with `--party 3 | 4`: copies C and D join by the room's
+  code); `tools/godot/project/main.gd` (`--party` known to the game scene, so no "unknown option").
 
 ## 8. Fixed after the check (Ran, 2026-10-26)
 
@@ -208,7 +214,8 @@ changes nothing (`z-before` 0.34, `z-clear` 0.36): what is black there is drawn 
 overhead and action views in `wat1`, `innovat1`, `islc1`, `islsm1`, `storm1`, `storm4` right after the view changes
 (a series in `wat1` every 4 ticks: black until tick 72, then the game's fade-in, `runs/o2`), and first person in the
 underwater levels `watg2a/b/c`, `swamp1`, `valor2`. Godot Classic shows the same pictures black in the same places
-(`K1`), so these come with the game's picture; to be checked against the native program view by view.
+(`K1`), so these come with the game's picture; to be checked against the native program view by view. (Checked in
+section 10: the first kind is the game's own blank after a load; the second our look kept over a level change, fixed.)
 
 **Two copies still in step.** `online/r2`: two Godot copies with the Remastered options in a room (`n2party.py`),
 hub -> drunare -> valor -> arachna1, 6 deaths, 3 reloads: 6,250 ticks in step; `online/r4`: four copies, 8 deaths,
@@ -225,3 +232,108 @@ Seen on the way, not from this change: `model_remaster.gd:477` (`f.name` on a fi
 errors in `L1`) is in the `5249c6e` tree this was built from and already fixed on main (section 8, `r3`);
 `er_world.gd:434` (`paths`, 2 errors in `L1`) is the hub-rebuild work's file.
 
+## 10. The open items closed (Ran, 2026-10-26, evening)
+
+Built from a clean worktree of `e9289ce` with only the changes listed in section 7 (`build.py all` into
+`local/rem-close`, `run.py import`); native programs: `rta_app_next` (this morning's, the Remastered modes),
+`rta_app_next_orig` (the game as on the disc, none of our modes) and `rta_app_remclose` (`build.py --no-game --as`:
+`rta_app_next`'s game with this section's `fpview.cpp`). Evidence in `local/rem-close/` (not tracked): `runs/` (the
+routes `mkseries.py`, `mkviews.py`, `mkpitch.py`, `mkfeat.py`, `mkboss.py` and each run's pictures and output),
+`online/` (`roomn.py`, `room.sh`, `cmp.py`, the rooms). Load average 2-20.
+
+### 10.1 Black for a moment after a view change: the game's own blank after a load
+
+The check's route asked for the views as soon as the level's tick count reached 150. A picture every 4 blanks from that
+moment for 120 blanks (`mkseries.py`), in the native program, once with no view change at all (chase, as it was) and
+once with the overhead view asked for at the first picture; and in the game as on the disc:
+
+| Level | black pictures of 30: native, no view change | native, overhead asked | the game as on the disc | Godot, no view change |
+|---|---|---|---|---|
+| `wat1` | 18 | 18 | 18 | 11 |
+| `islc1` | 21 | 21 | 21 | 22 |
+| `storm1` | 21 | 21 | - | - |
+| `innovat1` | - | 20 | 20 | - |
+| `islsm1` | - | 14 | 14 | - |
+| `storm4` | - | 13 | 13 | - |
+
+The same pictures are black with and without the view change, to the blank, and in the program without any of our
+code; then the game's fade-in (`wat1`: mean 6 -> 53 of 255 over 32 blanks). The view's own status in those blanks:
+"the game's camera: warm-up (the picture is blanked)" - the game's wait loop after a load (`0x506048`, session loop
+`0x322998`, `docs/ui.md` P1), whose length follows the loading (Godot 11 to 22). So it is not the view change and
+not ours: the check's first one or two views simply fell into it. Routes that picture views now wait for
+`0x506048` to be 0 and for the fade.
+
+### 10.2 First person black in levels without a sky: the look kept from the level before (bug 10, fixed)
+
+- **Not the levels.** Fresh from the hub, first person in `watg2a`, `watg2b`, `swamp1`, `valor2` (the check's own views
+  route, `mkviews.py`, a picture every 3 blanks): Godot 0.17-0.49 of the picture black, native 0.15-0.56 - dark
+  levels, drawn.
+- **What the check had.** In `L1` / `K1` the first-person picture came after every earlier level's first person had
+  looked up (the route's `stick R 200 100`): the look was kept from level to level and stood at 65 degrees up
+  (`aim info`: pitch 11833 at `watg2a`); the draw counts there fell from about 3,500 a list to 4-54 (the speed lines:
+  only the HUD). Looking straight at the sky of a level that clears to black and has no dome shows black.
+- **Reproduced** (`mkpitch.py`: first person in `watg2a`, the look up for 60 blanks; then `watg2b` and `swamp1`
+  asked for, first person there): native `rta_app_next` 0.93 and 0.95 black, its view info "forward -0.285 0.311
+  0.906" in both new levels; Godot (the section 9 build) `watg2b` 0.98. The native program is black too, and the
+  cause is ours: `fpview.cpp` kept each view's pitch over level changes.
+- **Fix** (`tools/recomp/app/fpview.cpp`, `begin_pass`): when the game's tick count is lower than at the last pass - a
+  level started or restarted - every view's look starts level again. It is this machine's view; the aim's pitch
+  (`fpaim`) is sent as this player's input in game message 4 and follows what is shown, as it does whenever the stick
+  moves the look, and every copy applies the message alike, so the lockstep rule holds (nothing in the tick reads the
+  view). After: native `rta_app_remclose` `watg2b` 0.29 and `swamp1` 0.42 black with the view "forward -0.675 0.737
+  0.000"; Godot 0.43 and 0.23. The rooms of 10.6 ran with it through three level changes, every pair in step.
+
+### 10.3 Spells and projectiles aimed by the look (Godot, Remastered options)
+
+`mkfeat.py`: `valor` by the boar, first person, Hardcore and aim look; the nearest creature locked and held in front
+(test aid `app souls pose front`); the look moved up or down by the right stick, then the skill button; the aim block's
+words after each (`0xe1800`: projectiles aimed, the last one's heading, pitch, class, speed).
+
+| Run | Character | What | Seen |
+|---|---|---|---|
+| `gfW` | Erudite Wizard (8 presses right on the class page) | the second skill button at the look +13.6, +0.4, -11.1, +10.3 degrees | 3 Shock of Frost bolts aimed, each at the look's pitch exactly (aim words 2477, 64, 1883 = the look's), 350 a second, 3 spells cast, **3 spell hits** on the boar (mana 42.5 -> 36.1 each); the cast looking down not made (not looked into; the one before it 115 blanks earlier) |
+| `gfR` | Wood Elf Ranger (4 presses right) | the attack at the same four looks, no creature beside | **4 arrows aimed** at 2477, 64, -2019, 1883 (the look's exactly), 1,000 a second |
+| `fW`, `fR` | the same, native `rta_app_next` | the same | the same numbers |
+| `f0` | the first class (the check's) | both skill buttons | the first button casts nothing (no spell bound for this class), the second casts the homing bolt: 1 cast, 1 hit, not turned onto the look - homing bolts are left to the game by design (`native-first-person-aim.md` 4) |
+
+So the check's "spells cast 0" was its route: it pressed only the first skill button.
+
+### 10.4 Weapon arts and two-handing (Godot, Hardcore)
+
+The same runs, chase view: L3 held + attack = the weapon art; L3 held + the weapon swap = two-handing, then three swings,
+then back. `gfW`: 1 weapon art (mana 42.5 -> 34.6), two-handing on and off (toggles 2) with the swings between; `gfR`:
+the bow's art (1), two-handing not taken for the bow (0 toggles); native `f0` (the first class, a mace): 1 art,
+2 toggles. No script or shader error in any of them.
+
+### 10.5 A boss killed
+
+`mkboss.py`: `islsm1`, whose boss - Broon, the FatCyclops, 1,714 hit points (the boss meter's name `broon`) - stands
+beside the arrival; locked on (Hardcore) in the chase view, four swings at full strength, then its hit points brought to
+6 by the test aid and the player's own swings until it falls.
+
+| Run | Seen |
+|---|---|
+| `sB`: through the portal (the Remastered card's Play, as the campaign) | boss music engaged at tick 1,282 (an Elden Ring track from the player's own files, the game's music at 0.32 then 0); the meter 1,714 / 1,714; **killed at tick 1,706**: hit points -11.05, its AI state 0x14 (a corpse), the meter cleared, the player level 1 -> 2 from the experience; "the fight is over (tick 1939): back to the game's music over 3.0 s" |
+| `gbH`: Godot scene, Hardcore | the same ticks and numbers |
+| `gbN`: Godot scene, Remastered look, **Hardcore off** (the game's own combat; no lock-on, which is Hardcore's: the same object by its address) | **killed at tick 1,622**: -8.83, state 0x14, the meter cleared, level 2 |
+| `bH`, `bN`: native | the same as `gbH`, `gbN` |
+
+### 10.6 Three and four portals in one room through the service path
+
+`shots.gd` scenario `room5` now takes `--party 3 | 4`: the host waits for that many in the room and in "everybody
+ready", copies C and D join by the room's code after B is in (by the host's invitation, as before), and every copy
+waits for all the others at the end. `online/roomn.py` (`room2.py` for two to four portals) starts a rendezvous service
+of the run's own on 127.0.0.1 (`tools/rendezvous/rendezvous.py --bind 127.0.0.1`, as `check_client.py` does) and the
+portals, each choosing Remastered on its card; the game's own character screens; Start; then hub -> `drunare` (tick
+1,600) -> `valor` (3,100) -> `arachna1` (4,600), the players put beside the nearest creature in turn from 4,800 (test
+aid in every copy's `tick-do`). Compared with `tools/rig/compare.py ticks`, every pair, the title fly-over clock `cutf`
+left out (`cmp.py`).
+
+| Run | Portals | Ticks | Result |
+|---|---|---|---|
+| `r4` | 4 | 6,344 to 6,352 | **no shared column differs on any tick, all six pairs**; 6 deaths in `arachna1`; every copy Hardcore, aim look, hold-to-skip, 16:9 |
+| `r3b` | 3 | 6,365 to 6,378 | **no shared column differs, all three pairs**; 7 deaths |
+| `r3` | 3 | 2,284 to 2,291 (a shorter stay) | in step, all three pairs |
+
+Every copy quit cleanly (exit 0, 10 of 10), no script or shader error. `r3` and `r4` printed "unknown option --party"
+from the game scene; `main.gd` now knows it (`r3b`: none).

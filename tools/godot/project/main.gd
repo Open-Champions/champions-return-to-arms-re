@@ -83,7 +83,7 @@ extends Node
 
 # options on the shared command line that are other scripts' (each takes a value): the test window's
 # (portal/dev/shots.gd) and the join test's (dev/join_test.gd); --portal-* and --hud-* are the portal's and the HUD's
-const OTHER_SCRIPTS_OPTIONS := ["--out", "--only", "--speed", "--role", "--sync", "--service", "--join-by", "--level-to",
+const OTHER_SCRIPTS_OPTIONS := ["--out", "--only", "--speed", "--role", "--sync", "--service", "--join-by", "--level-to", "--party",
 	"--join-data", "--join-shots"]
 
 const PAD_SELECT := 0x0001

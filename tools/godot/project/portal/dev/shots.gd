@@ -22,7 +22,8 @@ var portal: Node
 var view: TextureRect
 var count := 0
 var run_number := 0
-var role := ""                      # duo: "a" or "b", two programs through one service
+var role := ""                      # duo: "a" or "b", two programs through one service (room5: also "c", "d")
+var party := 2                       # room5: the number of copies in the room (--party 3 | 4: c and d join by the room's code)
 var sync_dir := ""
 var service := ""
 var join_by := "invite"              # room5: how B comes into A's room - "invite" (from the friends list) or "code"
@@ -43,6 +44,7 @@ func _ready() -> void:
 			"--service": service = args[k + 1]; k += 1
 			"--join-by": join_by = args[k + 1]; k += 1
 			"--level-to": level_to = args[k + 1]; k += 1
+			"--party": party = clampi(int(args[k + 1]), 2, 4); k += 1
 		k += 1
 	var window := get_window()
 	window.title = "AGENT TEST - portal pictures"
@@ -58,6 +60,10 @@ func _ready() -> void:
 		window.position = area.position + area.size - Vector2i(2, 2) * dot
 		if role == "b":         # b: the lower LEFT corner (a window over another's corner would hide it)
 			window.position = Vector2i(area.position.x - window.size.x + 2 * dot, area.position.y + area.size.y - 2 * dot)
+		elif role == "c":       # c and d (room5 with --party 3 | 4): the upper corners
+			window.position = Vector2i(area.position.x + area.size.x - 2 * dot, area.position.y - window.size.y + 2 * dot)
+		elif role == "d":
+			window.position = Vector2i(area.position.x - window.size.x + 2 * dot, area.position.y - window.size.y + 2 * dot)
 	if role != "":
 		window.title = "AGENT TEST - portal duo " + role
 	AudioServer.set_bus_mute(0, true)
@@ -986,7 +992,7 @@ func scenario_duo2() -> void:
 func scenario_room5() -> void:
 	await open_portal(Vector2i(1920, 1080), {}, {"mock": false, "service": service, "stub_game": false})
 	var p := "real5/" + role + "-"
-	await type("Tester One" if role == "a" else "Tester Two")
+	await type({"a": "Tester One", "b": "Tester Two", "c": "Tester Three", "d": "Tester Four"}.get(role, "Tester"))
 	await key(KEY_ENTER)
 	await pick_edition(p)
 	await until(func() -> bool: return portal.session.online(), 60.0)
@@ -1021,12 +1027,27 @@ func scenario_room5() -> void:
 			await wait(0.4)
 			await shot(p + "03-invitation-sent")
 			post("a_invited")
-		await until(func() -> bool: return int(portal.session.room().count) >= 2, 120.0)
+		await until(func() -> bool: return int(portal.session.room().count) >= party, 180.0)
 		if portal.current_name() != "room":
 			portal.go("room")
 		await wait(0.8)
-		flow_says("two in the room")
-		await shot(p + "04-two-in-the-room")
+		flow_says("%d in the room" % party)
+		await shot(p + "04-%d-in-the-room" % party)
+	elif role == "c" or role == "d":
+		# a third and a fourth copy: no friend; in by the room's code, after B is in
+		var room := await fetch("room", 180.0)
+		await fetch("b_in" if role == "c" else "c_in", 240.0)
+		portal.home()
+		await wait(0.3)
+		portal.go("join")
+		await wait(0.4)
+		await type(room)
+		await key(KEY_ENTER)
+		await until(func() -> bool: return int(portal.session.room().state) == 2, 60.0)
+		await wait(0.8)
+		flow_says("joined by code")
+		await shot(p + "03-in-the-room")
+		post(role + "_in")
 	else:
 		var code := await fetch("a_code", 120.0)
 		portal.go("friends")
@@ -1060,6 +1081,7 @@ func scenario_room5() -> void:
 		await wait(0.8)
 		flow_says("joined by " + join_by)
 		await shot(p + "03-in-the-room")
+		post("b_in")
 	if OS.get_environment("RTA_SHOTS_MISMATCH") == "1":
 		await mismatch(p)
 		return
@@ -1084,7 +1106,7 @@ func scenario_room5() -> void:
 	if role == "a":
 		await until(func() -> bool:
 			var b: Control = portal.screen.find_key(portal.screen, "main")
-			return b != null and not bool(b.get("disabled")) and int(portal.session.room().get("count", 0)) >= 2, 300.0)
+			return b != null and not bool(b.get("disabled")) and int(portal.session.room().get("count", 0)) >= party, 300.0)
 		await wait(0.6)
 		await shot(p + "07-everybody-ready")
 		await press_main()
@@ -1106,7 +1128,9 @@ func scenario_room5() -> void:
 		await shot(p + "09-in-" + level_to)
 		dump_effective(p + "09")
 	post(role + "_done")
-	await fetch("b_done" if role == "a" else "a_done", 300.0)
+	for other in ["a", "b", "c", "d"].slice(0, party):
+		if other != role:
+			await fetch(other + "_done", 300.0)
 	await wait(2.0)
 	flow_says("end")
 
@@ -1144,7 +1168,7 @@ func aim_look(p: String) -> void:
 		await key(KEY_RIGHT)
 		flow_says("aim choice pressed")
 	await until(func() -> bool:
-		var all := room_members().size() >= 2
+		var all := room_members().size() >= party
 		for m in room_members():
 			all = all and (int(m.get("fix_words", 0)) & 0x4000) != 0
 		return all, 120.0)
@@ -1168,7 +1192,7 @@ func combat_souls(p: String) -> bool:
 		await key(KEY_RIGHT)
 		flow_says("combat choice pressed")
 	await until(func() -> bool:
-		var all := room_members().size() >= 2
+		var all := room_members().size() >= party
 		for m in room_members():
 			all = all and (int(m.get("fix_words", 0)) & 0x8000) != 0
 		return all, 120.0)
@@ -1269,7 +1293,7 @@ func mismatch(p: String) -> void:
 		post("a_refused")
 	# both: the room agrees once B's copy says Remastered
 	await until(func() -> bool:
-		var all := room_members().size() >= 2
+		var all := room_members().size() >= party
 		for m in room_members():
 			all = all and (load("res://portal/edition.gd") as GDScript).call("of_member", m) == "remastered"
 		return all and not bool(portal.session.room().get("mismatch", 0)), 120.0)

@@ -220,6 +220,7 @@ Pose g_shown;                       // the pose of the last active frame
 bool g_shown_valid = false;
 bool g_was_fallback = true;
 float g_pitch[MODE_COUNT];          // what the stick has added, per view
+u32 g_level_tick = 0;               // the game's tick at the last pass: a smaller one is a level (re)started
 std::atomic<float> g_pitch_add{0};  // add_pitch(): taken at the next draw pass
 float g_anchor_z = 0;               // the character's height, smoothed over steps
 bool g_anchor_valid = false;
@@ -688,6 +689,14 @@ bool begin_pass(Ctx* c) {
     v.fallback = false;
     v.fallback_why = "";
     v.hide_player = false;
+    // A level (re)started - the game's tick count begins again from 0: every view's look starts level again.  It was
+    // kept from the level before, so a player who had looked up arrived looking at the sky - all black in a level
+    // that has none (watg2a/b/c, swamp1: docs/issues/remastered-complete.md section 10).  This machine's view only;
+    // the aim's pitch (fpaim, sent as this player's input in game message 4) follows what is shown, as it does when
+    // the stick moves the look.
+    if (v.tick < g_level_tick)
+        for (float& p : g_pitch) p = 0;
+    g_level_tick = v.tick;
     if (wanted == OVERHEAD && g_mode == OVERHEAD && g_t >= 1) {     // the game as it is: nothing is read, nothing is written
         v.shown = OVERHEAD;
         v.blend = 0;
