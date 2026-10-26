@@ -98,6 +98,12 @@ struct RtaDrawer::Scene {
     bool sky = false;                   // asked for: Godot draws the sky
     bool sky_active = false;            // ... and does in this frame (the camera is known and the game cleared the picture)
     int fill_draw = -1;                 // this frame: the game's clearing rectangle
+    // ... and it is the list's first draw into the 3-D surface and replaces what is there: the game draws every pixel
+    // anew, and so does Godot - the surface is cleared (scene_begin), not kept.  Kept, a pixel that once held a value
+    // that is not a number stayed so for good: every draw of the world is blended (source x A + destination x (1 - A)),
+    // and NaN x 0 is NaN; black geometry stuck to the screen grew over a long session (remastered-complete.md, bug 1)
+    bool fill_clears = false;
+    uint64_t frames_cleared = 0;
     std::vector<uint8_t> is_dome;       // this frame, per draw
     bool have_clear = false, dome = false;
     float clear[3] = {0, 0, 0};
@@ -445,12 +451,15 @@ void RtaDrawer::scene_scan_sky(const rtag_frame& f, const Target& world) {
     Scene& sc = *scene;
     const rtag_scene* tap = sc.tap;
     sc.fill_draw = -1;
+    sc.fill_clears = false;
+    int first_world = -1;
     sc.is_dome.assign(f.draw_count, 0);
     std::vector<uint32_t> found;
     float frame_top = -10.0f, frame_bottom = 10.0f;
     const float* eye = tap->camera_position;
     for (uint32_t i = 0; i < f.draw_count; i++) {
         const rtag_draw& d = f.draws[i];
+        if (d.target == world.id && first_world < 0) first_world = (int)i;
         if (d.target != world.id || d.kind != RTAG_DRAW || !d.count || d.first + d.count > f.vertex_count) continue;
         bool in_scene = d.scene_first >= 0 && (uint32_t)d.scene_first + d.count <= tap->vertex_count;
         if (!in_scene) {
@@ -462,6 +471,8 @@ void RtaDrawer::scene_scan_sky(const rtag_frame& f, const Target& world) {
                 }
                 if (x0 <= 2 && y0 <= 2 && x1 >= world.lw - 2 && y1 >= world.lh - 2) {
                     sc.fill_draw = (int)i;
+                    // (a blend that reads the destination - Cd in A, B or D - keeps part of it: not a clear)
+                    sc.fill_clears = first_world == (int)i && (!d.blend || (d.ba != 1 && d.bb != 1 && d.bd != 1)) && d.ztst != 0;
                     const rtag_vertex& v = f.vertices[d.first];
                     sc.clear[0] = v.r / 255.0f; sc.clear[1] = v.g / 255.0f; sc.clear[2] = v.b / 255.0f;
                     sc.have_clear = true;
@@ -739,6 +750,7 @@ Dictionary RtaDrawer::get_scene_info() const {
                               (int64_t)scene->frames_without_camera, scene->world_draws / n, scene->world_vertices / n, scene->exact_draws / n, scene->packet_draws / n,
                               (double)scene->packet_extra / n, scene->flat_draws / n, scene->blob_shadows_dropped / n, scene->fills_dropped / n, scene->dome_draws / n,
                               scene->near_faded / n, scene->kept_hits / n, scene->kept_corners / n, scene->kept_misses / n, scene->kept_updates / n, (int64_t)scene->kept.size());
+    info["figures"] = String(info["figures"]) + vformat("; the 3-D surface cleared in %d lists (they begin with the game's clearing rectangle)", (int64_t)scene->frames_cleared);
     if (scene->tween_on)
         info["figures"] = String(info["figures"]) + vformat("; between game frames: %.1f kept draws a list carried on (moving), %.2f not (jumped), %.2f stopped",
                                   scene->tween_moving / n, scene->tween_jumped / n, scene->tween_stopped / n);
@@ -773,7 +785,13 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
     sc.segment = 0;
     sc.fused_skip = -1;
     Target* world = world_target();
-    if (!sc.valid || !world) { if (!sc.valid) sc.frames_without_camera++; return; }
+    sc.fill_clears = false;
+    if (!sc.valid || !world) {
+        if (!sc.valid) sc.frames_without_camera++;
+        // a list without the scene (a menu over the picture, a film): what the 3-D surface holds stays
+        if (world) s->environment_set_background(world->passes[0]->environment, RenderingServer::ENV_BG_KEEP);
+        return;
+    }
     scene_scan_sky(f, *world);
     sc.sky_active = sc.sky && sc.fill_draw >= 0;
     if (sc.packets && f.scene->full && (sc.model_smooth > 1 || sc.contacts_on)) scene_models_scan(f.scene, sc.weld, sc.contacts, sc.model_look && sc.model_smooth > 1,
@@ -833,8 +851,10 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
     s->camera_set_perspective(pass->camera, (float)sc.fov_y, f.scene->near_plane, (float)far_plane);
     fill_frame(f, camera.origin, pass->scenario);           // the level's generated ceilings and skirts (rta_fill.cpp)
     if (sc.lit) s->environment_set_ambient_light(pass->environment, Color(1, 1, 1), RenderingServer::ENV_AMBIENT_SOURCE_COLOR, (float)sc.ambient);
-    // a camera that is not the game's sees past what the game drew: black there, not last frame's picture
-    s->environment_set_background(pass->environment, sc.pull_back != 1.0 || sc.orbit != 0.0 || sc.raise != 0.0 || sc.aim > 0.0 ? RenderingServer::ENV_BG_CLEAR_COLOR : RenderingServer::ENV_BG_KEEP);
+    // a camera that is not the game's sees past what the game drew: black there, not last frame's picture; and a list
+    // that begins with the game's clearing rectangle draws the whole picture anew (fill_clears)
+    if (sc.fill_clears) sc.frames_cleared++;
+    s->environment_set_background(pass->environment, sc.fill_clears || sc.pull_back != 1.0 || sc.orbit != 0.0 || sc.raise != 0.0 || sc.aim > 0.0 ? RenderingServer::ENV_BG_CLEAR_COLOR : RenderingServer::ENV_BG_KEEP);
 }
 
 bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, const Target& target, RID texture, float order) {

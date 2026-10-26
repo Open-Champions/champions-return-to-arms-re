@@ -133,6 +133,20 @@ func release() -> void:
 	for key in figures:
 		_free_figure(figures[key])
 	figures.clear()
+	_drop_meshes()
+
+
+# The meshes and materials this layer keeps (the outfits' glTF meshes in models[set].meshes, the weapons', the player's
+# own): let go while the rendering server is whole.  Left to the script's own end in SceneTree::finalize, a room copy's
+# quit crashed freeing their materials (signal 11 in RendererRD::MaterialStorage::free from ~BaseMaterial3D of an
+# ArrayMesh in models; docs/issues/remastered-complete.md, bug 4).
+func _drop_meshes() -> void:
+	models.clear()
+	weapon_models.clear()
+	game_weapons.clear()
+	ordered_materials.clear()
+	self_mesh = null
+	self_material = null
 
 
 func _free_figure(f: Dictionary) -> void:
@@ -762,7 +776,7 @@ func _exit_tree() -> void:
 		if l.has("task"):
 			WorkerThreadPool.wait_for_task_completion(int(l.task))
 	loads.clear()
-	ordered_materials.clear()
+	release()
 
 
 func _loading(set_name: String) -> bool:
