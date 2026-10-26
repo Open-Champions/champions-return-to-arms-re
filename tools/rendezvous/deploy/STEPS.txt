@@ -131,10 +131,12 @@ nothing of `size` and gets four, as today; a service of before ignores `size` an
    ssh root@<server-address> 'cd /opt/champions-net2 && mv rendezvous.py.new rendezvous.py && systemctl restart champions-net2 &&
      sleep 2 && journalctl -u champions-net2 -n 5 --no-pager'
 
-16. From the Mac: a room of five copies through it (copies started for rooms of up to eight)
-   RTA_DISC=... python3 -B tools/recomp/net2/n2party.py local/party8/public5 --players 5 --external \
-     --service-address <server-host> --port 41900 --opt party8=1 --program <the window program run headless, as in
-     docs/issues/native-8-players.md C: app/build.py --party8 --as rta_app_next>
+16. From the Mac: a room of five copies through it (copies started for rooms of up to eight: party8=8;
+   with party8=1 a copy plays rooms of up to four and the service keeps the fifth out)
+   RTA_DISC=... RTA_NET2_SERVICE=<server-host>:41900 python3 -B tools/recomp/net2/n2party.py local/party8/public5 \
+     --players 5 --external --tls --service-address <server-host> --port 41900 --opt party8=8 \
+     --program <the window program run headless, as in docs/issues/native-8-players.md C: app/build.py --party8 --as rta_app_next>
+   Done 2026-10-26: room of five, every pair in step (1,807-1,810 ticks).
 
 17. Back
    ssh root@<server-address> 'cd /opt/champions-net2 && cp -p rendezvous.py.before-eight rendezvous.py && systemctl restart champions-net2'
