@@ -236,6 +236,7 @@ const uint32_t SOULS_MAGIC = 0x4c554f53;        // "SOUL"
 //   +0x1d0 this player's hit points, +0x1d4 their maximum, +0x1d8 its mana, +0x1dc the maximum mana (f32), +0x1e0 u8[15] the
 //   ability records of its spellbook in order (the open screen's rows after the three attributes; 0xff none), +0xb00 u8[24][15] the names of its
 //   ability records (0 none)
+// header +0x580 a test aid (slot + 1: that player is put beside the nearest living creature, facing it, in its next tick)
 // header (version 4, the attributes and the spellbook) +0x5e8 a test aid (slot + 1 | amount << 8: that player is given
 //   `amount` experience by the game's own player_giveExp in its next tick), +0x5ec mode points spent, +0x5f0 attunement
 //   changes, +0x5f4 spells cast, +0x5f8 spell hits scaled, +0x5fc casts refused (not attuned)

@@ -1,8 +1,10 @@
 // soulscombat.cpp - the souls-style combat mode (soulscombat.h; docs/issues/native-souls-combat.md).
 #include "soulscombat.h"
+#include "partyscale.h"
 #include "fpcontrols.h"
 #include "testerkit.h"
 #include "rt.h"
+#include "moved.h"
 #include "backend.h"
 #include "../net2/hooks.h"
 
@@ -29,7 +31,7 @@ const u32 G_PLAYERS = 0x4d8af0, REC = 0x4c30, REC_OBJECT = 0x43d8, REC_HP = 0xac
 const u32 G_PADS = 0x41bfd8, PAD = 0x58, PAD_HELD = 8, PAD_PRESSED = 0xc, PAD_LX = 0x14, PAD_LY = 0x18;
 const u32 G_BTN_ATTACK = 0x41b980, G_BTN_BLOCK = 0x41b9d0, G_BTN_POTION_A = 0x41ba10;
 const u32 REC_GOLD = 0xe4, REC_HEAL_PENDING = 0xb4, REC_HEAL_RATE = 0xb8, REC_BLOCK_TIMER = 0x4a5c, O_POS = 0x10, O_ANIM_FLAGS = 0x11a;
-const u32 G_SIM_FRAME = 0x44fdcc, G_NETWORK_MODE = 0x402791, G_LEVEL_FLAGS = 0x44fe08, G_LEVEL_NAME = 0x41b721;
+const u32 G_SIM_FRAME = 0x44fdcc, G_NETWORK_MODE = 0x402791, G_LEVEL_FLAGS = 0x44fe08, G_LEVEL_NAME = 0x41b721, G_GRID = 0x5db4f0;
 const u32 VT_PLAYER = 0x511308;
 const u32 O_FLAGS = 0x0c, O_FACING = 0x38, O_VTABLE = 0x48, O_ANIM = 0x114, O_TRACKS = 0x118, O_TRACKS2 = 0x119, O_ANIM_TABLE = 0x24;
 const u32 C_HP = 0x228, C_INERT = 0x231, C_PENDING = 0xc8, C_PENDING_FLAGS = 0x2dc, C_TURN_RATE = 0xb0;
@@ -58,13 +60,13 @@ const u32 PAD_UP = 0x1000, PAD_RIGHT = 0x2000, PAD_DOWN = 0x4000, PAD_LEFT = 0x8
 const s32 ID_HEAVY = 0x25;
 
 bool ok(u32 a, u32 size = 4) { a &= 0x1FFFFFFF; return a >= 0x80000 && a <= RAM_SIZE - size; }
-u32 W(u32 a) { u32 v = 0; if (ok(a)) memcpy(&v, g_ram + (a & 0x1FFFFFFF), 4); return v; }
-u16 H(u32 a) { u16 v = 0; if (ok(a, 2)) memcpy(&v, g_ram + (a & 0x1FFFFFFF), 2); return v; }
-u8 B(u32 a) { return ok(a, 1) ? g_ram[a & 0x1FFFFFFF] : 0; }
-float F(u32 a) { float v = 0; if (ok(a)) memcpy(&v, g_ram + (a & 0x1FFFFFFF), 4); return v; }
-void PW(u32 a, u32 v) { if (ok(a)) memcpy(g_ram + (a & 0x1FFFFFFF), &v, 4); }
-void PH(u32 a, u16 v) { if (ok(a, 2)) memcpy(g_ram + (a & 0x1FFFFFFF), &v, 2); }
-void PB(u32 a, u8 v) { if (ok(a, 1)) g_ram[a & 0x1FFFFFFF] = v; }
+u32 W(u32 a) { u32 v = 0; if (ok(a)) memcpy(&v, g_ram + (party8_at(a) & 0x1FFFFFFF), 4); return v; }
+u16 H(u32 a) { u16 v = 0; if (ok(a, 2)) memcpy(&v, g_ram + (party8_at(a) & 0x1FFFFFFF), 2); return v; }
+u8 B(u32 a) { return ok(a, 1) ? g_ram[party8_at(a) & 0x1FFFFFFF] : 0; }
+float F(u32 a) { float v = 0; if (ok(a)) memcpy(&v, g_ram + (party8_at(a) & 0x1FFFFFFF), 4); return v; }
+void PW(u32 a, u32 v) { if (ok(a)) memcpy(g_ram + (party8_at(a) & 0x1FFFFFFF), &v, 4); }
+void PH(u32 a, u16 v) { if (ok(a, 2)) memcpy(g_ram + (party8_at(a) & 0x1FFFFFFF), &v, 2); }
+void PB(u32 a, u8 v) { if (ok(a, 1)) g_ram[party8_at(a) & 0x1FFFFFFF] = v; }
 void PF(u32 a, float v) { u32 b; memcpy(&b, &v, 4); PW(a, b); }
 u32 bits(float v) { u32 b; memcpy(&b, &v, 4); return b; }
 float flt(u32 b) { float v; memcpy(&v, &b, 4); return v; }
@@ -92,7 +94,7 @@ enum : u32 { W_CLASS = 0, W_LOAD = 4, W_CAP = 8, W_TIER = 0xc, W_UPG = 0x10, W_G
              W_ART_T = 0x20, W_ART_KIND = 0x24, W_MATS = 0x28, W_NEAR = 0x2c, W_ARTS = 0x30, W_UPGRADES = 0x34, W_RECOVER = 0x38,
              W_SWING = 0x3c, W_ART_CD = 0x40, W_BUFFER = 0x44, W_DMG = 0x48, W_GOLD_NEXT = 0x4c, W_MATS_NEXT = 0x50, W_UP_REFUSED = 0x54 };
 enum : u32 { H_ARTS = 0x320, H_UPGRADES = 0x324, H_MAT_DROPS = 0x328, H_TWOHANDS = 0x32c, H_CHIPS = 0x330, H_INTERRUPTS = 0x334,
-             H_CANCELS = 0x338, H_TEST_MAT = 0x33c, H_SCRATCH = 0x340, H_SAVES = 0x380, H_SAVES_LEVEL = 0x3fc, H_ITEM_SCRATCH = 0x5a0, L_NAME = 0x1a0 };
+             H_CANCELS = 0x338, H_TEST_MAT = 0x33c, H_SCRATCH = 0x340, H_SAVES = 0x380, H_SAVES_LEVEL = 0x3fc, H_ITEM_SCRATCH = 0x5a0, H_TEST_POSE = 0x580, L_NAME = 0x1a0 };
 s32 WR(int slot, u32 f) { return SR(wpn_off(slot, f)); }
 void WW(int slot, u32 f, s32 v) { SW(wpn_off(slot, f), v); }
 // the attributes and spellbook part (soulscombat.h, version 4)
@@ -725,6 +727,31 @@ void w_player_run(Ctx* c) {
             if (g_log) fprintf(stderr, "souls: tick %u: p%d given %u experience: level %d\n", frame_now(), slot, xp >> 8, (int)(int8_t)B(record + REC_LEVEL));
             stats_numbers(c, slot, record, false);
         }
+        // a test aid for the room runs (0 outside a test): the word H_TEST_POSE = slot + 1, written by every copy in the same
+        // lockstep tick, puts that player 40 units on the +x side of the nearest living creature (the collision grid in its
+        // order, the first of equal distances), level with it and facing it (no trigonometry: every build alike); its grid
+        // cell is left as it was, as the drop spot's aid does
+        if (SR(H_TEST_POSE) == slot + 1) {
+            SW(H_TEST_POSE, 0);
+            u32 best = 0;
+            float best_d = 0;
+            for (u32 cell = 0; cell < 120 * 120; cell++) {
+                u32 node = W(G_GRID + cell * 4);
+                for (int guard = 0; node && ok(node, 16) && guard < 256; guard++, node = W(node)) {
+                    u32 V = W(node + 12);
+                    if (!creature(V)) continue;
+                    float d = ground2(V, P);
+                    if (!best || d < best_d) { best = V; best_d = d; }
+                }
+            }
+            if (best) {
+                PF(P + O_POS, F(best + O_POS) + 40.0f);
+                PW(P + O_POS + 4, W(best + O_POS + 4));
+                PW(P + O_POS + 8, W(best + O_POS + 8));
+                PH(P + O_FACING, 0x8000);
+            }
+            if (g_log) fprintf(stderr, "souls: tick %u: p%d posed by %s\n", frame_now(), slot, best ? "a creature" : "nothing (no creature)");
+        }
         weapon_numbers(c, slot, record);    // the weapon in hand, the equip load and its tier (every machine alike)
         WW(slot, W_NEAR, near_save(P) ? 1 : 0);
         apply_mana(slot, record);           // the maximum mana with Mind
@@ -1341,6 +1368,7 @@ void w_creature_take_damage(Ctx* c) {
     p.last = tick;
     u32 rank = call(c, CREATURE_BOSS_RANK, V) & 0xff;
     s32 limit = rank >= 2 ? t.poise_boss : rank == 1 ? t.poise_miniboss : t.poise_normal;
+    if (partyscale_hook::poise_limit) limit = partyscale_hook::poise_limit(V, rank, limit, t.poise_miniboss);   // the party's size, elites
     if (p.poise >= limit) {
         p.poise = 0;
         if (stun(c, V, t.stagger_ticks)) {
@@ -1402,6 +1430,7 @@ void install() {
     }
     g_installed = true;
     g_log = getenv("SOULS_LOG") != nullptr;
+    if (partyscale_hook::install) partyscale_hook::install();      // the party scaling's factory wrapper (partyscale.h)
     fprintf(stderr, "souls: the combat mode's wrappers are in place%s\n", g_orig_save ? "" : " (no save point refill: Savepoint_run not found)");
 }
 
@@ -1410,6 +1439,7 @@ u32 tuning_figure() {
     u32 h = 2166136261u;
     const unsigned char* p = (const unsigned char*)&g_tuning;
     for (size_t k = 0; k < sizeof g_tuning; k++) h = (h ^ p[k]) * 16777619u;
+    if (partyscale_hook::figure) h = (h ^ partyscale_hook::figure()) * 16777619u;   // the party scaling's numbers (partyscale.h)
     return h;
 }
 
@@ -1528,6 +1558,7 @@ void blank(uint64_t number) {
     if (on != g_on || room != g_last_room) {
         g_last_room = room;
         reset_all();
+        if (partyscale_hook::reset) partyscale_hook::reset();       // the party scaling's counters and elites (partyscale.h)
         g_on = on;
         SW(H_MODE, on ? 1 : 0);
         if (!on) SW(H_MAGIC, 0);
@@ -1779,6 +1810,7 @@ void overlay(render::FrameList& frame) {
 
 bool setting(const char* key, const char* value) {
     if (strncmp(key, "combat.", 7) != 0) return false;
+    if (partyscale_hook::setting && partyscale_hook::setting(key, value)) return true;   // combat.party.* (partyscale.h)
     std::string name = key + 7, text = value ? value : "";
     if (name == "mode") { g_want = text == "hardcore" || text == "souls" || text == "on" || text == "yes"; return true; }   // "souls": the earlier name
     std::lock_guard<std::mutex> hold(g_lock);
@@ -1812,6 +1844,7 @@ std::string figures() {
              SR(H_PARRIES), SR(H_RIPOSTES), SR(H_STANCE), SR(H_BACKSTABS), SR(H_COUNTERS), SR(H_DRUNK), SR(H_REFILLS), (unsigned long long)g_save_calls,
              SR(H_DROPS), SR(H_PICKUPS), SR(H_GOLD_BACK), SR(H_GOLD_LOST), SR(H_ARTS), SR(H_UPGRADES), SR(H_MAT_DROPS), SR(H_TWOHANDS),
              SR(H_CHIPS), SR(H_INTERRUPTS), SR(H_CANCELS), SR(H_POINTS), SR(H_SWAPS), SR(H_CASTS), SR(H_SPELL_HITS), SR(H_CAST_REFUSED), tuning_figure());
+    if (partyscale_hook::figures) return std::string(text) + "; " + partyscale_hook::figures();   // partyscale.h
     return text;
 }
 

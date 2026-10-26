@@ -10,6 +10,7 @@
 // poke, dump, show, echo, sync, log (ignored), quit.  Commands of the rig that belong to
 // the emulator (save, load, break, pnach, netshim, fuzz, ontick, A:/B:) are refused.
 #include "rt.h"
+#include "moved.h"
 
 #include <cinttypes>
 #include <cstdio>
@@ -24,7 +25,7 @@ std::map<std::string, u32> g_symbols;
 const u8* mem_ptr(u32 address, u32 size) {
     if (address >= 0x70000000u && address - 0x70000000u <= 0x4000u - size && size <= 0x4000u)
         return rta::scratchpad() + (address - 0x70000000u);
-    u32 a = guest_addr(address, size);
+    u32 a = guest_addr(party8_at(address), size);   // a table moved for eight players is read where it is (moved.h)
     return a == ~0u ? nullptr : g_ram + a;
 }
 

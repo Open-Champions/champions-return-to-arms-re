@@ -2,6 +2,7 @@
 #include "testerkit.h"
 #include "backend.h"
 #include "iface.h"
+#include "moved.h"
 #include "../net2/hooks.h"
 
 #include <algorithm>
@@ -86,7 +87,7 @@ int g_chord_blanks = 0;
 bool g_chord_done = false;
 uint16_t g_box_buttons = 0;                             // the controller's buttons when the box opened (held ones do not count as a press)
 
-uint32_t rd32(const uint8_t* ram, uint32_t a) { uint32_t v = 0; a &= RAM - 1; if (a <= RAM - 4) memcpy(&v, ram + a, 4); return v; }
+uint32_t rd32(const uint8_t* ram, uint32_t a) { uint32_t v = 0; a = party8_at(a) & (RAM - 1); if (a <= RAM - 4) memcpy(&v, ram + a, 4); return v; }
 
 std::string stamp(const char* format) {
     time_t t = time(nullptr);

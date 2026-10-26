@@ -2,6 +2,7 @@
 #include "fpaim.h"
 #include "fpcontrols.h"
 #include "rt.h"
+#include "moved.h"
 #include "../net2/hooks.h"
 
 #include <atomic>
@@ -42,13 +43,13 @@ const Class CLASSES[] = {
 const int CLASS_COUNT = (int)(sizeof CLASSES / sizeof CLASSES[0]);
 
 bool ok(u32 a, u32 size = 4) { a &= 0x1FFFFFFF; return a >= 0x80000 && a <= RAM_SIZE - size; }
-u32 RD(u32 a) { u32 v = 0; if (ok(a)) memcpy(&v, g_ram + (a & 0x1FFFFFFF), 4); return v; }
-u16 RH(u32 a) { u16 v = 0; if (ok(a, 2)) memcpy(&v, g_ram + (a & 0x1FFFFFFF), 2); return v; }
-u8 RB(u32 a) { return ok(a, 1) ? g_ram[a & 0x1FFFFFFF] : 0; }
-float RF(u32 a) { float v = 0; if (ok(a)) memcpy(&v, g_ram + (a & 0x1FFFFFFF), 4); return v; }
-void WR(u32 a, u32 v) { if (ok(a)) memcpy(g_ram + (a & 0x1FFFFFFF), &v, 4); }
-void WH(u32 a, u16 v) { if (ok(a, 2)) memcpy(g_ram + (a & 0x1FFFFFFF), &v, 2); }
-void WB(u32 a, u8 v) { if (ok(a, 1)) g_ram[a & 0x1FFFFFFF] = v; }
+u32 RD(u32 a) { u32 v = 0; if (ok(a)) memcpy(&v, g_ram + (party8_at(a) & 0x1FFFFFFF), 4); return v; }
+u16 RH(u32 a) { u16 v = 0; if (ok(a, 2)) memcpy(&v, g_ram + (party8_at(a) & 0x1FFFFFFF), 2); return v; }
+u8 RB(u32 a) { return ok(a, 1) ? g_ram[party8_at(a) & 0x1FFFFFFF] : 0; }
+float RF(u32 a) { float v = 0; if (ok(a)) memcpy(&v, g_ram + (party8_at(a) & 0x1FFFFFFF), 4); return v; }
+void WR(u32 a, u32 v) { if (ok(a)) memcpy(g_ram + (party8_at(a) & 0x1FFFFFFF), &v, 4); }
+void WH(u32 a, u16 v) { if (ok(a, 2)) memcpy(g_ram + (party8_at(a) & 0x1FFFFFFF), &v, 2); }
+void WB(u32 a, u8 v) { if (ok(a, 1)) g_ram[party8_at(a) & 0x1FFFFFFF] = v; }
 void WF(u32 a, float v) { u32 b; memcpy(&b, &v, 4); WR(a, b); }
 u32 bits(float v) { u32 b; memcpy(&b, &v, 4); return b; }
 float flt(u32 b) { float v; memcpy(&v, &b, 4); return v; }

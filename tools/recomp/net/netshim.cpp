@@ -57,6 +57,7 @@
 // the runtime's one lock held, so nothing here needs a lock of its own.
 #include "recomp.h"
 #include "funcs.h"
+#include "moved.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -147,7 +148,7 @@ double cpu_seconds() {
 // ---- guest memory, as the rig's Machine sees it (main memory and its mirrors) -----------
 u8* gptr(u32 address, u32 length) {
     if ((address & 0xF0000000u) == 0x70000000u) return nullptr;         // the scratchpad is the runtime's
-    u32 physical = address & 0x1FFFFFFFu;
+    u32 physical = party8_at(address) & 0x1FFFFFFFu;   // a table moved for eight players is read where it is (moved.h)
     if ((u64)physical + length > RAM_SIZE) return nullptr;
     return g_ram + physical;
 }

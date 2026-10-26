@@ -1,0 +1,20 @@
+# The game's tables sized for four players that a game of five to eight moves (docs/issues/native-8-players.md A.9;
+# tools/recomp/reloc.py reads this for recomp.py --reloc).  One table per line: slot of g_reloc (decimal), start, end
+# (exclusive; hex).  Each moves as a whole; a table whose slots are back to back with another table's is listed on its own line
+# so that each can grow.
+0   4d8af0  4ebbb0   # g_players: 4 x 0x4c30
+1   5bf838  5d0bb8   # g_peers: 4 x 0x44e0 (with the sync ring g_localSyncRing 0x5c10e4)
+2   41bfd8  41c138   # g_pads: 4 x 0x58
+3   41c140  41c144   # g_padSlotMap: s8[4]
+4   41b980  41ba40   # the button tables: 12 x u32[4] (each 0x10)
+5   402b3b  402b5b   # the address tables: 2 x 4 x 4 bytes
+6   402b5c  402b7c   # the port tables: 2 x u32[4]
+7   402b90  4030a0   # g_launchRecs: 4 x 0x144
+8   5d0bc0  5d0bc8   # g_netCamYaw: u16[4]
+9   5d0bc8  5d0bf8   # g_netInputLock: 4 x 12
+10  5d1454  5d1458   # g_netKickAcks: u8[4]
+11  4f70d0  4f7100   # g_spawnPos: Vec3[4]
+12  4f8410  4f8418   # g_spawnFacing: s16[4]
+13  4f84a8  4f84b0   # g_playerDeadCountdown: s16[4]
+14  4039c8  4039f8   # g_activityCenters: Vec3[4] (the count at 0x403a08 stays; 0x4039f8 is the script-self word)
+15  879ec0  88cf80   # g_savedPlayers: 4 x 0x4c30

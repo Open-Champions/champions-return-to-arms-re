@@ -91,41 +91,83 @@ extern u32 g_site;
 #define SX32(x) ((u64)(s64)(s32)(x))
 
 // ---- guest memory ---------------------------------------------------------------------
+#ifdef RECOMP_RELOC_CHECK
+// A test build of a translation with moved tables (recomp.py --reloc, app/party8.h): every load and store of the
+// translated code is checked against the old places of the moved tables while they are moved; a hit is reported
+// with the translated function it came from (app/party8.cpp).
+#include "moved.h"
+__attribute__((weak, noinline)) void reloc_check_hit(u32 address) { (void)address; }   // app/party8.cpp has the one that reports
+static inline void RELOC_CHECK(u32 a) {
+    if (UNLIKELY(g_party8_delta != nullptr)) {
+        u32 p = a & 0x1FFFFFFFu;
+        for (int k = 0; k < 32; k++)
+            if (p >= g_party8_spans[k][0] && p < g_party8_spans[k][1]) { reloc_check_hit(a); break; }
+    }
+}
+#else
+#define RELOC_CHECK(a) ((void)0)
+#endif
+#ifdef RECOMP_RELOC_DYN
+// A translation with moved tables (app/party8.h): every load and store at an old place of a moved table goes to the
+// new place, whatever made the address (a pointer made before the move, one the translator could not follow).
+#include "moved.h"
+#define RELOC_MAP(a) do { if (UNLIKELY(g_party8_page[((a) & 0x1FFFFFFFu) >> 16])) (a) = party8_at(a); } while (0)
+#else
+#define RELOC_MAP(a) ((void)0)
+#endif
 static inline u8 LD8(u32 a) {
+    RELOC_CHECK(a);
+    RELOC_MAP(a);
     if (LIKELY(a < RAM_SIZE)) return g_ram[a];
     return (u8)rt_load(a, 1);
 }
 static inline u16 LD16(u32 a) {
+    RELOC_CHECK(a);
+    RELOC_MAP(a);
     if (LIKELY(a <= RAM_SIZE - 2)) { u16 v; memcpy(&v, g_ram + a, 2); return v; }
     return (u16)rt_load(a, 2);
 }
 static inline u32 LD32(u32 a) {
+    RELOC_CHECK(a);
+    RELOC_MAP(a);
     if (LIKELY(a <= RAM_SIZE - 4)) { u32 v; memcpy(&v, g_ram + a, 4); return v; }
     return (u32)rt_load(a, 4);
 }
 static inline u64 LD64(u32 a) {
+    RELOC_CHECK(a);
+    RELOC_MAP(a);
     if (LIKELY(a <= RAM_SIZE - 8)) { u64 v; memcpy(&v, g_ram + a, 8); return v; }
     return rt_load(a, 8);
 }
 static inline void ST8(u32 a, u8 v) {
+    RELOC_CHECK(a);
+    RELOC_MAP(a);
     if (LIKELY(a < RAM_SIZE)) { g_ram[a] = v; DIRTY(a, 1); return; }
     rt_store(a, 1, v);
 }
 static inline void ST16(u32 a, u16 v) {
+    RELOC_CHECK(a);
+    RELOC_MAP(a);
     if (LIKELY(a <= RAM_SIZE - 2)) { memcpy(g_ram + a, &v, 2); DIRTY(a, 2); return; }
     rt_store(a, 2, v);
 }
 static inline void ST32(u32 a, u32 v) {
+    RELOC_CHECK(a);
+    RELOC_MAP(a);
     if (LIKELY(a <= RAM_SIZE - 4)) { memcpy(g_ram + a, &v, 4); DIRTY(a, 4); return; }
     rt_store(a, 4, v);
 }
 static inline void ST64(u32 a, u64 v) {
+    RELOC_CHECK(a);
+    RELOC_MAP(a);
     if (LIKELY(a <= RAM_SIZE - 8)) { memcpy(g_ram + a, &v, 8); DIRTY(a, 8); return; }
     rt_store(a, 8, v);
 }
 // LQ / SQ: the CPU ignores the low four address bits
 static inline void op_lq(Ctx* c, int rt, u32 a) {
     a &= ~15u;
+    RELOC_CHECK(a);
+    RELOC_MAP(a);
     u64 lo, hi;
     if (LIKELY(a <= RAM_SIZE - 16)) { memcpy(&lo, g_ram + a, 8); memcpy(&hi, g_ram + a + 8, 8); }
     else rt_load128(a, &lo, &hi);
@@ -133,6 +175,8 @@ static inline void op_lq(Ctx* c, int rt, u32 a) {
 }
 static inline void op_sq(Ctx* c, int rt, u32 a) {
     a &= ~15u;
+    RELOC_CHECK(a);
+    RELOC_MAP(a);
     if (LIKELY(a <= RAM_SIZE - 16)) {
         memcpy(g_ram + a, &c->r[rt], 8); memcpy(g_ram + a + 8, &c->rh[rt], 8); DIRTY(a, 16);
     } else rt_store128(a, c->r[rt], c->rh[rt]);

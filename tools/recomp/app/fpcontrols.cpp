@@ -10,6 +10,7 @@
 //   obj_moveWithCollision  does not move for a step whose square is not above 0.001.
 //   pad_decodeStick        |stick| = 1.4705882 x (m - 0.32), m the raw length in 1/128ths.
 #include "fpcontrols.h"
+#include "moved.h"
 
 #include <algorithm>
 #include <atomic>
@@ -31,7 +32,7 @@ typedef int32_t s32;
 // ---- the game's memory ----------------------------------------------------------------------
 const u32 RAM = 0x2000000;
 bool ok(u32 a, u32 size = 4) { a &= 0x1FFFFFFF; return a >= 0x80000 && a <= RAM - size; }
-u8* at(u32 a) { return rta::memory() + (a & 0x1FFFFFFF); }
+u8* at(u32 a) { return rta::memory() + (party8_at(a) & 0x1FFFFFFF); }   // moved.h: a table moved for eight players
 u32 W(u32 a) { u32 v = 0; if (ok(a)) memcpy(&v, at(a), 4); return v; }
 u16 H(u32 a) { u16 v = 0; if (ok(a, 2)) memcpy(&v, at(a), 2); return v; }
 u8 B(u32 a) { return ok(a, 1) ? *at(a) : 0; }

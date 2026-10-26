@@ -8,6 +8,7 @@
 // reading the HUD's functions is written up in docs/issues/native-hud.md, "Where the numbers come
 // from", with what was checked on the running game.
 #include "gamestate.h"
+#include "../rt/moved.h"
 
 #include <chrono>
 #include <cmath>
@@ -108,7 +109,7 @@ double now_usec() {
 struct Mem {
     const u8* ram = nullptr;
     bool ok(u32 a, u32 n = 4) const { return a >= 0x10000 && a < RAM_SIZE && n <= RAM_SIZE - a; }
-    template <class T> T get(u32 a) const { T v{}; if (ok(a, sizeof(T))) memcpy(&v, ram + a, sizeof(T)); return v; }
+    template <class T> T get(u32 a) const { T v{}; a = party8_at(a); if (ok(a, sizeof(T))) memcpy(&v, ram + a, sizeof(T)); return v; }   // moved.h
     u32 w(u32 a) const { return get<u32>(a); }
     int32_t i(u32 a) const { return get<int32_t>(a); }
     u16 h(u32 a) const { return get<u16>(a); }

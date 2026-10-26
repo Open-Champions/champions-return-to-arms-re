@@ -10,6 +10,7 @@
 #pragma once
 #include "recomp.h"
 #include "iface.h"
+#include "moved.h"
 
 #include <functional>
 #include <string>
@@ -26,7 +27,7 @@ static inline u32& W(u32 addr) { return *(u32*)(g_ram + addr); }
 // a guest pointer as an index into main memory (kernel segments and mirrors folded), or
 // ~0u when it does not point into it with `size` bytes to spare
 static inline u32 guest_addr(u32 pointer, u32 size) {
-    u32 a = pointer & 0x1FFFFFFF;
+    u32 a = party8_at(pointer) & 0x1FFFFFFF;    // a table moved for eight players is where it is (moved.h)
     return (a < RAM_SIZE && size <= RAM_SIZE - a) ? a : ~0u;
 }
 

@@ -36,6 +36,7 @@
 #include "gfx_rt.h"
 
 #include "rt.h"
+#include "moved.h"
 #include "funcs.h"
 
 #include <algorithm>
@@ -669,7 +670,7 @@ const char* fallback_reason(u32& camera, u32& object, int& slot) {
     if (alive > 1) return "more than one local player";
     slot = (s32)W(G_LOCAL_ALIVE);
     if (slot < 0 || slot > 3) return "no local player";
-    object = W(G_PLAYER_OBJECT + (u32)slot * PLAYER_STRIDE);
+    object = W(party8_at(G_PLAYER_OBJECT + (u32)slot * PLAYER_STRIDE));   // moved.h
     if (!in_ram(object, 0x600)) return "no player object";
     return nullptr;
 }

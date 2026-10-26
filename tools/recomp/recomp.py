@@ -34,6 +34,7 @@ Instruction semantics follow tools/ee_emu.py one for one; tools/recomp/difftest.
 the result against that interpreter.
 """
 import argparse
+import reloc
 import bisect
 import os
 import re
@@ -540,6 +541,25 @@ def simple(pc, w):
     return bad
 
 
+# Relocatable tables (--reloc FILE, reloc.py): the decisions of the unit being emitted, {pc: k}; the statements of
+# those instructions get g_reloc[k] added to the address they form.
+RELOC_DECIDE = {}
+RELOC_MISSED = []
+_simple_plain = simple
+
+
+def simple(pc, w):  # noqa: F811 (the plain one wrapped)
+    text = _simple_plain(pc, w)
+    k = RELOC_DECIDE.get(pc)
+    if k is None:
+        return text
+    moved = reloc.apply(pc, w, text, k, ea)
+    if moved is None:
+        RELOC_MISSED.append(pc)
+        return text
+    return moved
+
+
 def branch_condition(w):
     op, rs, rt = w >> 26, (w >> 21) & 31, (w >> 16) & 31
     if op in (4, 0x14):
@@ -1010,6 +1030,8 @@ def main(argv=None):
                         help='one more patch file, applied whole after --pnach (repeatable): a patch kept outside the '
                         'repository, such as the local sign-in skip.  Its words go into the image and into patches.cpp '
                         'after the words of --pnach, and are not counted in recomp_patch_set_words()')
+    parser.add_argument('--reloc', help='a file of table ranges (reloc.py) whose addresses the translation forms '
+                        'with g_reloc[k] added: 0 unless a mode has moved the table at run time')
     parser.add_argument('--hle-add', action='append', default=[],
                         help='one more file of addresses supplied by whoever links the translation (repeatable), '
                         'added to --hle: a module such as tools/recomp/net keeps its own list')
@@ -1100,7 +1122,17 @@ def main(argv=None):
         files.append(path)
         current, current_size = [], 0
 
+    reloc_ranges = reloc.read_ranges(args.reloc) if args.reloc else []
+    reloc_count, reloc_units = {}, 0
     for unit in units:
+        RELOC_DECIDE.clear()
+        if reloc_ranges:
+            RELOC_DECIDE.update(reloc.analyse_unit(image, unit, walk, control_kind, branch_target, jump_target,
+                                                   always_taken, reloc_ranges, set(stats['outside']) | extra))
+            if RELOC_DECIDE:
+                reloc_units += 1
+            for k in RELOC_DECIDE.values():
+                reloc_count[k] = reloc_count.get(k, 0) + 1
         lines = emit_unit(image, unit, unit_of, known)
         bad += sum(line.count('rt_unimpl(') for line in lines)
         total_ins += unit.size() // 4
@@ -1113,11 +1145,19 @@ def main(argv=None):
     text = ['// generated - do not commit', '#pragma once']
     text += ['void fn_%08x(Ctx*);' % addr for addr in sorted(known)]
     text += ['void orig_%08x(Ctx*);' % addr for addr in sorted(hle & {u.start for u in units})]
+    if reloc_ranges:
+        text += ['extern u32 g_reloc[32];   // reloc.py: added to the addresses of the moved tables; 0 = where the game has them']
     write_if_changed(os.path.join(args.out, 'funcs.h'), '\n'.join(text) + '\n')
     text = ['// generated - do not commit', '#include "recomp.h"', '#include "funcs.h"',
             'const RecompEntry g_recomp_entries[] = {']
     text += ['    {0x%xu, fn_%08x},' % (addr, addr) for addr in sorted(known)]
     text += ['};', 'const unsigned g_recomp_entry_count = %d;' % len(known)]
+    if reloc_ranges:
+        # the moved tables: what reloc.py relocates, for the module that moves them (app/party8.cpp; weak there)
+        text += ['u32 g_reloc[32];', 'u32 g_reloc_spans[32][2] = {']
+        text += ['    {0x%xu, 0x%xu},' % (lo, hi) if any(r[0] == k for r in reloc_ranges) else '    {0u, 0u},'
+                 for k in range(32) for (lo, hi) in [next(((r[1], r[2]) for r in reloc_ranges if r[0] == k), (0, 0))]]
+        text += ['};', 'unsigned g_reloc_count = %d;' % len(reloc_ranges)]
     write_if_changed(os.path.join(args.out, 'table.cpp'), '\n'.join(text) + '\n')
     # a program that does not replace a function on the HLE list gets the translation
     text = ['// generated - do not commit', '#include "recomp.h"', '#include "funcs.h"']
@@ -1159,6 +1199,10 @@ def main(argv=None):
         stats['data_refs'], stats['code_refs']))
     print('transfer targets outside every unit: %d' % stats['no_unit'])
     print('instructions emitted as rt_unimpl: %d' % bad)
+    if reloc_ranges:
+        print('relocated: %d instructions in %d units (%s); not rewritten: %d%s' % (
+            sum(reloc_count.values()), reloc_units, ', '.join('table %d: %d' % kv for kv in sorted(reloc_count.items())),
+            len(RELOC_MISSED), (' (' + ' '.join('%x' % a for a in RELOC_MISSED[:20]) + ')') if RELOC_MISSED else ''))
     print('C++ files: %d (+ funcs.h, table.cpp) in %s' % (len(files), args.out))
     return 0
 
