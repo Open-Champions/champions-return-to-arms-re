@@ -27,7 +27,7 @@ Evidence under `local/godot-remaster-check/` (not tracked): the build, routes, l
 | [x] | Shops | **Ran**: the hub's shop through the dialogue, the Buy list, a tab, out (`c1/pictures/hub-shop-*.png`) |
 | [~] | Bosses | **Ran**: every boss level loaded with its boss (boss bar in `bossgood`, boss music above) and fought by the route; killing each boss by script was not attempted |
 | [ ] | 60 fps paced, 120 where possible, per level | **Not met**. At load 11-19 (`c3`, paced, 120 Hz display): game frames a second `drunare` 59.1, `valor` 57.2, `fearboss` 56.6 (walking at 119.7 pictures a second), `blood1` 55.8, `nitdung2` 53.4, `storm5` 51.8, `fire1` 37.7, `bossgood` 37.9. At load 40-450 (the long runs) 18-45 in most levels. See bug 2 |
-| [x] | No script or shader errors | **Ran**: no SCRIPT ERROR, SHADER ERROR or Parse Error in any run's output (campaign, rooms); the only warnings are the test window's own arguments (bug 8) |
+| [x] | No script or shader errors | **Ran**: no SCRIPT ERROR, SHADER ERROR or Parse Error in any run's output (campaign, rooms); the test window's "unknown option" warnings fixed (bug 8). A later commit (`e1d87ed`) brought one back in rooms - `model_remaster.gd` reading a figure's `name` that is not always there, 3,063 times in a two-copy room - fixed (section 8) |
 | [x] | Pictures per level | **Ran**: about 12 per level (arrival, HUD window picture, five views, end), sheets in `local/godot-remaster-check/` |
 | [x] | Remastered online, 2 copies through the portal | **Ran** (`online/r2a`): two portals, both Remastered by their cards, friends, room, Start; hub -> `drunare` -> `valor` -> `arachna1`, deaths and the reload; **6,467 ticks, no shared column differs** (the cut-scene clock column `cutf` left out: the front end's title fly-over clock, as `native-cutscenes.md` notes); copy A crashed at quit (bug 4) |
 | [x] | Remastered online, 3 and 4 copies | **Ran** (`online/r3a`, `r4a`: Godot copies with the Remastered options on the command line, launched by `n2party.py` through a service on this Mac): 3 copies 6,131 / 6,131 / 6,143 ticks every pair in step, 4 copies 6,038-6,045 ticks every pair in step; hub -> `drunare` -> `valor` -> `arachna1`, 6 and 8 deaths, 2 reloads after everybody died; Hardcore, aiming and hold-to-skip "ON (a room's game)" on every copy |
@@ -69,12 +69,12 @@ session and the portal comes back ("the session is over (frontend)", `c2-2`). No
 |---|---|---|---|---|
 | 1 | **Blocker** | In every long Remastered session (4 of 4) black geometry - a slab with jagged spikes and thin black streaks - appears and then stays fixed to the player through every later level, view and the ending, growing until the 3-D picture is wholly black: from `drunarm`'s Hardcore round in `c1` (levels 3-9 covered), from `watg2a` in `c2-1` (the next 34 levels and `endgood`'s closing scene), from `watg2a` in `t2` (nearly the whole picture black), from `disbonus` in `c4-1` (every later level's 3-D picture mean 0.0 of 255 while the game ran on with 300-700 draws a picture; only the HUD showed). A player cannot finish the campaign in one sitting | Godot side: the native program with the same route and modes draws cleanly (`endgood/w1`); seen also without the portal, paced (`w2`: the streaks); not seen in two short runs. Not removed by switching off any of `remaster_models`, `er_models`, `er_creatures`, `models`, `fill`, `er_world`, `lights`, `contact`, `backdrop`, `sky`, `batch`, `prepass`, nor by the display rate 60 (`t1`, `t2`). Left: the scene's kept meshes and the between-frames carry (`tools/godot/extension/src/rta_scene.cpp` `keep` / `carry`, `rta_drawer.cpp`), which no look key turns off. Other agents work in those files | **open** |
 | 2 | **Major** | 60 a second not held: game frames 37.7 a second in `fire1` and 37.9 in `bossgood`, 51.8-59.1 elsewhere, at load 11-19; the 120 Hz picture rate reached only walking in light levels (`fearboss` 119.7, `valor` 92) | the machine was never quiet (other agents' Godot runs); `native-godot.md` measured 58.5-60 in fire1 alone. Needs a measurement on a quiet machine before a cause is named | **open** |
-| 3 | Medium | Remastered's per-level look presets reach no player: `levels.cfg` is game output made by `presets.py walk/make`; `build.py project` stages it only when `OUT/presets/levels.cfg` exists, and no setup or installer runs `presets.py`. No build since round 7 (`godot-r7`) has had it, including the exports and the release of 2026-10-25 - the PROGRESS claim "a lighting preset for every one of the 111 levels" is true only on the machine that made them | `tools/godot/build.py` (staging), `tools/install/setup/*` (no step makes it); fix: make the presets on the player's machine at setup (from the player's disc, like the films) or derive them at level load | **open** (a setup step, not a small fix) |
+| 3 | Medium | Remastered's per-level look presets reached no player: `levels.cfg` was kept as game output under `local/` and staged only where `presets.py make` had run, so no build since round 7 had it | the file holds only our own look numbers (shade, fog, bloom, light energy, brightness, contrast, saturation, sun height by level name; no colour, texture, geometry or code of the game): now tracked as `tools/godot/project/presets/levels.cfg` (the measurement comments left out); `build.py` stages and exports it with the project, `build_setups.py` no longer refuses the name | **fixed** (section 8) |
 | 4 | Medium | Crash at quit of a room copy: signal 11 in `RendererRD::MaterialStorage::free` from `BaseMaterial3D::~BaseMaterial3D` of `ArrayMesh`es held in nested GDScript dictionaries, freed in `SceneTree::finalize` after the rendering server's materials (`online/r2a/a.txt`; the crash report in the copy's `reports/`). 1 of about 12 Godot exits | a script-held mesh cache (`er_layer.gd`, `model_remaster.gd` or `er_world.gd` keep such dictionaries) not cleared before shutdown; clearing it in `_exit_tree` would avoid it | **open** |
-| 5 | Minor | Remastered plays at 4:3 between black bars in a 16:9 window by default: the profile's `wide` is off and `edition.gd` does not set it | `portal/edition.gd` / profile default | open (a design choice for the owner) |
-| 6 | Minor | The game's 2-D screens in the Godot window are much darker than the game's own picture (the ending's save screen: mean 3-4 against 19-22) | already found in `native-cutscenes.md` ("the sRGB curve applied once too often" in the 2-D path) | open |
-| 7 | Minor | The library's room status keeps the text "the game runs: level hub" after level changes (the level field itself is current) | `tools/recomp/net2/launch.cpp:557` (set once at the start); net2 is other agents' area | open |
-| 8 | Cosmetic | Every run of the portal test window prints "unknown option" for the test window's own arguments | `main.gd` argument parser | open |
+| 5 | Minor | Remastered played at 4:3 between black bars in the test window's 16:9 picture | the profile's `wide` was on (the default since 2026-10-13); the game scene took the shape from the window, not from the viewport it is shown in - the portal's test window puts the portal into a 16:9 off-screen viewport inside a window of another shape. Now the viewport's shape; Classic kept at 4:3 whatever the setting | **fixed** (section 8) |
+| 6 | Minor | The game's picture in the Godot window was darker than the game's own picture - 2-D screens most visibly (the ending's save screen mean 3-4 against 19-22), the 3-D picture too | `view.gd`'s canvas shader multiplied `texture(TEXTURE, UV)` by `COLOR`, which in Godot 4 already holds the texture's colour: every value squared (not the sRGB curve twice) | **fixed** (section 8) |
+| 7 | Minor | The library's room status kept the text "the game runs: level hub" after level changes | `tools/recomp/net2/launch.cpp`: the text was set once at the start; now set again with the level when the presence sees it change | **fixed** (section 8) |
+| 8 | Cosmetic | Every run of the portal test window printed "unknown option" for the test window's own arguments | `main.gd` now knows the test window's and the join test's options (with their values) | **fixed** (section 8) |
 | 9 | - | Three level requests in the long runs brought back a level (`honor` -> `fire1`, `nitdung1` -> `nitdung2`, `nitbon2` -> `nitbonus` four times instead of `bossevil`); each level loads when asked for in a run of its own | not found; the route's request may meet the game's own restart or a bonus level's return | noted |
 
 Fixed here: none of the above was both small and clearly correct within the files open to this work.
@@ -112,7 +112,7 @@ were black (bug 1), so its later figures do not count.
 ## 6. Open items
 
 - Bug 1 (the black geometry) and bug 2 (60 / 120 on a quiet machine).
-- Bugs 3 and 4.
+- Bug 4.
 - Spells cast and aimed by the look inside the campaign; weapon arts and two-handing in the campaign; a boss killed.
 - The sharp films seen in this route.
 - Remastered online through the public service with three and four copies, and from two networks.
@@ -124,3 +124,40 @@ were black (bug 1), so its later figures do not count.
 - `tools/godot/project/portal/dev/shots.gd`: scenario `solo` (the Remastered or Classic card's Play pressed, the game
   run with the command line's script to its end).
 - `docs/issues/remastered-complete.md` (this file), `docs/PROGRESS.md` (the Remastered row).
+
+## 8. Fixed after the check (Ran, 2026-10-26)
+
+Built from a clean worktree of `5249c6e` with only these changes (`build.py all` into `local/rfix-out`, `run.py
+import`); evidence in `local/rfix-check/` (not tracked).
+
+- **Bug 3, the look presets ship.** `tools/godot/project/presets/levels.cfg` (111 levels, our own look keys only) is
+  tracked; `build.py project` stages it from the project and no longer copies `OUT/presets`; the export takes it with
+  the project; `presets.py make` writes `OUT/levels.cfg` with its measurement comments and says to copy the key lines
+  into the project. Fresh build: `look presets: 111 levels from res://presets/levels.cfg, res://presets/tuning.cfg`;
+  in a level `level valor: look preset { brightness 1.22, shade 0.72, fog_start 420, fog_end 1350, saturation 1.196,
+  bloom_strength 0.75 }` (the made preset with the hand-tuning over it); Classic still `preset=off`.
+- **Bug 6, the window's brightness.** Cause found with a two-file Godot project: a viewport texture holding 127 shows
+  127 through a plain canvas item and 63 through `view.gd`'s shader (`texture(TEXTURE, UV) * COLOR`: COLOR already
+  is the texture's colour, so every value was squared); `vec4 c = COLOR` shows 127. Means of 255 (the window's own
+  picture; the native program's at the same point of the same script):
+
+  | Picture | native | Godot window before | Godot window now |
+  |---|---|---|---|
+  | title menu (2-D) | 123.3 124.7 156.9 | 74.1 72.8 116.3 | 123.8 125.9 158.5 (the screen itself, captured: 125.9 127.1 168.6) |
+  | hub (3-D) | 99.6 87.6 86.7 | 50.6 38.5 40.3 | 96.8 84.8 84.1; Godot Classic through the portal 100.2 88.0 87.0 |
+  | `endgood`'s save screen (2-D) | 25.5 28.6 27.3 | 3.4 4.1 3.7 | 25.5 28.7 27.4 |
+
+  The films and cut scenes go through the same shader. The look presets were picked from Godot's own drawing (`app
+  shot`), not from the window, so they stay as they were.
+- **Bug 5, widescreen.** The wide view already exists and is on by default (profile `wide`, `--aspect`, the library's
+  `aspect` option: the game's own projection widened, `native-graphics.md` 1.3: nothing the simulation computes
+  changes, the screen clamp of offline two-player games kept at 4:3). `main.gd` now takes the shape of the viewport the
+  game is shown in; Classic stays 4:3 whatever the setting (`handover.gd`, `main.gd apply_settings`, also on a switch
+  of edition while running). Through the portal (`shots.gd solo`, 1920 x 1080): Remastered `aspect 1.778`, the
+  picture filling the width; Classic `aspect 1.333`.
+- **Bug 7.** In rooms the status now reads `the game runs: level hub`, `... drunare`, `... valor`, `... arachna1` in turn.
+- **Bug 8.** No "unknown option" in the portal test runs (`solo`, Remastered and Classic).
+- **Rooms, two copies, one 16:9 and one 4:3** (`n2party.py`, Godot copies with the Remastered options, hub -> drunare
+  -> valor -> arachna1, deaths and reloads): 6,418 ticks in step (`r2`), and after the `model_remaster.gd` fix 6,171
+  ticks in step with no script error (`r3`).
+

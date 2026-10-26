@@ -325,7 +325,7 @@ func _aim() -> void:
 
 func _materials_ready(f: Dictionary) -> bool:
 	for pk in f.piece_keys:
-		if not packets.has(String(f.name) + "|" + String(pk)):
+		if not packets.has(String(f.get("name", "")) + "|" + String(pk)):
 			return false                # not drawn yet: its texture is not known
 	return true
 
@@ -474,7 +474,7 @@ func frame(to_scenario: RID) -> void:
 			# takes its maps when they are made: _maps_tick)
 			# (a packet's material is the figure's: two figures of one model - a player and the hub's statue of that
 			# class - can have different choices)
-			var pkn := String(f.name) + "|" + pk
+			var pkn := String(f.get("name", "")) + "|" + pk
 			var tu: Array = packet_draw.get(pk + "|under", [])
 			var te: Array = packet_draw.get(pk + "|env", [])
 			var both := tex_id * 1000003 + ((tu[0] as RID).get_id() if not tu.is_empty() else 0) + ((te[0] as RID).get_id() * 7919 if not te.is_empty() else 0)
@@ -483,14 +483,14 @@ func frame(to_scenario: RID) -> void:
 			packet_tex[pkn] = both
 			_packet(pkn, t, o, n, int(ordinal[tex_id]), shiny.has(n), tu, te, decal.has(n))
 			all_set = false
-		if debug and not said.has("env " + String(f.name)):
-			said["env " + String(f.name)] = true
+		if debug and not said.has("env " + String(f.get("name", ""))):
+			said["env " + String(f.get("name", ""))] = true
 			var ne := 0
 			var nt := 0
 			for n in keys.size():
 				ne += 1 if n < envs.size() and int(envs[n]) >= 0 else 0
 				nt += 1 if packet_draw.has(String(keys[n]) + "|env") else 0
-			print("rta_godot: remaster: %s: %d packets over an environment map, %d of their maps' textures known" % [String(f.name), ne, nt])
+			print("rta_godot: remaster: %s: %d packets over an environment map, %d of their maps' textures known" % [String(f.get("name", "")), ne, nt])
 		if keys.size() > 0 and all_set and ordinal.size() > 0:
 			settled["%s|%s" % [String(f.get("id", "")), String(f.key)]] = frame_no
 	if settled.size() > 4096:
@@ -748,9 +748,9 @@ func _draw(f: Dictionary, cam: Transform3D, orders: Dictionary) -> void:
 		RenderingServer.instance_geometry_set_cast_shadows_setting(g.instance, RenderingServer.SHADOW_CASTING_SETTING_ON)
 		RenderingServer.instance_attach_skeleton(g.instance, g.skeleton)
 		figs[String(f.id)] = g
-	var o := _opt(String(f.name))
+	var o := _opt(String(f.get("name", "")))
 	var root: Vector3 = f.root
-	var m := _merged(f.bake, String(f.name))
+	var m := _merged(f.bake, String(f.get("name", "")))
 	if m.is_empty():
 		return
 	var meshes: Array = m.meshes
@@ -793,7 +793,7 @@ func _draw(f: Dictionary, cam: Transform3D, orders: Dictionary) -> void:
 	if not g.has("stagger"):
 		g["stagger"] = figs.size() % 4
 		if debug:
-			print("rta_godot: remaster: %s %s: the game's light %s" % [String(f.name), String(f.id), str(light)])
+			print("rta_godot: remaster: %s %s: the game's light %s" % [String(f.get("name", "")), String(f.id), str(light)])
 	# (the figure's light set only when it changed or a material was made again: a crowd of figures, each with a few
 	# materials, would otherwise cost thousands of calls a frame)
 	var fresh := false

@@ -81,6 +81,11 @@ extends Node
 # Q E L1 R1, 1 3 L2 R2, X C L3 R3, Return Start, Backspace Select (the native application's map).
 # The first controller Godot knows is port 1 as well.
 
+# options on the shared command line that are other scripts' (each takes a value): the test window's
+# (portal/dev/shots.gd) and the join test's (dev/join_test.gd); --portal-* and --hud-* are the portal's and the HUD's
+const OTHER_SCRIPTS_OPTIONS := ["--out", "--only", "--speed", "--role", "--sync", "--service", "--join-by", "--level-to",
+	"--join-data", "--join-shots"]
+
 const PAD_SELECT := 0x0001
 const PAD_L3 := 0x0002
 const PAD_R3 := 0x0004
@@ -328,7 +333,7 @@ func _parse_arguments() -> void:
 				k += 1
 			"--offscreen", "--plain", "--no-portal": pass
 			_:
-				if not (a.begins_with("--portal") or a.begins_with("--hud")):
+				if not (a.begins_with("--portal") or a.begins_with("--hud") or a in OTHER_SCRIPTS_OPTIONS):
 					push_warning("unknown option " + a)
 				elif not value.begins_with("--"):
 					k += 1
@@ -426,10 +431,16 @@ func _ask_for_library() -> void:
 	dialog.popup_centered_ratio(0.7)
 
 
+# the pixels the game is shown in: the window's, or the viewport's when the game scene is inside one (the portal's test
+# window puts the portal into an off-screen viewport of the size being tested, whose shape is not the window's)
+func _area() -> Vector2i:
+	return Vector2i(get_viewport().get_visible_rect().size)
+
+
 func _picture_size() -> Vector2i:
 	if opt.size != Vector2i.ZERO:
 		return opt.size
-	var pixels := get_window().size
+	var pixels := _area()
 	var shape: float = opt.aspect if opt.aspect > 0.0 else 4.0 / 3.0
 	var h := pixels.y
 	var w := int(round(h * shape))
@@ -500,7 +511,7 @@ func _start() -> void:
 	if OS.has_environment("RTA_CWD"):
 		machine.change_directory(OS.get_environment("RTA_CWD"))     # tools/godot/run.py: relative paths mean what they meant there
 	if opt.aspect_window:
-		opt.aspect = max(float(get_window().size.x) / get_window().size.y, 4.0 / 3.0)
+		opt.aspect = max(float(_area().x) / _area().y, 4.0 / 3.0)
 	if opt.data == "":
 		opt.data = ProjectSettings.globalize_path("user://data")
 	var size := _picture_size()
@@ -624,12 +635,13 @@ func apply_settings(d: Dictionary) -> void:
 	if d.has("view"):
 		machine.set_option("view", String(d.view))
 	if d.has("wide"):
-		var shape: float = max(float(get_window().size.x) / get_window().size.y, 4.0 / 3.0) if bool(d.wide) else 4.0 / 3.0
+		# Classic keeps the console's 4:3 whatever the setting; Remastered takes the window's shape when wide
+		var shape: float = max(float(_area().x) / _area().y, 4.0 / 3.0) if bool(d.wide) and String(opt.edition) != "classic" else 4.0 / 3.0
 		opt.aspect = shape
 		machine.set_option("aspect", "%.5f" % shape)
 	if d.has("sharpness") and drawer != null:
 		var sharp: float = [0.5, 0.75, 1.0, 1.5, 2.0][clampi(int(d.sharpness), 0, 4)]
-		var pixels := Vector2(get_window().size) * sharp
+		var pixels := Vector2(_area()) * sharp
 		var shape2: float = opt.aspect if opt.aspect > 0.0 else 4.0 / 3.0
 		opt.size = Vector2i(int(round(pixels.y * shape2)), int(pixels.y))
 		drawer.call("set_output_size", opt.size)
@@ -718,6 +730,8 @@ func _apply_edition(e: Dictionary) -> void:
 		clock = 0.0
 		game_clock = 0.0
 	_apply_cinematic()
+	if stored.has("wide"):
+		apply_settings({"wide": stored.wide})       # the picture shape follows the edition (Classic 4:3)
 	print("rta_godot: the game is now %s" % opt.edition)
 
 
@@ -734,6 +748,8 @@ func effective_settings() -> Dictionary:
 			d[key] = info.substr(at + key.length() + 2).get_slice(" ", 0).to_int() if at >= 0 else -1
 		d["copy"] = info.substr(info.find(" copy=") + 6).get_slice(" ", 0) if info.find(" copy=") >= 0 else ""
 		d["view"] = VIEWS[clampi(int(machine.get_view().get("mode", 0)), 0, VIEWS.size() - 1)]
+		d["aspect"] = snappedf(float(machine.get_frame_aspect()), 0.001)     # the 3-D view's shape (4:3 = 1.333)
+		d["aspect_window"] = bool(opt.aspect_window)
 	if hud_node != null:
 		var hs: Dictionary = hud_node.get("setting")
 		d["hud_mode"] = String(hs.get("mode", ""))

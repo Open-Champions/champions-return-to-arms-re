@@ -614,14 +614,14 @@ ground is under the feet again.  `pvpinn` and the hub: never shown (`levels/aren
 
 ### An export without the game (`build.py export --platform macos|windows|linux`, `project/gamelib.gd`, `fromdisc.py --godot`)
 
-- **What an export holds** (checked by `build.py` after each export: no `librta_game*`, no `levels.cfg`): Godot's
+- **What an export holds** (checked by `build.py` after each export: no `librta_game*`): Godot's
   official 4.5.2 release template (from the archive of the official release, already here), our extension built for
   that platform, the project's scripts and shaders.  macOS `RtaGodot.app` 179.8 MB (8 files); Windows `RtaGodot.exe` +
   `.pck` + `rta_godot.windows.template_release.x86_64.dll` 94.2 MB (MinGW-w64 cross build from this Mac,
   `extension/cmake/mingw-x86_64.cmake`; it needs only Windows' own DLLs); Linux arm64 63.1 MB (built in the colima `rta`
   profile, image `rta-godot-linux:arm64` = the Linux build's image with cmake, ninja, git); Linux x86-64 69.6 MB, the same
-  through the container's emulation (`rta-godot-linux:amd64`): it starts and loads the extension (headless, no disc).  The look presets made from the game's pictures (`levels.cfg`) are
-  not in an export (`--with-game` makes the old private export with them and the library).
+  through the container's emulation (`rta-godot-linux:amd64`): it starts and loads the extension (headless, no disc).  The look presets (`levels.cfg`) are
+  in every export since 2026-10-26: tracked, our own numbers (`remastered-complete.md` bug 3); `--with-game` makes the old private export with the library.
 - **First start**: the game library is found by `res://gamelib.gd` (used by `main.gd`, the portal's profile and the
   extension's net2): `--lib`, the one chosen once (`user://settings.cfg [game] library`), beside the extension or the
   executable, **the installer's per-user place** (macOS `~/Library/Application Support/Open Champions/RTA Godot/`, Linux
@@ -716,8 +716,8 @@ option).  Tests, pictures and logs: `local/godot-r6/test/`, `local/godot-r6/pres
   under a warm clear colour; brightness and saturation are moved half of the way to a target made from the `g`
   picture (0.85 of its brightness, 1.25 of its saturation), within 0.9..1.15 and 1.0..1.4.  Each section of the made
   file says why (`; dark, lit by the game's lights; light level 128; 7 of the game's lights near; brightness ...`).
-- **Files**: `OUT/levels.cfg` (game output, staged into the project by `build.py project` as `res://presets/levels.cfg`,
-  and into an export), `project/presets/tuning.cfg` (tracked, my numbers), `user://look_presets.cfg`, `--look-presets
+- **Files**: `project/presets/levels.cfg` (picked by `presets.py make` into `OUT/levels.cfg`, its key lines tracked since
+  2026-10-26: our own numbers), `project/presets/tuning.cfg` (tracked, my numbers), `user://look_presets.cfg`, `--look-presets
   FILE` / `$RTA_LOOK_PRESETS`.  A key given with `--look` or `app look` stays as given; `--look preset=off` leaves
   them out.  `app look stats` prints the line the walk reads.
 - **Not seen in a view along the ground** (their pictures are the game's own camera: a scripted opening or an

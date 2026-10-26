@@ -7,8 +7,10 @@ extends Control
 var texture: Texture2D
 var drawer: Object
 # Forward+ / Mobile: a picture drawn in stored values (RtaDrawer.get_shown_stored, gs_draw.gdshaderinc GS_STORED_SPACE)
-# carries Godot's sRGB curve on top: taken off here
-const DECODE := "shader_type canvas_item;\nuniform bool decode = false;\nvoid fragment() {\n\tvec4 c = texture(TEXTURE, UV) * COLOR;\n" + \
+# carries Godot's sRGB curve on top: taken off here.  COLOR already holds the texture's colour times the modulate (Godot 4
+# canvas_item): sampling TEXTURE again squared every value - the whole window was darker than the game's own picture
+# (the title screen's mean 72 against 123 of 255; docs/issues/remastered-complete.md, bug 6)
+const DECODE := "shader_type canvas_item;\nuniform bool decode = false;\nvoid fragment() {\n\tvec4 c = COLOR;\n" + \
 	"\tif (decode) c.rgb = mix(c.rgb / 12.92, pow((c.rgb + vec3(0.055)) / 1.055, vec3(2.4)), step(vec3(0.04045), c.rgb));\n\tCOLOR = c;\n}\n"
 var decoding: ShaderMaterial
 var aspect := 4.0 / 3.0

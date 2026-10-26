@@ -560,7 +560,11 @@ void on_blank(uint64_t number) {
         if (G.phase == NET2_GAME_RUNNING && number % 60 == 0) {
             // presence: the level's name when it changes, the character when it gains a level
             std::string level = rdstr(A_LEVEL_NAME, 20);
-            if (level != G.level && !level.empty() && level != "intro") { G.level = level; tell_room(level.c_str()); }
+            if (level != G.level && !level.empty() && level != "intro") {
+                G.level = level;
+                tell_room(level.c_str());
+                set_phase(NET2_GAME_RUNNING, "the game runs: level " + level);     // the status follows the level
+            }
             u32 my_slot = (u32)G.direct.my_slot;
             net2_character mine = read_character(A_PLAYERS + my_slot * PLAYER_SIZE);
             if (G.session && mine.name[0] && (mine.level != G.character.level || strcmp(mine.name, G.character.name) || strcmp(mine.cls, G.character.cls))) {

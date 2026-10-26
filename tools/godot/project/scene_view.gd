@@ -112,8 +112,7 @@ var look := {
 # are (its clear colour, its dome, its light level, the game's light nodes, the picture the game's own camera gives) by
 # a walk through every level, plus hand-tuning.  Files, each over the one before (ConfigFile: a [section] per level name,
 # [*] for every level):
-#   res://presets/levels.cfg     made by presets.py `make` (game output: it lives under local/ and is staged with the
-#                                project; it is not in the repository)
+#   res://presets/levels.cfg     picked by presets.py `make` (tracked: our own look numbers, no colour of the game)
 #   res://presets/tuning.cfg     the hand-tuning (tracked: my own numbers, no colour of the game)
 #   user://look_presets.cfg      the player's own;  --look-presets FILE (main.gd) or $RTA_LOOK_PRESETS: one more on top
 # A key given on the command line or by "app look KEY VALUE" stays as given; "preset=off" leaves every preset out.

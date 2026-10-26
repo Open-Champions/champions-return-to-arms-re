@@ -22,7 +22,7 @@ What a setup holds - and what it never holds:
 
 The proof: every file in the setup, also inside the archives in it (zip, tar.gz), is checked for
   - names: *.iso, SLUS_209.73, librta_game*, rta_app*, rta_native*, objects (*.o), the translation's files (c_NNN.cpp,
-    gen-app/, gen-vu/, funcs.h, vu1_fast.cpp), levels.cfg;
+    gen-app/, gen-vu/, funcs.h, vu1_fast.cpp) (the look presets, project/presets/levels.cfg, are our own numbers: allowed);
   - size: nothing over 300 MB (the Godot program for macOS, two processors in one, is 160 MB; a disc image 4 GB);
   - content: an ISO 9660 volume descriptor ("CD001" at 32769), a MIPS ELF header (the PS2's executables), the text
     of the translated code (the head of each translated function, the first line recomp.py writes into its files), the
@@ -120,7 +120,7 @@ def setup_ini(service):
 
 
 # ---- the proof: nothing of the game ----------------------------------------------------------------------------------
-BAD_NAMES = re.compile(r'(\.iso$|^slus_209\.73$|^librta_game|^rta_(app|native)[^.]*(\.exe)?$|\.o$|^c_\d{3}\.cpp$|^funcs\.h$|^vu1_fast\.cpp$|^levels\.cfg$)', re.I)
+BAD_NAMES = re.compile(r'(\.iso$|^slus_209\.73$|^librta_game|^rta_(app|native)[^.]*(\.exe)?$|\.o$|^c_\d{3}\.cpp$|^funcs\.h$|^vu1_fast\.cpp$)', re.I)
 CODE_MARK = b'static void ' + b'body_00'                  # every function of the translation (split: not to find itself)
 PROGRAM_MARK = b'fn_' + b'00100000'                       # the game's first function: in the translation's table and in every
                                                            # program or library built from it that keeps its symbols

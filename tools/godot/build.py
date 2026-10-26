@@ -444,14 +444,7 @@ def stage_project(args):
             shutil.copy2(a, b + '.new%d' % os.getpid())
             os.replace(b + '.new%d' % os.getpid(), b)
             count += 1
-    # the per-level look presets made by presets.py from a walk through the levels (game output: OUT/presets, not in
-    # the repository) go beside the tracked hand-tuning in presets/
-    made = os.path.join(OUT, 'presets', 'levels.cfg')
-    if os.path.exists(made):
-        os.makedirs(os.path.join(to, 'presets'), exist_ok=True)
-        if not os.path.exists(os.path.join(to, 'presets', 'levels.cfg')) or not filecmp.cmp(made, os.path.join(to, 'presets', 'levels.cfg'), shallow=False):
-            shutil.copy2(made, os.path.join(to, 'presets', 'levels.cfg'))
-            count += 1
+    # (the per-level look presets are tracked: project/presets/levels.cfg, staged with the rest of the project)
     # The staged copy is the one test runs start: its window is small and says what it is from the first
     # moment (the script gives it its final title).  An exported application is made from a copy without this.
     open(os.path.join(to, 'override.cfg'), 'w').write(
@@ -463,10 +456,10 @@ def stage_project(args):
 
 def export_app(args):
     """An application of our own code only: Godot's official release template, the extension, the project's scripts and
-    shaders.  No game library, no look presets made from the game's pictures, no art: on its first start it asks for the
+    shaders and look presets (our own numbers).  No game library, no art: on its first start it asks for the
     player's disc image and finds the game library the installer built from it (project/gamelib.gd; tools/install/
     fromdisc.py --godot).  --platform macos (default) | windows | linux [--arch arm64|x86_64].  --with-game (macOS):
-    the old private export, with this machine's game library and presets inside - it must not leave this machine."""
+    the old private export, with this machine's game library inside - it must not leave this machine."""
     godot = os.environ.get('RTA_GODOT', os.path.join(DEPS, 'godot-editor', 'Godot.app', 'Contents', 'MacOS', 'Godot'))
     tpz = os.path.join(DEPS, 'godot-templates', 'Godot_v4.5.2-stable_export_templates.tpz')
     platform_, arch = args.platform, args.arch
@@ -497,10 +490,6 @@ def export_app(args):
         for name in files:
             if not name.endswith(('.uid', '.import')) and name not in ('.DS_Store', 'override.cfg'):
                 shutil.copy2(os.path.join(folder, name), os.path.join(project, rel, name))
-    made = os.path.join(OUT, 'presets', 'levels.cfg')     # the look presets of presets.py: made from the game's pictures, so only in --with-game
-    if with_game and os.path.exists(made):
-        os.makedirs(os.path.join(project, 'presets'), exist_ok=True)
-        shutil.copy2(made, os.path.join(project, 'presets', 'levels.cfg'))
     os.makedirs(os.path.join(project, 'bin'))
     # the editor that runs the export is this Mac's and loads the extension for itself: the macOS one is always there (an
     # export takes only its own platform's library out of bin/)
@@ -542,9 +531,9 @@ def export_app(args):
         if signed.returncode != 0:
             print('codesign: ' + signed.stderr.strip())
             return 1
-    # what is in it: nothing of the game (checked: no game library, no presets made from the game)
+    # what is in it: nothing of the game (checked: no game library)
     found = [os.path.join(d, f) for d, _, fs in os.walk(where) for f in fs]
-    bad = [f for f in found if os.path.basename(f).startswith('librta_game') or f.endswith('levels.cfg')]
+    bad = [f for f in found if os.path.basename(f).startswith('librta_game')]
     size = sum(os.path.getsize(f) for f in found)
     if bad and not with_game:
         print('the export holds what it must not: %s' % ', '.join(bad))

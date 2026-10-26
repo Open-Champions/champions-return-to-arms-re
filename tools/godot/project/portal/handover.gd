@@ -86,12 +86,14 @@ func _make_game() -> Node:
 		# the new HUD (main.gd); "--mode picture|draw" on the command line still decides, since main.gd reads it after this
 		opt["mode"] = "scene"
 		opt["view"] = String(profile.setting("view"))
-		if bool(profile.setting("wide")):
+		# the picture shape: the window's for Remastered (wide), 4:3 for Classic whatever the setting (the game as it was)
+		var wide := bool(profile.setting("wide")) and String(profile.edition()) != "classic"
+		if wide:
 			opt["aspect_window"] = true
 		var sharp: float = [0.5, 0.75, 1.0, 1.5, 2.0][clampi(int(profile.setting("sharpness")), 0, 4)]
 		if not is_equal_approx(sharp, 1.0) and opt.get("size", Vector2i.ZERO) == Vector2i.ZERO:
 			var pixels := Vector2(get_window().size) * sharp
-			opt["size"] = Vector2i(int(pixels.y * (pixels.x / pixels.y if bool(profile.setting("wide")) else 4.0 / 3.0)), int(pixels.y))
+			opt["size"] = Vector2i(int(pixels.y * (pixels.x / pixels.y if wide else 4.0 / 3.0)), int(pixels.y))
 		if String(profile.setting("interface")) == "original":
 			opt["game_hud"] = true
 		var e := edition_options()
@@ -115,6 +117,11 @@ func _make_game() -> Node:
 			var more: PackedStringArray = opt.get("args", PackedStringArray())
 			if not more.has("net2-boot=1"):
 				more.append_array(PackedStringArray(["--opt", "net2-boot=1"]))
+			# Remastered: the game's tables sized for four are moved at power-on, so that this copy can play a room of up to
+			# eight (docs/issues/native-8-players.md; a library without the relocatable translation ignores it).  Classic
+			# runs the game's own memory layout, untouched.
+			if String(e.get("edition", "")) == "remastered" and not more.has("party8=1"):
+				more.append_array(PackedStringArray(["--opt", "party8=1"]))
 			opt["args"] = more
 	return g
 

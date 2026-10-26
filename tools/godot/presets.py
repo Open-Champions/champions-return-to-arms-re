@@ -9,10 +9,11 @@ own colours, and contact sheets before / after.
       `rta_look_stats` of what scene_view.gd reads of the level: clear colour, dome, light level, far plane, the
       painted sun, the game's light nodes near the eye.  Each stop is taken twice: with the look of the fifth round
       (TAG-old: no preset, Compatibility's sun rule) and with the Forward+ balance (TAG-base: no preset).  With
-      --tag after and no --look, the presets of RTA_GODOT_OUT/presets/levels.cfg are in force (one picture a stop).
+      --tag after and no --look, the project's presets (presets/levels.cfg) are in force (one picture a stop).
   presets.py make OUT [--from TAG]
-      the presets from the walk: OUT/levels.cfg (game output: it stays under local/; build.py stages it into the
-      project as res://presets/levels.cfg).  The hand-tuning is tracked: project/presets/tuning.cfg (read over it).
+      the presets from the walk: OUT/levels.cfg (under local/: its comments quote the walk's measurements).  The look
+      keys themselves are our own numbers: copied without the comments into project/presets/levels.cfg (tracked, so
+      every build ships them).  The hand-tuning is tracked too: project/presets/tuning.cfg (read over it).
   presets.py sheets OUT [--before TAG-old] [--after after]
       one contact sheet per level, OUT/sheets/LEVEL.jpg: the stops of the walk before above, after below; and
       OUT/sheets/index.jpg with stop a of every level.
@@ -305,10 +306,7 @@ def make(args):
         made += 1
     target = os.path.join(out, 'levels.cfg')
     open(target, 'w').write('\n'.join(lines))
-    os.makedirs(os.path.join(GODOT_OUT, 'presets'), exist_ok=True)
-    if os.path.realpath(os.path.join(GODOT_OUT, 'presets')) != os.path.realpath(out):
-        shutil.copy2(target, os.path.join(GODOT_OUT, 'presets', 'levels.cfg'))
-    print('presets: %d levels -> %s (and %s/presets/levels.cfg; `build.py project` stages it)' % (made, target, GODOT_OUT))
+    print('presets: %d levels -> %s (to ship them: copy the key lines into tools/godot/project/presets/levels.cfg)' % (made, target))
     return 0
 
 
