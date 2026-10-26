@@ -69,6 +69,7 @@ sys.path.insert(0, RECOMP)
 import genfiles  # noqa: E402  (the translation's own list of files)
 sys.path.insert(0, HERE)
 import buildid  # noqa: E402  (the build id of testerkit.cpp)
+import appmodules  # noqa: E402  (the application's modules, shared with app/build.py)
 ROOT = os.path.dirname(os.path.dirname(RECOMP))
 OUT = os.path.join(ROOT, 'local', 'recomp-out')
 WIN = os.path.join(OUT, 'win')
@@ -409,24 +410,15 @@ def build_mac(args):
     # the VU1 programs translated ahead of time (vu1.cpp calls them; the stand-in for a missing file is vu1_fast_none.cpp)
     fast = os.path.join(OUT, 'gen-vu', 'vu1_fast.cpp')
     vu1_fast = fast if os.path.exists(fast) and not args.no_translation else os.path.join(RENDER, 'vu1_fast_none.cpp')
-    sources = [(os.path.join(RENDER, n), render_flags, 'r_') for n in RENDER_CORE] + [
+    # the application's modules: appmodules.py, the one list app/build.py shares (the game here is the fix-set translation:
+    # its entries for the films, cut_runFrame and Creature_setStats are open)
+    kinds = {'rt': rt_flags + ['-I', HERE], 'rt_render': rt_flags + ['-I', HERE, '-I', RENDER],
+             'testerkit': rt_flags + ['-I', HERE, '-I', RENDER, buildid.define()], 'plain': app_flags,
+             'plain_rt': ['-std=c++17', opt, '-Wall', '-I', HERE, '-I', RT], 'objc': objc + ['-I', HERE, '-I', RT]}
+    sources = [(os.path.join(RENDER, n), render_flags, 'r_') for n in RENDER_CORE] + appmodules.jobs(kinds) + [
         (vu1, render_flags, 'r_'), (vu1_fast, render_flags, 'r_'),
         (os.path.join(RENDER, 'backend_gl.cpp'), render_flags + qt_flags, 'r_'),
         (os.path.join(SOUND, 'sound_rta.cpp'), rt_flags + ['-I', SOUND], 'rt_'),
-        (os.path.join(HERE, 'app_rt.cpp'), rt_flags + ['-I', HERE], 'a_'),
-        (os.path.join(HERE, 'gfx_rt.cpp'), rt_flags + ['-I', HERE], 'a_'),
-        (os.path.join(HERE, 'fpview.cpp'), rt_flags + ['-I', HERE], 'a_'),
-        (os.path.join(HERE, 'fpworld.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),
-        (os.path.join(HERE, 'soulscombat.cpp'), rt_flags + ['-I', HERE, '-I', RENDER], 'a_'),
-        (os.path.join(HERE, 'fpaim.cpp'), rt_flags + ['-I', HERE], 'a_'),         # aiming by looking: app_main.cpp calls it
-        (os.path.join(HERE, 'testerkit.cpp'), rt_flags + ['-I', HERE, '-I', RENDER, buildid.define()], 'a_'),  # the tester's kit (testerkit.h)
-        (os.path.join(HERE, 'gamestate.cpp'), app_flags, 'a_'),                   # the player's own boss music (bossmusic.h): app_main.cpp calls it
-        (os.path.join(HERE, 'bossmusic.cpp'), app_flags, 'a_'),
-        (os.path.join(HERE, 'fpcontrols.cpp'), ['-std=c++17', opt, '-Wall', '-I', HERE, '-I', RT], 'a_'),
-        (os.path.join(HERE, 'look_mac.mm'), objc + ['-I', HERE, '-I', RT], 'a_'),
-        (FILM, rt_flags + ['-I', HERE], 'a_'),
-        (os.path.join(HERE, 'cinematic.cpp'), rt_flags + ['-I', HERE], 'a_'),       # hold to skip a cut scene: app_main.cpp calls it
-        (os.path.join(HERE, 'cinematic_hle.cpp'), rt_flags + ['-I', HERE], 'a_'),   # ... and its one game entry (hle-app.txt)
         (os.path.join(NET, 'netdrv.cpp'), rt_flags, 'n_'),
         (os.path.join(NET, 'online.cpp'), rt_flags, 'n_'),
         (ONLINE, rt_flags, 'n_'),

@@ -58,6 +58,17 @@ const u32 G_BTN_POTION_B = 0x41ba20, SKILL_RECORD_NAME = 0x535e30, PLAYER_GIVE_E
 const u32 PLAYER_RECALC_STATS = 0x1b6458;
 const u32 PAD_UP = 0x1000, PAD_RIGHT = 0x2000, PAD_DOWN = 0x4000, PAD_LEFT = 0x8000;
 const s32 ID_HEAVY = 0x25;
+// Where a hit on a creature comes from (w_creature_take_damage).  The creature's slot 2 is called by damage_apply 0x1e8230
+// (docs/spec/combat.md 2), whose prologue keeps its own caller's return address at sp + 0x218 of its 0x250-byte frame: that
+// caller is the code that does the damage - Player_meleeHit 0x1b6a98 for a swing, MissileWeapon_onTouch 0x152a18 for a shot
+// or a throw, the skill's own object (a projectile's touch handler, an area's tick, ...) for a spell.  Read from the game's
+// own stack at the call, the same on every machine, and settled when the damaging object was made, not by what the caster
+// does when it lands (a Disease Bolt lives 300 ticks: docs/spec/player-spell-pipeline.md 3).
+const u32 DAMAGE_APPLY = 0x1e8230, DAMAGE_APPLY_END = 0x1eacb8, DAMAGE_APPLY_RA = 0x218;
+const u32 PLAYER_MELEE_HIT = 0x1b6a98, PLAYER_MELEE_HIT_END = 0x1b7158;
+const u32 MISSILE_ON_TOUCH = 0x152a18, MISSILE_ON_TOUCH_END = 0x153314;
+const u32 CREATURE_HITS = 0x1196e8, CREATURE_HITS_END = 0x119d10;   // Creature_hitTargetAtReach .. Creature_hitAllEnemiesInArc
+enum : s32 { SRC_WEAPON = 0, SRC_MELEE = 1, SRC_SPELL = 2 };
 
 bool ok(u32 a, u32 size = 4) { a &= 0x1FFFFFFF; return a >= 0x80000 && a <= RAM_SIZE - size; }
 u32 W(u32 a) { u32 v = 0; if (ok(a)) memcpy(&v, g_ram + (party8_at(a) & 0x1FFFFFFF), 4); return v; }
@@ -102,7 +113,7 @@ u32 st_off(int slot, u32 field) { return 0x600 + (u32)slot * 0x80 + field; }
 enum : u32 { A_VIG = 0, A_MND = 4, A_END = 8, A_STR = 0xc, A_DEX = 0x10, A_INT = 0x14, A_FTH = 0x18, A_UNSPENT = 0x1c, A_SPENT = 0x20,
              A_OPEN = 0x24, A_ROW = 0x28, A_SLOTS = 0x2c, A_BOOK = 0x30, A_ATTUNED = 0x34, A_STAMINA_MAX = 0x38, A_MANA_BASE = 0x3c,
              A_MANA_WRITTEN = 0x40, A_MANA_LAST = 0x44, A_SPELL_PCT = 0x48, A_SPELL_GRADES = 0x4c, A_SPELL_T = 0x50, A_CASTS = 0x54,
-             A_CAST_REFUSED = 0x58, A_POINTS = 0x5c, A_SWAPS = 0x60, A_SPOT = 0x64, A_LEVEL = 0x68, A_OPENED = 0x6c, A_CLASS = 0x70, A_USED = 0x74 };
+             A_CAST_REFUSED = 0x58, A_POINTS = 0x5c, A_SWAPS = 0x60, A_SPOT = 0x64, A_LEVEL = 0x68, A_OPENED = 0x6c, A_CLASS = 0x70, A_USED = 0x74, A_SOURCE = 0x78 };
 enum : u32 { H_TEST_XP = 0x5e8, H_POINTS = 0x5ec, H_SWAPS = 0x5f0, H_CASTS = 0x5f4, H_SPELL_HITS = 0x5f8, H_CAST_REFUSED = 0x5fc,
              COST_BASE = 0xa00, L_SHEET = 0x1c0, L_SLOT_REC = 0x1e0, L_SPELL_NAMES = 0xb00 };
 s32 AR(int slot, u32 f) { return SR(st_off(slot, f)); }
@@ -1294,6 +1305,18 @@ void drop_material(Ctx* c, u32 V, int slot) {
     if (g_log) fprintf(stderr, "souls: tick %u: p%d's kill (rank %u, roll %d of %d) left an upgrade material\n", frame_now(), slot, rank, roll, chance);
 }
 
+// the source of the hit whose slot 2 call this is (DAMAGE_APPLY above): a player's swing, a spell, or another weapon hit
+// (a shot, a creature-style reach / arc hit, a nested or direct call)
+s32 damage_source(Ctx* c) {
+    u32 ra = (u32)c->r[31];
+    if (ra < DAMAGE_APPLY || ra >= DAMAGE_APPLY_END) return SRC_WEAPON;
+    u32 caller = W((u32)c->r[29] + DAMAGE_APPLY_RA);
+    if (caller >= PLAYER_MELEE_HIT && caller < PLAYER_MELEE_HIT_END) return SRC_MELEE;
+    if ((caller >= MISSILE_ON_TOUCH && caller < MISSILE_ON_TOUCH_END) || (caller >= CREATURE_HITS && caller < CREATURE_HITS_END) ||
+        (caller >= DAMAGE_APPLY && caller < DAMAGE_APPLY_END) || caller == 0) return SRC_WEAPON;
+    return SRC_SPELL;
+}
+
 // ---- Creature_takeDamage (slot 2 of most creatures) -------------------------------------------------------------
 void w_creature_take_damage(Ctx* c) {
     u32 V = (u32)c->r[4], A = (u32)c->r[5];
@@ -1305,13 +1328,18 @@ void w_creature_take_damage(Ctx* c) {
     float amount = flt(c->f[12]), raw = amount;
     s32 state = (s32)W(A + P_STATE);
     u32 pflags = (u32)SR(slot_off(slot, S_FLAGS));
-    bool heavy = state == 1 && W(A + P_ATTACK_REQUEST) == 2 && (pflags & FL_HEAVY);
+    // the swing's modifiers (heavy, guard counter, criticals) only for a hit of the swing itself: a spell or a shot that lands
+    // while the caster swings is not the swing's
+    s32 source = damage_source(c);
+    bool melee = source == SRC_MELEE && state == 1;
+    AW(slot, A_SOURCE, source);
+    bool heavy = melee && W(A + P_ATTACK_REQUEST) == 2 && (pflags & FL_HEAVY);
     bool counter = heavy && (pflags & FL_COUNTER_HEAVY);
     u32 tick = frame_now();
     // a critical: a riposte on the creature a parry opened, a heavy hit on a creature whose poise just broke, a light
     // hit from behind
     int kind = 0;
-    if (state == 1 && amount > 0 && amount < 100000.0f && F(V + C_HP) > 0 && !B(V + C_INERT)) {
+    if (melee && amount > 0 && amount < 100000.0f && F(V + C_HP) > 0 && !B(V + C_INERT)) {
         auto it = g_poise.find(V);
         if (ER(slot, E_RIPOSTE) > 0 && g_riposte_target[slot] == V) kind = 1;
         else if (heavy && it != g_poise.end() && it->second.broken && tick + 1 - it->second.broken <= (u32)t.stance_crit_window) kind = 2;
@@ -1323,16 +1351,16 @@ void w_creature_take_damage(Ctx* c) {
     // a slam (the ground pound's shoves, one point each with the lightest knock bit): the weapon's own top damage instead
     bool slam = WR(slot, W_ART_T) >= 0 && WR(slot, W_ART_KIND) == ART_SLAM && state == 10 && (((u32)c->r[6]) & FLAG_KNOCK_LIGHT) && amount >= 0 && amount <= 2.0f;
     s32 art_kind = WR(slot, W_ART_KIND);
-    bool art_hit = WR(slot, W_ART_T) >= 0 && (art_kind == ART_BOLT ? state != 1 && state != 0 : (state == 6 || state == 9 || state == 10));
+    bool art_hit = WR(slot, W_ART_T) >= 0 && (art_kind == ART_BOLT ? source == SRC_SPELL : (state == 6 || state == 9 || state == 10));
     // the lunge's and the bolt's hits are the skills' own fixed damage (made for characters of a higher level): scaled down
     if (art_hit && (art_kind == ART_LUNGE || art_kind == ART_BOLT) && amount > 0 && amount < 100000.0f) amount = amount * ((float)t.art_fixed_percent / 100.0f);
     if (slam) amount = F(G_PLAYERS + (u32)slot * REC + REC_DMG_MAX) * ((float)t.art_slam_percent / 100.0f);
     if (kind && amount > 0) amount = amount * ((float)percent / 100.0f);
     else if (counter && amount > 0) amount = amount * ((float)t.guard_counter_damage_percent / 100.0f);
     else if (heavy && amount > 0) amount = amount * ((float)t.heavy_damage_percent / 100.0f);
-    // a spell's hit (the caster's hits in the spell window that are not a swing or a weapon art): Intelligence and Faith; every
-    // other hit of the player: the weapon's upgrade and the character's statistics (the scaling of its class)
-    bool spell_hit = !art_hit && !slam && state != 1 && AR(slot, A_SPELL_T) >= 0;
+    // a spell's hit (its damage done by a skill's own object, not by a swing or a shot, and not a weapon art): Intelligence and
+    // Faith; every other hit of the player: the weapon's upgrade and the character's statistics (the scaling of its class)
+    bool spell_hit = !art_hit && !slam && source == SRC_SPELL;
     s32 dmg = spell_hit ? AR(slot, A_SPELL_PCT) : WR(slot, W_DMG);
     if (spell_hit && amount > 0 && amount < 100000.0f) bump(H_SPELL_HITS);
     if (amount > 0 && amount < 100000.0f && dmg > 0 && dmg != 100) amount = amount * ((float)dmg / 100.0f);
@@ -1340,8 +1368,8 @@ void w_creature_take_damage(Ctx* c) {
     float hp_before = F(V + C_HP);
     g_orig_ctd(c);
     if (hp_before > 0 && !(F(V + C_HP) > 0)) drop_material(c, V, slot);
-    if (g_log) fprintf(stderr, "souls: tick %u: p%d hits %08x: %.1f -> %.1f (%s, %s %d %%)%s%s, its hit points %.1f -> %.1f\n", tick, slot, V, raw, amount,
-                       class_name(wc), spell_hit ? "spell" : "weapon", dmg, heavy ? " (heavy)" : "", slam ? " (slam)" : art_hit ? " (weapon art)" : "", hp_before, F(V + C_HP));
+    if (g_log) fprintf(stderr, "souls: tick %u: p%d hits %08x: %.1f -> %.1f (%s, %s %d %%, from %s, the hitter in state %d)%s%s, its hit points %.1f -> %.1f\n", tick, slot, V, raw, amount,
+                       class_name(wc), spell_hit ? "spell" : "weapon", dmg, source == SRC_MELEE ? "a swing" : source == SRC_SPELL ? "a skill" : "a shot or other", state, heavy ? " (heavy)" : "", slam ? " (slam)" : art_hit ? " (weapon art)" : "", hp_before, F(V + C_HP));
     if (!(amount > 0)) return;
     if (kind) {
         if (kind == 1) { EW(slot, E_RIPOSTE, 0); g_riposte_target[slot] = 0; bump(H_RIPOSTES); }
@@ -1361,7 +1389,7 @@ void w_creature_take_damage(Ctx* c) {
         stun(c, V, t.crit_stun_ticks);
     }
     if (tick - p.last > (u32)t.poise_reset_ticks) p.poise = 0;
-    s32 poise = counter ? t.poise_guard_counter : (heavy || art_hit) ? t.poise_heavy : state == 0 ? t.poise_ranged : t.poise_light;
+    s32 poise = counter ? t.poise_guard_counter : (heavy || art_hit) ? t.poise_heavy : source == SRC_MELEE ? t.poise_light : t.poise_ranged;
     poise = poise * t.wc_poise[wc] / 100;
     if (weapon_now(slot).two) poise = poise * t.twohand_poise_percent / 100;
     p.poise += poise;
@@ -1440,6 +1468,7 @@ u32 tuning_figure() {
     const unsigned char* p = (const unsigned char*)&g_tuning;
     for (size_t k = 0; k < sizeof g_tuning; k++) h = (h ^ p[k]) * 16777619u;
     if (partyscale_hook::figure) h = (h ^ partyscale_hook::figure()) * 16777619u;   // the party scaling's numbers (partyscale.h)
+    h = (h ^ 0x53524331u) * 16777619u;   // "SRC1": hits classified by their source (damage_source), not the caster's state
     return h;
 }
 

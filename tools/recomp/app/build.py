@@ -44,6 +44,8 @@ RECOMP = os.path.dirname(HERE)
 sys.path.insert(0, RECOMP)
 import genfiles  # noqa: E402  (the translation's own list of files)
 import buildid  # noqa: E402  (the build id of testerkit.cpp)
+sys.path.insert(0, HERE)
+import appmodules  # noqa: E402  (the application's modules, shared with build_win.py --mac)
 ROOT = os.path.dirname(os.path.dirname(RECOMP))
 OUT = os.path.join(ROOT, 'local', 'recomp-out')
 
@@ -157,37 +159,15 @@ def main():
     jobs.append((os.path.join(render, 'texpack.cpp'), render_flags + qt_flags, 'r_'))
     jobs += [(os.path.join(rt, n), rt_flags, 'rt_') for n in RUNTIME]
     jobs.append((os.path.join(sound, 'sound_rta.cpp'), rt_flags + ['-I', sound], 'rt_'))
-    jobs.append((os.path.join(HERE, 'app_rt.cpp'), rt_flags + ['-I', HERE], 'a_'))
-    jobs.append((os.path.join(HERE, 'gfx_rt.cpp'), rt_flags + ['-I', HERE], 'a_'))
-    # the view modes (fpview.h; docs/issues/native-first-person.md)
-    jobs.append((os.path.join(HERE, 'fpview.cpp'), rt_flags + ['-I', HERE], 'a_'))
-    # the world for a camera inside it (fpworld.h; docs/issues/native-first-person-world.md)
-    jobs.append((os.path.join(HERE, 'fpworld.cpp'), rt_flags + ['-I', HERE, '-I', render], 'a_'))
-    # the controls of the look views (plain C++: the Windows program compiles the same file)
-    jobs.append((os.path.join(HERE, 'fpcontrols.cpp'), ['-std=c++17', args.opt, '-Wall', '-I', HERE, '-I', rt], 'a_'))
-    # the souls-style combat mode (soulscombat.h; docs/issues/native-souls-combat.md): reaches the game's memory and its overlay the frame list
-    jobs.append((os.path.join(HERE, 'soulscombat.cpp'), rt_flags + ['-I', HERE, '-I', render], 'a_'))
-    # Hardcore mode's party scaling (partyscale.h; docs/issues/native-8-players.md): its game entry is partyscale_hle.cpp
-    jobs.append((os.path.join(HERE, 'partyscale.cpp'), rt_flags + ['-I', HERE], 'a_'))
-    # the tables sized for four moved at run time (party8.h): does something only with a --party8 translation
-    jobs.append((os.path.join(HERE, 'party8.cpp'), rt_flags + ['-I', HERE], 'a_'))
-    # aiming by looking (fpaim.h; docs/issues/native-first-person-aim.md): the same kind of module
-    jobs.append((os.path.join(HERE, 'fpaim.cpp'), rt_flags + ['-I', HERE], 'a_'))
-    # hold to skip a cut scene (cinematic.h; docs/issues/native-cutscenes.md): the mode; its one game entry is cinematic_hle.cpp
-    jobs.append((os.path.join(HERE, 'cinematic.cpp'), rt_flags + ['-I', HERE], 'a_'))
-    # the tester's kit (testerkit.h): the bug report (F8), the crash report, the build line (F9); the build id is buildid.py's
-    jobs.append((os.path.join(HERE, 'testerkit.cpp'), rt_flags + ['-I', HERE, '-I', render, buildid.define()], 'a_'))
-    # the player's own boss music (bossmusic.h; docs/issues/native-hud.md): the state reader and the decoders, plain C++
-    jobs.append((os.path.join(HERE, 'gamestate.cpp'), ['-std=c++17', args.opt, '-Wall', '-I', HERE], 'a_'))
-    jobs.append((os.path.join(HERE, 'bossmusic.cpp'), ['-std=c++17', args.opt, '-Wall', '-I', HERE, '-I', rt], 'a_'))
-    jobs.append((os.path.join(HERE, 'look_mac.mm'), ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt], 'a_'))
+    # the application's modules (appmodules.py: the one list app/build.py and build_win.py --mac share)
+    kinds = {'rt': rt_flags + ['-I', HERE], 'rt_render': rt_flags + ['-I', HERE, '-I', render],
+             'testerkit': rt_flags + ['-I', HERE, '-I', render, buildid.define()],
+             'plain': ['-std=c++17', args.opt, '-Wall', '-I', HERE], 'plain_rt': ['-std=c++17', args.opt, '-Wall', '-I', HERE, '-I', rt],
+             'objc': ['-std=c++17', args.opt, '-Wall', '-fobjc-arc', '-I', HERE, '-I', rt]}
+    jobs += appmodules.jobs(kinds, appmodules.APP_MODULES)
     if not args.original:
-        # the films: the library entry points of hle-app.txt, which only this translation leaves open
-        jobs.append((os.path.join(HERE, 'film.cpp'), rt_flags + ['-I', HERE], 'a_'))
-        # ... and cut_runFrame for hold to skip (cinematic.h): the same list leaves it open
-        jobs.append((os.path.join(HERE, 'cinematic_hle.cpp'), rt_flags + ['-I', HERE], 'a_'))
-        # ... and Creature_setStats for Hardcore mode's party scaling (partyscale.h): the same list leaves it open
-        jobs.append((os.path.join(HERE, 'partyscale_hle.cpp'), rt_flags + ['-I', HERE], 'a_'))
+        # the game entries this translation leaves open (hle-app.txt): the films, cut_runFrame, Creature_setStats
+        jobs += appmodules.jobs(kinds, appmodules.FIXSET_MODULES)
         # the network: the driver, the one-step online (the emulator build's own file, linked
         # as it is) and its questions on the window
         net = os.path.join(RECOMP, 'net')

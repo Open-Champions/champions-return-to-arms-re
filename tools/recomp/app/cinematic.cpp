@@ -15,7 +15,7 @@ namespace {
 const u32 G_PADS = 0x41bfd8, PAD = 0x58, PAD_HELD = 8, PAD_PRESSED = 0xc;
 const u32 G_PLAYER_COUNT = 0x4d8ae0;        // the count cut_runFrame's skip loop runs over (0x199dd8)
 const u32 G_CUT_ACTIVE = 0x44fcd0, G_CUT_FRAME = 0x44fce0, G_CUT_SKIP = 0x44fcec;
-const u32 G_SIM_FRAME = 0x44fdcc, G_NETWORK_MODE = 0x402791;
+const u32 G_SIM_FRAME = 0x44fdcc, G_NETWORK_MODE = 0x402791, G_IN_FRONTEND = 0x41b510;
 const u32 START = 0x800;
 
 enum : u32 { H_MAGIC = 0, H_VERSION = 4, H_MODE = 8, H_SKIPS = 0xc, H_NEED = 0x10, H_PLAYERS = 0x14, H_FRAME = 0x18, H_HELD_BACK = 0x1c };
@@ -32,19 +32,19 @@ std::atomic<int> g_room{-1};            // -1 no room game; 0 / 1 the launched g
 int g_last_room = -1;
 bool g_on = false;
 // counters (per machine)
-uint64_t g_calls = 0, g_counted = 0, g_skips = 0, g_held_back = 0;
+uint64_t g_calls = 0, g_counted = 0, g_skips = 0, g_held_back = 0, g_warmups = 0, g_refused = 0, g_frontend = 0;
 
 void reset_all() {
     for (u32 a = 0; a < 0x40; a += 4) WR(CINE_BASE + a, 0);
     BW(H_MAGIC, (s32)CINE_MAGIC);
-    BW(H_VERSION, 1);
+    BW(H_VERSION, 2);
     BW(H_NEED, HOLD_TICKS);
 }
 
 // what the room is told: the mode's version (a copy that skips otherwise must not meet this one in a game)
 u32 cine_figure() {
     u32 h = 2166136261u;
-    const char* text = "cinematic 1: START held 60 ticks by every player; cut_runFrame 0x199944 pressed bit 0x800";
+    const char* text = "cinematic 2: START held 60 ticks by every player, counted in ticks only (not the load warm-up, not the front end), retried until the game takes it; cut_runFrame 0x199944 pressed bit 0x800";
     for (const char* p = text; *p; p++) h = (h ^ (u8)*p) * 16777619u;
     return h;
 }
@@ -79,16 +79,28 @@ void blank(uint64_t) {
 
 void run_frame(Ctx* c, RecompFn original) {
     if (!g_on) { original(c); return; }
+    // The load warm-up loop (docs/mainloop.md section 7 step 8, 0x322ee8) calls cut_runFrame(1); the scene's task, inside
+    // the tick, calls cut_runFrame(0) (0x199930).  The number of warm-up passes differs per machine (terrain streaming,
+    // equipment models, displayed frames), and the original returns before its skip test while the loading screen is
+    // up, so a warm-up pass is handed to the original as it is: no hold counted, no pressed word changed.
+    if ((u32)c->r[4] != 0) { g_warmups++; original(c); return; }
+    // The front end's own scenes (the title fly-over) run on each machine's own clock, also while a room's game is being
+    // launched; the game never skips them (cut_runFrame jumps over its skip test while g_inFrontend 0x41b510 is set).  They
+    // are handed over untouched too, so nothing of them is left in the block when the game's first scene begins.
+    if (RB(G_IN_FRONTEND)) { g_frontend++; original(c); return; }
     g_calls++;
     s32 n = (s32)RD(G_PLAYER_COUNT);
     if (n < 0) n = 0;
     if (n > 4) n = 4;
     BW(H_PLAYERS, n);
-    // once a game frame (the function may be reached twice in one: from its task and from the frame loop)
+    // Once a game frame.  H_FRAME holds the frame counted last PLUS ONE; 0 means none yet in this scene (after the mode
+    // was set, or after a scene ended in a tick), so the first tick of a scene - frame 0 after a level load included -
+    // is counted exactly once, from the tick alone.
     s32 frame = (s32)RD(G_SIM_FRAME);
-    bool count = BR(H_FRAME) != frame || BR(H_FRAME) == 0;
-    bool fresh = BR(H_FRAME) != frame - 1 && BR(H_FRAME) != frame;     // a scene that just began: counts start again
-    BW(H_FRAME, frame);
+    s32 last = BR(H_FRAME);
+    bool fresh = last == 0 || (last != frame && last - 1 != frame);   // a scene that just began: counts start again
+    bool count = last == 0 || last - 1 != frame;
+    BW(H_FRAME, frame + 1);
     if (count) g_counted++;
     bool all = n > 0;
     for (s32 k = 0; k < n; k++) {
@@ -103,7 +115,7 @@ void run_frame(Ctx* c, RecompFn original) {
         }
         all = all && t >= HOLD_TICKS;
     }
-    // the game's own skip test sees START pressed only in the tick in which every player has held it long enough
+    // the game's own skip test sees START pressed only in the ticks in which every player has held it long enough
     u32 saved[4] = {0, 0, 0, 0};
     for (s32 k = 0; k < n; k++) {
         u32 row = G_PADS + (u32)k * PAD;
@@ -115,11 +127,20 @@ void run_frame(Ctx* c, RecompFn original) {
     u8 skip_before = RB(G_CUT_SKIP);
     original(c);
     for (s32 k = 0; k < n; k++) WR(G_PADS + (u32)k * PAD + PAD_PRESSED, saved[k]);
+    bool ended = !RB(G_CUT_ACTIVE);
     if (all) {
-        // held through: each player counts again only after letting go (a next scene is not skipped by the same hold)
-        for (s32 k = 0; k < n; k++) BW(CINE_HOLD + (u32)k * 4, -1);
-        if (!skip_before && (RB(G_CUT_SKIP) || !RB(G_CUT_ACTIVE))) { g_skips++; BW(H_SKIPS, BR(H_SKIPS) + 1); }
+        // The game took the skip (g_cutSkip set) or the scene ended: each player counts again only after letting go (a
+        // next scene is not skipped by the same hold).  A skip the game refused (online, an ending scene - "endgood" /
+        // "endbad" - before its 301st frame) leaves the completed holds as they are, and the press is
+        // offered again in each later tick while every player still holds.
+        if (RB(G_CUT_SKIP) || ended) {
+            for (s32 k = 0; k < n; k++) BW(CINE_HOLD + (u32)k * 4, -1);
+            if (!skip_before) { g_skips++; BW(H_SKIPS, BR(H_SKIPS) + 1); }
+        } else {
+            g_refused++;
+        }
     }
+    if (ended) BW(H_FRAME, 0);      // the scene ended in this tick: the next one starts afresh
 }
 
 bool setting(const char* key, const char* value) {
@@ -135,9 +156,10 @@ std::string settings_text() {
 }
 
 std::string figures() {
-    char text[200];
-    snprintf(text, sizeof text, "cinematic: hold to skip %s; scene ticks %llu, counted %llu, scenes skipped %llu, taps held back %llu",
-             g_on ? "on" : "off", (unsigned long long)g_calls, (unsigned long long)g_counted, (unsigned long long)g_skips, (unsigned long long)g_held_back);
+    char text[300];
+    snprintf(text, sizeof text, "cinematic: hold to skip %s; scene ticks %llu, counted %llu, scenes skipped %llu, taps held back %llu, skips refused %llu, warm-up passes %llu, front-end passes %llu",
+             g_on ? "on" : "off", (unsigned long long)g_calls, (unsigned long long)g_counted, (unsigned long long)g_skips, (unsigned long long)g_held_back,
+             (unsigned long long)g_refused, (unsigned long long)g_warmups, (unsigned long long)g_frontend);
     return text;
 }
 
@@ -145,9 +167,9 @@ std::string command(const std::string& text) {
     std::string w = text;
     while (!w.empty() && w[0] == ' ') w.erase(0, 1);
     if (w.empty() || w == "info") {
-        char one[200];
+        char one[400];
         snprintf(one, sizeof one, "%s | block mode=%d skips=%d need=%d players=%d frame=%d held_back=%d hold=%d,%d,%d,%d cut=%d cut_frame=%d", figures().c_str(),
-                 BR(H_MODE), BR(H_SKIPS), BR(H_NEED), BR(H_PLAYERS), BR(H_FRAME), BR(H_HELD_BACK), BR(CINE_HOLD), BR(CINE_HOLD + 4), BR(CINE_HOLD + 8),
+                 BR(H_MODE), BR(H_SKIPS), BR(H_NEED), BR(H_PLAYERS), BR(H_FRAME) - 1, BR(H_HELD_BACK), BR(CINE_HOLD), BR(CINE_HOLD + 4), BR(CINE_HOLD + 8),
                  BR(CINE_HOLD + 12), (int)RB(G_CUT_ACTIVE), (int)RD(G_CUT_FRAME));
         return one;
     }

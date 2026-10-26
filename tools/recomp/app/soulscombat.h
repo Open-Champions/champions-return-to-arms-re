@@ -192,7 +192,8 @@ struct Tuning {
     // curve(Faith)) / 100 (the weapons' curve); grade letters as the weapons'
     int32_t sc_int[7] = {0, 0, 45, 25, 90, 0, 30};
     int32_t sc_faith[7] = {20, 80, 40, 25, 0, 20, 60};
-    int32_t spell_hit_ticks = 240;           // how long after a cast the caster's hits (not swings, not weapon arts) count as the spell's
+    int32_t spell_hit_ticks = 240;           // how long after a cast the block shows the spell as recent (A_SPELL_T); which hit is a
+                                             // spell's is decided by the hit's source (soulscombat.cpp damage_source), not by this window
 };
 enum : int32_t { WC_NONE = 0, WC_DAGGER, WC_SWORD, WC_AXE, WC_MACE, WC_GREAT, WC_SPEAR, WC_STAFF, WC_BOW, WC_COUNT };
 enum : int32_t { ART_NONE = 0, ART_LUNGE, ART_SPIN, ART_SLAM, ART_BOLT };
@@ -245,9 +246,10 @@ const uint32_t SOULS_MAGIC = 0x4c554f53;        // "SOUL"
 //   +0x1c mode points unspent  +0x20 spent  +0x24 the character screen open (1)  +0x28 its selected row  +0x2c spell slots
 //   +0x30 spells (bit k: ability record k is in the spellbook)  +0x34 attuned (bit k: castable)  +0x38 stamina maximum
 //   +0x3c the game's own maximum mana (f32)  +0x40 the maximum written (f32)  +0x44 the mana at the end of the last tick (f32)
-//   +0x48 spell damage percent  +0x4c spell grades (Intelligence, Faith letters in bytes 0, 1)  +0x50 spell window (ticks since
-//   the cast, -1 none)  +0x54 casts  +0x58 casts refused  +0x5c points spent  +0x60 attunement changes  +0x64 the save spot
+//   +0x48 spell damage percent  +0x4c spell grades (Intelligence, Faith letters in bytes 0, 1)  +0x50 ticks since the last
+//   spell cast (-1 none; shown only)  +0x54 casts  +0x58 casts refused  +0x5c points spent  +0x60 attunement changes  +0x64 the save spot
 //   was found (1)  +0x68 the level  +0x6c screens opened  +0x70 the class (0-6)  +0x74 spell slots in use
+//   +0x78 the source of the player's last hit on a creature (0 a shot or another weapon hit, 1 a swing, 2 a spell)
 // per player at +0xa00 + slot x 0x40: u16[15] the mana cost of each ability record (tenths), u8[15] at +0x20 its rank
 // Mind, Endurance, Faith and the attuned spells are kept with the character, in the last 6 bytes of the player record, which
 // the game never reads or writes (+0x4c2a..+0x4c2f, after the marker byte +0x4c29: tools/fieldxref.py finds no access; a

@@ -76,7 +76,7 @@ The game skips a cut scene when any player's lockstep row shows START pressed (`
 (`hle-app.txt`, original emitted as `orig_00199944`): with the mode on, START's pressed bit is taken off every row for the
 original call and put back on player 1's row only in the tick in which every player of the game (the count the game's
 loop uses, 0x4d8ae0) has held START (the held word, +8) for 60 ticks; the rows are put back afterwards. The game's own
-conditions stay its own (no skip in a net game before the scene's 301st frame, the not-skippable flag). Counts live in
+conditions stay its own (in a net game the two ending scenes `endgood` / `endbad` are not skipped before their 301st frame - every other scene may be skipped at once; no skip test in the front end, 0x41b510, or under the loading screen; corrected 2026-10-26 from the code at 0x199d68-0x199dd4). Counts live in
 guest memory at 0xE1C00 (tick logs, the HUD); a hold that skipped must be released before it counts again. Mode off:
 the original runs untouched.
 
@@ -102,6 +102,20 @@ Godot: Remastered (or `--cinematic on`) sets it, Classic sets `tap`.
   `cinematic.gd` stops when the machine has ended). **Second room run `cs2`** with the fix: A alone held 90 ticks, no
 skip; the scene ended at tick 1373 on both copies; **1,768 ticks compared, no shared column differs** (without
 `g_cutFrame`, as above); no Godot error at shutdown.
+- **Review fixes (2026-10-26, review-codex items 1 and 3; mode figure "cinematic 2", block version 2).** Only the scene's
+  own tick call (`cut_runFrame(0)`, 0x199930) counts; the load warm-up's `cut_runFrame(1)` (0x322ee8, a per-machine
+  number of passes) and the front end's scenes (`g_inFrontend`) run the original untouched - no hold counted, no pressed
+  word changed. The block's +0x18 holds the frame counted last plus one (0: none in this scene), so the first tick of a
+  scene counts exactly once; a scene that ends in a tick clears it. A completed hold whose skip the game refuses is kept
+  and the press offered again each tick; the release is required only once the game took the skip or the scene ended.
+  Ran with native copies (`n2party.py` with hold input, `rta_app_reviewfix`): START held from 5 ticks before the level
+  tick through bossevil's load into its opening scene - **3,212 ticks in step**, the cut-scene block a compared column,
+  hold 1 at the scene's first tick on both (8,582 warm-up passes not counted), skipped at tick 1,662 on both; START
+  pressed after the scene began and held past its frame 301 - **2,955 ticks in step**, skipped at tick 1,888 on both.
+  The first run before the front-end change differed in the block's +0x18 only (the title fly-over's per-machine frame
+  left in it). A synthetic probe of the real wrapper (10 / 20 / 3 / 40 warm-up passes, an ending scene refused until
+  frame 301, release-before-next-scene, two calls in one frame) passes; the refused-skip path cannot be reached in a
+  room short of the game's ending scenes.
 - **Mode off, the rig (Ran):** `local/cutscenes/rig/check.py` (the fight session against the rig's log, the souls work's
   script) with `rta_app_next_orig`: overhead and first person **byte for byte** the reference reports (`off-over`,
   `off-first`).

@@ -11,8 +11,10 @@
 // own player count (0x4d8ae0) - nothing local.  The game's own skip test stays the judge: around the original
 // cut_runFrame the START bit of every pressed word is taken away, and put on player 1's row only in the tick in which
 // every player has held long enough; the words are put back as they were afterwards (nothing else in the tick sees a
-// difference).  The game's other conditions (in a net game no skip before the scene's 301st frame, outside two
-// levels; a scene that cannot be skipped, 0x41b510) are its own and still hold.  The counts are kept in guest memory
+// difference).  The game's other conditions are its own and still hold: no skip test at all in the front end (g_inFrontend
+// 0x41b510) or while the loading screen is up (0x506094); in a net game the two ending scenes "endgood" / "endbad" (the
+// scene name at 0x44fe18, compared at 0x199da0 / 0x199db4) are not skipped before their 301st frame - every other scene
+// may be skipped at once (Ran: bossevil's opening scene ended at its frame 62 in a room).  The counts are kept in guest memory
 // (CINE_BASE), written in the tick: tick logs and the host's HUD read them.
 //
 // The mode is a room option like Hardcore and aiming: a copy that wants it says so with bit 0x2000 of its fix-set
@@ -38,10 +40,14 @@ namespace cinematic {
 // Hardcore 0xE0800-0xE147F (soulscombat.h BLOCK_SIZE), aiming 0xE1800 (fpaim.h)) ----
 const uint32_t CINE_BASE = 0xE1C00;
 const uint32_t CINE_MAGIC = 0x314e4943;     // "CIN1"
-// header: +0x00 magic, +0x04 version (1), +0x08 mode (1 hold to skip), +0x0c scenes skipped, +0x10 ticks to hold,
-// +0x14 players counted in the last tick, +0x18 the game frame counted last, +0x1c taps held back (a press of START
-// that the game would have taken as a skip), +0x20 + slot x 4: ticks START has been held by that player (-1: held
-// through a skip, counts again from a release)
+// header: +0x00 magic, +0x04 version (2), +0x08 mode (1 hold to skip), +0x0c scenes skipped, +0x10 ticks to hold,
+// +0x14 players counted in the last tick, +0x18 the game frame counted last PLUS ONE (0: none yet in this scene),
+// +0x1c taps held back (a press of START that the game would have taken as a skip), +0x20 + slot x 4: ticks START has
+// been held by that player (-1: held through a skip the game took, counts again from a release).  Only the scene's
+// own tick call (cut_runFrame(0)) counts; the load warm-up's cut_runFrame(1), whose number differs per machine, runs
+// the original untouched, as do the front end's own scenes (g_inFrontend: per-machine clocks, never skipped by the
+// game).  A completed hold whose skip the game refuses (an ending scene before frame 301 online) stays
+// complete and the press is offered again each tick until the game takes it.
 const uint32_t CINE_HOLD = 0x20;
 const int HOLD_TICKS = 60;                  // one second of the game's 60 ticks
 
