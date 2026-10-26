@@ -28,7 +28,8 @@ extends Node
 #   --mipmaps on|off    draw/scene modes: mip maps for every texture, with anisotropic filtering in the scene (default on)
 #   --script FILE       a script in the rig's language (tools/rig); its "app shot FILE.png" lines write pictures:
 #                       in picture mode the library's own, in the other modes Godot's capture of what it drew
-#                       ("app windowshot FILE.png": what is in the Godot window itself, the root viewport)
+#                       ("app windowshot FILE.png": what is in the Godot window itself, the root viewport;
+#                       "app effective FILE.json": what is in force now, effective_settings())
 #   --godot-shots DIR   write Godot's capture for every "app shot" into DIR (by file name) instead
 #   --unpaced           as fast as it goes (tests)
 #   --mute              no sound is heard (the sound side still runs)
@@ -57,6 +58,8 @@ extends Node
 #   --look-presets FILE scene mode: one more file of per-level look presets over the project's (scene_view.gd, presets.py)
 #   --no-hud            the new HUD (res://hud) is not added
 #   --no-portal         (read by the portal: straight to this scene)
+#   --edition classic|remastered   the portal's choice without the portal (portal/edition.gd game_options, as
+#                       handover.gd hands it over); options after it on the command line still win
 #   --net2-flow ROLE:DIR   a test: a room of our own through RtaNet2 as the portal drives it (dev/net2_flow.gd); give the
 #                       runtime "--opt net2-boot=1" after "--" so that the game walks to its title screen by itself
 #
@@ -320,6 +323,9 @@ func _parse_arguments() -> void:
 			"--speed-log": opt.speed_log = value.to_int(); k += 1
 			"--no-hud": opt.hud = false
 			"--net2-flow": opt.net2_flow = value; k += 1
+			"--edition":
+				_edition_options(value)
+				k += 1
 			"--offscreen", "--plain", "--no-portal": pass
 			_:
 				if not (a.begins_with("--portal") or a.begins_with("--hud")):
@@ -638,6 +644,21 @@ func apply_settings(d: Dictionary) -> void:
 
 
 # ---- Classic / Remastered (portal/edition.gd) -----------------------------------------------------------------------
+# --edition on the command line: what handover.gd puts into `opt` from the portal's choice, for a run without the portal
+func _edition_options(kind: String) -> void:
+	var e: Dictionary = load("res://portal/edition.gd").call("game_options", kind, "", "")
+	if e.is_empty():
+		push_warning("--edition: classic or remastered")
+		return
+	for key in ["edition", "view", "combat", "aim", "display_rate", "hud_mode"]:
+		opt[key] = String(e[key])
+	opt.views_locked = bool(e.views_locked)
+	opt.boss_music = String(e.music)
+	opt.boss_music_er = String(e.music_er)
+	if String(e.look) != "":
+		opt.look = String(e.look) if String(opt.look) == "" else String(e.look) + "," + String(opt.look)
+
+
 # At the first start the choice arrives in `opt` (handover.gd); a change while the game runs comes here.  Nothing of
 # the game's own code is new: the options are the existing ones (combat.mode, combat.aim, the look keys, the HUD's
 # mode and its music director, the display rate, the views).
@@ -724,7 +745,7 @@ func effective_settings() -> Dictionary:
 	if scene_view != null:
 		var look: Dictionary = scene_view.get("look")
 		var shown := {}
-		for key in ["preset", "models", "sky", "fog", "sun", "lamp", "bloom", "grade", "lights", "fill", "backdrop", "contact", "er_models", "er_creatures"]:
+		for key in load("res://portal/edition.gd").CLASSIC_KEYS:      # every look key Classic turns off
 			shown[key] = look.get(key)
 		d["look"] = shown
 		d["look_preset_applied"] = String(scene_view.get("preset_applied"))
@@ -912,6 +933,13 @@ func _host_command(text: String) -> void:
 		print("[blank %d] rta_godot: %s" % [blanks, cine.call("info_text")])
 	elif w.size() >= 1 and w[0] == "cinematic":
 		pass
+	elif w.size() >= 2 and w[0] == "effective":
+		# test aid: what is in force now (effective_settings) as JSON into a file
+		var f := FileAccess.open(text.substr(text.find(w[1])), FileAccess.WRITE)
+		if f != null:
+			var d := effective_settings()
+			d["blank"] = blanks
+			f.store_string(JSON.stringify(d, "  "))
 	elif w.size() >= 2 and w[0] == "mark":
 		frame_rows.append("M,%d,%s" % [blanks, " ".join(w.slice(1))])   # test aid: a named part of the route in the frame log
 	elif w.size() >= 2 and w[0] == "hold":

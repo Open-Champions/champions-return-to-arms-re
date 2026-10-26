@@ -8,11 +8,13 @@ docs/issues/app-rendezvous.md.
           [--relay force|never|mixed] [--external --service-address HOST --port N] [--app PATH] [--program PATH]
           [--app-start lobby|title [--signin-patch FILE]] [--menu-start]
 
---copies: two to four of "app" and "native", the first is the host. An app copy is the application
+--copies: two to four of "app", "native" and "godot", the first is the host. An app copy is the application
 built under local/ (--app, default local/app-rv/build/.../Play), started off to the side as a test
 window (--rta-test) with a control socket, a data folder of its own and --rta-room; a native copy is
 tools/recomp/net2/n2party.py's (headless, $RTA_NATIVE_NET2 or --program), started by that file's own
-start_copy. A rendezvous service of this run's own on 127.0.0.1 is started (tools/rendezvous) unless
+start_copy. A godot copy is the Godot game scene (tools/godot/project/main.gd, the project staged under
+$RTA_GODOT_OUT, default local/godot-spike) with that native copy's script and runtime options, as
+--edition says (default classic: the portal's Classic choice). A rendezvous service of this run's own on 127.0.0.1 is started (tools/rendezvous) unless
 --external names one already running.
 
 Every copy boots by itself into the room (the host's code is read from its output), makes a new
@@ -20,7 +22,8 @@ character on the game's own screens (the app's are pressed through its control s
 native copies' by their script), the host starts when all are in and ready, drawn input is played
 for --play frames; with --level the pending level name is written in one lockstep tick on every copy
 (the native program's tick-do and the application's --rta-tick-do, the same file) and --play2 more
-frames are played there. Compared: every pair of tick logs (tools/rig/compare.py ticks). One result
+frames are played there.  --level A,B,C: one level after the other, each --level-every ticks after
+the one before. Compared: every pair of tick logs (tools/rig/compare.py ticks). One result
 line goes to OUT/results.txt. Exit code 0: every copy in the level and no column differing.
 
 The application is given the sections of tools/play-net/sections-suggested.txt that the native
@@ -236,13 +239,13 @@ class AppCopy:
             seed = {'host': 0, 'j1': 1000, 'j2': 2000, 'j3': 3000}[self.role] + 7
             for text in lobbypair.play_lines(args.play, args.seed + seed):
                 self.line(text)
-            if args.level:
-                self.say('waiting for the level %s' % args.level)
-                self.until('g_levelName:str8 == %s' % args.level, 600 * args.slow)
+            for k, name in enumerate(level_list(args)):
+                self.say('waiting for the level %s' % name)
+                self.until('g_levelName:str16 == %s' % name, 600 * args.slow)
                 self.until('g_players+0x43d8:u32 != 0', 300 * args.slow)
                 self.send('wait 240')
-                self.say('in the second level')
-                for text in lobbypair.play_lines(args.play2, args.seed + seed + 500):
+                self.say('in the level %s' % name)
+                for text in lobbypair.play_lines(args.play2, args.seed + seed + 500 + 100 * k):
                     self.line(text)
             self.send('wait 120')
             self.say('done: %s' % self.send('room status'))
@@ -405,6 +408,62 @@ def start_native(role, index, out, run, room, n, args):
         n2party.subprocess.Popen = real
 
 
+def level_list(args):
+    return [name for name in (args.level or '').split(',') if name]
+
+
+def with_levels(args):
+    """n2party's script for a native or Godot copy, with every level of --level waited for and played in
+    (n2party itself knows one level)"""
+    names = level_list(args)
+    original = n2party.script_lines
+
+    def lines(role, index, n, a):
+        out = original(role, index, n, a)
+        if not names:
+            return out
+        tail = len(out) - 1 - out[::-1].index('wait 120')
+        seed = args.seed + {'host': 0, 'j1': 1000, 'j2': 2000, 'j3': 3000}[role]
+        more = []
+        for k, name in enumerate(names):
+            more += ['echo waiting-for-level %s' % name, 'until g_levelName:str16 == %s timeout 12000' % name,
+                     'until g_players+0x43d8:u32 != 0 timeout 6000', 'wait 240', 'echo in-level %s' % name]
+            more += lobbypair.play_lines(args.play2, seed + 500 + 100 * k)
+        return out[:tail] + more + out[tail:]
+    return lines
+
+
+def start_godot(role, index, out, run, room, n, args):
+    """a copy that is the Godot game scene: n2party's script and runtime options, the game drawn by Godot (scene
+    mode) as the portal's --edition choice has it, in a small test window"""
+    godot_out = os.path.abspath(os.environ.get('RTA_GODOT_OUT', os.path.join(ROOT, 'local', 'godot-spike')))
+    godot = os.environ.get('RTA_GODOT', os.path.join(ROOT, 'local', 'godot-spike', 'deps', 'godot-editor', 'Godot.app', 'Contents', 'MacOS', 'Godot'))
+    real = n2party.subprocess.Popen
+
+    def popen(command, **kw):
+        rest = command[1:]
+        disc = rest[rest.index('--disc') + 1]
+        card = rest[rest.index('--card') + 1]
+        script = rest[rest.index('--script') + 1]
+        runtime = [w for i, w in enumerate(rest) if i >= rest.index('--card') + 2 and w != '--script' and w != script]
+        env = dict(kw.pop('env', None) or os.environ)
+        for key, name in (('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data'), ('XDG_CACHE_HOME', 'cache')):
+            env[key] = os.path.join(godot_out, 'godot-home', name)
+            os.makedirs(env[key], exist_ok=True)
+        env['RTA_CWD'] = ROOT
+        env['RTA_TEST_OFFSCREEN'] = '1'
+        window = [godot, '--path', os.path.join(godot_out, 'project'), '--', '--disc', disc, '--data', os.path.dirname(card),
+                  '--mode', 'scene', '--edition', args.edition, '--test', 'room proof ' + role, '--script', script]
+        if args.godot_frame_log:
+            window += ['--frame-log', os.path.join(run, role + '.frames.csv')]
+        return real(window + ['--'] + runtime, env=env, **kw)
+    n2party.subprocess.Popen = popen
+    try:
+        return n2party.start_copy(role, index, out, run, room, n, args)
+    finally:
+        n2party.subprocess.Popen = real
+
+
 def native_args(args, n):
     a = argparse.Namespace(**vars(args))
     a.tls = False
@@ -413,6 +472,7 @@ def native_args(args, n):
     a.rounds = 2
     a.idle = False
     a.level_option = None
+    a.level = None              # the levels are added by with_levels
     a.opt = args.opt
     a.tick_watch = []
     a.limit = args.limit
@@ -428,8 +488,8 @@ def one_run(out, number, args):
         shutil.rmtree(run)
     os.makedirs(run)
     with open(os.path.join(run, 'tick-do.txt'), 'w') as sink:
-        if args.level:
-            sink.write('%d poke g_pendingLevel %s\n' % (args.level_tick or (400 + args.play + 300), args.level))
+        for k, name in enumerate(level_list(args)):
+            sink.write('%d poke g_pendingLevel %s\n' % ((args.level_tick or (400 + args.play + 300)) + k * args.level_every, name))
     started = time.time()
     copies, room = {}, None
     nargs = native_args(args, n)
@@ -440,6 +500,10 @@ def one_run(out, number, args):
             copy = AppCopy(role, index, n, out, run, room, args)
             pids.write('%d\n' % copy.process.pid)
             return copy
+        if kinds[index] == 'godot':
+            process = start_godot(role, index, out, run, room or '', n, nargs)
+            pids.write('%d\n' % process.pid)
+            return process
         process = start_native(role, index, out, run, room or '', n, nargs)
         pids.write('%d\n' % process.pid)
         return process
@@ -553,6 +617,9 @@ def main():
     parser.add_argument('--play', type=int, default=1800)
     parser.add_argument('--level')
     parser.add_argument('--level-tick', type=int)
+    parser.add_argument('--level-every', type=int, default=2400, help='with --level A,B,...: lockstep ticks from one level change to the next')
+    parser.add_argument('--edition', default='classic', help='the godot copies: classic or remastered (portal/edition.gd)')
+    parser.add_argument('--godot-frame-log', action='store_true', help='the godot copies write their frame log (main.gd --frame-log) beside the tick logs')
     parser.add_argument('--play2', type=int, default=1800)
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--pace', type=float, default=59.94)
@@ -562,11 +629,12 @@ def main():
     parser.add_argument('--nice', type=int, default=10)
     parser.add_argument('--opt', action='append', default=[], help='--opt KEY=VALUE for the native copies')
     args = parser.parse_args()
+    n2party.script_lines = with_levels(args)
     if not os.environ.get('RTA_DISC'):
         raise SystemExit('name the disc image with RTA_DISC')
     kinds = args.copies.split(',')
-    if not 2 <= len(kinds) <= 4 or any(k not in ('app', 'native') for k in kinds):
-        raise SystemExit('--copies: two to four of app and native')
+    if not 2 <= len(kinds) <= 4 or any(k not in ('app', 'native', 'godot') for k in kinds):
+        raise SystemExit('--copies: two to four of app, native and godot')
     out = os.path.abspath(args.out)
     os.makedirs(out, exist_ok=True)
     sections = [line.rstrip('\n') for line in open(args.sections) if line.strip() and not line.startswith('#')]

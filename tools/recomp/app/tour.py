@@ -9,6 +9,20 @@ laid side by side stop for stop.
   tour.py sheet OUT.png DIR_A DIR_B [--width W] [--cols N] [--only PREFIX]
   tour.py native fpwalk NAME [NAME ...] --out DIR [--points N] [--size WxH]
   tour.py fpreport DIR [DIR ...]
+  tour.py native|emu campaign [NAME ...] --out DIR [--paced] [--hold N]
+  tour.py rigscript campaign NAME [NAME ...] --out FILE.rig --shots DIR [--screens]
+
+`campaign`: every level of the campaign in story order - the 13 act lists of the executable
+(g_actLevelTables 0x4f8e48, read at run time), then the mission table's story, medal and bonus levels
+that no act names (levels named on the command line instead when given; --skip leaves some out),
+each asked for as `levels` does.  At every level: the picture as it arrives (an opening scene or
+film shows here), the scene answered, then after --hold vertical blanks the picture as the player
+plays it (the game's own camera and zoom).  Native only: the pacing of those blanks (`app stats`),
+what is in force (`app souls|aim|cine|music|view info` - a Classic run wants all of it off and
+the overhead view), and the build's own complaints (lines of its output with error / unknown /
+fault / not found).  One line per level in <out>/campaign.tsv, the level order in <out>/order.txt.
+`rigscript campaign`: the same route as a script in the rig's language for the Godot scene
+(main.gd --script; its `app shot` and `app effective` lines write pictures and what is in force).
 
 `levels`: from power-on to the first level, then every named level is asked for the way
 the game's own level changes ask (the name written to g_pendingLevel 0x41b6d0); a picture
@@ -639,6 +653,203 @@ def world_info(m):
     return out
 
 
+G_ACT_COUNT, G_ACT_COUNTS, G_ACT_TABLES, G_MISSION_TABLE = 0x4F8E7C, 0x4F8E10, 0x4F8E48, 0x4FE540
+COMPLAINT = re.compile(r'error|unknown|fault|not found|cannot|failed|missing', re.I)
+
+
+def campaign_order(m):
+    """The levels of the 13 act lists in order (each a name and a saved-state size), read from the
+    running game; then the story levels of the mission table that no act names.  Nothing is kept
+    in the repository: the list is written to <out>/order.txt."""
+    order, acts = [], []
+    count = int(m.peek(G_ACT_COUNT, 's32'))
+    for act in range(max(0, min(count, 13))):
+        rows = int(m.peek(G_ACT_COUNTS + 4 * act, 's32'))
+        names = []
+        for row in range(max(0, min(rows, 64))):
+            names.append(m.peek('[[0x%x]+%d]' % (G_ACT_TABLES + 4 * act, 8 * row), 'str24'))
+        acts.append(names)
+        for name in names:
+            if name and name not in order:
+                order.append(name)
+    story = []
+    for column in (8, 0xC, 0x10, 0x14):          # story, the evil side's story, medal round, bonus level
+        for row in range(13):
+            if m.peek(G_MISSION_TABLE + 0x34 * row + column) != '0':
+                story.append(m.peek('[0x%x]' % (G_MISSION_TABLE + 0x34 * row + column), 'str24'))
+    for name in story:
+        if name and name not in order:
+            order.append(name)
+    return order, acts, story
+
+
+def new_output(m, since):
+    """Lines the build wrote to its output since byte `since`; the new end."""
+    path = os.path.join(m.out, m.kind + '.out')
+    with open(path, 'rb') as handle:
+        handle.seek(since)
+        text = handle.read().decode('latin-1')
+    return text.splitlines(), since + len(text.encode('latin-1'))
+
+
+def run_campaign(args):
+    m = Instance(args.build, args.out, args.disc, paced=args.paced, size=args.size, label='classic campaign', extra=args.app_arg)
+    log = open(os.path.join(m.out, args.build + '-campaign.log'), 'a')
+    table = open(os.path.join(m.out, 'campaign.tsv'), 'a')
+    native = m.kind == 'native'
+
+    def say(text):
+        line = time.strftime('%H:%M:%S ') + text
+        print(line, flush=True)
+        log.write(line + '\n')
+        log.flush()
+    mark = 0
+    try:
+        m.to_hub()
+        order, acts, story = campaign_order(m)
+        with open(os.path.join(m.out, 'order.txt'), 'w') as handle:
+            for k, names in enumerate(acts):
+                handle.write('act %d\t%s\n' % (k, ' '.join(names)))
+            handle.write('story\t%s\n' % ' '.join(story))
+            handle.write('order\t%s\n' % ' '.join(order))
+        names = args.names or order
+        if args.only:
+            names = [n for n in names if n in args.only.split(',')]
+        if args.skip:
+            names = [n for n in names if n not in args.skip.split(',')]
+        say('%d levels: %s' % (len(names), ' '.join(names)))
+        lines, mark = new_output(m, 0)
+        for k, name in enumerate(names):
+            tag = '%03d-%s' % (k, name)
+            before = m.info()
+            started = time.time()
+            if not m.enter(name, timeout=args.enter_timeout):
+                say('%s: not entered (level now %s)' % (name, m.level()))
+                table.write('\t'.join([str(k), name, 'not-entered', m.level()]) + '\n')
+                table.flush()
+                continue
+            load_s = time.time() - started
+            cam_mode = m.peek('[0x%x]+0x34' % G_CAMERA)
+            m.shot(tag + '-a')
+            held = cam_mode != '1'
+            freed = m.free_camera()
+            if native:
+                m.ok('app stats reset')
+            m.wait(args.hold)
+            pace, settings = '', {}
+            if native:
+                m.ok('app stats')               # before the picture: writing it holds the game for a moment
+            m.shot(tag + '-b')
+            if native:
+                for what in ('souls info', 'aim info', 'cine info', 'music info', 'view info'):
+                    m.ok('app ' + what)
+                m.wait(2)
+            out_lines, mark = new_output(m, mark)
+            if native:
+                for line in out_lines:
+                    found = re.search(r'pacing: (\d+) pictures in (\d+) ms: ([\d.]+) a second \(display ([\d.]+) Hz.*?a picture stood for(.*?)longest ([\d.]+) ms', line)
+                    if found:
+                        # on time: a picture stands for one 60th of a second, that many refreshes of the display
+                        due = max(1, int(round(float(found.group(4)) / 60.0)))
+                        stood = dict((int(a), int(b)) for a, b in re.findall(r'(\d)\+? refreshes: (\d+)', found.group(5)))
+                        off = sum(v for r, v in stood.items() if r != due)
+                        pace = '%s/s %d of %s off the 60 grid, longest %s ms' % (found.group(3), off, found.group(1), found.group(6))
+                    for key in ('souls', 'aim', 'cinematic', 'boss music', 'view'):
+                        if re.search(r'\] %s: ' % key, line):
+                            settings[key] = line.split('] ', 1)[1][:160]
+            complaints = [l for l in out_lines if COMPLAINT.search(l) and 'pacing' not in l and 'path:' not in l]
+            info = m.info()
+            delta = ' '.join('%s+%d' % (key, info.get(key, 0) - before.get(key, 0)) for key in ('vu_bad', 'gs_unknown', 'tex_missing')
+                             if isinstance(info.get(key), int) and info.get(key, 0) - before.get(key, 0))
+            row = [str(k), name, 'entered', '%.1f' % load_s, 'held' if held else '-', 'freed' if freed else 'camera-not-back', pace,
+                   ' | '.join('%s' % settings[key] for key in sorted(settings)), delta, ' || '.join(complaints[:5])]
+            table.write('\t'.join(row) + '\n')
+            table.flush()
+            say('%s: load %.1f s, %s%s; %s; %s' % (name, load_s, 'scene at entry, ' if held else '', pace or '-', delta or 'no render complaints',
+                                                    ('%d complaints' % len(complaints)) if complaints else 'no complaints'))
+    finally:
+        m.quit()
+
+
+def taps_until(button, condition, times, gap):
+    """A tap and a bounded wait for the condition, `times` over: a tap after the condition holds is wasted
+    but harmless (the rig's tapuntil ends the whole run on its time-out)."""
+    out = []
+    for _ in range(times):
+        out += ['until %s timeout %d continue' % (condition, gap), 'tap %s 4' % button]
+    return out + ['until %s timeout %d continue' % (condition, gap)]
+
+
+def free_camera_lines():
+    """`free_camera` as rig-script lines: cross answers a dialogue, START skips a scene (when the camera already
+    follows, START opens the pause menu and the cross after it is its first entry, Return to Game)."""
+    out = taps_until('cross', '[0x%x]+0x34:u32 == 1' % G_CAMERA, 20, 12)
+    for _ in range(4):
+        out += ['until [0x%x]+0x34:u32 == 1 timeout 30 continue' % G_CAMERA, 'tap start 4', 'wait 40', 'tap cross 4', 'wait 30']
+    return out + taps_until('cross', '[0x%x]+0x34:u32 == 1' % G_CAMERA, 10, 12)
+
+
+def rig_screens(shots):
+    """`screens` (run_screens) as rig-script lines: the first level's pause menu, options, bag, map,
+    a dialogue and the shop, pictures under `shots`."""
+    def tap(button, hold, after):
+        return ['tap %s %d' % (button, hold), 'wait %d' % after]
+    free = taps_until('cross', '[0x%x]+0x34:u32 == 1' % G_CAMERA, 30, 12)
+    out = ['# the first level\'s screens (tools/recomp/app/tour.py run_screens)'] + free
+    out += ['app shot %s/s00-hub.png' % shots] + tap('start', 6, 60) + ['app shot %s/s01-pause.png' % shots]
+    for _ in range(3):
+        out += tap('down', 6, 20)
+    out += tap('cross', 6, 90) + ['app shot %s/s02-options.png' % shots]
+    for _ in range(3):
+        out += tap('circle', 6, 60)
+    out += free + tap('select', 6, 90) + ['app shot %s/s03-bag-1.png' % shots]
+    for k in range(2, 7):
+        out += tap('r1', 6, 60) + ['app shot %s/s03-bag-%d.png' % (shots, k)]
+    out += tap('select', 6, 90) + free
+    out += tap('r3', 6, 60) + ['app shot %s/s04-map-1.png' % shots] + tap('r3', 6, 60) + ['app shot %s/s04-map-2.png' % shots] + tap('r3', 6, 60)
+    for off, value in ((0x10, 122), (0x14, -40), (0x18, -47)):
+        out.append('poke %s+0x%x:f32 %d' % (PLAYER, off, value))
+    out += ['poke [0x%x]+0x16d:u8 5' % G_CAMERA, 'wait 60'] + tap('square', 6, 150) + ['app shot %s/s05-dialogue-1.png' % shots]
+    out += tap('cross', 6, 100) + tap('cross', 6, 100) + ['app shot %s/s05-dialogue-2.png' % shots]
+    for _ in range(10):
+        out += tap('cross', 6, 100)
+    out += ['app shot %s/s05-dialogue-end.png' % shots] + tap('down', 6, 30) + tap('cross', 6, 180) + ['app shot %s/s06-shop-menu.png' % shots]
+    out += tap('cross', 6, 120) + ['app shot %s/s06-shop-buy.png' % shots]
+    out += tap('down', 4, 20) + tap('down', 4, 20) + tap('right', 4, 30) + ['app shot %s/s06-shop-buy-2.png' % shots]
+    out += tap('r1', 6, 60) + ['app shot %s/s06-shop-buy-tab2.png' % shots]
+    for _ in range(4):
+        out += tap('circle', 6, 60)
+    return out + free
+
+
+def rig_campaign(names, shots, hold=300, enter_timeout=3600):
+    """The campaign route as rig-script lines for a build without a control socket (the Godot scene):
+    from the first level, every named level asked for as `enter` does it, its pictures and what is in force."""
+    out = ['# the campaign route (tools/recomp/app/tour.py rigscript campaign); after the route to the first level',
+           'poke 0x%x:u32 1' % G_INVULNERABLE]
+    for k, name in enumerate(names):
+        tag = '%03d-%s' % (k, name)
+        out += ['echo campaign: asking for %s' % name,
+                'poke 0x%x:str16 %s' % (G_PENDING, name),
+                'until 0x%x:str16 == %s timeout %d continue' % (G_LEVEL_NAME, name, enter_timeout),
+                'until 0x%x:u8 == 0 timeout %d continue' % (G_PENDING, enter_timeout),
+                'until 0x%x:u32 != 0 timeout %d continue' % (G_PLAYERS + 0x43D8, enter_timeout),
+               ] + taps_until('cross', '0x%x:u32 > 20' % G_SIM_FRAME, 20, 60) + [      # a notice box holds the game: "OK"
+                'wait 90',
+                'poke 0x%x:u32 1' % G_INVULNERABLE,
+                'echo campaign: in %s' % name,
+                'show level=0x%x:str16 camera=[0x%x]+0x34:u32 sim=0x%x:u32' % (G_LEVEL_NAME, G_CAMERA, G_SIM_FRAME),
+                'app shot %s/%s-a.png' % (shots, tag),
+               ] + free_camera_lines() + [
+                'app mark %s' % name,
+                'wait %d' % hold,
+                'app shot %s/%s-b.png' % (shots, tag),
+                'app effective %s/%s.json' % (shots, tag),
+                'show level=0x%x:str16 camera=[0x%x]+0x34:u32' % (G_LEVEL_NAME, G_CAMERA)]
+    out += ['echo campaign: done', 'quit']
+    return out
+
+
 def run_fpreport(args):
     rows = []
     for directory in [args.what] + args.names:
@@ -655,7 +866,7 @@ def run_fpreport(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('build', choices=['native', 'emu', 'sheet', 'fpreport'])
+    parser.add_argument('build', choices=['native', 'emu', 'sheet', 'fpreport', 'rigscript'])
     parser.add_argument('what')
     parser.add_argument('names', nargs='*')
     parser.add_argument('--out')
@@ -671,10 +882,22 @@ def main():
     parser.add_argument('--walk', type=int, default=150, help='fpwalk: vertical blanks of walking between two places')
     parser.add_argument('--enter-timeout', type=int, default=3600)
     parser.add_argument('--fade', type=int, default=300, help='fpwalk: vertical blanks after a level runs before the first picture')
+    parser.add_argument('--hold', type=int, default=300, help='campaign: vertical blanks played at a level before its second picture')
+    parser.add_argument('--skip', help='campaign: levels left out (comma-separated), e.g. an act-list row no exit or mission leads to')
+    parser.add_argument('--screens', action='store_true', help='rigscript: the first level\'s screens (as `screens`) before the route')
+    parser.add_argument('--shots', help='rigscript: where the script writes its pictures')
     parser.add_argument('--app-arg', action='append', default=[], help='one more argument for rta_app (repeatable; --app-arg=--opt ...)')
     args = parser.parse_args()
     if args.build == 'fpreport':
         return run_fpreport(args)
+    if args.build == 'rigscript':
+        if args.what != 'campaign' or not args.out or not args.shots:
+            raise SystemExit('tour: rigscript campaign NAME... --out FILE.rig --shots DIR')
+        with open(args.out, 'w') as handle:
+            if args.screens:
+                handle.write('\n'.join(rig_screens(os.path.abspath(args.shots))) + '\n')
+            handle.write('\n'.join(rig_campaign(args.names, os.path.abspath(args.shots), args.hold, args.enter_timeout)) + '\n')
+        return 0
     if args.build == 'sheet':
         args.sheet, args.a, args.b = args.what, args.names[0], args.names[1]
         return run_sheet(args)
@@ -686,11 +909,13 @@ def main():
         return run_levels(args)
     if args.what == 'screens':
         return run_screens(args)
+    if args.what == 'campaign':
+        return run_campaign(args)
     if args.what == 'fpwalk':
         if args.settle == 50:
             args.settle = 12
         return run_fpwalk(args)
-    raise SystemExit('tour: levels, screens or fpwalk')
+    raise SystemExit('tour: levels, screens, fpwalk or campaign')
 
 
 if __name__ == '__main__':
