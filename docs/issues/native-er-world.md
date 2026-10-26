@@ -7,21 +7,23 @@ nothing changes.
 
 Everything below says **Ran** (with what was seen) or **Read**.
 
-## STATE (2026-10-26, third session: gate 3)
+## STATE (2026-10-26, fourth session: gate 4)
 
-Phase 1 steps 1-3 are **working, Ran**, with their faults fixed (below). Step 4, the hub's fitted rebuild: the daises and
-the obelisk pass the check but are now **refused on review** (gate 3: plainer than the game's own); the arch is **refused
-by the check**. The hub draws the game's own shapes. The haze fault in the figures' shaders is **fixed, Ran**.
+Phase 1 steps 1-3 are **working, Ran**. Step 4, the hub's fitted rebuild: the richer pieces (carved podium, relief
+monument, engraved round floor) were fetched, textured and given full materials (gold, marble, metal maps); they **pass
+the check** but are **refused on review again** (Gate 4: richer close up, not clearly better at play distance or in back
+light, and the daises cost 4-8 s to load). The arch was not tried (its step waits on the hub pieces passing). The hub
+draws the game's own shapes.
 
 | Step | State |
 |---|---|
 | 1. Materials by class, ER albedo + normal, world scale, triplanar, blended | **done, Ran**: 8 classes; reader + our own table (`er_world.cfg`); wood now read on its own (a mine's beams), metal only by a strict rule (none read on the four levels tried) |
 | 2. Grass (MultiMesh, swaying, density by distance, no collision, not on paths / against walls) | **done, Ran**: clears painted flower patches and stones; no tufts in the air; valor 3,509 points |
 | 3. Skies: ER cloud layer tinted by the level's own sky | **done, Ran** |
-| 4. Hub fitted rebuild (ruin pieces fitted to the Champions shapes, a hand's-width check) | **refused on review** (daises, obelisk: they pass the check but read plainer than the game's; see Gate 3); arch **refused** by the check (max 13.4 units off) |
-| Gate: before/after pictures, 60+ fps, room in step | **Ran**: pictures in `local/er-world/gate2/`; **106.3 fps with the layer, 106.3 without** (hub 98.3 / 95.5, fire1 66.6 / 68.7); **room in step** (1,856 ticks) |
+| 4. Hub fitted rebuild (ruin pieces fitted to the Champions shapes, a hand's-width check) | **refused on review** (gate 4, see Gate 4; gate 3 before it); arch **refused** by the check (max 13.4 units off), not retried |
+| Gate: before/after pictures, 60+ fps, room in step | **Ran**: pictures in `local/er-world/gate4/final/`; room in step (1,792 ticks, A drawing the gate-4 pieces); fps see Gate 4 |
 
-Built into `local/godot-r27/` (extension and project). Not committed.
+Built into `local/godot-r30/` (extension and project). Not committed.
 
 ## How it works
 
@@ -335,9 +337,15 @@ Pictures in `local/er-world/gate/`; 106.8 / 107.3 fps; room in step over 1,854 t
 - The same fitting on other levels' landmarks: a recipe per level, a dump of the level (`app er world dump`).
 - The rebuild's loading (about 210 ms at the hub's start): read the pieces ahead, or on a worker.
 - Metal: try the strict rule on a level that has real metal (the gnome levels).
-- The hub rebuild back on only with pieces that beat the game's (Gate 3): an obelisk needs a carved, coloured piece whose
-  textures are fetched (the column `AEG230_497`, the pedestal `AEG270_194` and the tower `AEG099_070` have none here); a
-  dais needs a stepped round piece whose step edges read.
+- The hub rebuild back on only with pieces that beat the game's (Gates 3, 4). What is still missing (Gate 4):
+  - the daises: a stepped round piece whose risers stand (the engraved floor's rim is a low band; fitted to a 7-unit step it
+    reads flat), drawn with the trefoil platform and the stairs beside it in the same stone, or not at all;
+  - the obelisk: one large gold panel per face (the game's focal point) rather than gilt relief; a gold mask made per
+    vertex by the fitter (relief faces against the panel's plane) instead of the screen-space bend, which shows the
+    relief's facets close up;
+  - the pieces' light: they stay brighter than the game's shapes in back light (the ambient fill dominates);
+  - a lighter dais mesh (the engraved floor is 92k triangles a step: 552k for both daises) or the meshes made once per
+    model and placed, not re-read per piece: the GDScript reader takes 0.8 s alone, 4-8 s on a loaded machine.
 - Grass: a second card (small plants).
 - Fetch the soil's own normal map.
 - Flicker check from a recording.
@@ -437,3 +445,64 @@ gap 8.97 ms, p99 17.2 ms; valor part 106.8); **1,857 ticks compared, no shared c
   - `tools/godot/er_world_fit.py`: `review`
   - this file
 - Local: `local/er-world/gate3/`, `local/er-world/hubfit/hub-gate3.json`, `local/godot-r28/`
+
+## Gate 4 (Ran, fourth session)
+
+**Fetched (local only).** The remembered DepotDownloader login with the range patch (`DOTNET_ROOT` set to the local .NET;
+no password asked): 20 more asset geometry bundles (6.7 MB of ranges, 56 MB of chunks) and 106 texture packages (the 11
+the gate-3 candidates lacked, then the 95 the new pieces' materials name: 264 MB of chunks). Decompressed in the Windows
+VM (QEMU, `-snapshot`; stopped after), converted to `local/er-world/ruins/{flv,dds,png}`. Lists and logs:
+`local/er-world/gate4/fetch/`. Textured contact sheets (`gate4/texview.py`, a small numpy rasteriser):
+`gate4/final/sheet1.jpg`, `sheet2.jpg`; maps: `texsheet1.jpg`, `texsheet2.jpg`.
+
+**Read from the sheets.** The richer pieces: a tall elaborate brazier pedestal (`aeg022_028`), the inscribed monument
+(`aeg099_070`: a flat slab, 1.8 × 1.1, a sculpted crown), an engraved round floor with a carved rim (`aeg210_459`), an
+engraved podium with relief panels and two mouldings (`aeg210_460`), a tapered pink-marble monument with figural relief
+bands (`aeg237_039`), white spires and columns (`aeg250_141`, `aeg250_526`, `aeg240_550`), a dark carved spire whose
+materials carry real metal maps (`aeg230_744`). No piece of the list is gold itself: gold is the material's (the `_m`
+maps are metal masks; `_1m` / `_3m` are blend and cavity masks).
+
+**The material (tracked, generic).**
+
+- `er_world_fit.py`: a part's `surfaces` (by the model's mesh number or `*`) give a mesh another albedo or normal, a metal
+  or mask map, shader values and its own tint. Pictures written at most 1024² (`MAX_SIDE`).
+- `er_ruin.gdshader`: `metallic` (or a metal map's channel and range), `recolour` (the texture's carving laid in another
+  colour: marble, gold), `metal_colour` (gold inlaid where a mask says), `gild` (the geometry's raised edges gilt),
+  `riser_dark`, `mask_polish`; a metal's light is the sky and the level's light in its own colour, whiter at a grazing
+  angle, with a coloured highlight and a broad sheen from the scene's lights (`glint`, `metal_sheen`).
+- `er_world.gd`: loads the metal and mask maps, sets the values, and takes a surface's own tint and its laid colour as its
+  mean.
+
+**Tried** (recipes `local/er-world/gate4/fit/try1..7.json`; runs `gate4/r1..r7`, route `gate4/run4.sh`, pictures game |
+rebuild):
+
+| Target | Pieces and material | Check | Seen | Verdict |
+|---|---|---|---|---|
+| daises | the engraved round floor, three discs per dais; pink marble laid over its carving, risers darker | passed, max 3.0 | the engraved ring and carved rim read close up, far more carving than the game's; at play distance the three steps read as one patterned slab, busy; it no longer matches the untouched trefoil platform and stairs in the game's stone beside it; in back light it stays bright (dais 105/84/86 against the game's 71/56/73) | **refused on review** |
+| obelisk | the engraved podium on the plinth, its two mouldings gold; the relief monument on the shaft, its base and cap gold, its relief gilt | passed, max 10.4 | close up far richer (relief figures, gold mouldings that catch the light); at play distance the game's large gold panel on dark stone reads stronger than gilt lines on pale marble; the gilt relief shows its facets close up; the pale shaft stays bright in back light | **refused on review** |
+| arch | not tried (step 3 waits on the hub passing) | - | - | - |
+
+The reasons are in `local/er-world/hubfit/hub-gate4.json` and the live `rebuild/hub/rebuild.json` (0 pieces).
+
+**A fault found and fixed in the recipe.** The obelisk's shaft volume (yaw 0, half 14) left the game's shaft fins drawn:
+its lower corners reach 19.3 units out along the axes. Turned 45° with the shaft, every shaft triangle is left out
+(Ran: none of them remains; the gem's cage stays). Gate 2's pictures had this fault.
+
+**Frame rate (Ran, machine shared with other agents' runs: the numbers are noisy).** Paced, 3024×1964, hub + valor,
+`local/er-world/gate4/fps4.sh`: with the gate-4 pieces **59.5 fps** mean (median gap 11.9 ms, p99 147 ms, 852 stalls over
+50 ms); the layer off 69.3 (9.5 ms, 71.5 ms, 261 stalls). Loading the pieces: 0.84 s alone, 4.4 s and 7.9 s on the loaded
+machine. Another reason the daises' mesh cannot ship as it is.
+
+**Room (Ran).** `local/godot-r30/test/room30.py g4 --level valor` (port 41993), both copies Remastered, A drawing the
+gate-4 pieces (`RTA_ER_WORLD_DIR` = the gate-4 folder), B with `RTA_ER_WORLD=off`: **1,792 ticks compared, no shared
+column differs.** Both copies ran about 50 fps there (the machine's load).
+
+**Live state (Ran).** The live folder's rebuild: `rebuild for hub, 0 pieces`; no shader error.
+
+**Fourth session changed:**
+
+- Modified (tracked): `tools/godot/er_world_fit.py` (surfaces, picture size), `tools/godot/project/er_world.gd` (the
+  rebuild's materials only), `tools/godot/project/shaders/er_ruin.gdshader` (metal, recolour, gild, riser), this file.
+- Local: `local/er-world/gate4/` (fetch lists, fits, runs, `final/` pictures, `fps4.sh`, `run4.sh`, `pair.py`,
+  `texview.py`), `local/er-world/ruins/` (the new pieces and textures), `local/er-world/hubfit/hub-gate4.json`,
+  `local/godot-r30/`.

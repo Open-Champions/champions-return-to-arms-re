@@ -22,6 +22,9 @@ The recipe (a local file; numbers of the level's shapes and names of Elden Ring 
         the piece's own footprint centre to (cx, cy), its radius to r, its height span to z0..z1
   box:  {"box": [x0, y0, z0, x1, y1, z1] (default: the reference geometry's box), "turn": degrees, "keep_aspect": 0..1}
         the piece's own box (turned) onto that box
+  any part: "surfaces": {"<the model's mesh number>" or "*": {"albedo": "<PNG name>", "normal": ..., "metal": "<a metal map>",
+        "mask": "<a mask map>", "params": {<er_ruin.gdshader uniform>: value}, "tint": <this surface's own tint 0..1>}}
+        a mesh's material made other than the model's own: a carved stone's moulding made gold, a pale stone made marble
 
 What it stands in for is what the game draws inside the target's volume (the drawer leaves exactly that out at run time:
 RtaDrawer.set_world_hide - a level draw lying wholly inside, a model's triangles lying wholly inside), taken from the dump.
@@ -43,7 +46,6 @@ Needs numpy and Pillow.
 import json
 import math
 import os
-import shutil
 import sys
 
 import numpy as np
@@ -83,7 +85,7 @@ def load_model(stem):
     j = json.load(open(stem + '.json'))
     b = open(stem + '.bin', 'rb').read()
     meshes = []
-    for m in j['meshes']:
+    for k, m in enumerate(j['meshes']):
         n, at = m['vertices'], m['at']
         p = np.frombuffer(b, np.float32, n * 3, at).reshape(n, 3).astype(float); at += n * 12
         nm = np.frombuffer(b, np.float32, n * 3, at).reshape(n, 3).astype(float); at += n * 12
@@ -94,7 +96,7 @@ def load_model(stem):
         # y up -> z up: (x, y, z) -> (x, -z, y), a turn (no mirror)
         p = p[:, [0, 2, 1]] * np.array([1.0, -1.0, 1.0])
         nm = nm[:, [0, 2, 1]] * np.array([1.0, -1.0, 1.0])
-        meshes.append({'p': p, 'n': nm, 'uv': uv, 'i': idx.astype(np.int64), 'mat': j['materials'][m['material']]})
+        meshes.append({'p': p, 'n': nm, 'uv': uv, 'i': idx.astype(np.int64), 'mat': j['materials'][m['material']], 'k': k})
     return meshes
 
 
@@ -413,9 +415,22 @@ def texture_pair(mat, texdir):
     return albedo, normal
 
 
+MAX_SIDE = 1024     # the pictures written at most this size (the 2048 maps: four times the loading at the level's start)
+
+
+def smaller(im):
+    if max(im.size) > MAX_SIDE:
+        im = im.resize((min(im.width, MAX_SIDE), min(im.height, MAX_SIDE)), Image.LANCZOS)
+    return im
+
+
+def write_picture(src, dst):
+    smaller(Image.open(src)).save(dst)
+
+
 def write_normal(src, dst):
     """an Elden Ring normal map (x, y in red and green) with its z put back, as Godot wants it"""
-    im = np.asarray(Image.open(src).convert('RGBA')).astype(float) / 255.0
+    im = np.asarray(smaller(Image.open(src).convert('RGBA'))).astype(float) / 255.0
     x, y = im[..., 0] * 2 - 1, im[..., 1] * 2 - 1
     z = np.sqrt(np.clip(1 - x * x - y * y, 0, 1))
     out = np.stack([x * 0.5 + 0.5, y * 0.5 + 0.5, z * 0.5 + 0.5], -1)
@@ -486,11 +501,24 @@ def main():
                 mat['_textures'] = [t['path'] for t in mat.get('textures', []) if t.get('path')] + entry.get('tex', [])
                 albedo, normal = texture_pair(mat, recipe['textures'])
                 surf = {'first': int(sum(len(x) for x in idx)) * 3, 'count': int(len(m['i'])) * 3}
-                for key, src in (('albedo', albedo), ('normal', normal)):
+                # the recipe's own say over this mesh's material (see "surfaces" above): other textures, a metal or mask
+                # map, shader values, its own tint
+                over = dict(part.get('surfaces', {}).get('*', {}), **part.get('surfaces', {}).get(str(m['k']), {}))
+                named = lambda b: os.path.join(recipe['textures'], b + '.png') if b else None
+                if over.get('albedo'):
+                    albedo = named(over['albedo'])
+                if over.get('normal'):
+                    normal = named(over['normal'])
+                maps = [('albedo', albedo), ('normal', normal)] + [(k, named(over[k])) for k in ('metal', 'mask') if over.get(k)]
+                if over.get('params'):
+                    surf['params'] = over['params']
+                if 'tint' in over:
+                    surf['tint'] = over['tint']
+                for key, src in maps:
                     if src:
                         dst = os.path.join(out, 'tex', os.path.basename(src))
                         if not os.path.exists(dst):
-                            (write_normal if key == 'normal' else shutil.copyfile)(src, dst)
+                            (write_normal if key == 'normal' else write_picture)(src, dst)
                         surf[key] = 'tex/' + os.path.basename(src)
                         if key == 'albedo':
                             surf['albedo_mean'] = [round(float(x), 4) for x in np.asarray(Image.open(src).convert('RGB').resize((32, 32))).reshape(-1, 3).mean(0) / 255.0]
