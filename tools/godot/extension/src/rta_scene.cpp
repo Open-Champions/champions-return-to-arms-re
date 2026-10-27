@@ -919,7 +919,12 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         sc.segment++;
         return true;
     }
-    if (sc.batch_on && normals && sc.packets && batch_take(pass, f, d, target, texture, order)) {
+    // the game's painted dome is drawn as the list has it, never as whole packets: the triangles its vertex programs drop
+    // under and round the eye are not meant to be seen (drawn, the hub's lower cloud bowl was a flat disc of the clear
+    // colour over the clouds: playtest-classic.md G3)
+    const bool dome_here = index < sc.is_dome.size() && sc.is_dome[index];
+    const bool packets = sc.packets && !dome_here;
+    if (sc.batch_on && normals && packets && batch_take(pass, f, d, target, texture, order)) {
         // (test aid, RTA_BATCH_SINGLE=1: each chunk a batch of its own, at its own place - fused, but not gathered)
         static const bool single = getenv("RTA_BATCH_SINGLE") && atoi(getenv("RTA_BATCH_SINGLE")) != 0;
         if (single) sc.segment++;
@@ -927,7 +932,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     }
     if (!draw_commutes(d)) sc.segment++;
     // kept meshes are made only of whole packets with normals: with tween on they carry 16 bytes more a corner (CUSTOM2)
-    const bool carry = sc.tween_on && sc.keep && normals && sc.packets && d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count;
+    const bool carry = sc.tween_on && sc.keep && normals && packets && d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count;
     const int stride = (normals ? 32 : 20) + (carry ? 16 : 0);
     bool model = false;
     sc.kept_key = 0;
@@ -937,7 +942,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     // the mesh's real box: Godot pairs its lights with what they reach, and culls the shadow casters by it
     AABB box;
     bool box_known = false;
-    if (normals && sc.packets && d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count) {
+    if (normals && packets && d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count) {
         // The packets' own geometry: every triangle of every strip drawn with this state - the list's triangles and the
         // ones the game's vertex programs dropped whole near the eye (Godot clips them as triangles should be clipped).
         const rtag_scene_piece* pieces = sc.tap->pieces + d.scene_piece_first;

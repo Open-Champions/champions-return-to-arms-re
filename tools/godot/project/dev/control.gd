@@ -11,6 +11,7 @@ extends Node
 #   info                             -> "ok blanks=N level=NAME process_usec=N"
 #   shot FILE.png                    the Godot window's own picture after this frame ("app windowshot")
 #   app TEXT                         an "app ..." script line for the host (main.gd _host_command)
+#   sceneopt NAME VALUE              a scene option of the drawer (rta_scene.cpp set_scene_option; a test aid)
 #   quit                             end the program as a script's quit does
 #
 # Commands are carried out in _process, before the controller is read for the frame let go in it.
@@ -123,6 +124,13 @@ func _run(line: String) -> String:
 			return "ok"
 		"app":
 			main.call("_host_command", line.substr(4))
+			return "ok"
+		"sceneopt":
+			# a scene option of the drawer (rta_scene.cpp set_scene_option: keep, batch, prepass, packets, near_fade ...)
+			var drawer: Object = main.get("drawer")
+			if drawer == null or w.size() < 3:
+				return "err sceneopt NAME VALUE (scene mode)"
+			drawer.call("set_scene_option", w[1], w[2].to_float())
 			return "ok"
 		"quit":
 			main.call("_finish", 0)
