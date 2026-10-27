@@ -95,7 +95,7 @@ The display is blanked at 0x322db8; `mainloop_loadRequestedWorld` runs and
 starts the loading thread. `mainloop_startWarmup` stores 10 in
 `g_warmupFrames` 0x506048 (0x322934–0x322950). Its loop runs at least those
 idle-stream passes, resets the counter to 10 while terrain is busy, holds it
-at 3 or more for pending equipment, and forces it to zero after 1,500
+at 3 or more for pending equipment, and forces it to zero after more than 1,500
 displayed frames (0x322eb0–0x322fd0). Those are local loading/display
 waits, not simulation ticks or a fixed loading duration.
 
@@ -196,7 +196,7 @@ integrated emulation of the entire system. `t3/research-levels`
    hub-to-`blood1` game run.
 6. The session starts the 10-count warm-up, runs deferred script calls once,
    repeats camera/world/cutscene setup while streaming is busy, waits for
-   peers in a net game, and stocks four named stores
+   peers in a net game, and conditionally generates stock for one of four destinations
    (0x322e58–0x3230f4). The loading thread retains the display during this
    interval. `drawWorld` omits minimap/backdrop while it is active;
    `cut_runFrame(1)` may set up a load-time cutscene but skips time advance.
@@ -266,3 +266,7 @@ the reference-branch scripts and inputs were read-only.
 | `python3 tools/difftest_story_route.py --elf "$ELF" --hub-gob HUB.GOB --blood-gob BLOOD1.GOB` from `t3/research-story-route` | 26 menu snapshots per seed; archive links checked |
 | `python3 tools/difftest_mission_menu_art.py --elf "$ELF" --iso "$ISO"` from the same branch | 39 draw and 20 input cases per seed; 32 disc texture headers |
 | `python3 -m unittest discover -s tools -p 'test_*.py'` | 652/652 pass |
+
+2026-10-27: see [loading readiness](loading-readiness.md) for addressed deferred,
+equipment, offline/online peer and conditional store/save checks, original-slice
+difftests, and explicit resource/runtime limits.
