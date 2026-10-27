@@ -397,8 +397,70 @@ def switch_effects(drundar, boss_name, doors, stairs):
     flag = drundar.arguments(0x338, "getv", 1, (0,))[0]
     assert [drundar.word(at) for at in (0x348, 0x34c)] == [0x35, 0x3b8]
     assert drundar.arguments(0xa68, "getv", 1, (0,)) == (flag,)
+    assert drundar.word(0xa78) == 0x54  # NOT, not arithmetic NEG or comparison
     assert [drundar.word(at) for at in (0xa7c, 0xa80)] == [0x35, 0xb10]
     assert drundar.arguments(0xb00, "setv", 2, (0,)) == (flag, 1)
+
+
+def door_predicate(executable, image):
+    """Execute the private door entry in the original VM and existing AMX model.
+
+    Native effects are recorded/stubbed; this establishes control flow only.
+    No private image cells or decoded identifiers are emitted.
+    """
+    from difftest_amx import Original
+    from ref_amx import Machine
+
+    script = ScriptCheck(image)
+    assert script.word(0xa78) == 0x54
+    assert (script.word(0xa7c), script.word(0xa80)) == (0x35, 0xb10)
+    flag = script.arguments(0xa68, "getv", 1, (0,))[0]
+    key = script.word(0xa5c)
+    assert script.strings[key] == flag
+    cases = 0
+    for saved in (0, 1, 2, -1, -2147483648):
+        orig, model = Original(executable), Machine(image)
+        orig.place(image)
+        assert orig.load() == model.load() == 0
+        names = model.native_names()
+        assert orig.register([(name, orig.stubs + 8 * slot)
+                              for slot, name in enumerate(names)]) == 0
+        traces = [[], []]
+
+        def native(side, name, args):
+            traces[side].append((name, tuple(args)))
+            if name == b"getv":
+                assert tuple(args) == (key,)
+                return saved
+            return 0
+
+        orig.on_native = lambda slot, args, _params: native(0, names[slot], args)
+        assert model.register({name: (lambda _m, args, name=name:
+                                     native(1, name, args)) for name in names}) == 0
+        # Frame +4 is PRI (script-machine section 4). Observe before NOT
+        # and before JZER, so the predicate is tested independently of effects.
+        registers = []
+        for handler in (0x1403e8, 0x13fd40):
+            orig.emu.hook(handler, lambda e, handler=handler: registers.append(
+                (handler, e.mem.s32((e.r[29] & 0xffffffff) + 4))))
+        entry = script.entry_at(0xa3c).encode("latin1")
+        error, index = orig.find(entry)
+        assert error == 0
+        assert model.find_public(entry) == (0, index)
+        original_result = orig.interpret(index, (), 0, 0xa5a5a5a5)
+        assert original_result == model.execute(index, pri=0)
+        assert original_result[0] == 0
+        assert registers == [(0x1403e8, saved), (0x13fd40, int(saved == 0))]
+        assert traces[0] == traces[1]
+        expected = [b"getv"] + ([] if saved else
+                   [b"setSaveInhibit", b"cutScene", b"setv"])
+        assert [name for name, _args in traces[0]] == expected
+        if saved == 0:
+            assert traces[0][1][1] == (0,)
+            written_key, written_value = traces[0][-1][1]
+            assert script.strings[written_key] == flag and written_value == 1
+        cases += 1
+    return cases
 
 
 def script_contract(gobs, rows_by_level):
@@ -531,10 +593,12 @@ def main():
     direct = direct_requests(args.executable, rows_by_level, resources,
                              args.source_dir, args.seed)
     script_contract(gobs, rows_by_level)
+    predicates = door_predicate(args.executable, lump(gobs["drundar"], "script.scr"))
     print(f"PASS seed {args.seed}: {total_records} records/{total_bytes} loader bytes, "
           f"{total_selected} factory selections, 89 definition entries, "
           f"{requests} requests through nine hostile constructor chains, "
-          f"{direct} bounded direct probes, two script/exit contracts; "
+          f"{direct} bounded direct probes, two script/exit contracts, "
+          f"{predicates} original/model door predicate cases; "
           "allocation, resource returns and downstream services stubbed")
 
 

@@ -211,6 +211,29 @@ literal eight at 0x870–0x878, inhibits saving at 0x89c and defers the entry at
 clears the inhibit at 0xaa0, requests a cutscene at 0xacc and writes a
 persistent flag at 0xb00, which `start` reads at 0x338. These cells and
 relationships are asserted by [`switch_effects`](../tools/difftest_strife_drundar.py).
+**Observed predicate (2026-10-27, PSD-R1-2):** the private script image has
+NOT (opcode 0x54) at code offset 0xa78, between the persistent read at
+0xa68 and JZER at 0xa7c (target 0xb10 at 0xa80). The existing VM research
+identifies NOT's original handler at 0x1403e8 as `PRI = (PRI == 0)` and
+JZER's handler at 0x13fd40 as branching when PRI is zero
+([machine specification](spec/script-machine.md), opcode table). This is
+logical negation, not arithmetic negation or a comparison with one.
+
+**Executed predicate:** `door_predicate` in the same difftest loads the
+owner's image through the original loader (0x13e8f8), enters the door at
+0xa3c through the original interpreter (0x13ecf8), and compares native
+traces/results with `ref_amx.Machine`. Hooks at the original NOT and JZER
+handlers inspect PRI before each operation. For saved value zero, PRI
+becomes one: JZER falls through to 0xa84, clear-save-inhibit at 0xaa0,
+cutscene request at 0xacc and persistent write of one at 0xb00. For saved
+values one, two, minus one and minimum signed 32-bit, PRI becomes zero:
+JZER takes 0xb10 and none of those three effects is called. All native
+services are stubbed; the returned persistent value is controlled. These
+are five isolated original/model VM cases, not a running-game door or
+cutscene test. Actual effect completion and playable reachability remain
+**Unknown**. The contract now explicitly checks 0xa78, so changing the
+predicate opcode is rejected before execution.
+
 Four `arenadoor` records share one nonempty name, which `start` targets at
 0x374; the `UWStair` name is targeted at 0x3a8.
 
