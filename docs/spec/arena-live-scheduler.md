@@ -97,3 +97,52 @@ loading, destructor semantics, complete class/factory bindings, purchase qsort
 ties and signed-wave overflow gameplay. The bounded scheduler is documented;
 the full live-match gate remains partial and must continue to refuse these
 unsupported paths. No Play!, PCSX2, console or native gameplay was run here.
+
+## Round 2: later boundaries and terminal input
+
+Research date: 2026-10-27; starting pin `2fbfaa46`.
+
+**Executed:** additive `tools/difftest_arena_terminal.py` runs original task
+`0x306b78` at reconstructed intermission-expiry states for waves 29, 44, 149,
+299, 2999, 29999 and 32765, offline and online (14 cases). Every case requests
+exactly the runtime-table pointer predicted by `level_record_index`, leaves
+mode B enabled and terminal/session-exit words zero, and does not call
+`0x307ebc`. These are later signed-positive continuation samples, not earned
+waves, overflow evidence, or proof that every possible wave continues.
+
+**Executed:** the same probe constructs exhausted player records (zero HP,
+negative lives, zero saved-life snapshot and dead countdown), excludes the
+128-frame empty-grid visit, and calls the original task for 1–4 active slots,
+offline and online, with both terminal-input choices (16 cases). The original
+terminal flag store executes at `0x306f94`; the original end/rank bodies run,
+intermission stays zero, and no same-wave retry is requested. Each case then
+executes the task with its selected button held at fade zero, the immediately
+preceding float bit pattern below 1.0, and exactly 1.0. Neither earlier value
+accepts the button. At 1.0, confirm calls shutdown and executes the original
+level picker `0x304bc8`, requesting recipe-zero's runtime-selected level pointer
+while retaining mode B. Cancel clears mode B, sets session exit to one and
+requests no level copy. This extends isolated round-1 input vectors into a
+bounded defeat-to-input sequence; it is not a natural match completion.
+
+**Observed (heuristic static cross-reference inventory):** `Elf.analyze()` on
+the private executable identifies direct terminal-word store references at
+`0x304dcc`, `0x306dd4`, and `0x306f94`; the latter is executed above. This
+inventory follows the tool's register-pair heuristic, not an exhaustive alias,
+indirect-store, DMA, script or external-event proof. No absence-of-victory claim
+is justified by this inventory. Private outputs retain addresses/counts only.
+
+**Partial:** active-slot services, player construction, grid, qsort, rendering,
+record lookup/restoration services, shutdown, string copy and loader remain
+fixture boundaries. The confirm fixture supplies an allocated zero-filled
+synthetic saved record; it does not establish valid persistent-record content.
+An initial null saved-record probe faulted at `0x3070a8`; using allocated state
+corrected that fixture, without changing emulator/reference APIs or vectors.
+Fade values are supplied, not produced by a rendered screen. No rewards were
+asserted or inferred from restart behavior.
+
+**Unknown:** an external natural mode-B victory, normal-input kills and later
+creature ticks, results rendering, fixed award calculation/collection, actual
+next-level loading and signed-wave overflow. Priority 1 remains partial;
+priorities 2 and 3 remain unresolved. Settling these requires tracing the
+external event/writer (if present), a combat-input-to-tick original execution,
+and addressed award/load services rather than adding zero-return fixtures.
