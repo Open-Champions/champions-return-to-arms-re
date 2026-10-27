@@ -101,6 +101,17 @@ from respawning merely because they remain in `objects.ob`. The separate
 factory callbacks. **Inferred:** absent eligible records stay absent on a
 revisit, provided the saved entry was retained and the class is not filtered.
 
+## Later executed load evidence (2026-10-27)
+
+See [offline death reload](death-reload.md) for additive original-function
+probes at base `e7d8972`: automatic death-to-buffer-restore, Trigger loads,
+Creature load fields/callback arguments, Chest/AutoChest animation state,
+world-backed door setters, JumpGate callback arguments and nested ItemProp/Prop
+loading. The table below records the earlier pin's evidence boundary; its
+"no committed load probe" statements are historical and superseded only for
+those specifically tested branches by the later document. Full world services,
+real-resource reconstruction and end-to-end death reload remain Unknown.
+
 ## State examples and script limits
 
 | Case | Original treatment and evidence |
