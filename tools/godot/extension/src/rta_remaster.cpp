@@ -991,6 +991,33 @@ bool RtaRemaster::pose(const Ref<RtaMachine>& machine, int64_t skeleton, const R
     return true;
 }
 
+bool RtaRemaster::skin_palette(const RID& rid, const PackedInt32Array& binds, const Array& globals, const Array& inverse_bind) const {
+    if (!rid.is_valid() || binds.size() != inverse_bind.size()) return false;
+    // Validate before changing any bone. Missing global bones keep the script's
+    // identity transform; malformed palettes are refused as a whole.
+    for (int64_t q = 0; q < binds.size(); ++q) {
+        const int bone = binds[q];
+        if (bone >= globals.size() || inverse_bind[q].get_type() != Variant::TRANSFORM3D) return false;
+        if (bone >= 0 && globals[bone].get_type() != Variant::NIL && globals[bone].get_type() != Variant::TRANSFORM3D) return false;
+    }
+    RenderingServer* rs = RenderingServer::get_singleton();
+    for (int64_t q = 0; q < binds.size(); ++q) {
+        const int bone = binds[q];
+        Transform3D value;
+        if (bone >= 0 && globals[bone].get_type() != Variant::NIL) {
+            // Use the engine's operator, just as GDScript does. The extension's
+            // compiled matrix multiply can differ in its final floating-point bit.
+            Variant product;
+            bool valid = false;
+            Variant::evaluate(Variant::OP_MULTIPLY, globals[bone], inverse_bind[q], product, valid);
+            if (!valid) return false; // types were checked above
+            value = product;
+        }
+        rs->skeleton_bone_set_transform(rid, q, value);
+    }
+    return true;
+}
+
 void RtaRemaster::tween(const RID& rid, double t) {
     auto it = poses.find(rid.get_id());
     if (it == poses.end() || it->second.now.empty()) return;
@@ -1032,13 +1059,17 @@ PackedVector4Array RtaRemaster::light_sh(const Ref<RtaMachine>& machine, const P
             const double Y[9] = {1.0, y, z, x, x * y, y * z, 3.0 * z * z - 1.0, x * z, x * x - y * y};
             const double col[3] = {f.r / 128.0, f.g / 128.0, f.b / 128.0};
             for (int a = 0; a < 9; a++) {
-                for (int b = 0; b < 9; b++) A[a][b] += Y[a] * Y[b];
+                // The normal matrix is symmetric. Accumulate each product once,
+                // in the original corner order, then mirror it before solving.
+                for (int b = a; b < 9; b++) A[a][b] += Y[a] * Y[b];
                 for (int ch = 0; ch < 3; ch++) B[a][ch] += Y[a] * col[ch];
             }
             n++;
         }
     }
     if (n < 24) return out;
+    for (int a = 0; a < 9; a++)
+        for (int b = 0; b < a; b++) A[a][b] = A[b][a];
     // ridge (the bands of directions a figure's normals do not cover stay near the mean) and Gauss-Jordan
     for (int a = 0; a < 9; a++) A[a][a] += (a == 0 ? 1e-6 : 0.02) * (double)n;
     for (int col = 0; col < 9; col++) {
@@ -1410,6 +1441,7 @@ void RtaRemaster::_bind_methods() {
     ClassDB::bind_method(D_METHOD("bakes_running"), &RtaRemaster::bakes_running);
     ClassDB::bind_method(D_METHOD("merge", "surfaces", "groups", "count"), &RtaRemaster::merge);
     ClassDB::bind_method(D_METHOD("pose", "machine", "skeleton", "rid"), &RtaRemaster::pose);
+    ClassDB::bind_method(D_METHOD("skin_palette", "rid", "binds", "globals", "inverse_bind"), &RtaRemaster::skin_palette);
     ClassDB::bind_method(D_METHOD("tween", "rid", "t"), &RtaRemaster::tween);
     ClassDB::bind_method(D_METHOD("forget", "rid"), &RtaRemaster::forget);
     ClassDB::bind_method(D_METHOD("light_sh", "machine", "pieces"), &RtaRemaster::light_sh);

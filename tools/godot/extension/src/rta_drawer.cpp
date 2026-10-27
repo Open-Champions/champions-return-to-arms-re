@@ -107,6 +107,8 @@ RtaDrawer::Pass* RtaDrawer::make_pass(Target& target) {
 void RtaDrawer::free_pass(Pass* pass) {
     RenderingServer* s = rs();
     last_order.erase(std::remove(last_order.begin(), last_order.end(), pass), last_order.end());
+    for (auto& entry : pass->kept_instances)
+        for (auto& instance : entry.second) s->free_rid(instance.rid);
     for (RID instance : pass->instances) s->free_rid(instance);
     for (RID mesh : pass->meshes) s->free_rid(mesh);
     s->viewport_set_active(pass->viewport, false);
@@ -503,6 +505,32 @@ RID RtaDrawer::place_mesh(Pass& pass, RID mesh, RID material, float order) {
     RenderingServer* s = rs();
     if (pass.used >= pass.meshes.size()) { pass.meshes.push_back(s->mesh_create()); meshes_made++; }
     RID instance = instance_for(pass);
+    if (stable_instances) {
+        // Keep the pool's slot empty: a flat/dynamic draw may use it next frame.
+        // Only retained meshes use the separate instances, keyed by their RID
+        // (including its generation), never by an address or a draw-list index.
+        s->instance_set_base(instance, RID());
+        auto& kept = pass.kept_instances[mesh.get_id()];
+        auto at = std::find_if(kept.begin(), kept.end(), [&](const Pass::KeptInstance& k) { return k.used != frames; });
+        if (at == kept.end()) {
+            Pass::KeptInstance k;
+            k.rid = s->instance_create2(mesh, pass.scenario);
+            s->instance_set_ignore_culling(k.rid, true);
+            s->instance_geometry_set_cast_shadows_setting(k.rid, RenderingServer::SHADOW_CASTING_SETTING_OFF);
+            kept.push_back(k);
+            at = kept.end() - 1;
+        }
+        if (at->material != material) {
+            s->instance_geometry_set_material_override(at->rid, material);
+            at->material = material;
+        }
+        s->instance_set_pivot_data(at->rid, order, false);
+        if (!at->visible) s->instance_set_visible(at->rid, true);
+        at->visible = true;
+        at->used = frames;
+        pass.used++;
+        return at->rid;
+    }
     s->instance_geometry_set_material_override(instance, material);
     pass.overridden[pass.used] = 1;
     s->instance_set_base(instance, mesh);
@@ -905,8 +933,19 @@ void RtaDrawer::submit() {
     frame_texture_of = nullptr;
 
     // instances left over from a frame with more draws show nothing
-    for (Pass* pass : all_passes)
+    for (Pass* pass : all_passes) {
         for (size_t k = pass->used; k < pass->instances.size(); k++) s->instance_set_base(pass->instances[k], RID());
+        for (auto entry = pass->kept_instances.begin(); entry != pass->kept_instances.end();) {
+            auto& kept = entry->second;
+            for (auto k = kept.begin(); k != kept.end();) {
+                if (k->used != frames && k->visible) { s->instance_set_visible(k->rid, false); k->visible = false; }
+                if (frames - k->used > 30) { retire(k->rid); k = kept.erase(k); }
+                else ++k;
+            }
+            if (kept.empty()) entry = pass->kept_instances.erase(entry);
+            else ++entry;
+        }
+    }
     // the viewports in order: activated one after the other, each rendered once
     for (Pass* pass : all_passes) s->viewport_set_active(pass->viewport, false);
     last_order.clear();

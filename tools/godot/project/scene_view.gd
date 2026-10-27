@@ -453,6 +453,7 @@ func before_frame() -> void:
 	# Classic keeps its original shader variants and ordering.
 	var opaque_world := not _classic_look_in_force() and OS.get_environment("RTA_OPAQUE_WORLD") != "0" and RenderingServer.get_current_rendering_method() == "forward_plus"
 	drawer.call("set_scene_option", "opaque", 1.0 if opaque_world else 0.0)
+	drawer.call("set_scene_option", "stable_instances", 1.0 if String(main.opt.edition) == "remastered" else 0.0)
 	sky_material.shader = sky_depth_shader if opaque_world else sky_ordered_shader
 	drawer.call("set_scene_option", "fill", 1.0 if in_force.fill else 0.0)
 	for key in ["fill_light", "fill_scale"]:

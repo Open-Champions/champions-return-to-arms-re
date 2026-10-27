@@ -273,6 +273,7 @@ bool RtaDrawer::scene_lit() const { return scene && scene->lit; }
 void RtaDrawer::set_scene_option(const String& name, double value) {
     if (name == "letterbox_off") { letterbox_off = value != 0; return; }     // the drawer's own (no scene needed)
     if (name == "stored_world") { stored_world = value != 0; return; }       // ... and this (rta_drawer.h)
+    if (name == "stable_instances") { stable_instances = value != 0; return; }
     if (!scene) scene = new Scene;
     if (name.begins_with("fill")) { fill_option(name, value); return; }
     if (name == "lit") scene->lit = value != 0;

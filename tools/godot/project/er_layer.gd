@@ -67,6 +67,9 @@ var self_instance: RID
 var self_skeleton: RID
 var self_mesh: ArrayMesh
 var self_material: StandardMaterial3D
+var placed_materials := {}      # instance RID -> immutable material list last installed
+var sent_light := {}            # instance RID -> exact parameter values last sent
+var pose_writer: RefCounted     # optional native palette submission; older extensions use the same script loop
 # the Elden Ring figures
 # A figure's identity (docs/issues/native-cutscenes.md): the object whose animation state poses it is a Player (its
 # vtable) of a slot (Player +0x3c8) - the player itself or this machine's prediction copy of it.  A cut scene's story
@@ -119,10 +122,16 @@ var part_us := {"get": 0, "find": 0, "draw": 0}
 func _ready() -> void:
 	machine = main.machine
 	drawer = main.drawer
+	if ClassDB.class_exists("RtaRemaster"):
+		pose_writer = ClassDB.instantiate("RtaRemaster")
+		if not pose_writer.has_method("skin_palette"):
+			pose_writer = null
 
 
 func release() -> void:
 	depth.release()
+	placed_materials.clear()
+	sent_light.clear()
 	for pair in own_lights:
 		RenderingServer.free_rid(pair[1])
 		RenderingServer.free_rid(pair[0])
@@ -156,10 +165,14 @@ func _free_figure(f: Dictionary) -> void:
 	for m in f.get("instances", []):
 		for key in ["instance", "skeleton"]:
 			if (m[key] as RID).is_valid():
+				placed_materials.erase(m[key])
+				sent_light.erase(m[key])
 				depth.free_instance(m[key])
 				RenderingServer.free_rid(m[key])
 	for w in f.get("weapons", {}).values():
 		if (w.instance as RID).is_valid():
+			placed_materials.erase(w.instance)
+			sent_light.erase(w.instance)
 			depth.free_instance(w.instance)
 			RenderingServer.free_rid(w.instance)
 	f["instances"] = []
@@ -1494,6 +1507,8 @@ func _draw_figure(t: Dictionary) -> void:
 		var w: Dictionary = weapons.get(key, {})
 		if w.is_empty() or w.what != h.what:
 			if not w.is_empty():
+				placed_materials.erase(w.instance)
+				sent_light.erase(w.instance)
 				depth.free_instance(w.instance)
 				RenderingServer.free_rid(w.instance)
 			w = {"what": h.what, "instance": RenderingServer.instance_create2((wm.mesh as Mesh).get_rid(), scenario)}
@@ -1528,8 +1543,11 @@ func _draw_figure(t: Dictionary) -> void:
 	for key in weapons:
 		lit.append(weapons[key].instance)
 	for inst in lit:
+		if sent_light.has(inst) and sent_light[inst] == light:
+			continue
 		for key in light:
 			RenderingServer.instance_geometry_set_shader_parameter(inst, key, light[key])
+		sent_light[inst] = light.duplicate()
 	f["drawn_frame"] = now_frame
 
 
@@ -1549,9 +1567,10 @@ func _skin(f: Dictionary, m: Dictionary, g: Array, root_at: Vector3, t: Dictiona
 		var binds: PackedInt32Array = mesh.binds
 		var poses: Array = mesh.poses
 		var rid: RID = instances[i].skeleton
-		for q in binds.size():
-			var bone := binds[q]
-			RenderingServer.skeleton_bone_set_transform(rid, q, (g[bone] as Transform3D) * (poses[q] as Transform3D) if bone >= 0 and g[bone] != null else Transform3D())
+		if pose_writer == null or not pose_writer.call("skin_palette", rid, binds, g, poses):
+			for q in binds.size():
+				var bone := binds[q]
+				RenderingServer.skeleton_bone_set_transform(rid, q, (g[bone] as Transform3D) * (poses[q] as Transform3D) if bone >= 0 and g[bone] != null else Transform3D())
 		if t.has("tween"):
 			continue                    # between game frames: only the bones move (the order and the box are the frame's)
 		_place(instances[i].instance, mesh.materials, t)
@@ -1658,14 +1677,19 @@ var orders_frame := -1
 var first_order := -1.0
 var orders := {}                    # this frame's drawer: per object left out, the place of its first draw
 func _place(instance: RID, materials: Array, t: Dictionary = {}) -> void:
-	RenderingServer.instance_set_layer_mask(instance, 1 | OWN_LAYER)
-	for i in materials.size():
-		RenderingServer.instance_set_surface_override_material(instance, i, (materials[i] as Material).get_rid())
-	var depth_ok := not materials.is_empty() and materials.all(func(m): return m is ShaderMaterial and m.shader == armour_shader)
-	depth.allow(instance, depth_ok)
-	if depth_ok:
+	# A creature keeps its mesh/materials for the instance's lifetime. Reinstalling
+	# them every game frame dirties Godot's instance dependencies across the crowd.
+	# Compare the actual resources, and forget the entry whenever its RID is freed.
+	if not placed_materials.has(instance) or placed_materials[instance] != materials:
+		RenderingServer.instance_set_layer_mask(instance, 1 | OWN_LAYER)
 		for i in materials.size():
-			depth.surface(instance, i, depth.depth_material(materials[i]).get_rid())
+			RenderingServer.instance_set_surface_override_material(instance, i, (materials[i] as Material).get_rid())
+		var depth_ok := not materials.is_empty() and materials.all(func(m): return m is ShaderMaterial and m.shader == armour_shader)
+		depth.allow(instance, depth_ok)
+		if depth_ok:
+			for i in materials.size():
+				depth.surface(instance, i, depth.depth_material(materials[i]).get_rid())
+		placed_materials[instance] = materials.duplicate()
 	if t.has("fit"):
 		# a fitted figure's pieces: over the player's own figure, which is not left out (so has no place of its own in
 		# the list): after the world's draws, depth tested against them - the figure under it and whatever stands in front

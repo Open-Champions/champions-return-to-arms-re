@@ -66,6 +66,9 @@ class RtaRemaster : public RefCounted {
     // The skin matrices of skeleton `skeleton` (an index into this frame's skeletons) into a RenderingServer skeleton
     // (its data allocated as needed); the matrices before are kept for tween
     bool pose(const Ref<RtaMachine>& machine, int64_t skeleton, const RID& rid);
+    // ER's already computed global bones times the mesh's inverse bind poses.
+    // Submit a palette in one script call; the transforms and update cadence stay the same.
+    bool skin_palette(const RID& rid, const PackedInt32Array& binds, const Array& globals, const Array& inverse_bind) const;
     // between two game frames (RtaDrawer.redraw): T game frames past the last pose (T < 0: between the last two)
     void tween(const RID& rid, double t);
     void forget(const RID& rid);
