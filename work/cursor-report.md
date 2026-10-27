@@ -49,3 +49,31 @@ No pictures generated (function-level research). No network/public-server contac
 no push/PR, no main commit, no process termination. Private source inputs were read
 through local/ symlinks only. No tracked game bytes, raw disassembly or decompiler output.
 One dated handoff line is appended to the authorized open-champions COORDINATION.md.
+
+
+2026-10-27 — A1 audit fix (starting pin 9077656)
+- Removed both literal original level-file name lists from docs/arena-modes.md.
+  The replacement table records only addresses 0x5037b8 / 0x503798, entry counts
+  13 / 7 (excluding null terminators), and mode-selection/rotation roles.
+  No name contents are needed as retained evidence; none were copied elsewhere.
+- Reviewed all six tracked files added by git diff 77c2f70..9077656 for other
+  copied game names/strings, including Python string/byte literals. No additional
+  copied game content found; remaining text is research prose, identifiers,
+  authored check labels and synthetic fixtures. Removed-name grep over those
+  current files returns zero matches. Runtime private-table reads are unchanged.
+- Read-only inspection confirms older research-arena-match pin d4f58da carries
+  the same two original rows. That branch/pin was not edited.
+
+A1 verification (same commands as Verification above, after the documentation fix)
+- Scheduler --seed 20973: PASS, eight configurations / 240 wave cases;
+  local/arena-scheduler-a1-20973.log.
+- Scheduler --seed 7: PASS, eight configurations / 240 wave cases;
+  local/arena-scheduler-a1-7.log.
+  Combined: 4,160 spawn, 512 preload and 160 level requests; occupied-grid controls
+  passed on both seeds. All commands exited 0.
+- Arena-mode difftest: PASS, 302 passed / 0 failed; local/arena-modes-a1.log.
+- Unit discovery: PASS, 652 tests in 5.265 seconds; local/unittest-a1.log.
+- git diff --check and git diff --cached --check: PASS.
+- Only docs/arena-modes.md and this report changed. All execution logs remain
+  ignored under local/. No writes to the primary checkout or other worktrees,
+  no push, no main commit, and no process termination.

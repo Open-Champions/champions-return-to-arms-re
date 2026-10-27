@@ -25,12 +25,13 @@ Mode A has 13 level-file names at 0x5037b8, then a null pointer. Mode B has 7 at
 mode B the mode-A word is 0, so the divide of that word by the recipe count leaves
 remainder 0: recipe 0, and its low nibble selects the mode-B name.
 
-The file names, in table order:
+| Table address | Entry count (excluding null terminator) | Role |
+|---|---|---|
+| 0x5037b8 | 13 | Mode-A level selection and rotation |
+| 0x503798 | 7 | Mode-B level selection through recipe indices |
 
-| Table | Names |
-|---|---|
-| A, 0x5037b8 | pvpnit, compsto, pvpfire2, pvpval, compdis, pvptor, compwat, pvpinn, pvpblo2, pvparena, pvpblo, pvpbas, pvpfire |
-| B, 0x503798 | pvparena, pvpblo, pvpbas, pvpfire, compwat, pvptor, pvpnit |
+The difftests read the table pointers from the private executable at runtime;
+no original level-file names are reproduced here.
 
 Five recipe records sit at 0x503868. The count halfword at 0x503886 is 5. Each record is
 6 bytes. The first byte's high nibble is a group count (`sll 24; sra 28`) and its low
