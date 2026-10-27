@@ -25,7 +25,7 @@ Started 2026-10-26. Evidence under `local/classic/` (not tracked): pictures, log
 | [x] | The art pack and Classic defaults in the native program | **Ran** (section 7): found by itself where Godot finds it; boss music off in Classic; Godot Classic no longer reads the Elden Ring materials |
 | [x] | 60 fps paced | Native **Ran**: 60.0 a second, 0 of ~300 pictures off the 60 grid in 11 of 13 levels measured cleanly; Godot **Ran on a quiet machine** (2026-10-26, [fps-verdict](fps-verdict.md); load under 20 and the GPU idle at each start): Classic at 3024 x 1964, hub, fire1, arachna1, water1, drunare, islsm3b, fearboss, bossgood, storm5, nitdung2, wate2c, twice: 59.9-60.0 game frames a second in every level, the slowest second 58-60, 0-7 intervals over 25 ms a level |
 | [~] | Windows and Linux in Classic | **Ran** (section 8): both built from this tree; Linux aarch64 and x86-64 (container, Xvfb) take the 11 tick-keyed `--plain` pictures - the same scenes as the Mac's, a rounding difference of the GL driver only - and the rig comparison byte for byte; Windows built and linked only (no wine here); no Classic campaign on either |
-| [ ] | A person playing it through | never done |
+| [~] | Played through like a tester | **Ran** (2026-10-27, [playtest-classic](playtest-classic.md)): Godot Classic through the portal's card and the native program driven by play - new game, the hub's mission flow, Act 1 fought through by walking, fighting and the levels' own exits (blood1, strife to its boss), the other Act 1 levels and acts 2-8 level by level (45 levels in all, bosses fought), deaths, level-ups, chests, the save point and a load after a restart, menus, keyboard and controller, a 2-copy online room played (14,198 ticks in step); 9 glitches found, 4 of ours fixed (garbled woven text and level banners in both programs, the art pack's font in Godot, the hub's cloud disc in Godot), 3 open; acts 9-12 not played, nobody human yet |
 
 ## 1. The campaign walk (Ran)
 
@@ -225,7 +225,7 @@ container under Xvfb (Mesa llvmpipe):
   (copied from the aarch64 one).
 
 Left: Windows run (a Windows machine or wine), a Classic campaign on Windows and Linux, a person
-playing it.
+playing it. Played by a driver since: `playtest-classic.md`.
 
 ## How to repeat
 
