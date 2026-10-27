@@ -547,6 +547,8 @@ func _level() -> void:
 	if name == level:
 		return
 	level = name
+	if remaster != null:
+		remaster.call("new_level")
 	_apply_preset(name)
 	drawer.call("sky_reset")
 	sky_version = -1

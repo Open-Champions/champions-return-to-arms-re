@@ -15,6 +15,10 @@ Metal Forward+, the built-in 120 Hz display.
   (40-53).** Where it holds, the game is at 60.0 (it ran 64-66 before the pacing fix below, too fast) with 85-103
   pictures a second on the 120 Hz display. `arachna1` is bound by the GPU (MSAA 4x over 3024 x 1964), `wate2c` by
   the main thread at the end of a long session. Not met overall: see "What is left".
+- **`wate2c` late in a long session: found and fixed (2026-10-26, "The long session").** Remastered figures were
+  dropped one by one over a session (a per-figure counter that never reset), and the game's own figures took their
+  place, curved on the CPU: wate2c as the eleventh level now costs the main thread what it does fresh (26-28 ms of
+  processor time a game frame, `submit()` 7.6-8.1 ms; it was 37.8 / 15.3).
 
 ## How it was measured
 
@@ -145,9 +149,81 @@ Above 60 is not headroom: the game itself ran fast (next section). `wate2c` 45 a
   26 %, self time 13 %: the per-corner work of the level's curved and kept meshes), Godot's render 31 % (culling,
   instance updates 6 %, surface pipelines made in play 4 %), `RtaRemaster::light_sh` 2 %. The processor time per
   picture rises from 34-49 ms (short session) to 60-88 ms (last of eleven); not thermal (no thermal or performance
-  warning recorded). Open: what grows over a session.
+  warning recorded). Found and fixed: see "The long session" below.
 - `fire1`, `islsm3b`, `drunare`, `storm5` held 60 in one run and 52-58 in the other (both quiet by the gate): the
   first run of a pair is the slower in each pair here; not attributed.
+
+## The long session: what grew, and the fix (2026-10-26, late)
+
+**Cause.** `model_remaster.gd` leaves a figure to the game when its model "keeps changing" (texture coordinates that
+move): more than 6 changes of its model's key under one figure id. The id is the figure's animation state - a guest
+address - and its place among that state's objects, and the game hands those addresses out again: in the next level,
+and to the next creature of the same one. The counter (`unstable`) was never reset, so over a session every reused
+address went over 6 once and for good, and its figures - in a level eleven deep, nearly all of them - were the game's
+own: not remastered (a different picture from a fresh session), and drawn by the drawer with the cleaner look's
+curved triangles (PN, 2 x 2), made on the main thread in `scene_take`. Late in the route that is **228-235 thousand
+curved corners a list** that a fresh session does not have (the per-corner self time of the Time Profiler above).
+Nothing else grew in a way that costs a frame (counts below).
+
+**Fix** (`model_remaster.gd`, `scene_view.gd`). Only changes that come close together count (each within 120 game
+frames of the one before; a change after a pause starts again from 0), and a new level clears the counter and the
+`settled` table (`model_remaster.new_level`, called by `scene_view._level` when the level's name changes). A model
+whose texture coordinates really move changes every frame and is still left to the game after 7 frames, as before.
+Drawing only: nothing reaches the game.
+
+**How it was measured.** The machine was busy the whole time (two playtest agents running games, load average
+18-42 at the runs' starts and ends), so wall-clock frame rates say nothing here; the figures are **processor time of
+the main thread** (`CLOCK_THREAD_CPUTIME_ID`, read at the route's marks) per game frame, and of `RtaDrawer::submit`
+alone per list, from the idle mark to the end mark of each level (735 game frames), with counts read at the same
+marks. Temporary counters, not committed (`local/fps-leak/instrumentation.patch`: the drawer's and the remaster's
+caches, every script's dictionaries and arrays, nodes by place and class, Godot's monitors and rendering info, the
+drawer's per-list draws, kept meshes, curved corners, draws left out). The same route and settings as above
+(`local/fps-leak/bench.py`, a copy of this one's), the build `local/godot-leak` (`godot-r38p8` with the counters),
+`nice -n 10`.
+
+Per level: main thread ms / `submit()` ms per game frame · curved corners a list · draws left out a list (the
+figures the remaster or the Elden Ring layer draws instead). Before = the session's counter as it was (`L2`), after =
+the fix (`L3`, `L4`).
+
+| Level | before (`L2`) | after (`L3`) | after (`L4`) |
+|---|---:|---:|---:|
+| hub | 17.5 / 4.9 · 0k · 599 | 17.9 / 5.1 · 0k · 599 | 16.1 / 4.7 · 0k · 599 |
+| fire1 | 19.3 / 6.5 · 1k · 329 | 19.5 / 6.5 · 1k · 329 | 18.2 / 6.1 · 1k · 335 |
+| arachna1 | 16.5 / 4.7 · 2k · 618 | 17.6 / 4.8 · 2k · 618 | 11.7 / 3.5 · 7k · 365 |
+| water1 | 8.2 / 1.8 · 0k · 238 | 8.4 / 1.9 · 0k · 238 | 8.5 / 2.0 · 1k · 238 |
+| drunare | 14.2 / 5.2 · 68k · 609 | 11.5 / 3.0 · 2k · 677 | 10.6 / 2.8 · 2k · 667 |
+| islsm3b | 16.3 / 6.4 · 49k · 66 | 11.8 / 3.5 · 0k · 300 | 11.5 / 3.5 · 0k · 300 |
+| fearboss | 13.6 / 5.0 · 80k · 0 | 8.5 / 1.8 · 0k · 238 | 8.3 / 1.8 · 0k · 238 |
+| bossgood | 24.1 / 13.1 · 235k · 417 | 14.7 / 5.6 · 6k · 655 | 13.7 / 5.3 · 6k · 657 |
+| storm5 | 27.9 / 12.7 · 228k · 36 | 17.7 / 5.3 · 0k · 274 | 17.4 / 5.4 · 0k · 284 |
+| nitdung2 | 19.6 / 9.3 · 228k · 0 | 9.1 / 1.9 · 0k · 238 | 10.2 / 2.3 · 0k · 239 |
+| **wate2c** | **37.8 / 15.3** · 228k · 561 | **27.7 / 8.1** · 0k · 799 | **26.1 / 7.6** · 0k · 760 |
+
+**wate2c fresh** (hub, then wate2c): 27.7 / 8.2 · 0k · 804 before the fix (`S2`), 26.8 / 8.1 · 0k · 804 after (`S3`).
+The eleventh-level wate2c now costs what the fresh one does (26.1-27.7 against 26.8-27.7 ms; `submit()` 7.6-8.1
+against 8.1-8.2), and draws what it does: 599-618 draws a list submitted (855 before), 1,880 objects in Godot's
+frame at the end mark (fresh 1,915; 2,483 before). The game drew the same in every run (its draws per list in the
+speed log alike, second for second); what differed was only how many of them the remaster took over. The levels from
+drunare on were all paying for it (bossgood 24.1 -> 14.7, storm5 27.9 -> 17.7, nitdung2 19.6 -> 9.1 ms).
+
+**What else was counted** (end of wate2c, fresh / eleventh before / eleventh after): kept meshes 686 / 922 / 658,
+materials 259 / 277 / 259, game textures 391 / 352 / 349, the retire queue 0 / 0 / 0, the remaster's figures 24 / 24 /
+25 - flat. Growing over a session but costing no frame time: nodes 997 / 1,783 / 2,072 (the Elden Ring outfits and
+weapons loaded so far, kept hidden under `er_layer`: one tree per outfit, a handful a session), the remaster's baked
+models 18 / 41 / 41 and its per-packet tables (1,251 / 2,525 / 2,465 entries: one per model packet seen, bounded by
+the game's models), static memory 444 / 614 / 554 MB. These are caches by content (bounded by what the game has), not
+per frame; left as they are.
+
+**Checks.** The picture: wate2c's end shot fresh and eleventh (`S3`, `L4` `wate2c.png`) show the same remastered
+figure in the same place; before the fix the eleventh level left 561 draws a list to others against 799-804 fresh
+(the figures the remaster did not take were the game's own; no shot of that run). No
+script error in any run. Classic: `model_remaster` is off there, the counter is never filled; a Classic hub -> wate2c
+run (`C1`) with no script error. Two copies in a room (`local/fps-leak/room.sh`: two Godot copies of this build,
+Remastered, `n2p8x.py`, hub -> drunare -> valor): **3,938 ticks in step**, no script error on either copy; an
+earlier two-copy room in valor (`room2`, 6 deaths, 3 reloads) 8,340 ticks in step.
+
+Seen on the way, not changed: the sky of the eleventh wate2c's end shot is darker than the fresh one's (not
+looked into), not part of this fix.
 
 ## The first measurements (GPU not quiet), for the record
 
@@ -177,6 +253,9 @@ Classic in the same conditions (reruns at load under 20): every level 59.8-60.0 
 ## Files
 
 - `tools/godot/project/main.gd`: the two fixes.
+- `tools/godot/project/model_remaster.gd`, `scene_view.gd`: the long-session fix (the remaster's change counter).
+- Local: `local/fps-leak/` (runs `L*`, `S*`, `C1`, `room2`, `room3`, `bench.py`, `seg.py`, `counts.py`,
+  `instrumentation.patch`), the build `local/godot-leak`.
 - Local: `local/fps-verdict/` (runs `f-rem-*`, `f-cls-*`, `b-rem-*`, `v-*`, `r38-*`, diagnostics `d-*`, `q*`, `tp-*`,
   the scripts), the builds `local/godot-r38` and `local/godot-r38p8`.
 - The *Play Champions - REMASTERED (new)* launcher (Desktop, not tracked) now starts `local/godot-r38p8`.

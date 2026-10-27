@@ -51,10 +51,18 @@ var maps_running := 0
 var targets: Array = []
 var scan_now := {}
 var hide_sent := false
-var unstable := {}              # figure id -> {key, changes}
+var unstable := {}              # figure id -> {key, changes, at}: its model's key changing frame after frame (UNSTABLE_*)
 var options_of := {}
 var said := {}
 var frame_no := 0
+# A figure whose model changes all the time (texture coordinates that move: a flowing robe, a flame) is left to the game.
+# Figures are known by their animation state - a guest address the game hands out again: in the next level, and to the
+# next creature of this one.  Only changes that come close together count (a model that keeps changing), and a level
+# begins with none: counted over a session, every reused address went over the limit sooner or later, and late in a
+# long session a level's creatures were all the game's own - not remastered, and curved on the CPU by the drawer
+# (wate2c as the eleventh level: 230 thousand curved corners a list more, its submit() 8 -> 15 ms a frame).
+const UNSTABLE_CHANGES := 6         # changes in a row (each within UNSTABLE_FRAMES of the one before) ...
+const UNSTABLE_FRAMES := 120        # ... frames: two seconds of game frames
 var cost_sum := 0
 var cost_frames := 0
 var cost_worst := 0
@@ -187,8 +195,9 @@ func before_frame() -> void:
 		var key := String(f.key)
 		var u: Dictionary = unstable.get(f.id, {})
 		if u.is_empty() or String(u.key) != key:
-			unstable[f.id] = {"key": key, "changes": int(u.get("changes", -1)) + 1}
-		if int(unstable[f.id].changes) > 6:
+			var close := not u.is_empty() and frame_no - int(u.at) <= UNSTABLE_FRAMES
+			unstable[f.id] = {"key": key, "changes": int(u.changes) + 1 if close else 0, "at": frame_no}
+		if int(unstable[f.id].changes) > UNSTABLE_CHANGES:
 			continue                    # a model that keeps changing (moving texture coordinates): the game's own
 		if not bakes.has(key) or String(bakes[key].state) == "stale":
 			if bakes.has(key) or not _load_cached(key, name):
@@ -981,6 +990,12 @@ func _free_fig(g: Dictionary) -> void:
 	RenderingServer.free_rid(g.skeleton)
 	for sig in g.mats:
 		RenderingServer.free_rid(g.mats[sig].rid)
+
+
+# a new level (scene_view.gd): the figures' ids are the game's addresses, handed out again
+func new_level() -> void:
+	unstable.clear()
+	settled.clear()
 
 
 func release() -> void:
