@@ -79,6 +79,8 @@ var setting := {"mode": "both", "view": "auto", "scale": 1.0, "numbers": true, "
 var host: Node                          # main.gd
 var machine: Object                     # RtaMachine
 var gs: Object                          # RtaGameState
+var souls_panel: Control                # hud/souls.gd (its text over the stamina bar: status.gd keeps its own line above it)
+var pillars: Control                    # black sides beside the game's own 4:3 full-screen 2-D screens in a wide picture
 var ok := false                         # a state was read this frame
 var frame := {}                         # RtaGameState.get_frame()
 const MAX_PLAYERS := 8                  # the game's own four, or eight in a room of five to eight (RTA_GS_PLAYERS)
@@ -141,6 +143,17 @@ func _ready() -> void:
 	var souls: Control = load("res://hud/souls.gd").new()   # the souls-style combat mode's stamina bar and lock-on (hud/souls.gd)
 	souls.set("hud", self)
 	root.add_child(souls)
+	souls_panel = souls
+	# The game draws its mission map, its gate menu and its loading picture for the console's 4:3 screen: in a wide
+	# picture what lies beside them is whatever was left there (the world kept from before, a piece of the map's
+	# background) - black there, as the films and the 4:3 picture itself have it
+	pillars = Control.new()
+	pillars.name = "Pillars"
+	pillars.set_anchors_preset(Control.PRESET_FULL_RECT)
+	pillars.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(pillars)
+	move_child(pillars, 0)
+	pillars.draw.connect(_draw_pillars)
 	_find_portal.call_deferred()
 	if ClassDB.class_exists("RtaGameState"):
 		gs = ClassDB.instantiate("RtaGameState")
@@ -430,6 +443,8 @@ func _process(delta: float) -> void:
 		me = {}
 		events = []
 		creatures = PackedFloat32Array()
+	if pillars != null:
+		pillars.queue_redraw()
 	if ok and not timed.is_empty():
 		var k := 0
 		while k < timed.size():
@@ -470,6 +485,17 @@ func _process(delta: float) -> void:
 				file.store_string(text + "\n")
 				file.close()
 			print("hud: wrote %s (%d x %d) and its state" % [path, image.get_width(), image.get_height()])
+
+
+func _draw_pillars() -> void:
+	if not ok or (phase & PH_FRONTEND) != 0 or (phase & (PH_GATE_MENU | PH_LOADING)) == 0:
+		return
+	var four := picture.size.y * 4.0 / 3.0
+	if picture.size.x <= four + 2.0:
+		return
+	var side := (picture.size.x - four) * 0.5
+	pillars.draw_rect(Rect2(picture.position, Vector2(side, picture.size.y)), Color.BLACK)
+	pillars.draw_rect(Rect2(picture.position + Vector2(picture.size.x - side, 0.0), Vector2(side, picture.size.y)), Color.BLACK)
 
 
 func _measure() -> void:

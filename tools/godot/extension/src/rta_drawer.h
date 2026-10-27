@@ -223,6 +223,9 @@ class RtaDrawer : public RefCounted {
     bool flip_surfaces = false;
     bool rd = false;                                // Forward+ / Mobile: surfaces stored the other way up (setup)
     uint32_t draw_space = 0;                        // V_STORED / V_DECODE for the draw being added (submit sets it)
+    bool draw_over = false;                         // scene mode: the draw being added is of the 2-D layer after the last draw of
+                                                    // the 3-D scene (a menu, a dialogue box): its material sorts after every world
+                                                    // instance, ours too (render priority 1), whatever their place in the world
     bool stored_colours = true;
     float world_bias = 0.00002f;                    // scene mode: draws that do not write depth come this much nearer (clip space)
 

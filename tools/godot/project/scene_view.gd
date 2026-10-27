@@ -89,6 +89,9 @@ const G_PLAYERS := 0x4D8AF0             # symbols: g_players; +0x43d8 the first 
 const G_LEVEL_NAME := 0x41B721          # g_levelName
 const G_WORLD_LIGHT := 0x5D347C         # g_worldLightLevel: 0x80, or 0x40 / 0x20 in dark levels
 const G_FAR_CLIP := 0x7D8A04            # g_farClip
+const G_PAUSED := 0x41B4F4              # g_paused (s32)
+const G_MEMCARD_STATE := 0x88D3A0       # g_memcardState: -1 idle, else a card screen
+const G_WARMUP := 0x506048              # the game's wait after a load (the picture is blanked)
 const VIEW_CHASE := 2
 const SUN_CLEAR := 0.004                # how clearly a level's textures must say where its light comes from
 
@@ -843,6 +846,15 @@ func _backdrop(info: Dictionary) -> void:
 	# bare: none of the level's own pieces reaches under the player's feet (some arenas, entered alone, put the
 	# character where the game has no ground at all)
 	var bare := int(info.get("ground_near", 1)) == 0
+	# while the game is paused (the mission map, a gate's menu, offline menus), a card screen is up or the picture is the
+	# game's blank after a load, a list without the level says nothing about the ground: the backdrop is neither started
+	# nor kept (it was laid in the mission map's wide margins and in a level's first moments)
+	if int(info.get("level_draws", 1)) == 0 and (machine.peek_u32(G_PAUSED) != 0 or int(machine.peek_u32(G_MEMCARD_STATE)) != 0xFFFFFFFF \
+			or machine.peek_u32(G_WARMUP) != 0):
+		if backdrop_instance.is_valid():
+			RenderingServer.instance_set_visible(backdrop_instance, false)
+		backdrop_on = false
+		return
 	backdrop_bare = maxi(backdrop_bare, 0) + 1 if bare else mini(backdrop_bare, 0) - 1
 	var mode := String(look.backdrop)
 	# on after half a second without ground under the feet, off after a second with it again

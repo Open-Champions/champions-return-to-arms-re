@@ -195,7 +195,8 @@ func _slots(me: Dictionary, at: Vector2, s: float) -> void:
 					pts.append(c + d * m)
 				if pts.size() >= 3 and frac > 0.02:
 					draw_colored_polygon(pts, Color(0, 0, 0, 0.62))
-				Style.text(self, c + Vector2(0, 7.0 * s), ("%.1f" % q.cooldown) if q.cooldown < 10.0 else str(int(q.cooldown)), 20.0 * s, Style.TEXT, 1, true)
+				# (tenths rounded up: the last moments of a cooldown read 0.1, never "0.0")
+				Style.text(self, c + Vector2(0, 7.0 * s), ("%.1f" % (ceilf(q.cooldown * 10.0) / 10.0)) if q.cooldown < 10.0 else str(int(ceilf(q.cooldown))), 20.0 * s, Style.TEXT, 1, true)
 			elif not q.enough_mana:
 				Style.rounded(self, rect.grow(-2.0 * s), 8.0 * s, Color(Style.MANA_A, 0.25))
 			if q.rank > 0:
