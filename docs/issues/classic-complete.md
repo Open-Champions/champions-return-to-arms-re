@@ -23,7 +23,7 @@ Started 2026-10-26. Evidence under `local/classic/` (not tracked): pictures, log
 | [x] | Bosses | **Ran**: `bossgood` and `bossevil` load with the boss and its bar; `bossgood` in an online room of three (section 4) |
 | [x] | Classic online, 2 to 4 copies, Godot Classic + native + the Mac application | **Ran**: three rooms, through 2-3 level changes each, a boss level, forced relay, every pair in step (section 4) |
 | [x] | The art pack and Classic defaults in the native program | **Ran** (section 7): found by itself where Godot finds it; boss music off in Classic; Godot Classic no longer reads the Elden Ring materials |
-| [~] | 60 fps paced | Native **Ran**: 60.0 a second, 0 of ~300 pictures off the 60 grid in 11 of 13 levels measured cleanly; Godot **not settled**: measured at a load average of 200-500 from other work (section 5) |
+| [x] | 60 fps paced | Native **Ran**: 60.0 a second, 0 of ~300 pictures off the 60 grid in 11 of 13 levels measured cleanly; Godot **Ran on a quiet machine** (2026-10-26, [fps-verdict](fps-verdict.md); load under 20 and the GPU idle at each start): Classic at 3024 x 1964, hub, fire1, arachna1, water1, drunare, islsm3b, fearboss, bossgood, storm5, nitdung2, wate2c, twice: 59.9-60.0 game frames a second in every level, the slowest second 58-60, 0-7 intervals over 25 ms a level |
 | [~] | Windows and Linux in Classic | **Ran** (section 8): both built from this tree; Linux aarch64 and x86-64 (container, Xvfb) take the 11 tick-keyed `--plain` pictures - the same scenes as the Mac's, a rounding difference of the GL driver only - and the rig comparison byte for byte; Windows built and linked only (no wine here); no Classic campaign on either |
 | [ ] | A person playing it through | never done |
 

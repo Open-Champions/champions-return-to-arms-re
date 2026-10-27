@@ -210,8 +210,9 @@ var last_tick_usec := 0                 # the display rate above 60: when the la
 var tick_ema := 16.7                    # ... the time between game frames, smoothed (ms)
 var between_off := false                # ... no pictures between while the game frames themselves come late
 var between_ok_since := 0
+var between_hold_until := 0             # ... nor for a moment after a refresh came late (the GPU had no time to spare)
 var stale_ticks := 0                   # ticks in a row whose frame was older than the lead says
-var tween_figs := {"dropped": 0, "pictures": 0, "between": 0, "late": 0, "lead_sum": 0, "lat_sum": 0.0, "lat_n": 0, "waited_us": 0}
+var tween_figs := {"dropped": 0, "pictures": 0, "between": 0, "late": 0, "lead_sum": 0, "lat_sum": 0.0, "lat_n": 0, "waited_us": 0, "held": 0}
 var window_shots: PackedStringArray = PackedStringArray()
 var hud_node: Node                      # res://hud, when it was added
 var art_pictures := 0                   # pictures of the art pack in use
@@ -1222,7 +1223,10 @@ func _paced_between(delta: float) -> bool:
 				stale_ticks += 1
 			else:
 				stale_ticks = 0
-			game_clock = maxf(0.0, game_clock - period_s)
+			# the remainder is kept, also when the frame was taken up to half a refresh before its tick: dropping it
+			# (the clock put back to 0) gained that part of a refresh at every game frame - with refreshes of 9-12 ms
+			# (a heavy scene at 120 Hz) the game ran at 63-66 frames a second instead of 60 (fps-verdict.md)
+			game_clock = maxf(-refresh_s * 0.5, game_clock - period_s)
 			if game_clock > period_s:
 				game_clock = 0.0
 			tween_t = 0.0
@@ -1261,12 +1265,19 @@ func _paced_between(delta: float) -> bool:
 			between_ok_since = now_t
 		elif between_off and now_t - between_ok_since > 2000000:
 			between_off = false
-	if not took and blanks > 0 and not between_off:
+	# a refresh that came late (more than half a refresh over): the GPU is not keeping up with the pictures already asked
+	# for - a picture between would take its time from the next game frame; none for a quarter of a second
+	var now_b := Time.get_ticks_usec()
+	if delta > refresh_s * 1.5:
+		between_hold_until = now_b + 250000
+	if not took and blanks > 0 and not between_off and now_b >= between_hold_until:
 		tween_t = clampf(game_clock / period_s, 0.0, 1.0)
 		drawer.call("redraw", tween_t - tween_back)
 		if scene_view != null:
 			scene_view.call("tween", tween_t - tween_back)
 		tween_figs.between += 1
+	elif not took and blanks > 0 and not between_off:
+		tween_figs.held += 1
 	tween_figs.pictures += 1
 	tween_figs.lead_sum += lead
 	_lower_lead()
@@ -1408,8 +1419,8 @@ func _figures() -> String:
 	text += "rta_godot: " + machine.info() + "\n"
 	if tween_n > 1:
 		var pics: float = max(1, int(tween_figs.pictures))
-		text += "rta_godot: display rate %s: %d pictures, %d of them between game frames, %d ticks whose frame was late; lead %.2f refreshes on average; a blank %.2f ms from its release to its frame (mean); %.2f ms a picture waiting for a frame; %d game frames drawn over in the refresh they were taken (the queue's spare one, to catch up)\n" % [
-			rate, int(tween_figs.pictures), int(tween_figs.between), int(tween_figs.late), float(tween_figs.lead_sum) / pics,
+		text += "rta_godot: display rate %s: %d pictures, %d of them between game frames (%d not drawn: a refresh had come late), %d ticks whose frame was late; lead %.2f refreshes on average; a blank %.2f ms from its release to its frame (mean); %.2f ms a picture waiting for a frame; %d game frames drawn over in the refresh they were taken (the queue's spare one, to catch up)\n" % [
+			rate, int(tween_figs.pictures), int(tween_figs.between), int(tween_figs.held), int(tween_figs.late), float(tween_figs.lead_sum) / pics,
 			float(tween_figs.lat_sum) / max(1, int(tween_figs.lat_n)), float(tween_figs.waited_us) / 1000.0 / pics, int(tween_figs.dropped)]
 	if drawer != null:
 		text += "rta_godot: " + str(drawer.call("figures")) + "\n"
