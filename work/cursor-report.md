@@ -77,3 +77,48 @@ A1 verification (same commands as Verification above, after the documentation fi
 - Only docs/arena-modes.md and this report changed. All execution logs remain
   ignored under local/. No writes to the primary checkout or other worktrees,
   no push, no main commit, and no process termination.
+
+2026-10-27 — Round 2 (starting clean at 2fbfaa46)
+STATUS: MORE
+
+Documented / executed
+- Research commit 744aa1a adds tools/difftest_arena_terminal.py and addressed
+  evidence in docs/spec/arena-live-scheduler.md. Existing references/vectors unchanged.
+- 14 offline/online later-wave boundary cases through signed-positive wave 32765
+  continue via runtime-selected level requests; no terminal victory in those cases.
+- 16 exhausted-slot defeat/input sequences (1–4 players, offline/online, confirm
+  and cancel): original terminal writer 0x306f94; input rejected below full fade;
+  original picker executed on confirm, restart request retains mode B; cancel exits.
+- Heuristic direct-reference inventory narrows terminal-word stores to addressed
+  sites, with explicitly incomplete alias coverage. No global absence proof.
+
+Partial
+- Priority 1: repeating scheduler interpretation strengthened, external final
+  victory still unknown. Synthetic states do not prove natural progression.
+- Terminal input is function-level evidence with saved-record, shutdown, copy,
+  qsort, presentation and load fixture boundaries. Initial null record failed
+  at 0x3070a8; corrected to allocated synthetic record and rerun successfully.
+
+Unknown / not completed
+- Priority 2: normal-input kills and later creature ticks remain unestablished.
+- Priority 3: rendered results, fixed awards/collection and actual next-level load
+  remain unestablished. No natural completed match or live/native acceptance.
+- External victory/event writers and signed-wave overflow remain unestablished.
+  These need original combat/event/award/load execution; current stubs cannot
+  establish them. No native-client files changed and refusals remain warranted.
+
+Verification (from this worktree; all final commands exit 0)
+- python3 -c 'import unittest,runpy,sys; sys.path.insert(0,"tools"); runpy.run_path("tools/difftest_arena_terminal.py",run_name="__main__")' local/SLUS_209.73
+  PASS: 14 continuation + 16 defeat/input cases. local/arena-terminal-r2.log.
+- python3 -c 'import unittest,runpy,sys; sys.path.insert(0,"tools"); runpy.run_path("tools/difftest_arena_modes.py",run_name="__main__")' local/SLUS_209.73
+  PASS: 302 passed, 0 failed. local/arena-modes-r2.log.
+- python3 -m unittest discover -s tools -p 'test_*.py'
+  PASS: 652 tests, 6.152 seconds. local/unittest-r2.log.
+- git diff --check: PASS. The earlier scheduler matrix was not rerun; its source
+  and reference API/vectors are unchanged. No builds or game process launched.
+
+No pictures (function-level work), network/public-server contact, push, PR,
+main commit or process termination. Private inputs read only through local/;
+analysis cache/logs remain ignored there. No raw game content tracked.
+The required dated coordination line records this partial outcome and research pin.
+This report is committed separately after 744aa1a.
