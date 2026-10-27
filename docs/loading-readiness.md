@@ -167,3 +167,8 @@ local/SLUS_209.73` reports deferred 13, equipment 12, peers 10, stores/save 12
 cases (47 total). Existing loading difftest passes both seeds; the full analysis
 unit suite passes 652 tests. Hardware writes in warm-up are mapped as inert
 memory; display, I/O, script bodies and stock generation are outside the probe.
+
+Round 2: [deferred error handling and equipment publication](loading-arrival-r2.md)
+executes VM-error continuation, specialized slot routes and the I/O completion
+writer. Destination-specific queued commands and end-to-end resource behavior
+remain explicitly unknown.
