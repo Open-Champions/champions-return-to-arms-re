@@ -967,7 +967,9 @@ func _gpu_quality_update() -> void:
 		gpu_quality.configure(requested)
 	if level != gpu_level:
 		gpu_level = level
-		gpu_quality.reset_observations()
+		if gpu_quality.new_level():
+			var q := gpu_quality.quality()
+			print("rta_gpu_quality: level=%s back to samples=%d scale=%.2f (a new level)" % [level, int(q.x), q.y])
 		gpu_sample_usec = 0
 	# Read existing presentation flags only. The HUD fade word can stay at 128
 	# throughout normal play: require a change or an actually submitted overlay
