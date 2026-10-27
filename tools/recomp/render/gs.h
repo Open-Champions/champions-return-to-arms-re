@@ -122,6 +122,7 @@ class Gs {
     // ---- registers ----
     uint64_t reg[0x64];
     uint64_t pmode = 0, smode2 = 0, dispfb[2] = {0, 0}, display[2] = {0, 0};
+    bool pmode_written = false;         // the game has set PMODE (before that the display is not held back)
     struct Queued { uint32_t x, y, z; float s, t, q; uint32_t u, v; uint8_t rgba[4]; uint8_t fog; };
     uint8_t cur_fog = 0;                // the FOG register's coefficient (for vertices that carry none)
     Queued vq[3];

@@ -377,7 +377,10 @@ class Run:
                     self.port.write(G_PENDING, value.encode('latin-1') + b'\0')
                 else:
                     self.port.c.ok('press ' + value)
-            self.port.c.ok('burst %s/f %d' % (out, n))
+            # (the emulator's burst takes 40 pictures at most: bursts one after the other, their clocks in f*-times.txt
+            # show whether a picture was missed between two)
+            for chunk in range((n + 39) // 40):
+                self.port.c.ok('burst %s/f%02d %d' % (out, chunk, min(40, n - 40 * chunk)))
             if press:
                 self.port.c.ok('release ' + press)
             time.sleep(1.0)

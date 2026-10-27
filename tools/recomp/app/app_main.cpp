@@ -1142,7 +1142,18 @@ class Screen : public QObject {
     void save(const std::string& name) {
         std::vector<uint8_t> rgba;
         int w = 0, h = 0;
-        if (!backend->read_shown(rgba, w, h)) { log_line("no picture to write to " + name + " (nothing is shown)"); g_control.shots_written++; return; }
+        static int last_w = 640, last_h = 448;
+        if (!backend->read_shown(rgba, w, h)) {
+            // nothing shown (the display circuits off: black on the console): a black picture of the last size, so that
+            // a run of pictures a blank apart has one for every blank
+            QImage black(last_w, last_h, QImage::Format_RGB888);
+            black.fill(Qt::black);
+            black.save(QString::fromStdString(name));
+            log_line("wrote " + name + " (black: nothing is shown)");
+            g_control.shots_written++;
+            return;
+        }
+        last_w = w; last_h = h;
         QImage image(rgba.data(), w, h, w * 4, QImage::Format_RGBA8888);
         image.convertToFormat(QImage::Format_RGB888).save(QString::fromStdString(name));
         g_control.shots_written++;

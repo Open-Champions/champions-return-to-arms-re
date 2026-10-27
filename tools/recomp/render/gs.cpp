@@ -565,8 +565,12 @@ void Gs::end_frame(uint64_t number) {
     int circuit = (pmode & 2) ? 1 : 0;
     uint64_t fb = dispfb[circuit];
     auto it = targets.find(((uint32_t)fb & 0x1FF) << 5);
-    if (it != targets.end()) {
-        it->second.last_used = frames_ended;
+    // PMODE with neither read circuit on: the console shows black.  The game turns both off at every level change
+    // while it draws the loading screen into the displayed buffer (it turns circuit 2 on again once the screen is
+    // whole); showing the buffer anyway flashed a half-made loading screen for two blanks (native) and the old level
+    // under it (Godot).  The emulator: black.  (Before the game's first PMODE write nothing is held back.)
+    if (it != targets.end()) it->second.last_used = frames_ended;
+    if (it != targets.end() && ((pmode & 3) || !pmode_written)) {
         frame.show_target = it->second.id;
         frame.show_rect[0] = 0; frame.show_rect[1] = 0;
         frame.show_rect[2] = it->second.width; frame.show_rect[3] = it->second.height;
@@ -587,7 +591,7 @@ void Gs::privileged(uint32_t address, uint64_t value) {
         }
     }
     switch (address) {
-    case 0x12000000: pmode = value; circuits_on |= (unsigned)value & 3; break;
+    case 0x12000000: pmode = value; pmode_written = true; circuits_on |= (unsigned)value & 3; break;
     case 0x12000020: smode2 = value; break;
     case 0x12000070: dispfb[0] = value; display_fbps[0][(uint32_t)value & 0x1FF] = frames_ended; break;
     case 0x12000080: display[0] = value; break;
