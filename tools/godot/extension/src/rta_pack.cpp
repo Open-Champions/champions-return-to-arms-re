@@ -114,13 +114,13 @@ Ref<Image> RtaPack::make(const Job& job, bool& from_file, bool& woven_out) {
                 if (file->get_format() != Image::FORMAT_RGBA8) file->convert(Image::FORMAT_RGBA8);
                 // the file covers texels_w x texels_h from the corner, `scale` times as many pixels
                 int scale = std::max(1, (int)(file->get_width() / job.texels_w));
-                // a two-field interface picture (upscale.py writes the woven picture twice: twice the factor in y) wants
-                // the native program's woven sampling; until the shader has it the game's own is drawn (no garbled text)
-                // (held whole as the native program holds it; only when it covers the whole texture)
+                // a two-field interface picture (upscale.py writes the woven picture twice: twice the factor in y): held whole
+                // and sampled by the woven line over the texels it covers (texels_w x texels_h), as the native program samples
+                // it (render/texpack.cpp, backend_gl.cpp) - also when it covers only part of the texture (the name screen's
+                // letters: a 256 x 256 page of which the file covers the part the two fields are in).  The game's own
+                // texture cannot be drawn so: it holds one field at a time (playtest-classic.md G2)
                 if (file->get_height() >= job.texels_h * scale * 2) {
-                    if (job.texels_w == job.width && job.texels_h == job.height) {
-                        two_field++; picture = file; woven_out = true; from_file = true; read_files++;
-                    } else woven = true;
+                    two_field++; picture = file; woven_out = true; from_file = true; read_files++;
                     file.unref();
                 }
             }
@@ -164,6 +164,7 @@ void RtaPack::work() {
         d.texture = job.texture;
         d.serial = job.serial;
         d.image = make(job, d.from_file, d.woven);
+        if (d.woven) { d.woven_w = job.texels_w; d.woven_h = job.texels_h; }
         std::lock_guard<std::mutex> hold(lock);
         if (quit) return;
         done.push_back(std::move(d));

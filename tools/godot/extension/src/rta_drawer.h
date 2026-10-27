@@ -170,6 +170,7 @@ class RtaDrawer : public RefCounted {
     RtaPack* pack = nullptr;                        // set_art_pack: pictures from the pack and mip maps, made on its threads
     bool pack_mipmaps = false;
     std::unordered_set<uint64_t> woven_textures;   // RIDs holding an art pack's two-field picture (weave_half -1)
+    std::unordered_map<uint64_t, Vector2> woven_sizes;   // ... the texels each covers: such a draw samples over these
     std::unordered_map<uint32_t, uint64_t> texture_serial;     // which answer of the pack's a texture waits for
     uint64_t pack_serial = 0, pack_named = 0, pack_found = 0, pack_replaced = 0, pack_replaced_files = 0;
     std::vector<rtag_texture_name> name_buffer;

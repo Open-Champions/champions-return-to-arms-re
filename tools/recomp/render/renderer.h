@@ -53,7 +53,11 @@ class Renderer {
   private:
     alignas(16) uint8_t own_micro[0x4000];
     alignas(16) uint8_t own_data[0x4000];
-    std::unordered_map<uint32_t, size_t> picture_failed;    // TBP0 -> headers known when its lookup failed
+    // TBP0 -> the headers known and the blank when its lookup failed: asked again when more headers are known, or half a
+    // second later (a header the game fills in after the upload - the block number it is resident at - is in the list
+    // already: the name screen's letters were woven by the size that was sent for good, every second frame garbled)
+    struct Failed { size_t headers; uint64_t blank; };
+    std::unordered_map<uint32_t, Failed> picture_failed;
 };
 
 }  // namespace render

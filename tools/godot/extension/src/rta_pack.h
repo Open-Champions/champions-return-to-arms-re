@@ -41,6 +41,7 @@ class RtaPack {
         uint64_t serial = 0;
         bool from_file = false;
         bool woven = false;                         // a two-field interface picture, held whole (sampled by the woven line)
+        int woven_w = 0, woven_h = 0;               // ... the texels it covers (the size in its name): sampled over these
         Ref<Image> image;
     };
     ~RtaPack() { stop(); }

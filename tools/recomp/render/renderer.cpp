@@ -77,8 +77,8 @@ void Renderer::set_memory(const uint8_t* ram, uint32_t size) {
         // a block nothing was found for is asked for again only when more headers are
         // known (each failed lookup makes whoever keeps the list look through memory)
         auto failed = picture_failed.find(tbp);
-        if (failed != picture_failed.end() && failed->second == index.headers.size()) return false;
-        if (!index.resident_at(tbp, h)) { picture_failed[tbp] = index.headers.size(); return false; }
+        if (failed != picture_failed.end() && failed->second.headers == index.headers.size() && blanks - failed->second.blank < 30) return false;
+        if (!index.resident_at(tbp, h)) { picture_failed[tbp] = {index.headers.size(), blanks}; return false; }
         picture_failed.erase(tbp);
         width = h.width; height = h.height;
         return true;

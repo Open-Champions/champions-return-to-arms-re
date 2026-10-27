@@ -308,8 +308,18 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
         key.texa_mode = d.tex_is_target ? d.texa_mode : 0; key.ta0 = d.ta0; key.ta1 = d.ta1; key.aem = d.aem;
         memcpy(key.st_scale, d.st_scale, sizeof key.st_scale); memcpy(key.tex_size, d.tex_size, sizeof key.tex_size);
         memcpy(key.tex_offset, d.tex_offset, sizeof key.tex_offset); memcpy(key.region, d.region, sizeof key.region);
-        // an art pack's two-field picture holds the woven picture itself: the woven line is the coordinate (-1)
+        // an art pack's two-field picture holds the woven picture itself: the woven line is the coordinate (-1), over the
+        // texels the picture covers (the native program's part: render/backend_gl.cpp), from its corner
         key.weave_half = d.weave_half > 0 && woven_textures.count(texture.get_id()) ? -1.0f : d.weave_half;
+        // ... and every draw of such a picture samples it over those texels, woven or not, as the native program's does (the
+        // game draws a field's sprite now as a field, now not: its second-field frames then fall in the file's second copy)
+        if (woven_textures.count(texture.get_id())) {
+            auto size = woven_sizes.find(texture.get_id());
+            if (size != woven_sizes.end() && size->second.x > 0 && size->second.y > 0) {
+                key.tex_size[0] = size->second.x; key.tex_size[1] = size->second.y;
+                key.tex_offset[0] = key.tex_offset[1] = 0.0f;
+            }
+        }
     }
     std::string bytes((const char*)&key, sizeof key);
     // a fused pair (rta_scene.cpp, the level's batches): the first pass's state too, as the "2" parameters
@@ -361,8 +371,8 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
         s->material_set_param(material, "tfx", (int)d.tfx);
         s->material_set_param(material, "tcc", d.tcc ? 1 : 0);
         s->material_set_param(material, "st_scale", Vector2(d.st_scale[0], d.st_scale[1]));
-        s->material_set_param(material, "tex_size", Vector2(d.tex_size[0], d.tex_size[1]));
-        s->material_set_param(material, "tex_offset", Vector2(d.tex_offset[0], d.tex_offset[1]));
+        s->material_set_param(material, "tex_size", Vector2(key.tex_size[0], key.tex_size[1]));
+        s->material_set_param(material, "tex_offset", Vector2(key.tex_offset[0], key.tex_offset[1]));
         s->material_set_param(material, "tex_flip", texture_flipped ? 1.0f : 0.0f);
         s->material_set_param(material, "wrap_mode", Vector2i(d.wrap_s, d.wrap_t));
         s->material_set_param(material, "region", Quaternion(d.region[0], d.region[1], d.region[2], d.region[3]));
@@ -651,7 +661,7 @@ void RtaDrawer::submit() {
         memcpy(bytes.ptrw(), t.rgba, (size_t)t.width * t.height * 4);
         Ref<Image> image = Image::create_from_data(t.width, t.height, false, Image::FORMAT_RGBA8, bytes);
         auto old = textures.find(t.id);
-        if (old != textures.end()) { woven_textures.erase(old->second.get_id()); s->free_rid(old->second); }
+        if (old != textures.end()) { woven_textures.erase(old->second.get_id()); woven_sizes.erase(old->second.get_id()); s->free_rid(old->second); }
         textures[t.id] = s->texture_2d_create(image);
         textures_made++;
         texture_serial.erase(t.id);
@@ -816,7 +826,16 @@ void RtaDrawer::submit() {
             UtilityFunctions::print(vformat("draw %d: kind %d prim %d by %d target %d tex %d%s tfx %d tcc %d | test %d atst %d aref %d afail %d | z %d/%d/%d | blend %d %d%d%d%d fix %d | mask %d%d | fog %d | scissor %d %d %d %d | %d vertices",
                 (int64_t)i, d.kind, d.prim, d.made_by, (int64_t)d.target, (int64_t)d.texture, String(d.tex_is_target ? " (surface)" : ""), d.tfx, d.tcc, d.alpha_test, d.atst, d.aref, d.afail,
                 d.depth_test, d.ztst, d.depth_write, d.blend, d.ba, d.bb, d.bc, d.bd, d.fix, d.mask_rgb, d.mask_a, d.fog, d.scissor[0], d.scissor[1], d.scissor[2], d.scissor[3], (int64_t)d.count) +
-                (v ? vformat(" | first %.0f %.0f rgba %d %d %d %d", v->x, v->y, v->r, v->g, v->b, v->a) : String()));
+                (v ? vformat(" | first %.0f %.0f rgba %d %d %d %d", v->x, v->y, v->r, v->g, v->b, v->a) : String()) +
+                (d.texture ? vformat(" | size %.0fx%.0f off %.1f %.1f st %.3f %.3f weave %.1f base %.1f linear %d wrap %d %d", d.tex_size[0], d.tex_size[1],
+                    d.tex_offset[0], d.tex_offset[1], d.st_scale[0], d.st_scale[1], d.weave_half, d.weave_base, d.linear, d.wrap_s, d.wrap_t) +
+                    (v ? vformat(" st0 %.2f %.2f q %.2f", v->s, v->t, v->q) : String()) +
+                    [&]() -> String {
+                        auto t = textures.find(d.texture);
+                        if (d.tex_is_target || t == textures.end() || !woven_textures.count(t->second.get_id())) return String();
+                        auto w = woven_sizes.find(t->second.get_id());
+                        return vformat(" woven %s", w != woven_sizes.end() ? String(w->second) : String("?"));
+                    }() : String()));
         }
     }
     // runs into a small surface that no drawn draw reads: its readers this frame are only the game's ground shadows the
@@ -1064,7 +1083,13 @@ void RtaDrawer::pack_frame(const rtag_frame& f) {
         if (t == textures.end()) continue;
         texture_serial.erase(want);
         s->texture_replace(t->second, s->texture_2d_create(done.image));
-        if (done.woven) woven_textures.insert(t->second.get_id()); else woven_textures.erase(t->second.get_id());
+        if (done.woven) {
+            woven_textures.insert(t->second.get_id());
+            woven_sizes[t->second.get_id()] = Vector2((float)done.woven_w, (float)done.woven_h);
+        } else {
+            woven_textures.erase(t->second.get_id());
+            woven_sizes.erase(t->second.get_id());
+        }
         handed += (size_t)done.image->get_data_size();
         pack_replaced++;
         if (done.from_file) pack_replaced_files++;
