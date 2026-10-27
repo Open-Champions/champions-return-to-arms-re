@@ -303,8 +303,10 @@ class Run:
     def creatures(self, me=None):
         me = me or self.pos()
         found = []
+        # Mithaniel Marr is a friend everywhere but in bossevil, where he is the last boss of the evil path
+        friendly = FRIENDLY - {'Marr'} if self.level() == 'bossevil' else FRIENDLY
         for o in self.objects():
-            if 'hp' not in o or o['cls'] in FRIENDLY or o['cls'] in NOT_FOES or o['hp'] <= 0 or o['cls'].startswith(('Skill', 'Spell')):
+            if 'hp' not in o or o['cls'] in friendly or o['cls'] in NOT_FOES or o['hp'] <= 0 or o['cls'].startswith(('Skill', 'Spell')):
                 continue
             if me:
                 o['d'] = math.hypot(o['x'] - me[0], o['y'] - me[1])
@@ -767,9 +769,10 @@ class Run:
                 return 'there'
         return 'stuck'
 
-    def teleport(self, x, y, z, why):
+    def teleport(self, x, y, z, why, _back=True):
         obj = self.u32(PLAYER_OBJ)
-        self.log('TELEPORT in %s from %s to (%.0f, %.0f, %.0f): %s' % (self.level(), self.pos(), x, y, z, why))
+        before = self.pos()
+        self.log('TELEPORT in %s from %s to (%.0f, %.0f, %.0f): %s' % (self.level(), before, x, y, z, why))
         self.state.setdefault('teleports', []).append({'level': self.level(), 'to': [x, y, z], 'why': why, 't': time.time()})
         self.save()
         for _ in range(4):
@@ -779,6 +782,15 @@ class Run:
                 self.port.write(cam + 0x16D, b'\x05')
             time.sleep(0.08)
         time.sleep(0.5)
+        # a place with no ground under it (beside a boss on a ledge, fay2): the character falls for ever - the driver's
+        # doing, not the game's; put back where it stood
+        time.sleep(0.6)
+        now = self.pos()
+        if _back and before and now and now[2] < z - 150:
+            self.log('TELEPORT: no ground at (%.0f, %.0f, %.0f) (fell to %.0f): back to where it stood' % (x, y, z, now[2]))
+            self.teleport(before[0], before[1], before[2] + 5, 'back from a place with no ground', _back=False)
+            return False
+        return True
 
     def answer(self, limit=40):
         """A dialogue, a notice or a scene has the camera: cross until play goes on (START skips a scene)."""
@@ -1565,7 +1577,16 @@ def main():
         parser.add_argument('--godot-out', default=os.path.join(ROOT, 'local', 'godot-play-classic'))
         parser.add_argument('--program', default=os.path.join(ROOT, 'local', 'recomp-out', 'bin', 'rta_app_playc'))
         parser.add_argument('extra', nargs='*')
-        return launch(parser.parse_args())
+        # everything after the first "--" goes to the program as it is (a further "--" included: the Godot copy's
+        # game-library options, e.g. -- -- --opt sound-wav=FILE)
+        argv = sys.argv[1:]
+        extra = []
+        if '--' in argv:
+            at = argv.index('--')
+            argv, extra = argv[:at], argv[at + 1:]
+        args = parser.parse_args(argv)
+        args.extra = args.extra + extra
+        return launch(args)
     if len(sys.argv) > 2 and sys.argv[1] == 'frames':
         print('\n'.join(frame_report(sys.argv[2])))
         return 0
