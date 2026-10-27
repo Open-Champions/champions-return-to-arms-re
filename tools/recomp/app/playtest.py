@@ -158,6 +158,11 @@ class NativePort:
         return out
 
     def write(self, address, data):
+        if data.endswith(b'\0') and len(data) > 1 and all(32 <= c < 127 for c in data[:-1]):
+            # a name: one command, so that the game never reads it half written (a level asked for as "boar" + the
+            # old name's tail was a level "boarare")
+            self.c.ok('poke 0x%x str %s' % (address, data[:-1].decode('latin-1')))
+            return
         data = data + b'\0' * (-len(data) % 4)
         for k in range(0, len(data), 4):
             self.c.ok('poke 0x%x u32 0x%08x' % (address + k, struct.unpack_from('<I', data, k)[0]))
@@ -340,6 +345,18 @@ class Run:
 
     # -- the stick in the world --
     def calibrate(self, force=False):
+        # the stick's axes in the world follow the camera: its yaw (camera +0x68, a 16-bit angle; tour.py CAM_ANGLES)
+        # points from the character to the camera's side; "up" is the opposite way, "right" a quarter turn clockwise.
+        # Read every time (a walk against a wall made the measured axes wrong)
+        cam = self.u32(G_CAMERA)
+        if cam and 0x100000 <= cam < 0x4000000:
+            yaw = struct.unpack('<H', self.port.read(cam + 0x68, 2))[0]
+            up = math.radians(yaw * 360.0 / 65536.0 - 180.0)
+            right = up - math.pi / 2
+            return {'level': self.level(), 'up': [math.cos(up), math.sin(up)], 'right': [math.cos(right), math.sin(right)], 'speed': 150, 'yaw': yaw}
+        return self.measure_axes(force)
+
+    def measure_axes(self, force=False):
         level = self.level()
         cal = self.state.get('cal', {})
         if not force and cal.get('level') == level:
@@ -425,13 +442,13 @@ class Run:
         g['free'] = [list(c) for c in self._free][-40000:]
         self.save()
 
-    def plan(self, start, goal, limit=60000):
+    def plan(self, start, goal, limit=15000):
         import heapq
         self._grid()
         s, t = self._cell(start[0], start[1]), self._cell(goal[0], goal[1])
         if s == t:
             return [goal]
-        span = max(abs(s[0] - t[0]), abs(s[1] - t[1])) + 40
+        span = max(abs(s[0] - t[0]), abs(s[1] - t[1])) // 2 + 12
         lo = (min(s[0], t[0]) - span, min(s[1], t[1]) - span)
         hi = (max(s[0], t[0]) + span, max(s[1], t[1]) + span)
         h = lambda c: math.hypot(c[0] - t[0], c[1] - t[1])
@@ -523,7 +540,7 @@ class Run:
                 moved_at = time.time()
             last_pos = me
             if fight:
-                near = [c for c in self.creatures(me) if c['d'] < 90 and abs(c['dz']) < 80 and c['addr'] not in self.unreachable]
+                near = [c for c in self.creatures(me) if c['d'] < 70 and abs(c['dz']) < 40 and c['addr'] not in self.unreachable]
                 if near:
                     self.pad()
                     self.fight(radius=140, timeout=25, quiet=True)
@@ -538,6 +555,9 @@ class Run:
                     c0 = self._cell(me[0], me[1])
                     self._blocked = set(c for c in self._blocked if max(abs(c[0] - c0[0]), abs(c[1] - c0[1])) > 4)
                     path = self.plan(me, (x, y))
+                    if path is None:
+                        self._blocked = set()           # all of it: walked again, learnt again
+                        path = self.plan(me, (x, y))
                 replans += 1
                 if path is None or replans > 40:
                     self.pad()
@@ -571,12 +591,121 @@ class Run:
         self._grid_save()
         return 'timeout'
 
+    # -- a road map for long ways: the places things stand on (creatures, things lying about, chests, save points, the
+    # triggers) are ground a player can reach; legs between near ones are walked on the grid, a leg that fails costs more
+    def roadmap(self):
+        level = self.level()
+        rm = self.state.get('roadmap', {})
+        if rm.get('level') != level:
+            points = []
+            for o in self.objects():
+                if ('hp' in o and o['cls'] not in NOT_FOES) or o['cls'] in LOOT or o['cls'] in CHESTS or o['cls'] in (
+                        'Savepoint', 'PushTrigger', 'Trigger', 'JumpGate', 'NPC'):
+                    points.append([round(o['x']), round(o['y']), round(o['z'])])
+            for o in self.exits():
+                points.append([round(o['x']), round(o['y']), round(o['z'])])
+            me = self.pos()
+            if me:
+                points.append([round(me[0]), round(me[1]), round(me[2])])
+            # one point per 150 units is enough
+            kept = []
+            for p in points:
+                if all(math.hypot(p[0] - q[0], p[1] - q[1]) > 150 for q in kept):
+                    kept.append(p)
+            rm = {'level': level, 'points': kept, 'bad': {}}
+            self.state['roadmap'] = rm
+            self.save()
+        return rm
+
+    def travel(self, x, y, radius=40.0, timeout=600.0, label=''):
+        """A long way: from road-map point to road-map point (Dijkstra over legs shorter than 700 units), each leg walked."""
+        import heapq
+        start = time.time()
+        level = self.level()
+        me = self.pos()
+        if not me:
+            return 'stuck'
+        if math.hypot(x - me[0], y - me[1]) < 600:
+            return self.goto(x, y, radius=radius, timeout=min(timeout, 90), label=label)
+        rm = self.roadmap()
+        pts = [tuple(p) for p in rm['points']] + [(x, y, me[2])]
+        goal = len(pts) - 1
+        for attempt in range(12):
+            me = self.pos()
+            if not me or self.level() != level:
+                return 'level' if self.level() != level else 'stuck'
+            if time.time() - start > timeout:
+                return 'timeout'
+            near = sorted(range(len(pts)), key=lambda k: math.hypot(pts[k][0] - me[0], pts[k][1] - me[1]))[0]
+            dist = {near: 0.0}
+            prev = {}
+            q = [(0.0, near)]
+            while q:
+                d0, k = heapq.heappop(q)
+                if k == goal:
+                    break
+                if d0 > dist.get(k, 1e18):
+                    continue
+                for j in range(len(pts)):
+                    if j == k:
+                        continue
+                    leg = math.hypot(pts[j][0] - pts[k][0], pts[j][1] - pts[k][1])
+                    if leg > 700 or abs(pts[j][2] - pts[k][2]) > 200 and j != goal:
+                        continue
+                    bad = rm['bad'].get('%d-%d' % (min(j, k), max(j, k)), 0)
+                    d1 = d0 + leg * (1 + 4 * bad)
+                    if d1 < dist.get(j, 1e18):
+                        dist[j] = d1
+                        prev[j] = k
+                        heapq.heappush(q, (d1, j))
+            if goal not in dist:
+                self.log('travel: no way on the road map to (%.0f, %.0f); straight on' % (x, y))
+                return self.goto(x, y, radius=radius, timeout=min(120, timeout), label=label)
+            route = [goal]
+            while route[-1] != near:
+                route.append(prev[route[-1]])
+            route.reverse()
+            self.log('travel: to (%.0f, %.0f)%s by %d legs' % (x, y, ' ' + label if label else '', len(route) - 1))
+            failed = False
+            for a, b in zip(route, route[1:]):
+                bx, by = pts[b][0], pts[b][1]
+                r = self.goto(bx, by, radius=radius if b == goal else 70, timeout=90, label=label)
+                if r == 'there':
+                    continue
+                if r in ('level', 'dead'):
+                    return r
+                key = '%d-%d' % (min(a, b), max(a, b))
+                rm['bad'][key] = rm['bad'].get(key, 0) + 1
+                self.save()
+                if rm['bad'][key] >= 2 and self.state.get('teleport_ok', True):
+                    # the last resort, logged: the leg's end, where something of the level stands (ground a player reaches)
+                    self.teleport(bx, by, pts[b][2] + 5, 'travel leg %s failed twice' % key)
+                    continue
+                failed = True
+                break
+            if not failed:
+                return 'there'
+        return 'stuck'
+
+    def teleport(self, x, y, z, why):
+        obj = self.u32(PLAYER_OBJ)
+        self.log('TELEPORT in %s from %s to (%.0f, %.0f, %.0f): %s' % (self.level(), self.pos(), x, y, z, why))
+        self.state.setdefault('teleports', []).append({'level': self.level(), 'to': [x, y, z], 'why': why, 't': time.time()})
+        self.save()
+        for _ in range(4):
+            self.port.write(obj + OBJ_POS, struct.pack('<3f', x, y, z))
+            cam = self.u32(G_CAMERA)
+            if cam:
+                self.port.write(cam + 0x16D, b'\x05')
+            time.sleep(0.08)
+        time.sleep(0.5)
+
     def answer(self, limit=40):
         """A dialogue, a notice or a scene has the camera: cross until play goes on (START skips a scene)."""
         for k in range(limit):
             if self.camera_follows() and not self.paused():
                 return True
-            self.tap('cross' if k % 6 != 5 else 'start', 5, 25)
+            self.tap('start' if k % 6 == 5 else ('square' if k % 6 == 3 else 'cross'), 5, 25)
         return self.camera_follows()
 
     # -- fighting --
@@ -758,8 +887,13 @@ class Run:
         if self.goto(o['x'], o['y'], radius=45, timeout=90, label='save point') != 'there':
             return False
         self.tap('square', 10, 60)
-        for _ in range(4):
-            self.tap('cross', 8, 100)
+        # the card's questions: the save (the current game's), "Overwrite save game 1?" (square: Continue), "Save
+        # Successful" (cross)
+        for button in ('cross', 'cross', 'square', 'cross', 'cross'):
+            if self.camera_follows() and not self.paused():
+                break
+            self.tap(button, 8, 100)
+        self.shot('save-end')
         self.answer(10)
         p = self.player()
         self.state['saved'] = {'exp': p['exp'], 'gold': p['gold'], 'level': self.level(), 't': time.time()}
@@ -812,7 +946,7 @@ class Run:
             alone = [c for c in foes if crowd(c) <= 2]
             foe = (alone or foes)[0]
             self.log('play: on to the %s at (%.0f, %.0f), %.0f away (%d creatures left)' % (foe['cls'], foe['x'], foe['y'], foe['d'], len(foes)))
-            r = self.goto(foe['x'], foe['y'], radius=60, timeout=60, label=foe['cls'])
+            r = self.travel(foe['x'], foe['y'], radius=60, timeout=240, label=foe['cls'])
             if r in ('stuck', 'timeout'):
                 skip.add(foe['addr'])
             if r == 'level':
@@ -850,9 +984,15 @@ class Run:
             else:
                 tx, ty, rad = o['x'], o['y'], 30.0
             self.log('exit: to %s by the %s at (%.0f, %.0f) (it asks for %s)' % (want or 'any', o['cls'], tx, ty, ','.join(o['dest'])))
-            result = self.goto(tx, ty, radius=rad, timeout=timeout)
+            result = self.travel(tx, ty, radius=rad, timeout=timeout, label='exit')
             if result == 'level':
                 return 'level'
+            if result in ('stuck', 'timeout') and self.state.get('teleport_ok', True):
+                # the last resort, logged: beside the exit itself
+                self.teleport(tx, ty - (0 if o['cls'] == 'Trigger' else 20), o['z'] + 5, 'the way to the %s exit (%s) not found' % (o['dest'][0], o['cls']))
+                if self.wait_level(level, 3.0):
+                    return 'level'
+                result = 'there'
             if result != 'there':
                 self.log('exit: %s on the way (%s)' % (result, o['cls']))
                 continue
@@ -1047,6 +1187,28 @@ def frame_report(path, settle=3.0):
     return rows
 
 
+def load_game(r, slot=0):
+    """Title -> Load Saved Game -> the save in `slot` (0 the first) -> the level it was made in."""
+    r.log('load game: waiting for the front end')
+    for _ in range(240):
+        if r.u32(G_IN_FRONTEND) & 0xff == 1 and r.level() == 'intro':
+            break
+        r.tap('cross', 6, 40)
+    time.sleep(7)
+    r.tap('down', 6, 30)
+    r.shot('front-load')
+    r.tap('cross', 8, 120)
+    for _ in range(slot):
+        r.tap('down', 6, 30)
+    r.shot('load-list')
+    r.tap('cross', 8, 120)
+    for _ in range(120):
+        if r.level() not in ('intro', '') and r.u32(PLAYER_OBJ):
+            break
+        time.sleep(0.5)
+    return r.arrive()
+
+
 def hub_mission(r, rows_down=0):
     """In the hub: Firiona's offer (the first time), the mission portal (the PushTrigger at the ring), the mission
     menu: `rows_down` presses of right (the next mission on the menu's line), accept; then the level's arrival."""
@@ -1054,26 +1216,205 @@ def hub_mission(r, rows_down=0):
         return False
     p = r.player()
     if not r.state.get('firiona_done'):
-        r.goto(122, -40, radius=15)
-        r.tap('square', 10, 60)
-        r.shot('firiona')
-        r.answer(60)
-        r.state['firiona_done'] = True
-        r.save()
+        for _ in range(3):
+            r.goto(122, -40, radius=15)
+            r.tap('square', 10, 60)
+            talked = not r.camera_follows()
+            r.shot('firiona')
+            r.answer(60)
+            if talked:
+                r.state['firiona_done'] = True
+                r.save()
+                break
     r.goto(60, 300, radius=25)
+    r.goto(53, 312, radius=8, timeout=15)          # in reach of the gateway's push trigger ("Enter Planar Gateway")
     r.tap('square', 10, 90)
     r.shot('mission-menu')
     for _ in range(rows_down):
         r.tap('right', 6, 40)
         r.shot('mission-menu-next')
     level = r.level()
-    r.tap('cross', 8, 60)
-    for _ in range(60):
+    for attempt in range(3):
+        r.tap('cross', 10, 60)
+        for _ in range(30):
+            if r.level() != level or r.u32(G_PENDING) & 0xff:
+                break
+            time.sleep(0.5)
         if r.level() != level or r.u32(G_PENDING) & 0xff:
             break
-        time.sleep(0.5)
+        # not taken: the menu not open (the gateway out of reach) - again from in front of it
+        r.answer(6)
+        r.goto(53, 312, radius=8, timeout=15)
+        r.tap('square', 10, 90)
+        r.shot('mission-menu-again')
     time.sleep(3)
+    r.arrive()
+    return r.level() != 'hub'
+
+
+ACTS = os.path.join(ROOT, 'local', 'classic', 'emu-c1', 'order.txt')     # the act lists and the story starts (tour.py campaign)
+
+
+def campaign_plan():
+    acts, story = [], []
+    for line in open(ACTS):
+        kind, _, rest = line.rstrip('\n').partition('\t')
+        if kind.startswith('act '):
+            acts.append(rest.split())
+        elif kind == 'story':
+            story = rest.split()
+    return acts, story
+
+
+def boss_of(r):
+    """The level's strongest creature, when it is far stronger than the rest (a boss)."""
+    foes = r.creatures()
+    if not foes:
+        return None
+    foes.sort(key=lambda c: -c['hp_max'])
+    top = foes[0]
+    rest = [c['hp_max'] for c in foes[1:]] or [1]
+    return top if top['hp_max'] >= 4 * (sorted(rest)[len(rest) // 2]) and top['hp_max'] >= 300 else None
+
+
+def play_level(r, minutes=6.0):
+    """A level as a player meets it: fight and loot for a while, its boss if it has one, then on by an exit that asks
+    for a level of the act not yet seen (exitmap), else any exit."""
+    level = r.level()
+    seen = set(r.state.get('seen_levels', []))
+    seen.add(level)
+    r.state['seen_levels'] = sorted(seen)
+    r.save()
+    r.log('campaign: playing %s' % level)
+    r.shot('level-start')
+    result = r.play(timeout=minutes * 60, radius=450)
+    if result == 'level':
+        return 'level'
+    boss = boss_of(r)
+    if boss:
+        r.log('campaign: the boss of %s: %s, %.0f hit points' % (level, boss['cls'], boss['hp_max']))
+        r.shot('boss')
+        start = time.time()
+        while time.time() - start < 900 and r.level() == level:
+            b = [c for c in r.creatures() if c['addr'] == boss['addr']]
+            if not b:
+                r.log('campaign: the %s is down' % boss['cls'])
+                r.shot('boss-down')
+                break
+            if r.travel(b[0]['x'], b[0]['y'], radius=80, timeout=120, label='boss') == 'level':
+                return 'level'
+            r.fight(radius=600, timeout=120)
+            if r.player()['hp'] <= 0:
+                time.sleep(3)
+                r.arrive()
+                deaths = r.state.setdefault('deaths', {})
+                deaths[level] = deaths.get(level, 0) + 1
+                if deaths[level] >= 3:
+                    r.port.write(G_INVULNERABLE, struct.pack('<I', 1))
+                    r.state['invulnerable'] = level
+                    r.log('LAST RESORT: invulnerability on in %s (the boss) after %d deaths' % (level, deaths[level]))
+                r.save()
+        # after a boss the game moves on by itself (a scene, the hub): wait for it
+        for _ in range(60):
+            if r.level() != level or (r.u32(G_PENDING) & 0xff):
+                return 'level'
+            r.answer(4)
+            time.sleep(1)
+    exits = r.exits()
+    acts, _ = campaign_plan()
+    act = next((a for a in acts if level in a), [])
+    wanted = [o for o in exits if any(d in act and d not in seen for d in o['dest'])] or exits
+    for o in wanted[:3]:
+        dest = next((d for d in o['dest'] if d in act and d not in seen), o['dest'][0])
+        if r.take_exit(dest) == 'level':
+            return 'level'
+    return 'stuck'
+
+
+def nudge(r, name, why):
+    """The game's own level change asked for (the pending level name, as an exit's newWorld writes it): logged."""
+    r.log('NUDGE to %s: %s' % (name, why))
+    r.state.setdefault('nudges', []).append({'from': r.level(), 'to': name, 'why': why, 't': time.time()})
+    r.save()
+    r.port.write(G_PENDING, name.encode('latin-1') + b'\0')
+    for _ in range(240):
+        if r.level() == name:
+            break
+        time.sleep(0.5)
     return r.arrive()
+
+
+def boss_fight(r, minutes=12.0):
+    level = r.level()
+    boss = boss_of(r)
+    if not boss:
+        return None
+    r.log('sweep: the boss of %s: %s, %.0f hit points' % (level, boss['cls'], boss['hp_max']))
+    r.shot('boss')
+    start = time.time()
+    while time.time() - start < minutes * 60 and r.level() == level:
+        b = [c for c in r.creatures() if c['addr'] == boss['addr'] and c['hp'] > 0]
+        if not b:
+            r.log('sweep: the %s of %s is down after %.0f s' % (boss['cls'], level, time.time() - start))
+            r.shot('boss-down')
+            return True
+        b = b[0]
+        if b['d'] > 120:
+            if r.travel(b['x'], b['y'], radius=90, timeout=90, label='boss') in ('stuck', 'timeout') and b['d'] > 400:
+                r.teleport(b['x'] - 80, b['y'] - 80, b['z'] + 5, 'the way to the boss not found')
+            continue
+        # the boss itself: beside it, facing it, the attack (the others round it are struck on the way)
+        me = r.pos()
+        dx, dy = b['x'] - me[0], b['y'] - me[1]
+        lx, ly = r.stick_toward(dx, dy)
+        if b['d'] > 50:
+            r.pad((), lx, ly)
+            time.sleep(0.15)
+            continue
+        r.pad((), lx, ly)
+        time.sleep(0.05)
+        r.pad(('cross',), lx, ly)
+        time.sleep(0.1)
+        r.pad()
+        time.sleep(0.12)
+        if int(time.time() - start) % 30 == 0:
+            r.log('sweep: the %s at %.0f of %.0f hit points' % (b['cls'], b['hp'], b['hp_max']))
+            r.every('boss', 10)
+    r.log('sweep: the boss of %s still stands after %.0f minutes' % (level, minutes))
+    return False
+
+
+def sweep(r, names, minutes=3.0):
+    """Every named level in order: by its exit from the level before where there is one, else the game's own level
+    change asked for; played a while (fights, things picked up, pictures, the checks), its boss fought."""
+    r.port.write(G_INVULNERABLE, struct.pack('<I', 1))
+    r.log('LAST RESORT for the sweep: the game\'s own invulnerability on (a low-level character in every act)')
+    done = set(r.state.get('swept', []))
+    for name in names:
+        if name in done:
+            continue
+        here = r.level()
+        if here != name:
+            exits = [o for o in r.exits() if name in o['dest']]
+            arrived = False
+            if exits:
+                r.state['teleport_ok'] = True
+                arrived = r.take_exit(name, timeout=240) == 'level' and r.arrive() and r.level() == name
+            if not arrived and r.level() != name:
+                nudge(r, name, 'no exit of %s leads there (or it held)' % here if not exits else 'the exit of %s held' % here)
+        if r.level() != name:
+            r.suspect('sweep', '%s not reached (in %s)' % (name, r.level()))
+            continue
+        r.port.write(G_INVULNERABLE, struct.pack('<I', 1))
+        r.log('sweep: in %s' % name)
+        r.shot('sweep-arrive')
+        r.play(timeout=minutes * 60, radius=500)
+        if r.level() == name:
+            boss_fight(r, minutes=6.0)
+        r.shot('sweep-leave')
+        done.add(name)
+        r.state['swept'] = sorted(done)
+        r.save()
 
 
 def main():
@@ -1130,6 +1471,8 @@ def main():
             print(json.dumps(r.state.get('last_picture')))
         elif what == 'newgame':
             new_game(r, int(a.pos[0]) if a.pos else 0, int(a.pos[1]) if len(a.pos) > 1 else 0)
+        elif what == 'travel':
+            print(r.travel(float(a.pos[0]), float(a.pos[1]), radius=a.radius or 40, timeout=a.timeout or 600))
         elif what == 'goto':
             print(r.goto(float(a.pos[0]), float(a.pos[1]), radius=a.radius or 40, timeout=a.timeout or 60))
         elif what == 'fight':
@@ -1147,6 +1490,32 @@ def main():
             print(result)
             if result == 'level':
                 r.arrive()
+        elif what == 'loadgame':
+            print(load_game(r, int(a.pos[0]) if a.pos else 0))
+        elif what == 'probe':
+            # can the character move from here?  The stick pushed in eight directions, half a second each
+            for k in range(8):
+                ang = k * math.pi / 4
+                p0 = r.pos()
+                lx, ly = r.stick_toward(math.cos(ang), math.sin(ang))
+                r.pad((), lx, ly)
+                time.sleep(0.5)
+                r.pad()
+                time.sleep(0.15)
+                p1 = r.pos()
+                print('direction %3d: moved %.0f' % (k * 45, math.hypot(p1[0] - p0[0], p1[1] - p0[1])))
+        elif what == 'level':
+            result = play_level(r, a.timeout / 60 if a.timeout else 6.0)
+            print(result)
+            if result == 'level':
+                r.arrive()
+        elif what == 'sweep':
+            sweep(r, a.pos, minutes=a.timeout / 60 if a.timeout else 3.0)
+        elif what == 'boss':
+            r.port.write(G_INVULNERABLE, struct.pack('<I', 1 if 'invulnerable' in a.pos else 0))
+            print(boss_fight(r, minutes=a.timeout / 60 if a.timeout else 15.0))
+        elif what == 'nudge':
+            nudge(r, a.pos[0], 'asked for by hand')
         elif what == 'mission':
             print(hub_mission(r, int(a.pos[0]) if a.pos else 0))
         elif what == 'play':

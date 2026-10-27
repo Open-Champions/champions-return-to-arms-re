@@ -58,6 +58,9 @@ class Script:
             if op == 0x7b:
                 n = words[i + 1]
                 args = pending[:-1][::-1] if pending else []
+                # a built-in that takes a name: a small number is the string pool's offset (0 is a string too)
+                if n < len(self.ext) and self.ext[n] in ('callScript', 'newWorld', 'simpleNewWorld', 'newWorldAlways', 'newWorldPost', 'setEntrance'):
+                    args = [self.pool.get(a, a) if isinstance(a, int) else a for a in args]
                 if current is not None and n < len(self.ext):
                     self.funcs[current].append(('ext', self.ext[n], args))
                 pending = []

@@ -34,6 +34,9 @@ func start(port: int) -> bool:
 
 var last_draws := -1
 var last_frame := -1
+var shot_dir := ""                      # where the pictures of such frames go (the driver says: "fewshots DIR")
+var few_shots := 0
+var pending_next := -1
 
 
 func poll() -> void:
@@ -75,6 +78,14 @@ func _watch_frames() -> void:
 		var level: String = machine.call("peek_string", G_LEVEL_NAME, 16)
 		print("rta_godot: control: frame %d of %s drew %d (the one before %d)" % [frame, level, draws, last_draws])
 		main.call("frame_mark", "control few-draws %d %s" % [draws, level])
+		if shot_dir != "" and few_shots < 8:
+			# the picture of that frame (and of the next) as the window shows it: is it black, or the frame before?
+			few_shots += 1
+			main.call("_host_command", "windowshot %s/few-%d-%d.png" % [shot_dir, frame, draws])
+			pending_next = frame
+	if pending_next >= 0 and frame > pending_next:
+		main.call("_host_command", "windowshot %s/few-%d-next-%d.png" % [shot_dir, pending_next, draws])
+		pending_next = -1
 	last_draws = draws
 
 
@@ -124,6 +135,10 @@ func _run(line: String) -> String:
 			return "ok"
 		"app":
 			main.call("_host_command", line.substr(4))
+			return "ok"
+		"fewshots":
+			shot_dir = line.substr(line.find(w[1])) if w.size() >= 2 else ""
+			few_shots = 0
 			return "ok"
 		"sceneopt":
 			# a scene option of the drawer (rta_scene.cpp set_scene_option: keep, batch, prepass, packets, near_fade ...)

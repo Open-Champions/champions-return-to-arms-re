@@ -456,6 +456,15 @@ def start_godot(role, index, out, run, room, n, args):
                   '--mode', 'scene', '--edition', args.edition, '--test', 'room proof ' + role, '--script', script]
         if args.godot_frame_log:
             window += ['--frame-log', os.path.join(run, role + '.frames.csv')]
+        if args.godot_control:
+            # a control port for a driver that plays this copy (dev/control.gd, tools/recomp/app/playtest.py): its pad
+            # takes port 1 while it holds it; the driver finds it through RUN/<role>-play/run.json
+            port = args.godot_control + index
+            window += ['--control', str(port), '--mute']
+            play = os.path.join(run, role + '-play')
+            os.makedirs(os.path.join(play, 'shots'), exist_ok=True)
+            with open(os.path.join(play, 'run.json'), 'w') as sink:
+                sink.write('{"kind": "godot", "port": %d}\n' % port)
         return real(window + ['--'] + runtime, env=env, **kw)
     n2party.subprocess.Popen = popen
     try:
@@ -620,6 +629,7 @@ def main():
     parser.add_argument('--level-every', type=int, default=2400, help='with --level A,B,...: lockstep ticks from one level change to the next')
     parser.add_argument('--edition', default='classic', help='the godot copies: classic or remastered (portal/edition.gd)')
     parser.add_argument('--godot-frame-log', action='store_true', help='the godot copies write their frame log (main.gd --frame-log) beside the tick logs')
+    parser.add_argument('--godot-control', type=int, default=0, help='the godot copies take a control port (this + the copy\'s index, 127.0.0.1) for a driver that plays them (tools/recomp/app/playtest.py RUN/<role>-play)')
     parser.add_argument('--play2', type=int, default=1800)
     parser.add_argument('--seed', type=int, default=1)
     parser.add_argument('--pace', type=float, default=59.94)
