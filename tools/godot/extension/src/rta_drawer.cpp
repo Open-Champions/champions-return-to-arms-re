@@ -953,6 +953,31 @@ void RtaDrawer::submit() {
 
 RID RtaDrawer::get_shown_texture() const { return shown && shown->latest && shown->latest->drawn_once ? shown->latest->texture : RID(); }
 
+bool RtaDrawer::has_screen_overlay() const {
+    if (machine.is_null() || !machine->current()) return true;
+    const rtag_frame& f = *machine->current();
+    bool world_seen = false;
+    for (uint32_t i = 0; i < f.draw_count; ++i) {
+        const rtag_draw& d = f.draws[i];
+        if (d.scene_kind != RTAG_SCENE_NONE) { world_seen = true; continue; }
+        if (!world_seen || d.kind != RTAG_DRAW || d.texture || d.mask_rgb || d.count < 6 || d.count > 12 ||
+            d.first > f.vertex_count || d.count > f.vertex_count - d.first) continue;
+        auto target = targets.find(d.target);
+        if (target == targets.end() || !target->second.screen) continue;
+        float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+        bool visible = !d.blend;
+        for (uint32_t k = 0; k < d.count; ++k) {
+            const auto& v = f.vertices[d.first + k];
+            x0 = std::min(x0, v.x); x1 = std::max(x1, v.x);
+            y0 = std::min(y0, v.y); y1 = std::max(y1, v.y);
+            visible = visible || v.a > 0;
+        }
+        const auto& t = target->second;
+        if (visible && x0 <= t.lw * .02f && y0 <= t.lh * .02f && x1 >= t.lw * .98f && y1 >= t.lh * .98f) return true;
+    }
+    return false;
+}
+
 Rect2 RtaDrawer::get_shown_region() const {
     if (!shown) return Rect2();
     float sx = (float)shown->pw / shown->lw, sy = (float)shown->ph / shown->lh;
@@ -1152,6 +1177,7 @@ void RtaDrawer::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_hidden_skinned", "objects"), &RtaDrawer::set_hidden_skinned);
     ClassDB::bind_method(D_METHOD("get_world_camera"), &RtaDrawer::get_world_camera);
     ClassDB::bind_method(D_METHOD("get_world_viewport"), &RtaDrawer::get_world_viewport);
+    ClassDB::bind_method(D_METHOD("has_screen_overlay"), &RtaDrawer::has_screen_overlay);
     ClassDB::bind_method(D_METHOD("redraw", "t"), &RtaDrawer::redraw);
     ClassDB::bind_method(D_METHOD("get_letterbox_left_out"), &RtaDrawer::get_letterbox_left_out);
     ClassDB::bind_method(D_METHOD("get_scene_camera"), &RtaDrawer::get_scene_camera);

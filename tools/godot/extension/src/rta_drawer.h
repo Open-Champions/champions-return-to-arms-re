@@ -69,6 +69,7 @@ class RtaDrawer : public RefCounted {
     Rect2 get_shown_region() const;                 // in that texture's pixels
     bool get_shown_flipped() const { return rd; }   // the region is stored bottom up (Forward+ / Mobile): show it turned over
     Ref<Image> get_shown_image() const;             // what Godot drew into the shown surface (after the frame was rendered)
+    bool has_screen_overlay() const;               // a submitted full-screen flat overlay after the world (fade guard)
     String figures() const;
     void dump_surfaces(const String& prefix) const; // debugging: every surface as Godot holds it now, PREFIX-s<id>-p<pass>.png
     void log_draws(int frames);                     // debugging: every draw of the next FRAMES lists to the output, with its state

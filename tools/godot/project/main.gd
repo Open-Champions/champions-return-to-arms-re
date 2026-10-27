@@ -219,11 +219,15 @@ var tween_figs := {"dropped": 0, "pictures": 0, "between": 0, "late": 0, "lead_s
 var window_shots: PackedStringArray = PackedStringArray()
 var hud_node: Node                      # res://hud, when it was added
 var art_pictures := 0                   # pictures of the art pack in use
+var gpu_timer: RefCounted               # Metal's completed GPU work (Godot 4.5's Metal query timers are zero)
+var gpu_world_drawn := false
 
 
 func _ready() -> void:
 	get_tree().set_auto_accept_quit(false)
 	_parse_arguments()
+	RenderingServer.frame_pre_draw.connect(_gpu_begin)
+	RenderingServer.frame_post_draw.connect(_gpu_end)
 	var window := get_window()
 	if opt.test != "":
 		window.title = "AGENT TEST - " + opt.test
@@ -1073,6 +1077,7 @@ func _speed_log() -> void:
 
 
 func _take_frame() -> void:
+	gpu_world_drawn = true
 	blanks += 1
 	if int(opt.speed_log) > 0:
 		_speed_log()
@@ -1103,6 +1108,7 @@ func _take_frame() -> void:
 func _process(delta: float) -> void:
 	if not started or quitting:
 		return
+	gpu_world_drawn = false
 	var t0 := Time.get_ticks_usec()
 	_write_pending_shots()
 	if control != null:
@@ -1295,9 +1301,11 @@ func _paced_between(delta: float) -> bool:
 	var now_b := Time.get_ticks_usec()
 	if delta > refresh_s * 1.5:
 		between_hold_until = now_b + 250000
-	if not took and blanks > 0 and not between_off and now_b >= between_hold_until:
+	var gpu_between := scene_view == null or bool(scene_view.call("gpu_between_allowed"))
+	if not took and blanks > 0 and not between_off and now_b >= between_hold_until and gpu_between:
 		tween_t = clampf(game_clock / period_s, 0.0, 1.0)
 		drawer.call("redraw", tween_t - tween_back)
+		gpu_world_drawn = true
 		if scene_view != null:
 			scene_view.call("tween", tween_t - tween_back)
 		tween_figs.between += 1
@@ -1307,6 +1315,20 @@ func _paced_between(delta: float) -> bool:
 	tween_figs.lead_sum += lead
 	_lower_lead()
 	return took
+
+
+func _gpu_begin() -> void:
+	# Classic never creates the timer or changes its drawing schedule.
+	var enabled := String(opt.edition) == "remastered" and scene_view != null and bool(scene_view.call("gpu_quality_enabled"))
+	if enabled and gpu_timer == null and ClassDB.class_exists("RtaGpuTimer"):
+		gpu_timer = ClassDB.instantiate("RtaGpuTimer")
+	if gpu_timer != null:
+		gpu_timer.call("begin_frame", enabled and gpu_world_drawn and not quitting)
+
+
+func _gpu_end() -> void:
+	if gpu_timer != null:
+		gpu_timer.call("end_frame")
 
 
 func _note_latency() -> void:

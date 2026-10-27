@@ -1,6 +1,7 @@
 // register.cpp - the extension's entry: RtaMachine, RtaAudioStream (and its playback), RtaDrawer.
 #include "rta_audio.h"
 #include "rta_drawer.h"
+#include "rta_gpu_timer.h"
 #ifdef RTA_GODOT_HAVE_GAMESTATE
 #include "rta_gamestate.h"
 #endif
@@ -23,6 +24,7 @@ static void initialize_rta_godot(ModuleInitializationLevel p_level) {
     GDREGISTER_CLASS(RtaAudioPlayback);
     GDREGISTER_CLASS(RtaAudioStream);
     GDREGISTER_CLASS(RtaDrawer);
+    GDREGISTER_CLASS(RtaGpuTimer);
     GDREGISTER_CLASS(RtaRemaster);      // the game's own figures remastered (model_remaster.gd)
 #ifdef RTA_GODOT_HAVE_GAMESTATE
     GDREGISTER_CLASS(RtaGameState);     // the HUD agent's: the game's state for a HUD drawn by Godot
