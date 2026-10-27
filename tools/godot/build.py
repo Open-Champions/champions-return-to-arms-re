@@ -254,15 +254,15 @@ def build_lib(args):
     opt = args.opt
     render_flags = ['-std=c++17', opt, '-fno-strict-aliasing', '-ffp-contract=off', '-frounding-math', '-Wall', '-Wno-unused-function', '-I', render]
     rt_flags = ['-std=c++17', opt, '-fno-strict-aliasing', '-fwrapv', '-w', '-ffp-contract=off', '-frounding-math', '-I', rt, '-I', game_dir]
-    if os.environ.get('RTA_GODOT_PARTY8') == '1' and game == 'fix':
+    memory_flags = ['-DRAM_SIZE=0x04000000u'] if os.environ.get('RTA_GODOT_PARTY8') == '1' and game == 'fix' else []
+    if memory_flags:
         # the relocatable translation was compiled with 64 MB of guest memory (app/build.py --party8, rt/ramsize.h):
         # everything that includes the runtime's headers is compiled with the same size
-        render_flags = render_flags + ['-DRAM_SIZE=0x04000000u']
-        rt_flags = rt_flags + ['-DRAM_SIZE=0x04000000u']
+        render_flags = render_flags + memory_flags
+        rt_flags = rt_flags + memory_flags
     lib_flags = ['-std=c++17', opt, '-Wall', '-Wno-unused-function', '-fno-strict-aliasing', '-ffp-contract=off', '-frounding-math',
                  '-I', LIB, '-I', app, '-I', render, '-I', rt] + (['-DRTAG_ORIGINAL'] if args.original else [])
-    if os.environ.get('RTA_GODOT_PARTY8') == '1' and game == 'fix':
-        lib_flags = lib_flags + ['-DRAM_SIZE=0x04000000u']
+    lib_flags = lib_flags + memory_flags
     # What the library can do depends on what the snapshot's core has (recomp.patch, or the shared tree once it is merged):
     # the music's own volume (sound/drivers.cpp: rta_sound_set_music_gain) and the second HUD group (render/gs.h:
     # hide_text - and the translation must wrap the two draw functions: funcs.h then declares orig_001d93b0).
@@ -299,9 +299,10 @@ def build_lib(args):
         jobs.append((os.path.join(app, 'fpview.cpp'), rt_flags + ['-I', app], 'a_'))
     if world:
         jobs.append((os.path.join(app, 'fpworld.cpp'), rt_flags + ['-I', app, '-I', render], 'a_'))
-    # the look controls (fpcontrols.h): nothing of the runtime in them but iface.h; rtag.cpp finds the header by itself
+    # The controls read guest bodies and pads too (moved.h/ramsize.h). Keep their bounds identical to the runtime's,
+    # including the upper 32 MB of a five-to-eight-player game; app/build.py applies this define to every module.
     if os.path.exists(os.path.join(app, 'fpcontrols.cpp')):
-        jobs.append((os.path.join(app, 'fpcontrols.cpp'), ['-std=c++17', opt, '-Wall', '-I', app, '-I', rt], 'a_'))
+        jobs.append((os.path.join(app, 'fpcontrols.cpp'), ['-std=c++17', opt, '-Wall', '-I', app, '-I', rt] + memory_flags, 'a_'))
         # the souls-style combat mode (soulscombat.h, docs/issues/native-souls-combat.md): it needs the controls (lock-on)
         if os.path.exists(os.path.join(app, 'soulscombat.cpp')):
             jobs.append((os.path.join(app, 'soulscombat.cpp'), rt_flags + ['-I', app, '-I', render], 'a_'))
