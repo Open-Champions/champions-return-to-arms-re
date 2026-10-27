@@ -89,6 +89,7 @@ const ResourceBudget := preload("res://resource_budget.gd")
 var fits := {}                  # outfit|build|class -> {"task", "out"} while fitting, then the fitted figure (er_fit.gd) or {"failed"}
 var fit_cfg: ConfigFile         # er_fit.cfg
 var armour_shader: Shader
+var depth := preload("res://model_depth.gd").new()
 var figures := {}               # key ("slot0".. or "local") -> figure: {set, instances, globals, springs, weapons, used}
 var targets: Array = []         # this frame's: [{key, skeleton, set, slot, wclass, held: [...]}]
 var game_weapons := {}          # signature -> {axis, side} of a game weapon in its own model space (from its vertices)
@@ -121,6 +122,7 @@ func _ready() -> void:
 
 
 func release() -> void:
+	depth.release()
 	for pair in own_lights:
 		RenderingServer.free_rid(pair[1])
 		RenderingServer.free_rid(pair[0])
@@ -154,9 +156,11 @@ func _free_figure(f: Dictionary) -> void:
 	for m in f.get("instances", []):
 		for key in ["instance", "skeleton"]:
 			if (m[key] as RID).is_valid():
+				depth.free_instance(m[key])
 				RenderingServer.free_rid(m[key])
 	for w in f.get("weapons", {}).values():
 		if (w.instance as RID).is_valid():
+			depth.free_instance(w.instance)
 			RenderingServer.free_rid(w.instance)
 	f["instances"] = []
 	f["weapons"] = {}
@@ -848,8 +852,10 @@ func _hide_drawn() -> void:
 func _hide_figure(f: Dictionary) -> void:
 	for m in f.get("instances", []):
 		RenderingServer.instance_set_visible(m.instance, false)
+		depth.visible(m.instance, false)
 	for w in f.get("weapons", {}).values():
 		RenderingServer.instance_set_visible(w.instance, false)
+		depth.visible(w.instance, false)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -1488,20 +1494,25 @@ func _draw_figure(t: Dictionary) -> void:
 		var w: Dictionary = weapons.get(key, {})
 		if w.is_empty() or w.what != h.what:
 			if not w.is_empty():
+				depth.free_instance(w.instance)
 				RenderingServer.free_rid(w.instance)
 			w = {"what": h.what, "instance": RenderingServer.instance_create2((wm.mesh as Mesh).get_rid(), scenario)}
+			depth.create(w.instance, (wm.mesh as Mesh).get_rid(), scenario)
 			weapons[key] = w
 		var size := k * float(wm.size)
 		var place := Transform3D(turn.scaled(Vector3(size, size, size)), grip)
 		w["before"] = w.get("now", place) if before_ok and w.has("now") else place
 		w["now"] = place
 		RenderingServer.instance_set_transform(w.instance, place)
+		depth.transform(w.instance, place)
 		_place(w.instance, wm.materials, t)
 		RenderingServer.instance_set_visible(w.instance, true)
+		depth.visible(w.instance, true)
 		shown[key] = true
 	for key in weapons:
 		if not shown.has(key):
 			RenderingServer.instance_set_visible(weapons[key].instance, false)
+			depth.visible(weapons[key].instance, false)
 			(weapons[key] as Dictionary).erase("now")
 	f["drawn_frame"] = now_frame
 
@@ -1515,7 +1526,9 @@ func _skin(f: Dictionary, m: Dictionary, g: Array, root_at: Vector3, t: Dictiona
 			var sk_rid := RenderingServer.skeleton_create()
 			RenderingServer.skeleton_allocate_data(sk_rid, (mesh.binds as PackedInt32Array).size())
 			var inst := RenderingServer.instance_create2((mesh.mesh as Mesh).get_rid(), scenario)
+			depth.create(inst, (mesh.mesh as Mesh).get_rid(), scenario)
 			RenderingServer.instance_attach_skeleton(inst, sk_rid)
+			depth.skeleton(inst, sk_rid)
 			instances.append({"instance": inst, "skeleton": sk_rid})
 		var binds: PackedInt32Array = mesh.binds
 		var poses: Array = mesh.poses
@@ -1527,7 +1540,9 @@ func _skin(f: Dictionary, m: Dictionary, g: Array, root_at: Vector3, t: Dictiona
 			continue                    # between game frames: only the bones move (the order and the box are the frame's)
 		_place(instances[i].instance, mesh.materials, t)
 		RenderingServer.instance_set_visible(instances[i].instance, true)
+		depth.visible(instances[i].instance, true)
 		RenderingServer.instance_set_custom_aabb(instances[i].instance, AABB(root_at - Vector3(120, 120, 120), Vector3(240, 240, 240)))
+		depth.bounds(instances[i].instance, AABB(root_at - Vector3(120, 120, 120), Vector3(240, 240, 240)))
 
 
 # A picture between game frames (main.gd, the display rate above 60): every figure drawn in the last game frame posed T
@@ -1568,6 +1583,7 @@ func tween(t: float) -> void:
 			var wd: Dictionary = f.weapons[wk]
 			if wd.has("now") and wd.has("before"):
 				RenderingServer.instance_set_transform(wd.instance, (wd.before as Transform3D).interpolate_with(wd.now as Transform3D, w))
+				depth.transform(wd.instance, (wd.before as Transform3D).interpolate_with(wd.now as Transform3D, w))
 
 
 const SPRING_PULL := 140.0          # 1/s^2: how hard the pose pulls the weight back
@@ -1629,10 +1645,16 @@ func _place(instance: RID, materials: Array, t: Dictionary = {}) -> void:
 	RenderingServer.instance_set_layer_mask(instance, 1 | OWN_LAYER)
 	for i in materials.size():
 		RenderingServer.instance_set_surface_override_material(instance, i, (materials[i] as Material).get_rid())
+	var depth_ok := not materials.is_empty() and materials.all(func(m): return m is ShaderMaterial and m.shader == armour_shader)
+	depth.allow(instance, depth_ok)
+	if depth_ok:
+		for i in materials.size():
+			depth.surface(instance, i, depth.depth_material(materials[i]).get_rid())
 	if t.has("fit"):
 		# a fitted figure's pieces: over the player's own figure, which is not left out (so has no place of its own in
 		# the list): after the world's draws, depth tested against them - the figure under it and whatever stands in front
 		RenderingServer.instance_set_pivot_data(instance, 1.0e6, false)
+		depth.order(instance, 1.0e6)
 		return
 	# each figure at the place of the first of its own draws the drawer left out (a creature drawn before the leaves over it
 	# stays under them; the first hidden draw of the whole frame may be another figure's); without one this frame (the
@@ -1659,6 +1681,7 @@ func _place(instance: RID, materials: Array, t: Dictionary = {}) -> void:
 	else:
 		order = last_order
 	RenderingServer.instance_set_pivot_data(instance, order + 0.5 if order >= 0.0 else 1.0e6, false)
+	depth.order(instance, order + 0.5 if order >= 0.0 else 1.0e6)
 
 
 func _collect(node: Node, out: Array, found: Dictionary) -> void:
@@ -2414,7 +2437,9 @@ func _draw_fitted(t: Dictionary) -> void:
 	for key in light:
 		RenderingServer.instance_geometry_set_shader_parameter(inst, key, light[key])
 	RenderingServer.instance_set_visible(inst, true)
+	depth.visible(inst, true)
 	RenderingServer.instance_set_custom_aabb(inst, AABB(root_at - Vector3(120, 120, 120), Vector3(240, 240, 240)))
+	depth.bounds(inst, AABB(root_at - Vector3(120, 120, 120), Vector3(240, 240, 240)))
 	f["drawn_frame"] = now_frame
 
 
@@ -2425,7 +2450,9 @@ func _skin_fitted(f: Dictionary, pal: Array) -> void:
 		var sk_rid := RenderingServer.skeleton_create()
 		RenderingServer.skeleton_allocate_data(sk_rid, pal.size())
 		var inst := RenderingServer.instance_create2((fit.mesh as Mesh).get_rid(), scenario)
+		depth.create(inst, (fit.mesh as Mesh).get_rid(), scenario)
 		RenderingServer.instance_attach_skeleton(inst, sk_rid)
+		depth.skeleton(inst, sk_rid)
 		instances.append({"instance": inst, "skeleton": sk_rid})
 	var rid: RID = instances[0].skeleton
 	for q in pal.size():

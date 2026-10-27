@@ -13,7 +13,11 @@
 //     sun with the same wrap as the game's models (gs_draw.gdshaderinc), the haze of atmosphere.gdshaderinc - and a
 //     metal gets the sky round it as its reflection (there are no reflections of Godot's in this scene).
 shader_type spatial;
+#ifdef MODEL_DEPTH
+render_mode unshaded, blend_premul_alpha, depth_draw_always, cull_disabled, shadows_disabled, fog_disabled;
+#else
 render_mode blend_mix, depth_draw_always, cull_disabled, ambient_light_disabled, fog_disabled, specular_schlick_ggx;
+#endif
 
 #include "res://shaders/atmosphere.gdshaderinc"
 
@@ -79,6 +83,10 @@ void fragment() {
 			discard;
 		}
 	}
+#ifdef MODEL_DEPTH
+	ALBEDO = vec3(0.0);
+	ALPHA = 0.0;
+#else
 	ALPHA = 1.0;
 	vec3 base = clamp(a.rgb * gain, vec3(0.0), vec3(1.0));
 	float rough = 0.7;
@@ -150,8 +158,10 @@ void fragment() {
 	vec3 lit = (amb + refl + rim_light) * tint;
 	ALBEDO = base * (1.0 - h) * tint;
 	EMISSION = lit * (1.0 - h) + haze * h;
+#endif
 }
 
+#ifndef MODEL_DEPTH
 void light() {
 	float facing = dot(NORMAL, LIGHT);
 	float wrap = LIGHT_IS_DIRECTIONAL ? mix(clamp(facing * 0.5 + 0.5, 0.0, 1.0), 1.0, sun_wrap) * clamp(facing * 0.5 + 0.75, 0.0, 1.0)
@@ -167,3 +177,5 @@ void light() {
 		SPECULAR_LIGHT += ATTENUATION * LIGHT_COLOR * f0 * d * facing * 0.25;
 	}
 }
+
+#endif

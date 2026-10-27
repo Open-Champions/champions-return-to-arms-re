@@ -19,6 +19,10 @@ void vertex() {
 	v_normal = CUSTOM1.xyz;
 	NORMAL = CUSTOM1.xyz;
 	v_fill = CUSTOM0;
+#ifdef FILL_OPAQUE_BACKGROUND
+	POSITION = PROJECTION_MATRIX * (MODELVIEW_MATRIX * vec4(VERTEX, 1.0));
+	POSITION.z = 0.0; // Forward+ reverse Z, only enabled for background skirts/rims
+#endif
 }
 
 vec3 to_linear(vec3 c) {

@@ -2,7 +2,10 @@ shader_type spatial;
 // sky.gdshader - the sky of scene mode: a sphere round the camera, drawn before everything else of the
 // 3-D surface (project/scene_view.gd makes it; the colours are atmosphere.gdshaderinc's rta_sky).
 // The game's own dome, where a level has one, is drawn over it by the game's own draws.
-render_mode unshaded, cull_disabled, depth_test_disabled, depth_draw_never, shadows_disabled, fog_disabled, blend_premul_alpha, skip_vertex_transform;
+render_mode unshaded, cull_disabled, depth_draw_never, shadows_disabled, fog_disabled, blend_premul_alpha, skip_vertex_transform;
+#ifndef OPAQUE_WORLD
+render_mode depth_test_disabled;
+#endif
 
 #include "res://shaders/atmosphere.gdshaderinc"
 
@@ -17,6 +20,9 @@ void vertex() {
 	v_dir = VERTEX;                                     // the sphere is in the world's axes (z up), centred on the eye
 	POSITION = PROJECTION_MATRIX * vec4(mat3(VIEW_MATRIX) * VERTEX, 1.0);
 	POSITION.z = POSITION.w * 0.5;                      // inside the depth range whatever the planes are
+#ifdef OPAQUE_WORLD
+	POSITION.z = 0.0; // Forward+ reverse Z: only uncovered samples after the opaque prefix
+#endif
 }
 
 vec3 stored(vec3 c) {

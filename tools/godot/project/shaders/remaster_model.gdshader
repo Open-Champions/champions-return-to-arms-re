@@ -16,7 +16,11 @@
 // own streaks), fur's broader and softer; CLOTH and STONE rough and nearly without a highlight.  AUX: r skin, g hair,
 // b/a the strand's doubled angle in the picture; ORM a: fur.
 shader_type spatial;
+#ifdef MODEL_DEPTH
+render_mode unshaded, blend_premul_alpha, depth_draw_always, cull_disabled, shadows_disabled, fog_disabled;
+#else
 render_mode blend_mix, depth_draw_always, cull_disabled, ambient_light_disabled, fog_disabled, specular_schlick_ggx;
+#endif
 
 #include "res://shaders/atmosphere.gdshaderinc"
 
@@ -139,6 +143,10 @@ void fragment() {
 	if (see_behind && alpha > 0.5 && dot(a.rgb, vec3(0.299, 0.587, 0.114)) < 0.18) {
 		discard;
 	}
+#ifdef MODEL_DEPTH
+	ALBEDO = vec3(0.0);
+	ALPHA = 0.0;
+#else
 	ALPHA = 1.0;
 	vec3 base = clamp(a.rgb * gain, vec3(0.0), vec3(1.0));
 	if (has_env) {
@@ -297,8 +305,10 @@ void fragment() {
 	if (debug_view == 1) { EMISSION = has_game ? lg * 0.5 : vec3(1.0, 0.0, 1.0); ALBEDO = vec3(0.0); }
 	if (debug_view == 2) { EMISSION = n_world * 0.5 + 0.5; ALBEDO = vec3(0.0); }
 	if (debug_view == 3) { EMISSION = vec3(skin, hair + fur, metal); ALBEDO = vec3(0.0); }
+#endif
 }
 
+#ifndef MODEL_DEPTH
 void light() {
 	float facing = dot(NORMAL, LIGHT);
 	float wrap = LIGHT_IS_DIRECTIONAL ? mix(clamp(facing * 0.5 + 0.5, 0.0, 1.0), 1.0, sun_wrap) * clamp(facing * 0.5 + 0.75, 0.0, 1.0)
@@ -330,3 +340,5 @@ void light() {
 	}
 	SPECULAR_LIGHT += ATTENUATION * LIGHT_COLOR * spec * spec_amount;
 }
+
+#endif

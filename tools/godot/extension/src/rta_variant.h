@@ -29,6 +29,8 @@ enum : uint32_t {
     // class (er_class, er_class_b; for a fused pair also er_class2*): its texture's own fine detail is replaced by the
     // owner's local Elden Ring material of that class, at world scale, over the texture's own colour (GS_ER)
     V_ER = 1048576,
+    V_OPAQUE = 2097152, // solid Remastered world batch in the engine's opaque pass
+    V_BACKGROUND = 4194304, // ordered sky/dome at far depth, behind promoted opaque surfaces
 };
 
 }  // namespace rta_variant

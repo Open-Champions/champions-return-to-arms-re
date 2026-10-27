@@ -170,6 +170,8 @@ var lamp: RID
 var lamp_instance: RID
 var sky_mesh: SphereMesh
 var sky_material: ShaderMaterial
+var sky_ordered_shader: Shader
+var sky_depth_shader: Shader
 var sky_instance: RID
 var ring_texture: ImageTexture
 var ring_image: Image
@@ -248,7 +250,10 @@ func _ready() -> void:
 	sky_mesh.radial_segments = 48
 	sky_mesh.rings = 24
 	sky_material = ShaderMaterial.new()
-	sky_material.shader = load("res://shaders/sky.gdshader")
+	sky_ordered_shader = load("res://shaders/sky.gdshader")
+	sky_depth_shader = Shader.new()
+	sky_depth_shader.code = sky_ordered_shader.code.replace("shader_type spatial;", "shader_type spatial;\n#define OPAQUE_WORLD")
+	sky_material.shader = sky_ordered_shader
 	drawer.call("set_fill_shader", load("res://shaders/fill.gdshader"), load("res://shaders/fill_skirt.gdshader"))
 	card = Node.new()
 	card.set_script(load("res://card.gd"))
@@ -441,6 +446,11 @@ func before_frame() -> void:
 	# the level's draws gathered into batches, a two-pass chunk drawn as one (rta_scene.cpp, Scene::batch_on); off: each by itself
 	drawer.call("set_scene_option", "batch", 0.0 if String(look.batch) == "off" or OS.get_environment("RTA_BATCH") == "0" else 1.0)
 	drawer.call("set_scene_option", "prepass", 0.0 if String(look.prepass) == "off" or OS.get_environment("RTA_PREPASS") == "0" else 1.0)
+	# Only the proven initial opaque stretch moves ahead of the ordered pass.
+	# Classic keeps its original shader variants and ordering.
+	var opaque_world := not _classic_look_in_force() and OS.get_environment("RTA_OPAQUE_WORLD") != "0" and RenderingServer.get_current_rendering_method() == "forward_plus"
+	drawer.call("set_scene_option", "opaque", 1.0 if opaque_world else 0.0)
+	sky_material.shader = sky_depth_shader if opaque_world else sky_ordered_shader
 	drawer.call("set_scene_option", "fill", 1.0 if in_force.fill else 0.0)
 	for key in ["fill_light", "fill_scale"]:
 		if fill_sent.get(key, -1.0) != float(look[key]):

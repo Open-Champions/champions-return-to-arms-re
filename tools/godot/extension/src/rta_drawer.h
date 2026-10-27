@@ -412,6 +412,7 @@ private:
     void fill_frame(const rtag_frame& f, const Vector3& eye, RID scenario);
     void fill_learn(const rtag_scene* tap, const rtag_draw& d, const rtag_scene_piece* pieces, uint32_t piece_count, const Vector3& eye);
     void fill_order();
+    void fill_opaque_background(bool on);
     void fill_option(const String& name, double value);
     void fill_note_level(float order);
     bool fill_drops(const rtag_frame& f, const rtag_draw& d);

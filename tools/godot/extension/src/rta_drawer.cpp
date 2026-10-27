@@ -144,6 +144,8 @@ RID RtaDrawer::shader_for(uint32_t variant) {
     if (variant & V_SOLID) code += "#define GS_SOLID\n";
     if (variant & V_PREPASS) code += "#define GS_PREPASS\n";
     if (variant & V_ER) code += "#define GS_ER\n";
+    if (variant & V_OPAQUE) code += "#define GS_OPAQUE\n";
+    if (variant & V_BACKGROUND) code += "#define GS_BACKGROUND\n";
     if (stored_colours) code += "#define GS_STORED_COLOURS\n";
     code += shader_code;
     Ref<Shader> shader;
