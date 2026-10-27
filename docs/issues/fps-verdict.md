@@ -1,5 +1,135 @@
 # Frame-rate verdict: Godot Remastered and Classic at the display's own size
 
+## Final verdict on the launcher's build, full screen size (2026-10-27)
+
+Build: the launcher's own `local/godot-r38p8`, rebuilt from `514065f` (origin/main `d00d858` - with the quality governor
+`2c01146`, the opaque promotion `b3eafdd`, the per-level remaster counter `1bb89b3`, the 120 Hz pacing fix `73f789a` and
+the fire1 stutter fixes `528dc0e` - and the governor change below), the way the launcher's build is made:
+`RTA_GODOT_PARTY8=1 RTA_GODOT_OUT=local/godot-r38p8 python3 tools/godot/build.py snapshot --refresh`, then `build.py all`.
+Apple M5 Pro, Godot 4.5.2, Metal Forward+, the built-in display at 120 Hz.
+
+- **Remastered: 60 held in all eleven levels** on the final build, two quiet runs: 59.7-60.0 game frames a second in
+  every level but `wate2c` in one run (below); the slowest second 55-59; picture interval p99 15.7-18.2 ms. The
+  governor keeps **4x MSAA** in nearly every level - 2x for a while in the hub, and in `fearboss` and `nitdung2` in one
+  run each; `arachna1` without MSAA from its opening on (and at 0.90 of the size during the sprite cloud below).
+- **`arachna1` was the one level short of 60** on the build as it was (`d00d858`): 58.0-58.2 in four quiet runs, the
+  slowest second 44-46. Cause and fix below. Now 59.8-59.9, the slowest second 58-59.
+- **`wate2c`, the last level of the route, is the one open point:** 59.4 in one final run, 53.9 in the other (52 and
+  41 in its slowest second); among the candidate's quiet runs 59.4, 59.4, 53.6, 53.9. Not the GPU (its frames 7-9 ms,
+  the governor at 4x without a step); in the slow runs the main thread's own work for the same lists (the same 1,686
+  draws and 418,578 vertices a list) takes 12-13 ms a game frame instead of 7.3 and its processor time a picture
+  rises from 35-52 to 58-67 ms: the same work done more slowly, which is the processor (clock or the kind of core the
+  main thread is on), not more work. The old build, whose governor had left MSAA off for the rest of the session after
+  `arachna1`, held `wate2c` at 59.2-59.8 in four of four runs; whether 4x MSAA for the whole session is what slows the
+  processor late in it (the power the GPU takes) could not be settled: other agents' programs took the machine
+  during the runs meant to settle it. `fire1` showed the same once on the old build (53.8: its first ten seconds).
+- **120 a second: not reached at the display's full size.** The display refreshes 71-111 times a second in these runs,
+  but a picture between two game frames is drawn only while the GPU's time for a game frame stays under 80 % of a
+  refresh (6.7 ms) and comes back below 65 % (5.4 ms); at 3024 x 1964 a game frame takes 6-9 ms of GPU (4x) or
+  6.2-7.4 ms (no MSAA), so the governor holds them back in every level after the first seconds: 1,700-2,000 of about
+  23,000 refreshes in a session were drawn between game frames. The motion is 60 distinct pictures a second; 120 would
+  need each picture in under about 6.7 ms of GPU, which the lighter levels at no MSAA nearly meet (6.2-6.5 ms).
+- **Classic: a steady 60** on the same build (one run, the same eleven levels): 59.9-60.0, the slowest second 58-60.
+
+### How it was measured
+
+As below ("How it was measured"), with the launcher's settings: the launcher (`Play Champions - REMASTERED (new)`)
+runs `tools/godot/run.py` at nice 0 on `local/godot-r38p8`; the portal's Remastered card gives `--edition remastered`
+(chase view, Hardcore, aiming by looking, the new HUD, the look with every feature, the per-level presets, the Elden
+Ring figures, creatures and world layer, 4x MSAA under the governor, display rate auto = 120 Hz), the wide picture
+and a sharpness of 1.0: the 3-D picture at the window's own pixels, which full screen is **3024 x 1964**. The bench
+(`local/fps-final/bench.py`, the hitch-codex route over the same eleven levels in one session) starts the game with
+those options at 3024 x 1964 in a 1512 x 982-point window, muted, not niced; each run started when the load was under
+20 and the GPU idle (results: load 1.9-3.2 at start and end, GPU 0 %).
+
+A real full-screen window could not be measured while the owner works at the screen: it takes a Space of its own,
+and while that Space is not the one shown macOS draws it 2-3 times a second (tried). The test window draws the same
+pixel count with the same settings; it is not held to the display's refresh (light levels refresh up to 145 times a
+second in it), so its refresh counts are an upper bound - the game frames and their intervals are the game's own.
+
+Cells: **game frames/s** (slowest 1 s) · picture interval p50 / p99 / max ms · picture intervals over 16.7 / over 25
+ms · governor (where it spent most of the level -> where it ended; samples x scale).
+
+**Final build** (`514065f`; load at start -> end: `f2-rem-1` 1.9 -> 3.2, `f2-rem-2` 3.2 -> 2.5):
+
+| Level | f2-rem-1 | f2-rem-2 |
+|---|---:|---:|
+| hub | **60.0** (59) · 9.5 / 16.6 / 17.9 · 14 / 0 · 2x@1.00 -> 4x@1.00 | **60.0** (59) · 9.5 / 17.1 / 18.5 · 31 / 0 · 2x@1.00 -> 4x@1.00 |
+| fire1 | **59.7** (55) · 10.0 / 16.5 / 55.5 · 10 / 2 · 4x@1.00 | **59.7** (55) · 12.0 / 18.2 / 59.3 · 41 / 4 · 4x@1.00 |
+| arachna1 | **59.9** (59) · 9.9 / 17.5 / 22.9 · 94 / 0 · 0x@0.90 -> 0x@1.00 | **59.9** (58) · 9.8 / 17.4 / 34.1 · 106 / 1 · 0x@0.90 |
+| water1 | **59.9** (59) · 9.4 / 16.0 / 18.2 · 7 / 0 · 4x@1.00 | **59.9** (59) · 9.5 / 15.7 / 18.2 · 7 / 0 · 4x@1.00 |
+| drunare | **59.7** (58) · 9.4 / 17.0 / 32.0 · 31 / 2 · 4x@1.00 | **59.7** (57) · 9.5 / 16.2 / 35.5 · 9 / 2 · 4x@1.00 |
+| islsm3b | **59.9** (58) · 9.4 / 16.7 / 18.2 · 19 / 0 · 4x@1.00 | **59.9** (59) · 9.4 / 16.1 / 29.5 · 9 / 1 · 4x@1.00 |
+| fearboss | **60.0** (59) · 9.5 / 15.9 / 17.4 · 6 / 0 · 4x@1.00 | **59.9** (59) · 9.3 / 16.1 / 18.2 · 7 / 0 · 2x@1.00 |
+| bossgood | **60.0** (59) · 9.4 / 16.6 / 22.3 · 15 / 0 | **60.0** (59) · 9.4 / 16.9 / 18.2 · 19 / 0 |
+| storm5 | **59.9** (59) · 9.6 / 17.0 / 27.8 · 26 / 1 · 4x@1.00 | **59.9** (57) · 9.8 / 17.4 / 31.9 · 66 / 1 · 4x@1.00 |
+| nitdung2 | **59.8** (58) · 9.7 / 16.7 / 21.6 · 17 / 0 · 4x@1.00 | **59.9** (57) · 9.7 / 15.8 / 19.8 · 10 / 0 · 4x@1.00 -> 2x@1.00 |
+| wate2c | **59.4** (52) · 10.8 / 21.3 / 26.6 · 93 / 2 · 4x@1.00 | **53.9** (41) · 13.7 / 26.6 / 38.7 · 508 / 25 · 4x@1.00 |
+
+**The launcher's build before the change** (`d00d858`; `q-rem-1` 6.3 -> 6.6 with the GPU idle by the gate, `q-rem-2`
+2.9 -> 2.3; two more runs `q-rem-3`, `q-rem-4` gave `arachna1` 58.2 and 58.2, `wate2c` 59.7 and 59.2, `fire1` 58.1
+and 53.8):
+
+| Level | q-rem-1 | q-rem-2 |
+|---|---:|---:|
+| hub | **60.0** (59) · 9.4 / 16.9 / 28.0 · 23 / 1 · 2x@1.00 | **60.0** (59) · 9.5 / 16.8 / 18.1 · 21 / 0 · 2x@1.00 -> 4x@1.00 |
+| fire1 | **59.5** (52) · 9.7 / 18.1 / 49.9 · 47 / 3 · 2x@1.00 | **59.7** (55) · 9.9 / 16.6 / 59.4 · 11 / 2 · 4x@1.00 |
+| arachna1 | **58.0** (46) · 9.1 / 22.2 / 23.3 · 178 / 0 · 0x@0.95 -> 0x@0.90 | **58.2** (44) · 9.8 / 23.4 / 30.8 · 176 / 1 · 0x@1.00 |
+| water1 | **59.9** (58) · 8.6 / 17.1 / 17.9 · 36 / 0 · 0x@0.90 -> 0x@1.00 | **60.1** (59) · 9.3 / 15.7 / 19.9 · 7 / 0 · 0x@1.00 |
+| drunare | **59.8** (56) · 8.7 / 17.4 / 28.5 · 60 / 2 · 0x@1.00 | **59.8** (58) · 9.4 / 16.6 / 34.6 · 14 / 2 · 0x@1.00 |
+| islsm3b | **59.9** (59) · 8.2 / 11.9 / 17.9 · 5 / 0 · 0x@1.00 | **60.0** (59) · 9.4 / 16.4 / 19.3 · 13 / 0 · 0x@1.00 |
+| fearboss | **59.7** (55) · 8.3 / 16.2 / 40.3 · 10 / 3 · 0x@1.00 | **59.9** (59) · 9.3 / 16.0 / 18.1 · 6 / 0 · 0x@1.00 |
+| bossgood | **59.9** (59) · 8.2 / 11.9 / 17.1 · 2 / 0 | **60.0** (59) · 9.4 / 16.5 / 18.2 · 12 / 0 |
+| storm5 | **59.9** (59) · 6.9 / 9.8 / 27.5 · 3 / 1 · 0x@1.00 | **60.0** (59) · 9.6 / 16.9 / 31.7 · 24 / 1 · 0x@1.00 |
+| nitdung2 | **59.8** (58) · 6.9 / 7.5 / 14.6 · 0 / 0 · 0x@1.00 | **59.9** (59) · 9.6 / 16.3 / 25.5 · 14 / 1 · 0x@1.00 |
+| wate2c | **59.4** (56) · 7.0 / 18.4 / 24.1 · 43 / 0 · 0x@1.00 | **59.8** (56) · 10.1 / 18.8 / 23.3 · 56 / 0 · 0x@1.00 |
+
+**Classic, final build** (`f2-cls-1`, load 2.5 -> 1.5; at 60 Hz, so every picture interval is a refresh of 16.7 ms
+or more):
+
+| Level | f2-cls-1 |
+|---|---:|
+| hub | **60.0** (59) · 16.1 / 24.0 / 26.9 · 426 / 2 |
+| fire1 | **59.9** (59) · 15.7 / 24.2 / 44.1 · 438 / 3 |
+| arachna1 | **60.0** (59) · 16.9 / 25.0 / 27.1 · 534 / 11 |
+| water1 | **59.9** (58) · 17.0 / 23.8 / 42.6 · 502 / 4 |
+| drunare | **60.0** (59) · 16.0 / 24.4 / 28.0 · 460 / 3 |
+| islsm3b | **59.9** (59) · 16.1 / 24.3 / 34.2 · 457 / 4 |
+| fearboss | **60.0** (60) · 17.3 / 23.9 / 26.1 · 519 / 1 |
+| bossgood | **60.0** (59) · 17.7 / 24.7 / 28.0 · 595 / 9 |
+| storm5 | **59.9** (59) · 15.6 / 24.4 / 29.1 · 442 / 5 |
+| nitdung2 | **60.0** (60) · 16.8 / 23.4 / 29.1 · 487 / 2 |
+| wate2c | **60.0** (59) · 17.8 / 24.5 / 27.1 · 561 / 4 |
+
+### arachna1: cause and fix
+
+**Cause.** For about five seconds from the end of the level's opening, a cloud of the game's own sprites (two draws
+of 2,382 and 3,876 corners - some 1,000 sprites, alpha-blended and additive, texture 455 of the level - 17 to 120
+units from the eye) lies around the chase camera and covers the picture many times over. At 3024 x 1964 the GPU's
+time for a game frame went from 6-8 ms to 22-38 ms (Metal System Trace: the world's transparent pass 2 -> 14 ms a
+frame, a second render pass 0 -> 7 ms). Found by elimination - none of the look's parts (lights, shadows, sun, lamp,
+fog, bloom, sky, fill, foliage, contact, cleaner models, remaster, the Elden Ring figures and world, the HUD, the art
+pack, the depth pre-pass, the backdrop) changed it, each taken away by itself - then by the frame's draws with their
+screen boxes, and by taking those sprites away in a test shader (the time back to 7 ms). Before, the governor met it
+at 4x and stepped 4x -> 2x -> none at 1.5 s a step: 42-50 game frames a second for two to three seconds.
+
+**Fix** (`gpu_quality.gd`, `scene_view.gd`; `514065f`). (1) Over 1.3 x its budget (14 ms) for 0.2 s the governor goes
+to native pixels without MSAA at once, the rung its steps reach anyway. (2) A new level starts from the requested
+quality: before, what one heavy level forced stayed for the rest of the session (the way back up asks for 8 s of a
+cautious estimate's headroom, which a level without MSAA at 6-7 ms never shows), so every level after `arachna1` ran
+without MSAA. Nothing else changes: the same rungs, the same budget; Classic does not use the governor.
+
+**Tried and left out:** leaving out a sprite's pixels that change nothing (under half a step of an 8-bit colour after
+the near fade): no measurable gain with the Elden Ring layer on (22.1 -> 22.2 ms) - the cloud's pixels are faint, not
+empty. Drawing such sprites at a lower resolution would cut the cost itself; not done (a change of the picture).
+
+Tooling (local, not tracked): `local/fps-final/` (`bench.py`, `stats.py`, `series.py`, `tools/` - `spike.py`,
+`timeline.py`, `proc.py`, `table.py`, `trace.sh`, `variants.sh`, `tprof.sh`; runs `q-rem-*` the build before,
+`f2-*` the final build, `c-rem-*` the candidate, `v*`/`p-*`/`t-*` the diagnostics), staged copies `local/fps-cand`,
+`local/fps-base`, `local/fps-dbg`.
+
+## Earlier verdict (2026-10-26, before the governor)
+
 2026-10-26. Build `local/godot-r38p8`: origin/main `dc7b4cf` (model remaster round 2, world sweep, hub gate 8, the
 view.gd brightness fix, the hitch fixes, the black-picture fix, presets, the fpview fix, the boss-music level fix
 `57b769e`, the 8-player phase 3 `6902c8c` and `dc7b4cf`) with the two fixes below, built as the launcher's build for
@@ -7,7 +137,7 @@ rooms of up to eight: `RTA_GODOT_PARTY8=1 RTA_GODOT_OUT=local/godot-r38p8 python
 The same tree without the party8 switch is `local/godot-r38` (the first measurements). Apple M5 Pro, Godot 4.5.2,
 Metal Forward+, the built-in 120 Hz display.
 
-## Verdict
+### Verdict
 
 - **Classic: a steady 60.** Every level of the eleven, both runs: 59.9-60.0 game frames a second, the slowest second
   58-60, 0-7 intervals over 25 ms in a level (the longest 26-50 ms, at a level's first frames).
