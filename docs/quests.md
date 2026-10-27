@@ -356,3 +356,12 @@ prefix match (including `hub2` not changing the act you are in), the quest-list
 clear, and the flag-39 keep list. `setCFlag` does not belong in that list.
 State 4's countdown was not followed to 0, and a tick with two buttons held
 was not tested. Neither is on the path that writes the pending level.
+
+### Executed follow-up: hub dialog predicates (2026-10-27)
+
+**Executed, bounded:** [mission-unlocks](spec/mission-unlocks.md) composes one
+shipped hub dialog with the original script VM and mission writer. It records
+all 31 node conditions and the first/second-offer choice paths, including active
+quest-variable priority and admission suppressors. It does not establish the
+whole prerequisite graph, first-act completion, physical interaction, or other
+turn-ins. The census above retains those limitations.
