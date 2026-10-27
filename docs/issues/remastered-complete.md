@@ -32,7 +32,7 @@ Evidence under `local/godot-remaster-check/` (not tracked): the build, routes, l
 | [x] | Remastered online, 2 copies through the portal | **Ran** (`online/r2a`): two portals, both Remastered by their cards, friends, room, Start; hub -> `drunare` -> `valor` -> `arachna1`, deaths and the reload; **6,467 ticks, no shared column differs** (the cut-scene clock column `cutf` left out: the front end's title fly-over clock, as `native-cutscenes.md` notes); copy A crashed at quit (bug 4) |
 | [x] | Remastered online, 3 and 4 copies | **Ran** (`online/r3a`, `r4a`: Godot copies with the Remastered options on the command line, launched by `n2party.py` through a service on this Mac): 3 copies 6,131 / 6,131 / 6,143 ticks every pair in step, 4 copies 6,038-6,045 ticks every pair in step; hub -> `drunare` -> `valor` -> `arachna1`, 6 and 8 deaths, 2 reloads after everybody died; Hardcore, aiming and hold-to-skip "ON (a room's game)" on every copy. Then **through the portals** (section 10.6): four portals, each Remastered by its card, in one room of a rendezvous service on 127.0.0.1 (friends, an invitation, two in by the room's code, the game's own character screens, Start): 6,344-6,352 ticks, every pair in step through hub -> `drunare` -> `valor` -> `arachna1`; three portals the same |
 | [x] | Long sessions draw cleanly | **Ran** after the fix (section 9): one Remastered session through the portal over 81 levels and both paths to `endgood`, and a Classic session over the 54 levels of the good path - no black build-up (bug 1, fixed) |
-| [ ] | A person playing it through | never done |
+| [ ] | A person playing it through | never done by a person; played as a player by a scripted player (section 11, [playtest-remastered](playtest-remastered.md)): the hub's dialogue, the portal and the mission map, blood1's story to its exit, strife's stages, Rallos Zek killed, the pause menu's exit, Acts 2-12 visited |
 
 ## 1. How it was run
 
@@ -338,3 +338,18 @@ left out (`cmp.py`).
 
 Every copy quit cleanly (exit 0, 10 of 10), no script or shader error. `r3` and `r4` printed "unknown option --party"
 from the game scene; `main.gd` now knows it (`r3b`: none).
+
+## 11. Played as a player (Ran, 2026-10-27)
+
+[playtest-remastered.md](playtest-remastered.md): the portal's Remastered choice played the way a player plays it -
+the hub's dialogue and portal ring, the game's own mission map, blood1's arrival scene, Natasla's choice and the good
+door, the level's own exits, Hardcore fights with deaths, drops, reloads, a save at a save point and a load from the
+title screen, strife's stages, Rallos Zek (Act 1's boss) killed with his boss music handed back, the pause menu's exit
+to the mission map; Acts 2-12 visited (45 levels, the five views in each, 14 exits used by the use button); rooms of
+two and four portals and of six Godot copies in step on a service on 127.0.0.1; the master bus clean. A driver that
+reads the game's memory and steers by the stick (the script runner's new `follow`); teleports and test aids said
+where used. Fixed: the game's menus drawn under our figures and pieces (render priority of the 2-D layer), the HUD's
+markers over card screens, cut scenes at 120 Hz alternating black and stale pictures, the 4:3 mission map's sides in
+a wide picture, two HUD overlaps, the portal's script error in the test window, the test window's party-size answer.
+Open: the hub's sky above its dome, pale Elden Ring soldiers, speckled demi-human fur, Natasla's round inset, the first
+pause picture without the player, the frame rate on a loaded machine.
