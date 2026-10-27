@@ -70,9 +70,12 @@ func _process(_delta: float) -> void:
 			queue_redraw()
 		return
 	var slot: int = int(hud.me.get("slot", 0))
-	if slot < 0 or slot > 3:
+	if slot < 0 or slot > 7:
 		return
-	var a := STATS + slot * 0x80
+	# players 5..8 (a game of five to eight): the same parts in the second block (soulscombat.cpp SOULS_HIGH 0xE2100)
+	var hi := 0x1900 if slot >= 4 else 0
+	var lo := slot % 4
+	var a := STATS + hi + lo * 0x80
 	open = _peek(a + 0x24) != 0
 	if not (open or asked or _peek(0x1c0) != 0):
 		if was:
@@ -86,7 +89,7 @@ func _process(_delta: float) -> void:
 	var unspent: int = _peek(a + 0x1c)
 	var slots: int = clampi(_peek(a + 0x2c), 0, 9)
 	var cls: int = clampi(_peek(a + 0x70), 0, 6)
-	var w := WPN + slot * 0x60
+	var w := WPN + hi + lo * 0x60
 	lines.append(["%s  LEVEL %d  POINTS %d" % [CLASS_WORDS[cls], level, unspent], -1])
 	lines.append(["%-13s %3d   HP %.0f/%.0f" % [ATTRS[0], v[0], hud.machine.peek_f32(BASE + 0x1d0), hud.machine.peek_f32(BASE + 0x1d4)], -1])
 	lines.append(["%-13s %3d   MANA %.0f/%.0f" % [ATTRS[1], v[1], hud.machine.peek_f32(BASE + 0x1d8), hud.machine.peek_f32(BASE + 0x1dc)], 0])
@@ -101,7 +104,7 @@ func _process(_delta: float) -> void:
 		_grade(grades, 16), _peek(w + 0x48)], -1])
 	var sg: int = _peek(a + 0x4c)
 	lines.append(["SPELLS  INT %s  FTH %s  %d%%   SLOTS %d OF %d (*)" % [_grade(sg, 0), _grade(sg, 8), _peek(a + 0x48), _peek(a + 0x74), slots], -1])
-	var c := COSTS + slot * 0x40
+	var c := COSTS + hi + lo * 0x40
 	var attuned: int = _peek(a + 0x34)
 	var n := 0
 	for j in range(15):

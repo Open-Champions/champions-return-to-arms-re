@@ -167,7 +167,7 @@ uint32_t drawn(const uint8_t* ram) {
         if (!invert34(p0, r.inverse0)) continue;
         r.state = rd32(ram, buffer + 0x610);
         if (r.state && in_ram(r.state, 0x108)) {
-            const int tracks = (int8_t)ram[(r.state & 0x1FFFFFF) + 4];
+            const int tracks = (int8_t)ram[(r.state & (RAM - 1)) + 4];
             if (tracks >= 1 && tracks <= 8) {
                 r.clip = rd32(ram, r.state + 8 + (tracks - 1) * 0x20);       // the top track's clip: its skeleton is the pose's (8.1 step 7)
                 if (in_ram(r.clip, 0x50)) {
@@ -176,7 +176,7 @@ uint32_t drawn(const uint8_t* ram) {
                     if (joints >= r.count && joints <= 64 && in_ram(bind, joints * 8) && in_ram(depth, joints)) {
                         r.skeleton = joints;
                         for (int j = 0; j < joints; j++) {
-                            r.depth[j] = ram[(depth & 0x1FFFFFF) + j];
+                            r.depth[j] = ram[(depth & (RAM - 1)) + j];
                             for (int k = 0; k < 3; k++) r.bind[j][k] = rd16(ram, bind + j * 8 + k * 2);
                         }
                         g_with_structure++;
@@ -186,8 +186,9 @@ uint32_t drawn(const uint8_t* ram) {
         }
         batch->records.push_back(r);
     }
-    for (int slot = 0; slot < 4; slot++) {
-        const uint32_t record = party8_at(G_PLAYERS + (uint32_t)slot * REC);    // a table moved for eight players (moved.h)
+    const int slots = g_party8_wide ? 8 : 4;        // a game of five to eight (moved.h): players 5..8 too
+    for (int slot = 0; slot < slots; slot++) {
+        const uint32_t record = party8_at(G_PLAYERS) + (uint32_t)slot * REC;    // a table moved for eight players: slots 4..7 past the old end (moved.h)
         const uint32_t object = rd32(ram, record + REC_OBJECT);
         if (!object || !in_ram(object, 0x600) || rd32(ram, object + O_VTABLE) != VT_PLAYER) continue;
         rtag_skeleton_player p;
@@ -330,8 +331,10 @@ void fill(const Frame& f, rtag_skeletons& out) {
     out.poses_seen = f.poses_seen;
     out.poses_matched = f.poses_matched;
     if (size >= offsetof(rtag_skeletons, players) + sizeof out.players) {
-        out.player_count = (uint32_t)std::min<size_t>(f.players.size(), 4);
-        for (uint32_t i = 0; i < out.player_count; i++) out.players[i] = f.players[i];
+        // players 5..8 (a game of five to eight) only for a host whose structure has room for them
+        const bool more = size >= offsetof(rtag_skeletons, players_more) + sizeof out.players_more;
+        out.player_count = (uint32_t)std::min<size_t>(f.players.size(), more ? 8 : 4);
+        for (uint32_t i = 0; i < out.player_count; i++) (i < 4 ? out.players[i] : out.players_more[i - 4]) = f.players[i];
     }
 }
 

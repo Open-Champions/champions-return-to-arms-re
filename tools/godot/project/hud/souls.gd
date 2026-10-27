@@ -97,24 +97,27 @@ func _process(_delta: float) -> void:
 			queue_redraw()
 		return
 	var slot: int = int(hud.me.get("slot", 0))
-	if slot < 0 or slot > 3:
+	if slot < 0 or slot > 7:
 		return
+	# players 5..8 (a game of five to eight): the same parts in the second block (soulscombat.cpp SOULS_HIGH 0xE2100)
+	var hi := 0x1900 if slot >= 4 else 0
+	var lo := slot % 4
 	on = true
 	if _sheet != null and _sheet.get("hud") == null:
 		_sheet.set("hud", hud)
 	var most := STAMINA_MAX
-	if _peek(4) >= 4 and _peek(0x600 + slot * 0x80 + 0x38) > 0:
-		most = float(_peek(0x600 + slot * 0x80 + 0x38))
-	stamina = clampf(float(_peek(0x40 + slot * 0x40)) / most, 0.0, 1.0)
-	flags = _peek(0x40 + slot * 0x40 + 8)
+	if _peek(4) >= 4 and _peek(0x600 + hi + lo * 0x80 + 0x38) > 0:
+		most = float(_peek(0x600 + hi + lo * 0x80 + 0x38))
+	stamina = clampf(float(_peek(0x40 + hi + lo * 0x40)) / most, 0.0, 1.0)
+	flags = _peek(0x40 + hi + lo * 0x40 + 8)
 	shown = lerpf(shown, stamina, 0.35)
-	flasks = _peek(EXT + slot * 0x40)
+	flasks = _peek(EXT + hi + lo * 0x40)
 	flask_max = maxi(flask_max, flasks)
 	drop = _peek(0x19c) != 0
 	if drop:
-		var e := BASE + EXT + slot * 0x40
+		var e := BASE + EXT + hi + lo * 0x40
 		drop_at = Vector3(hud.machine.peek_f32(e + 0x18), hud.machine.peek_f32(e + 0x1c), hud.machine.peek_f32(e + 0x20) + 20.0)
-	var w := WPN + slot * 0x60
+	var w := WPN + hi + lo * 0x60
 	var cls: int = clampi(_peek(w), 0, CLASSES.size() - 1)
 	var level: int = _peek(w + 0x10)
 	var grades: int = _peek(w + 0x14)
@@ -144,8 +147,8 @@ func _process(_delta: float) -> void:
 		upgrade_line = ("UPGRADE TO +%d: %d GOLD, %d WHETSTONE%s  (HOLD L3 + USE)" % [level + 1, gold, mats, "" if mats == 1 else "S"]) if gold > 0 else "FULLY UPGRADED"
 	level_line = ""
 	if _peek(4) >= 4:
-		var points: int = _peek(0x600 + slot * 0x80 + 0x1c)
-		if _peek(w + 0x2c) != 0 and _peek(0x600 + slot * 0x80 + 0x24) == 0:
+		var points: int = _peek(0x600 + hi + lo * 0x80 + 0x1c)
+		if _peek(w + 0x2c) != 0 and _peek(0x600 + hi + lo * 0x80 + 0x24) == 0:
 			level_line = "CHARACTER: HOLD L3 + L2" + ("  (POINTS TO SPEND)" if points > 0 else "")
 		elif points > 0:
 			level_line = "LEVEL UP: %d POINT%s - SPEND THEM AT A SAVE POINT" % [points, "" if points == 1 else "S"]

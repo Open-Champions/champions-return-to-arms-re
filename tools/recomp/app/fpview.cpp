@@ -670,7 +670,7 @@ const char* fallback_reason(u32& camera, u32& object, int& slot) {
     if (alive < 1) return "no local player alive";
     if (alive > 1) return "more than one local player";
     slot = (s32)W(G_LOCAL_ALIVE);
-    if (slot < 0 || slot > 3) return "no local player";
+    if (slot < 0 || slot > (g_party8_wide ? 7 : 3)) return "no local player";     // 5..8: a game of five to eight (moved.h)
     object = W(party8_at(G_PLAYER_OBJECT) + (u32)slot * PLAYER_STRIDE);   // moved.h: slots 4..7 past the old end
     if (!in_ram(object, 0x600)) return "no player object";
     return nullptr;
@@ -751,7 +751,7 @@ bool begin_pass(Ctx* c) {
     in.facing = wrap_deg(in.yaw - turn);
     in.facing_dir = v3(std::cos(in.facing * DEG), std::sin(in.facing * DEG), 0);
     u32 pad_slot = W(at(camera) + CAM_PAD_SLOT);
-    if (pad_slot > 3) pad_slot = (u32)slot;
+    if (pad_slot > (g_party8_wide ? 7u : 3u)) pad_slot = (u32)slot;
     in.stick_x = F(party8_at(G_PADS) + pad_slot * PAD_STRIDE + PAD_RX);     // moved.h
     in.stick_y = F(party8_at(G_PADS) + pad_slot * PAD_STRIDE + PAD_RY);
     u32 ticks = v.tick - g_last_tick;

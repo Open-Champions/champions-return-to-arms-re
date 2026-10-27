@@ -192,6 +192,40 @@ struct Hooks {
     }
 } g_hooks;
 
+// ---- the inventory's item lists (inventory_pollResources 0x1bfbc8) --------------------------------------------------
+// The inventory resource holds one item-list block per local player: 0x23988 bytes each from the pointer at 0x4ebbb0
+// (resource + 0x300000), four of them (the function clears four), and the inventory's textures at resource + 0x400000.
+// A player 5..8 indexes past the four: player 8's block would run 0x1cc40 bytes into the textures.  Every reader takes
+// the block as pointer + slot x 0x23988 and only for a local player (net_isLocalPlayer 0x13e150 first), and in a room
+// a machine has one local player.  So in a game of five to eight a machine whose player is 5..8 is given the pointer
+// four blocks lower: its block is then the one player slot - 4 would have used - inside the cleared four, on a machine
+// where that player is not local.  Nothing in any other game (the wrapper only calls the game's function).
+const u32 INV_POLL = 0x1bfbc8, INV_LISTS = 0x4ebbb0, INV_BLOCK = 0x23988;
+const u32 SETTINGS_MY_SLOT = 0x402a30 + 9;      // the launch's settings block +9: this machine's player slot (net2/launch.cpp)
+RecompFn g_inv_orig = nullptr;
+u32 g_inv_given = 0, g_inv_shifts = 0;
+u32 rd_u32(u32 a) { u32 v = 0; a &= 0x1FFFFFFF; if (g_ram && a <= RAM_SIZE - 4) memcpy(&v, g_ram + a, 4); return v; }
+void w_inventory_poll(Ctx* c) {
+    g_inv_orig(c);
+    if (!g_party8_wide || !g_ram) return;
+    const u32 at = party8_at(SETTINGS_MY_SLOT) & 0x1FFFFFFF;
+    const int mine = at < RAM_SIZE ? g_ram[at] : 0;
+    const u32 lists = rd_u32(INV_LISTS);
+    if (mine < 4 || mine > 7 || lists == 0 || lists == g_inv_given) return;
+    g_inv_given = lists - 4 * INV_BLOCK;
+    memcpy(g_ram + INV_LISTS, &g_inv_given, 4);
+    g_inv_shifts++;
+    fprintf(stderr, "party8: the inventory's item lists of player %d at %08x (the block of player %d, cleared, not local here)\n", mine + 1,
+            g_inv_given + (u32)mine * INV_BLOCK, mine - 3);
+}
+void install_inventory() {
+    static bool done = false;
+    if (done || !available()) return;
+    done = true;
+    g_inv_orig = rt_replace_function(INV_POLL, w_inventory_poll);
+    if (!g_inv_orig) fprintf(stderr, "party8: inventory_pollResources not found: players 5..8 keep the game's item-list blocks\n");
+}
+
 void move_back() {
     if (!g_moved) return;
     if (g_party8_wide) set_wide(0);
@@ -340,6 +374,7 @@ void blank(uint64_t number) {
         // "--opt party8=1" (or =poison): the tables are moved at the first blank, before the game has made a pointer into them
         first = false;
         if (asked()) want(true, strstr(rt_option("party8"), "poison") != nullptr);
+        if (asked()) install_inventory();       // a copy started for rooms of up to eight (the wrapper does nothing in four)
     }
     if (g_ram && getenv("PARTY8_EQDUMP") && number == strtoull(getenv("PARTY8_EQDUMP"), nullptr, 0)) eq_dump();
     if (g_ram && ((g_party8_wide && !(getenv("PARTY8_HEAPCHECK") && !strcmp(getenv("PARTY8_HEAPCHECK"), "0"))) ||
@@ -362,8 +397,8 @@ std::string command(const std::string& text) {
     }
     if (w == "off") { want(false); return "party8: the tables move back at the next frame"; }
     char out[256];
-    snprintf(out, sizeof out, "party8: %s, %u tables, %s; moved %u times, back %u times", available() ? "relocations present" : "no relocations",
-             g_reloc_count, g_moved ? "moved" : "where the game has them", g_moves, g_backs);
+    snprintf(out, sizeof out, "party8: %s, %u tables, %s; moved %u times, back %u times; inventory lists moved down %u times", available() ? "relocations present" : "no relocations",
+             g_reloc_count, g_moved ? "moved" : "where the game has them", g_moves, g_backs, g_inv_shifts);
     return out;
 }
 

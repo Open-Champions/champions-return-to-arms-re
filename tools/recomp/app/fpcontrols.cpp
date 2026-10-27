@@ -168,7 +168,7 @@ Body find_body() {
     b.net = (int8_t)B(G_NETWORK_MODE) != 0;
     s32 alive = (s32)W(G_LOCAL_ALIVE_COUNT);
     b.slot = alive >= 1 ? (s32)W(G_LOCAL_ALIVE) : 0;
-    if (b.slot < 0 || b.slot > 3) return b;
+    if (b.slot < 0 || b.slot > (g_party8_wide ? 7 : 3)) return b;     // 5..8: a game of five to eight (moved.h)
     u32 record = party8_at(G_PLAYERS) + (u32)b.slot * PLAYER_STRIDE;
     b.real = W(record + REC_OBJECT);
     if (!ok(b.real, 0x590)) return b;
@@ -372,9 +372,9 @@ void update_hud(uint64_t blank, const Body& b, bool steer, int heading_units, fl
 
     // something usable in reach: the game's own prompt (Player_interact 0x1b2640 fills it from the nearest usable
     // object in a box of 48 round the player, whatever way the player faces), and that object found again here
-    s32 fade = (s32)W(G_PROMPT_FADE + (u32)b.slot * 4);
+    s32 fade = (s32)W(party8_at(G_PROMPT_FADE) + (u32)b.slot * 4);
     h.usable_fade = fade;
-    h.usable_kind = (int)W(G_PROMPT_KIND + (u32)b.slot * 4);
+    h.usable_kind = (int)W(party8_at(G_PROMPT_KIND) + (u32)b.slot * 4);
     float best = 1e7f;
     for (int k = 0; k < count; k++) {
         const Seen& s = seen[k];
@@ -387,11 +387,11 @@ void update_hud(uint64_t blank, const Body& b, bool steer, int heading_units, fl
             h.usable_bearing = d2 > 0.01f ? wrap_deg(h.look_heading - std::atan2(dy, dx) * 180.0f / 3.14159265f) : 0;
         }
     }
-    h.usable = fade > 0 && H(G_PROMPT_TEXT + (u32)b.slot * 0x200) != 0;
+    h.usable = fade > 0 && H(party8_at(G_PROMPT_TEXT) + (u32)b.slot * 0x200) != 0;
     if (h.usable) {
         int n = 0;
         for (u32 k = 0; k < 95; k++) {
-            u16 ch = H(G_PROMPT_TEXT + (u32)b.slot * 0x200 + k * 2);
+            u16 ch = H(party8_at(G_PROMPT_TEXT) + (u32)b.slot * 0x200 + k * 2);
             if (!ch) break;
             h.usable_text[n++] = (ch >= 0x20 && ch < 0x7f) ? (char)ch : '?';
         }

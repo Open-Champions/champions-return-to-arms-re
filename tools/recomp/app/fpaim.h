@@ -41,7 +41,7 @@ struct Ctx;
 namespace fpaim {
 
 // ---- the block in guest memory (first megabyte: tools/recomp/soak 0xE0000-0xE004F, Hardcore mode
-// 0xE0800-0xE147F: soulscombat.h BLOCK_SIZE; aiming 0xE1800-0xE193F; cutscenes 0xE1C00: cinematic.h; party scaling 0xE2000: partyscale.h) ----
+// 0xE0800-0xE147F: soulscombat.h BLOCK_SIZE; aiming 0xE1800-0xE193F and 0xE1A00-0xE1A7F (players 5..8); cutscenes 0xE1C00: cinematic.h; party scaling 0xE2000: partyscale.h) ----
 const uint32_t AIM_BASE = 0xE1800;
 const uint32_t AIM_MAGIC = 0x314d4941;      // "AIM1"
 // header: +0 magic, +4 version (1), +8 mode (1 on), +0xc aim messages applied, +0x10 projectiles aimed
@@ -51,6 +51,9 @@ const uint32_t AIM_MAGIC = 0x314d4941;      // "AIM1"
 //   +0x14 its pitch          +0x18 its class (index of CLASSES + 1)   +0x1c its speed (f32)
 // local (per machine; not simulation): +0x100 the bytes of the message being sent
 const uint32_t AIM_SLOT = 0x40, AIM_SLOT_SIZE = 0x20;
+// players 5..8 of a game of five to eight (docs/issues/native-8-players.md): the same per-player parts in a second
+// block (guestmap.h), slot - 4 x 0x20 from AIM_HIGH; never touched in a game of one to four
+const uint32_t AIM_HIGH = 0xE1A00, AIM_HIGH_SIZE = 4 * AIM_SLOT_SIZE;
 
 // ---- from the application ----
 void want(bool on);                     // "combat.aim = look | off", "--aim look"

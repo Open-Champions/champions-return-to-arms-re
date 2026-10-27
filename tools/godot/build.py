@@ -86,7 +86,7 @@ EXPORTS = ['rtag_api_version', 'rtag_has', 'rtag_start', 'rtag_set_pad', 'rtag_s
            'rtag_memory', 'rtag_fields', 'rtag_info', 'rtag_ended', 'rtag_exit_code', 'rtag_stop', 'rtag_set_option',
            'rtag_controls_hud', 'rtag_mouse', 'rtag_mouse_button', 'rtag_fill_get', 'rtag_texture_names',
            'rtag_report_begin', 'rtag_report_finish', 'rtag_build_line', 'rtag_report_told', 'rtag_skeletons_get',
-           'rtag_frame_age_ms', 'rtag_frame_since_release_ms', 'rtag_release', 'rtag_film_now']
+           'rtag_frame_age_ms', 'rtag_frame_since_release_ms', 'rtag_release', 'rtag_film_now', 'rtag_memory_size', 'rtag_moved_get']
 # A room of our own (tools/recomp/net2/session.h, game.h): the fix-set library carries the one copy of net2 in the
 # process - the session client, the carrier of the game's datagrams and the direct launch - and hands out its plain-C
 # functions under their own names, for the portal (docs/issues/native-rendezvous.md 5.1).

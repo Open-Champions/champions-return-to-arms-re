@@ -18,6 +18,7 @@
 static_assert(guestmap::at(partyscale::PARTY_BASE).hi >= partyscale::PARTY_BASE + 0x80, "partyscale.h: PARTY_BASE is not in guestmap.h");
 static_assert(guestmap::at(soulscombat::SOULS_BASE).hi == soulscombat::SOULS_BASE + 0xC80, "soulscombat.h: SOULS_BASE is not in guestmap.h");
 static_assert(guestmap::at(fpaim::AIM_BASE).hi != 0 && fpaim::AIM_SLOT + 4 * fpaim::AIM_SLOT_SIZE <= 0x100, "fpaim.h: AIM_BASE is not in guestmap.h");
+static_assert(guestmap::at(fpaim::AIM_HIGH).hi >= fpaim::AIM_HIGH + fpaim::AIM_HIGH_SIZE, "fpaim.h: AIM_HIGH (players 5..8) is not in guestmap.h");
 static_assert(guestmap::at(cinematic::CINE_BASE).hi >= cinematic::CINE_BASE + cinematic::CINE_HOLD + 8 * 4, "cinematic.h: CINE_BASE is not in guestmap.h");
 
 namespace partyscale {

@@ -5,8 +5,14 @@
 
 #include <godot_cpp/core/class_db.hpp>
 
-// the reader itself: one source for this extension and for the native application
+// the reader itself: one source for this extension and for the native application.  The extension does not know at
+// build time how much memory the library has (32 MB, or 64 MB built for rooms of up to eight: rtag_memory_size) nor
+// where the tables sized for four are while they are moved (rtag_moved_get): both are taken from the library at every
+// update, into the reader's own copies (rt/ramsize.h RAM_SIZE, rt/moved.h g_party8_delta / spans / wide).
+static uint32_t g_library_ram_size = 0x02000000u;
+#define RAM_SIZE g_library_ram_size
 #include "../../../recomp/app/gamestate.cpp"
+#undef RAM_SIZE
 
 using namespace godot;
 
@@ -18,7 +24,21 @@ RtaGameState::RtaGameState() {
 RtaGameState::~RtaGameState() { rta_gs_destroy(reader); }
 
 bool RtaGameState::update(Object* machine) {
-    const uint8_t* ram = (machine && rta_library().loaded) ? rta_library().rtag_memory() : nullptr;
+    const RtaLibrary& lib = rta_library();
+    const uint8_t* ram = (machine && lib.loaded) ? lib.rtag_memory() : nullptr;
+    if (ram) {
+        const uint32_t size = lib.rtag_memory_size ? lib.rtag_memory_size() : 0;
+        g_library_ram_size = size >= 0x02000000u ? size : 0x02000000u;
+        rtag_moved moved{};
+        if (lib.rtag_moved_get && lib.rtag_moved_get(&moved) && moved.tables == (uint32_t)PARTY8_TABLES && moved.delta && moved.spans) {
+            g_party8_spans = moved.spans;
+            g_party8_delta = moved.delta;
+            g_party8_wide = moved.wide;
+        } else {
+            g_party8_delta = nullptr;
+            g_party8_wide = 0;
+        }
+    }
     state = rta_gs_update(reader, ram);
     return ram != nullptr;
 }

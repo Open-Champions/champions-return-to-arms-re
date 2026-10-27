@@ -384,9 +384,10 @@ func _player_slot_of(state: int) -> int:
 		return int(_slot_cache[state])
 	var slot := -1
 	var owner := state - O_ANIM
-	if state != 0 and owner >= 0x100000 and owner < 0x2000000 and int(machine.peek_u32(owner + O_VTABLE)) == VT_PLAYER:
+	# (64 MB: a copy started for rooms of up to eight has its heap past 32 MB - peek_u32 reads the library's whole memory)
+	if state != 0 and owner >= 0x100000 and owner < 0x4000000 and int(machine.peek_u32(owner + O_VTABLE)) == VT_PLAYER:
 		var k := int(machine.peek_u32(owner + P_SLOT))
-		if k >= 0 and k < 4:
+		if k >= 0 and k < 8:                # 5..8: a game of five to eight (docs/issues/native-8-players.md)
 			slot = k
 	_slot_cache[state] = slot
 	return slot
@@ -1908,8 +1909,8 @@ func _creature_table() -> ConfigFile:
 var identities := {}                # state -> identity (checked again by its virtual table each frame)
 func _identity(p: Dictionary) -> Dictionary:
 	var cfg := _creature_table()
-	var obj := (int(p.state) - 0x114) & 0x1ffffff
-	var vt := int(machine.peek_u32(obj + 0x48)) & 0x1ffffff
+	var obj := (int(p.state) - 0x114) & 0x3ffffff
+	var vt := int(machine.peek_u32(obj + 0x48)) & 0x3ffffff
 	var known: Dictionary = identities.get(int(p.state), {})
 	if not known.is_empty() and int(known.vtable) == vt:
 		return known
@@ -1917,7 +1918,7 @@ func _identity(p: Dictionary) -> Dictionary:
 	var rec := ""
 	var family: Array = []
 	if cls != "":
-		var rec_at := int(machine.peek_u32(obj + 0x34)) & 0x1ffffff
+		var rec_at := int(machine.peek_u32(obj + 0x34)) & 0x3ffffff
 		rec = machine.peek_string(rec_at, 32) if rec_at != 0 else ""
 		if rec != "" and cfg.has_section_key("families", rec):
 			family = cfg.get_value("families", rec)
@@ -2439,7 +2440,7 @@ func _skin_fitted(f: Dictionary, pal: Array) -> void:
 func _game_tint(state: int) -> Vector4:
 	if machine == null or state == 0:
 		return Vector4(0, 0, 0, 1)
-	var c := (state - 0x114) & 0x1ffffff                # the creature (its animation state at +0x114, animation.md 2.1)
+	var c := (state - 0x114) & 0x3ffffff                # the creature (its animation state at +0x114, animation.md 2.1)
 	var flags := int(machine.peek_u32(c + 0xc))
 	if flags & 0x100:
 		return Vector4(0, 0, 0, -1)                     # the one-frame white hit flash: ambient (255, 255, 255)
@@ -2514,7 +2515,7 @@ func _game_light(state: int, at: Vector3) -> Dictionary:
 			if a < 0 or b < 0 or a >= 90 or b >= 90:
 				continue
 			for idx in [b * 90 + a, a * 90 + b]:
-				var node := int(machine.peek_u32(LIGHT_GRID + 4 * idx)) & 0x1ffffff
+				var node := int(machine.peek_u32(LIGHT_GRID + 4 * idx)) & 0x3ffffff
 				var guard := 0
 				while node != 0 and guard < 64:
 					guard += 1
@@ -2535,7 +2536,7 @@ func _game_light(state: int, at: Vector3) -> Dictionary:
 								var col := Vector3(s16.call((w8 >> 16) & 0xffff), s16.call(wc & 0xffff), s16.call((wc >> 16) & 0xffff))
 								var k := clampf((r * r - d.length_squared()) * fo, 0.0, 1.0)
 								best.append({"key": d.length_squared() - r * r, "pos": pos, "col": col * k})
-					node = int(machine.peek_u32(node)) & 0x1ffffff
+					node = int(machine.peek_u32(node)) & 0x3ffffff
 	best.sort_custom(func(x, y): return float(x.key) < float(y.key))
 	var out := {"game_amb": Vector4(amb.x, amb.y, amb.z, 1), "game_sun_dir": Vector4(sun_dir.x, sun_dir.y, sun_dir.z, 0),
 		"game_sun": Vector4(sun.x, sun.y, sun.z, 0), "game_fill_dir": Vector4(fill_dir.x, fill_dir.y, fill_dir.z, 0),

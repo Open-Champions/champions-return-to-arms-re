@@ -29,6 +29,15 @@
 
 namespace godot {
 
+// the size of the game's memory (rtag_memory_size): 32 MB, or 64 MB in a library built for rooms of up to eight
+// (docs/issues/native-8-players.md C.7: the heap of a copy started for five to eight reaches past 32 MB); a library
+// without the function has 32 MB
+static int64_t memory_size() {
+    const RtaLibrary& lib = rta_library();
+    const uint32_t n = lib.rtag_memory_size ? lib.rtag_memory_size() : 0;
+    return n >= 0x2000000u ? (int64_t)n : 0x2000000;
+}
+
 static std::string text_of(const Variant& value) {
     String s = value;
     return std::string(s.utf8().get_data());
@@ -282,8 +291,8 @@ Dictionary RtaMachine::get_skeletons(bool with_mesh) const {
     d["poses_matched"] = (int64_t)k.poses_matched;
     // the game's players (a library from before they were added leaves player_count 0)
     Array players;
-    for (uint32_t i = 0; i < std::min<uint32_t>(k.player_count, 4); i++) {
-        const rtag_skeleton_player& p = k.players[i];
+    for (uint32_t i = 0; i < std::min<uint32_t>(k.player_count, 8); i++) {        // 5..8: a game of five to eight
+        const rtag_skeleton_player& p = i < 4 ? k.players[i] : k.players_more[i - 4];
         Dictionary e;
         e["slot"] = p.slot;
         e["object"] = (int64_t)p.object;
@@ -452,7 +461,7 @@ Ref<Image> RtaMachine::get_picture() const {
 
 int64_t RtaMachine::peek_u32(int64_t address) const {
     const uint8_t* ram = started ? rta_library().rtag_memory() : nullptr;
-    if (!ram || address < 0 || address > 0x2000000 - 4) return 0;
+    if (!ram || address < 0 || address > memory_size() - 4) return 0;
     uint32_t v;
     memcpy(&v, ram + address, 4);
     return v;
@@ -462,16 +471,17 @@ Array RtaMachine::get_lights(const Vector3& at, double radius, int max_count) co
     const uint8_t* ram = started ? rta_library().rtag_memory() : nullptr;
     if (!ram) return out;
     const uint32_t GRID = 0x5D34D8, OVERFLOW_LIST = 0x5DB368, LAYER = 0x4039A4;
-    auto u32 = [&](uint32_t a) { uint32_t v = 0; if (a <= 0x2000000 - 4) memcpy(&v, ram + a, 4); return v; };
-    auto f32 = [&](uint32_t a) { float v = 0; if (a <= 0x2000000 - 4) memcpy(&v, ram + a, 4); return v; };
-    auto s16 = [&](uint32_t a) { int16_t v = 0; if (a <= 0x2000000 - 2) memcpy(&v, ram + a, 2); return (int)v; };
+    const uint32_t size = (uint32_t)memory_size();
+    auto u32 = [&](uint32_t a) { uint32_t v = 0; if (a <= size - 4) memcpy(&v, ram + a, 4); return v; };
+    auto f32 = [&](uint32_t a) { float v = 0; if (a <= size - 4) memcpy(&v, ram + a, 4); return v; };
+    auto s16 = [&](uint32_t a) { int16_t v = 0; if (a <= size - 2) memcpy(&v, ram + a, 2); return (int)v; };
     const int32_t layer = (int32_t)u32(LAYER);
     std::vector<uint32_t> seen;
     auto walk = [&](uint32_t node) {
         // the game's own lists: a node's first word is the next one (the game changes them while this reads: bounded)
         for (int guard = 0; node && guard < 256 && (int)out.size() < max_count; guard++) {
-            node &= 0x1FFFFFF;
-            if (node < 0x100000 || node > 0x2000000 - 0x40) break;
+            node &= size - 1;
+            if (node < 0x100000 || node > size - 0x40) break;
             uint32_t next = u32(node);
             if (std::find(seen.begin(), seen.end(), node) != seen.end()) break;
             seen.push_back(node);
@@ -506,14 +516,14 @@ Array RtaMachine::get_lights(const Vector3& at, double radius, int max_count) co
 
 double RtaMachine::peek_f32(int64_t address) const {
     const uint8_t* ram = started ? rta_library().rtag_memory() : nullptr;
-    if (!ram || address < 0 || address > 0x2000000 - 4) return 0;
+    if (!ram || address < 0 || address > memory_size() - 4) return 0;
     float v;
     memcpy(&v, ram + address, 4);
     return v;
 }
 String RtaMachine::peek_string(int64_t address, int max_bytes) const {
     const uint8_t* ram = started ? rta_library().rtag_memory() : nullptr;
-    if (!ram || address < 0 || max_bytes <= 0 || address + max_bytes > 0x2000000) return String();
+    if (!ram || address < 0 || max_bytes <= 0 || address + max_bytes > memory_size()) return String();
     std::string out;
     for (int k = 0; k < max_bytes && ram[address + k]; k++) out.push_back((char)ram[address + k]);
     return String::utf8(out.c_str());

@@ -12,6 +12,8 @@
 // the end of the run stops the machine instead of the process (host_godot.cpp).
 #include "rtag.h"
 #include <cstddef>
+#include "ramsize.h"          // RAM_SIZE (rtag_memory_size)
+#include "moved.h"            // the moved tables (rtag_moved_get)
 
 #include "app_rt.h"
 #include "backend_gl.h"
@@ -843,6 +845,13 @@ int rtag_has(const char* feature) {
         return 0;
 #endif
     }
+    if (f == "party8") {                                // rooms of up to eight (app/party8.h): the relocatable translation and 64 MB
+#ifdef RTAG_HAVE_PARTY8
+        return party8::available() && RAM_SIZE > 0x02000000u ? 1 : 0;
+#else
+        return 0;
+#endif
+    }
     if (f == "network" || f == "net2") {                // the network driver and a room of our own (net2_* exported beside rtag_*)
 #ifdef RTAG_HAVE_NET2
         return 1;
@@ -1208,6 +1217,15 @@ void rtag_mouse_button(int button, int down) {
 }
 
 const uint8_t* rtag_memory(void) { return g_m ? rta::memory() : nullptr; }
+uint32_t rtag_memory_size(void) { return (uint32_t)RAM_SIZE; }      // rt/ramsize.h: 64 MB in a library for rooms of up to eight
+int rtag_moved_get(rtag_moved* out) {
+    if (!out) return 0;
+    out->delta = g_party8_delta;
+    out->spans = g_party8_spans;
+    out->tables = (uint32_t)PARTY8_TABLES;
+    out->wide = g_party8_wide;
+    return 1;
+}
 uint64_t rtag_fields(void) { return g_m ? apprt::fields() : 0; }
 
 const char* rtag_info(void) {
@@ -1244,7 +1262,7 @@ const char* rtag_info(void) {
 #endif
 #if (defined(RTAG_HAVE_SOULS) || defined(RTAG_HAVE_AIM) || defined(RTAG_HAVE_CINE)) && defined(RTAG_HAVE_NET2)
     // what this copy says of itself in a room (net2_set "copy"), as tools/recomp/net2/launch.cpp souls_describe makes it
-    // (souls bit 0x8000, aim bit 0x4000, each folding its figure in): the portal says it again when it changes
+    // (souls bit 0x8000, aim bit 0x4000, each folding its figure in; 0x1000 rooms of up to eight): the portal says it again when it changes
     {
         const rtanet::Info& net = rtanet::info();
         uint32_t set = net.patch_set;
@@ -1257,6 +1275,11 @@ const char* rtag_info(void) {
 #endif
 #ifdef RTAG_HAVE_CINE
         if (cinematic::wanted()) { words |= 0x2000; if (net2hook::cine_figure) set ^= net2hook::cine_figure(); }
+#endif
+#ifdef RTAG_HAVE_PARTY8
+        // a copy started for rooms of up to eight (party8=8): bit 0x1000, as souls_describe says it - without it the
+        // portal's own word for the copy hid it, and the room service held such a room at four
+        if (net2hook::party8_capable && net2hook::party8_capable() == 1) words |= 0x1000;
 #endif
         if (net.patch_set != 0 || net.patch_words != 0) {
             snprintf(said, sizeof said, " copy=fix=%08x,words=%u", set, words);

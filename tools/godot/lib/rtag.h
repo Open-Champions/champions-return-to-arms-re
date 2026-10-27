@@ -428,7 +428,7 @@ typedef struct rtag_skin_piece {    /* parallel to rtag_scene::pieces */
     float slot0[12];            /* joint matrix 0 of the piece in the world (a rigid model's own matrix: a weapon in a hand) */
 } rtag_skin_piece;
 typedef struct rtag_skeleton_player {  /* one of the game's players, as of the draw pass the frame shows */
-    int32_t slot;               /* 0 .. 3 */
+    int32_t slot;               /* 0 .. 3 (0 .. 7 in a game of five to eight) */
     uint32_t object;            /* guest address of its creature (player record +0x43d8) */
     uint32_t state;             /* its animation state (object +0x114): rtag_skeleton::state of the poses that draw it */
     int32_t character_class;    /* record +0x50: 0 barbarian, 1 cleric, 2 shadowknight, 3 ranger, 4 wizard, 5 berserker, 6 shaman */
@@ -447,6 +447,9 @@ typedef struct rtag_skeletons {
     /* added later (filled when struct_size reaches them): the players present - read on the game's thread with the poses */
     uint32_t player_count;
     rtag_skeleton_player players[4];
+    /* added later again (filled when struct_size reaches them): a game of five to eight's players past the first four
+       (docs/issues/native-8-players.md); player_count then counts them too (up to 8: players[0..3], then these) */
+    rtag_skeleton_player players_more[4];
 } rtag_skeletons;
 /* 1: filled for the frame taken last (pointers valid until the next frame is taken); 0: none (no scene, an older library).
  * Same thread as rtag_poll. */
@@ -469,7 +472,20 @@ int rtag_film_now(rtag_film* out);
 void rtag_audio_pull(int16_t* stereo, int frames);
 
 /* ---- the machine's memory and figures ------------------------------------------------ */
-const uint8_t* rtag_memory(void);       /* 32 MB of main memory, read only; NULL before the start */
+const uint8_t* rtag_memory(void);       /* main memory, read only (rtag_memory_size bytes; 32 MB); NULL before the start */
+/* the size of rtag_memory (optional, added after version 6): 32 MB, or 64 MB in a library built for rooms of up to
+   eight (RTA_GODOT_PARTY8=1, rt/ramsize.h); a host that finds no such function takes 32 MB */
+uint32_t rtag_memory_size(void);
+/* where the game's tables sized for four are while they are moved for a game of up to eight (optional, added after
+   version 6; tools/recomp/rt/moved.h): a host that reads rtag_memory at the game's fixed addresses maps them through
+   these (party8_at) - delta null: nothing is moved.  The pointers stay valid for the life of the machine. */
+typedef struct rtag_moved {
+    const uint32_t* delta;              /* per table: added to an address inside it; null while nothing is moved */
+    const uint32_t (*spans)[2];         /* per table: [lo, hi) of its old place */
+    uint32_t tables;                    /* the slots of both arrays (moved.h PARTY8_TABLES) */
+    uint32_t wide;                      /* 1 in a game of five to eight (moved.h g_party8_wide) */
+} rtag_moved;
+int rtag_moved_get(rtag_moved* out);
 uint64_t rtag_fields(void);             /* vertical blanks since power-on */
 /* One line of key=value figures: blanks, processor time of the process and of the decoder, queue, sound. */
 const char* rtag_info(void);

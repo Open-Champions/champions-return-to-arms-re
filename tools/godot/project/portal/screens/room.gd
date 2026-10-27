@@ -122,7 +122,9 @@ func build() -> void:
 	if typed:
 		combat = false
 		aim = false
-	var columns := 2 + (1 if combat else 0) + (1 if aim else 0) + 1
+	# the party size (Remastered, a host whose game library can play eight): a column of its own
+	var party := i_host and typed and mine_kind == Edition.REMASTERED and bool(portal.call("party8_possible"))
+	var columns := 2 + (1 if combat else 0) + (1 if aim else 0) + 1 + (1 if party else 0)
 	var cw := (left_w - UI.px(14) * (columns - 1)) / columns
 	# the game's own four (net2_options.difficulty 1..4; 0 means the first).
 	# ... and only those the game's own menu would offer this host (net2_game_status().difficulty_unlocked: 1 on a new card)
@@ -171,17 +173,23 @@ func build() -> void:
 		put(aiming, Rect2((cw + UI.px(14)) * column, choices_y, cw, choices_h))
 		aiming.changed.connect(func(index: int) -> void: portal.gameflow.call("set_aim", index == 1))
 		column += 1
-	# a room of up to eight (docs/issues/native-8-players.md): offered to a host whose copy can play one (fix_words bit
-	# 0x1000: started for rooms of up to eight - Remastered); every copy in the room must be able to
-	if i_host and (int(mine.get("fix_words", 0)) & PARTY8_BIT) != 0:
+	# the party size (docs/issues/native-8-players.md): Remastered only (Classic stays one to four), for a host whose game
+	# library can play a room of up to eight.  The game copy is started for the size (portal.gd host_party): changing it
+	# restarts the game and opens the room again - so only while the host is alone in the room
+	if party:
 		var wide := int(options.get("max_players", 0)) > 4
-		var size_choice := W.Choice.new("Players", PackedStringArray(["Up to 4", "Up to 8"]), 1 if wide else 0,
-			("Everyone's copy must allow 8" if wide and _capacity(room, members) < 8 else "") )
+		var size_note := ""
+		if wide and _capacity(room, members) < 8:
+			size_note = "Holds 4 until every copy allows 8"
+		elif members.size() > 1:
+			size_note = "Change it while you are alone"
+		var size_choice := W.Choice.new("Party size", PackedStringArray(["Up to 4", "Up to 8"]), 1 if wide else 0, size_note)
 		size_choice.key = "players"
-		size_choice.locked = not can_choose or members.size() > 4
-		size_choice.narrow = true
-		put(size_choice, Rect2((cw + UI.px(14)) * column, choices_y - choices_h - UI.px(10), cw, choices_h))
-		size_choice.changed.connect(func(index: int) -> void: _set_option("max_players", 8 if index == 1 else 4))
+		size_choice.locked = not can_choose or members.size() > 1
+		size_choice.narrow = columns > 3
+		put(size_choice, Rect2((cw + UI.px(14)) * column, choices_y, cw, choices_h))
+		size_choice.changed.connect(func(index: int) -> void: _set_party(8 if index == 1 else 4))
+		column += 1
 	var open_to := W.Choice.new("Who can join", PackedStringArray(["Code only", "Friends too"]), clampi(int(options.get("open_to", 0)), 0, 1))
 	open_to.key = "open_to"
 	open_to.locked = not can_choose
@@ -219,6 +227,14 @@ func build() -> void:
 		main.icon = "sword"
 		main.disabled = true
 		note = "Waiting for %s to switch to %s." % [_names(_other_kind(members, room_kind)), Edition.title(room_kind)]
+	elif state == Session.ROOM_OPEN and int(_party_problem(members, mine).get("restart", 0)) > 0:
+		# this machine's game was started for the other party size: restart it and come back to this room
+		var players := int(_party_problem(members, mine).restart)
+		var code := String(room.get("code", ""))
+		main.text = "Restart your game for up to %d" % players
+		main.icon = "check"
+		note = "A few seconds: the game starts again and joins this room again." if not i_host else "The game starts again and opens a new room."
+		main.activated.connect(func() -> void: portal.call("restart_for_party", players, "" if i_host else code))
 	elif gameflow_active() and not portal.gameflow.call("has_character"):
 		# the game's side: a character for this game first, on the game's own screens
 		main.icon = "person"
@@ -447,6 +463,10 @@ func _mismatch_text(members: Array, mine: Dictionary, host_member: Dictionary) -
 		if _aim_of(host_member):
 			return "The host aims where they look and %s does not have it (yet) - every copy must, or the host picks the game's aim." % " and ".join(PackedStringArray(without))
 		return "Aiming by looking is on for %s and off for the host - every copy must play the same." % " and ".join(PackedStringArray(without))
+	# the party size (up to 4 / up to 8): every copy started for the room's
+	var party := _party_problem(members, mine)
+	if not party.is_empty():
+		return String(party.text)
 	if not bool(room.get("mismatch", false)):
 		return ""
 	var odd := []
@@ -518,6 +538,44 @@ func _set_option(key: String, value: int) -> void:
 	var options: Dictionary = (room.get("options", {}) as Dictionary).duplicate()
 	options[key] = value
 	portal.session.set_options(options)
+
+
+func _set_party(players: int) -> void:
+	var booted := int(portal.handover.get("booted_party"))
+	portal.profile.set_setting("eight", players > 4)
+	if booted == 0 or booted == players:
+		_set_option("max_players", players if players > 4 else 4)
+		return
+	# the game copy was started for the other size: it starts again (one machine per run), and the room opens again
+	portal.call("confirm", "Restart the game for up to %d players?" % players,
+		"Your game was started for up to %d. It restarts in a few seconds and opens a new room - with a new code." % booted,
+		"Restart", func() -> void: portal.call("restart_for_party", players, ""), false, "Keep up to %d" % booted)
+	want_focus = "players"
+	rebuild.call_deferred()
+
+
+# A copy whose party size is not the room's (bit PARTY8_BIT: started for up to eight): the two are different games.
+# {"text": the warning, "restart": the size this machine's game must restart for (0: nothing this machine can do)}
+func _party_problem(members: Array, mine: Dictionary) -> Dictionary:
+	var want8 := int((room.get("options", {}) as Dictionary).get("max_players", 0)) > 4
+	var others := []
+	for m in members:
+		if int(m.get("fix_set", 0)) == 0 and int(m.get("fix_words", 0)) == 0:
+			continue                    # has not said anything of its copy yet (its game is still starting)
+		if Edition.of_member(m) != Edition.REMASTERED:
+			continue                    # the type's own warning comes first
+		var has8 := (int(m.get("fix_words", 0)) & PARTY8_BIT) != 0
+		if has8 == want8:
+			continue
+		if bool(m.me):
+			if want8 and not bool(portal.call("party8_possible")):
+				return {"text": "This room is for up to 8 players - your copy of the game can play up to 4 only. The host can switch to up to 4.", "restart": 0}
+			return {"text": "This room is for up to %d players and your game was started for up to %d - restart it to play here." % [8 if want8 else 4, 4 if want8 else 8],
+				"restart": 8 if want8 else 4}
+		others.append(String(m.name))
+	if not others.is_empty():
+		return {"text": "%s started the game for another party size - the room offers them the restart." % " and ".join(PackedStringArray(others)), "restart": 0}
+	return {}
 
 
 func _set_game(index: int) -> void:

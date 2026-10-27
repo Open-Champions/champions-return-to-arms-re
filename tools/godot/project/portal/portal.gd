@@ -64,7 +64,8 @@ signal notice(d: Dictionary)
 signal notice_gone(id: String)
 signal shown_changed(is_shown: bool)
 
-var options := {"test": "", "data": "", "mock": false, "service": "", "stub_game": false, "start": "", "embedded": false, "mock_speed": "", "shot": "", "quit_after": 0.0}
+var options := {"test": "", "data": "", "mock": false, "service": "", "stub_game": false, "start": "", "embedded": false, "mock_speed": "", "shot": "", "quit_after": 0.0,
+	"host_party": 0, "join_code": ""}     # after a restart for another party size: host / join again at once (restart_for_party)
 var session: Node
 var profile: RefCounted
 var handover: Node
@@ -92,6 +93,7 @@ var pending_invite := ""            # invite this friend as soon as my room is o
 var seen_requests := {}
 var seen_invites := {}
 var last_link := -1
+var said_room := ""                 # the room code and size last printed
 var glyph_style := "xbox"
 var starting_since := 0             # a session start is under way (milliseconds), 0: none
 
@@ -164,6 +166,8 @@ func _parse_arguments() -> void:
 			"--portal-mock-speed": given["mock_speed"] = value; k += 1
 			"--portal-shot": given["shot"] = value; k += 1
 			"--portal-quit-after": given["quit_after"] = value.to_float(); k += 1
+			"--portal-host-party": given["host_party"] = value.to_int(); k += 1
+			"--portal-join-code": given["join_code"] = value; k += 1
 			"--portal-mock": given["mock"] = true
 			"--portal-stub-game": given["stub_game"] = true
 			"--no-portal", "--script": given["pass"] = true
@@ -450,8 +454,8 @@ func confirm(title: String, text: String, yes_text: String, on_yes: Callable, da
 	_open_modal()
 
 
-func menu(title: String, items: Array, text := "") -> void:
-	modal = {"kind": "menu", "title": title, "text": text, "items": items, "focus": 0}
+func menu(title: String, items: Array, text := "", focus := 0) -> void:
+	modal = {"kind": "menu", "title": title, "text": text, "items": items, "focus": focus}
 	_open_modal()
 
 
@@ -583,6 +587,12 @@ func _on_changed(what: String) -> void:
 		_sync_requests()
 	if what == "invites":
 		_sync_invites()
+	if what == "room" and session.in_room():
+		var r: Dictionary = session.room()
+		var said := "%s/%d" % [String(r.get("code", "")), int((r.get("options", {}) as Dictionary).get("max_players", 0))]
+		if said != said_room and String(r.get("code", "")) != "":
+			said_room = said
+			print("portal: in room %s (%s players asked for)" % [String(r.get("code", "")), "up to 8" if said.ends_with("/8") else "up to 4"])
 	if screen != null:
 		screen.call("session_changed", what)
 
@@ -756,9 +766,94 @@ func host_game() -> void:
 	if session.in_room():
 		go("room")
 		return
+	if party8_possible():
+		# Remastered: the party size first - the game copy is started for it (docs/issues/native-8-players.md C.7)
+		var eight := bool(profile.setting("eight"))
+		var items := [
+			{"text": "Up to 4 players", "icon": "check" if not eight else "", "kind": "primary" if not eight else "normal", "run": func() -> void: host_party(4)},
+			{"text": "Up to 8 players", "icon": "check" if eight else "", "kind": "primary" if eight else "normal", "run": func() -> void: host_party(8)},
+			{"text": "Cancel", "kind": "ghost"}]
+		menu("Party size", items, "Up to 8: everybody needs Remastered; enemies scale with the party. You can change it while you are alone in the room.", 1 if eight else 0)
+		return
+	host_party(4)
+
+
+func host_party(players: int) -> void:
+	# the room for up to `players`; the game copy must be started for that size (handover.gd party_size): one started for
+	# the other is restarted first (one machine per run of the program), and the room is opened again after the restart
+	players = 8 if players > 4 and party8_possible() else 4
+	if party8_possible():
+		profile.set_setting("eight", players == 8)
+	var booted := int(handover.get("booted_party"))
+	if booted != 0 and booted != players:
+		restart_for_party(players, "")
+		return
 	pending_room = true
-	session.host({"level": "", "difficulty": 1, "mode": 0, "open_to": Session.OPEN_FRIENDS})
+	var opts := {"level": "", "difficulty": 1, "mode": 0, "open_to": Session.OPEN_FRIENDS}
+	if players > 4:
+		opts["max_players"] = players          # the room service holds eight once every copy says it can (rendezvous.py Room.capacity)
+	session.host(opts)
 	go("room")
+
+
+# ---- the party size (Remastered): up to 4, or up to 8 -------------------------------------------------------------
+# A copy for rooms of five to eight is started with party8=8 (64 MB, handover.gd); a room of up to four with party8=1.
+# The two are different games (other heap addresses: C.7), so every copy of a room is started for the room's size, and
+# the size of a copy is fixed for the run of the program: another size restarts the program, which then hosts again
+# (--portal-host-party N) or joins the same room again (--portal-join-code CODE).
+func party8_possible() -> bool:
+	if edition() != Edition.REMASTERED or not ClassDB.class_exists("RtaMachine"):
+		return false
+	var m: Object = ClassDB.instantiate("RtaMachine")
+	return m != null and bool(m.call("has", "party8"))
+
+
+func restart_for_party(players: int, join_code: String) -> void:
+	profile.set_setting("eight", players > 4)
+	var args := PackedStringArray()
+	for a in OS.get_cmdline_args():
+		if a == "--":
+			break
+		args.append(a)
+	var user := PackedStringArray()
+	var given := OS.get_cmdline_user_args()
+	var k := 0
+	while k < given.size():
+		if given[k] in ["--portal-host-party", "--portal-join-code", "--portal-start"]:
+			k += 2
+			continue
+		user.append(given[k])
+		k += 1
+	if join_code != "":
+		user.append_array(PackedStringArray(["--portal-join-code", join_code]))
+	else:
+		user.append_array(PackedStringArray(["--portal-host-party", str(players)]))
+	args.append("--")
+	args.append_array(user)
+	print("portal: restarting the program for a party of up to %d: %s" % [players, " ".join(args)])
+	toast("Restarting the game for up to %d players..." % players, "info")
+	if session != null and session.in_room():
+		session.leave()
+	OS.set_restart_on_exit(true, args)
+	quit.call_deferred()
+
+
+func _after_restart() -> void:
+	# --portal-host-party / --portal-join-code: once the connection is up, host or join as before the restart
+	if int(options.host_party) == 0 and String(options.join_code) == "":
+		return
+	if session == null or not session.online() or session.in_room():
+		return
+	var players := int(options.host_party)
+	var code := String(options.join_code)
+	options.host_party = 0
+	options.join_code = ""
+	if code != "":
+		print("portal: joining %s again after the restart" % code)
+		join_code(code)
+	elif players > 0:
+		print("portal: hosting again after the restart (up to %d)" % players)
+		host_party(players)
 
 
 func start_room() -> int:
@@ -1002,6 +1097,8 @@ func _process(delta: float) -> void:
 	if starting_since > 0 and Time.get_ticks_msec() - starting_since > (60000 if gameflow.active else 8000):
 		starting_since = 0              # the room never said "in game": get out of the way anyway
 		handover.call("reveal")
+	if session != null and (int(options.host_party) != 0 or String(options.join_code) != ""):
+		_after_restart()
 	if session != null:
 		var now: Dictionary = session.me() if session.available() else {}
 		var link := int(now.get("link", 0)) + String(now.get("problem", "")).hash() * 8

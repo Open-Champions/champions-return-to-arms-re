@@ -13,7 +13,7 @@ const DEFAULTS := {
 	"volume": 1.0, "music": 0.8, "effects": 1.0, "interface": "new", "glyphs": "auto",
 	"game": "",                     # classic | remastered (edition.gd; the portal's first screen); "" = never chosen
 	"er_outfits": "",               # per character class: auto | original | an outfit folder ("class:choice;...", settings.gd Game)
-	"eight": false,                 # Remastered: the game is started ready for rooms of up to eight (64 MB; handover.gd party8=8)
+	"eight": false,                 # Remastered: the host's party size, up to 8 (portal.gd host_party; the copy is started for the room's size, handover.gd)
 }
 
 var folder := "user://"

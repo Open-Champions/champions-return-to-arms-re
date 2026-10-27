@@ -20,17 +20,23 @@ local translation, numbers below) or **Ran**.
 
 ## STATE (rewritten at every step)
 
-**2026-10-26, second round.** A, B as before. **C built and Ran: rooms of five, six and eight copies play in step**
-through a level change and a fight in Hardcore with the party scaling at the real count (`n5` 8,165 ticks, `n6` 4,821,
-`n8` 4,738 - every pair, C.10), and four Godot copies with four window programs in one room of eight (Classic combat,
-3,564 ticks every pair). Rooms of one to four unchanged: the rig byte for byte (overhead and first person), the
-offline route 74 of 74 rows identical with the switch off and with the tables moved, Classic and moved rooms of two
-and three in step. What it took: the room launch with moved tables (two translation faults, C.3; the `ori` fault from
-the ChatGPT review), the hard-coded fours and more per-slot tables (C.4), the wire, the launch for eight and the room's
-capacity (C.5), the equipment cache (C.6), 64 MB for a copy started for five to eight (C.7), the native modules
-(C.8), the HUDs and the portal (C.9). Open (C.11): Hardcore across the Godot library and the window program in a room
-of five to eight. The public service still holds four (`tools/rendezvous/deploy/STEPS.txt` 14-17 prepared, not run).
-Nothing committed.
+**2026-10-26, third round (C.12).** The player-facing gaps are closed. **The portal has the switch**: a Remastered host
+picks "Party size: up to 4 / up to 8" when hosting (and on the room screen while alone in it); the game copy is started
+for the room's size (`party8=8`, 64 MB, or `party8=1`), a joiner's copy follows the room's size by itself, a copy of the
+other size is told and offered a restart that comes back to the same room, and a copy that cannot play eight is told so.
+Classic stays one to four. A Godot copy now says it can play eight (bit 0x1000 was missing from its own word: the room
+service held a portal room of eight at four). **Limited to four no more** where a real room of five to eight meets it:
+aiming by looking (second block at 0xE1A00, `guestmap.h`), the first-person and shoulder views and their controls for
+players 5..8, the Elden Ring layer's figures (`rtag_skeletons` players 5..8, the skeleton export's record address), the
+Godot extension's readers (the library's whole memory, and the moved tables for the HUD reader), the Hardcore HUD's
+stamina / flasks / sheet for players 5..8, and the inventory's item lists of players 5..8. **Ran**: six Godot copies,
+Remastered (Hardcore, aiming by looking, the Elden Ring layer, the shoulder view), a service on 127.0.0.1, valor >
+drunare with fights: **4,455 - 4,470 ticks in step, all 15 pairs**; every copy's figures list players 1..6, player 5's
+aim in the simulation on every copy alike. Rooms of one to four unchanged: the rig byte for byte (overhead and first
+person), the offline route identical row for row (switch off; tables moved and poisoned: every value), a room of
+**four** with the tables moved 3,455 ticks in step (all pairs), a room of two (switch off) 4,935. The 8-player native
+launchers are on the Desktop. Open (C.11): the mixed Godot + window-program Hardcore room (the ChatGPT job), the inventory
+change not yet run with an open inventory, the game's own launch screen and pause list of four.
 
 ---
 
@@ -373,7 +379,7 @@ creatures, scaled and with elites, on the next try.
 
 ## C. Five to eight (built; Ran in rooms of five, six and eight)
 
-C.1 and C.2 are the first round (the tables move, offline); C.3 to C.11 the second.
+C.1 and C.2 are the first round (the tables move, offline); C.3 to C.11 the second; C.12 the third.
 
 ### C.1 What was built
 
@@ -525,8 +531,8 @@ pipeline's memory copy, `fpworld`, `fpview`, `gfx_rt`, `testerkit`, `fpcontrols`
 `cinematic.cpp`, `testerkit.cpp`, `soulscombat.cpp`, `launch.cpp`, `skeleton_export.cpp`, and the script's symbols
 (`rt/script.cpp`: a moved table's name is its new place, so `g_players+4*0x4c30` is slot 4 in `show`, the tick logs and
 `n2party.py`'s columns). Hardcore's per-player parts for players 5..8 are a second block with the same layout at
-0xE2100 (`soulscombat.cpp high()`, `guestmap.h`); its guards and loops go to eight. Aiming by looking (`fpaim`) stays at
-players 1..4 (5..8 aim the game's way).
+0xE2100 (`soulscombat.cpp high()`, `guestmap.h`); its guards and loops go to eight. Aiming by looking (`fpaim`) stayed at
+players 1..4 in this round (5..8 aimed the game's way); C.12 gives it 5..8.
 
 ### C.9 What the players see
 
@@ -585,13 +591,70 @@ plain program part at tick 1,176 - so the program-against-program identity is sh
   old place in Hardcore's path (native or translated); a check-build Hardcore room (`--party8-check`) lists translated
   ones. All-window-program and all-Godot Hardcore rooms are in step (both read the same thing), so a room of eight in
   one program plays; a mixed one does not yet.
-- The public service holds four until `deploy/STEPS.txt` 14-17 are run.
-- Players 5..8: aiming by looking off for them (`fpaim` keeps four), the Elden Ring layer's figures for four
-  (`rtag_skeletons` holds four), the Godot extension's own readers (`rta_machine.cpp`) read the first 32 MB, the game's
-  own launch screen draws four rows, `inventory_pollResources` clears four item-list blocks (a local player 8 would
-  overrun its block by 0x1cc40 bytes into the inventory textures' region: not run with eight local inventories),
-  `pauseMenu_task`'s player list holds four (0x18db2c), the eqcache release at the end of a game of eight frees eight.
-- No room of four copies was run (three processes at most outside the five-to-eight proofs).
+- ~~The public service holds four~~ (deployed 2026-10-26).
+- Players 5..8: ~~aiming by looking, the Elden Ring layer's figures, the Godot extension's readers, the inventory's
+  item lists~~ (C.12). Still four: the game's own launch screen draws four rows, `pauseMenu_task`'s player list holds
+  four (0x18db2c); the eqcache release at the end of a game of eight frees eight. The inventory change (C.12) is built
+  but no run has opened an inventory yet (a scripted `tap select` opened none, for player 2 either).
+- ~~No room of four copies was run~~ (C.12: `xm4`).
+
+### C.12 Third round: the switch in the portal, and the last fours (2026-10-26: Ran)
+
+**The portal** (`portal.gd host_party`, `restart_for_party`; `handover.gd party_size`; `screens/room.gd`):
+
+- *Host a game* (Remastered, a game library that can play eight: `rtag_has("party8")`) first asks **Party size: up to 4 /
+  up to 8** (the last choice remembered, profile `eight`). The room is opened with `max_players` 8 (the service holds
+  eight once every copy says it can: `rendezvous.py Room.capacity`). Classic never asks: up to four.
+- The game copy is started for **the room's size** (`handover.gd party_size`: `party8=8`, 64 MB, in a room that asks for
+  more than four, else `party8=1`): the two are different games (C.7), so a joiner's copy follows the room it is in.
+  The size of a copy is fixed for the run of the program (one machine per run); another size restarts the program
+  (`OS.set_restart_on_exit`), which then hosts again (`--portal-host-party N`) or joins the same room again
+  (`--portal-join-code CODE`).
+- The room screen: a **Party size** choice for the host (locked once somebody else is in the room: changing it restarts
+  the host's game and opens a new room); eight seats in a room of up to eight.
+- **Joiners are told**: a copy whose size is not the room's sees "This room is for up to 8 players and your game was
+  started for up to 4 - restart it to play here" and the button *Restart your game for up to 8* (back in the same room);
+  a copy whose library cannot play eight: "This room is for up to 8 players - your copy of the game can play up to 4
+  only. The host can switch to up to 4"; the others see who must restart. The start waits.
+- Found: a Godot copy's own word for itself (`rtag.cpp`, the `copy=` of `rtag_info`, which the portal says to the room)
+  had no bit 0x1000, so the service held a portal room of eight at four; it has it now.
+
+**Ran** (the portal on a service of its own on 127.0.0.1, `local/party8/pt`): a host started with `--portal-host-party 8`
+opened a room asking for eight, its game started with `party8=8` and said `words=61629` (0x1000 set); a second portal
+joined by the code with `eight=false` in its profile: "the game is started for a room of up to 8", the same word, eight
+seats, no warning (`join3.png`). Before the `copy=` fix the same host showed the warning and the restart button
+(`room.png`). The restart itself (the program starting again) was not run.
+
+**The last fours** (each only in a game of five to eight; every game of one to four does what it did):
+
+| What | Where | Change |
+|---|---|---|
+| aiming by looking, players 5..8 | `fpaim.{h,cpp}`, `guestmap.h`, `partyscale.cpp` | the per-player parts of players 5..8 in a second block `AIM_HIGH` 0xE1A00-0xE1A7F (listed in `guestmap.h`, checked by `static_assert`); the message handler, `Player_run`'s wrapper and the sender take slots up to 7 |
+| the look views' controls and camera for players 5..8 | `fpcontrols.cpp find_body`, `fpview.cpp fallback_reason`, the pad slot | slots up to 7 (players 5..8 had no first-person or shoulder view at all, so no look to aim with); the interact prompt's arrays read as moved table + slot |
+| the Elden Ring layer's figures | `lib/skeleton_export.cpp`, `lib/rtag.h` (`rtag_skeletons.players_more[4]`, filled when the host's structure has it), `extension rta_machine.cpp get_skeletons`, `er_layer.gd _player_slot_of` | eight players; the record address of slots 4..7 is the moved table + slot (it was `party8_at(table + slot)`: past the old end, no player found); `er_layer.gd` takes owners up to 64 MB and masks with 0x3FFFFFF |
+| the Godot extension's readers | `rta_machine.cpp` (`peek_*`, the lights), `rta_gamestate.cpp`, `rtag_memory_size`, `rtag_moved_get` | the library's whole memory (64 MB) instead of the first 32 MB; the HUD reader (`gamestate.cpp` compiled into the extension) takes the library's memory size and its moved tables (it had its own empty map: in a copy with the tables moved it read the old places) |
+| the Hardcore HUD for players 5..8 | `hud/souls.gd`, `hud/sheet.gd` | stamina, flasks, the weapon and the sheet from the second block (`SOULS_HIGH`) |
+| the inventory's item lists | `party8.cpp` (a wrapper of `inventory_pollResources` 0x1bfbc8) | the four blocks of 0x23988 bytes from the pointer at 0x4ebbb0 are indexed by the local player's slot; a machine whose player is 5..8 gets the pointer four blocks lower, so its block is the cleared one of the player slot - 4, which is not local there (player 8 overran 0x1cc40 bytes into the inventory's textures) |
+
+**Ran**: programs `rta_app_p8x` (`app/build.py --party8`), `rta_app_orig_p8x` (`--original`), Godot `local/godot-p8x`
+(`RTA_GODOT_PARTY8=1`).
+
+| Run | Copies | Result |
+|---|---|---|
+| `x6b` (`local/party8/room8gx.sh`, `as-godot8x.py`) | **6 Godot copies, Remastered** (`--edition remastered`: Hardcore, aiming by looking, the Elden Ring layer; shoulder view), `party8=poison8`, service on 127.0.0.1 | **4,455 - 4,470 ticks in step, all 15 pairs**, valor > drunare, 3 deaths; party of 6 (155 scaled, 20 elites, 48 extra); every copy's figures (`app er dump`) list players 1..6; aiming: player 5 on with pitch -10923 after 112 messages, player 6 95 messages - the same on every copy (the simulation's block) |
+| `x6` (the same, before the skeleton fix) | 6 Godot | 3,890 - 3,905 ticks, all 15 pairs; the figures listed four players (the record address fault above) |
+| `y5` | 1 Godot (player 5, Elden Ring layer) + 4 window programs, Classic combat | 3,593 - 3,601 ticks, all 10 pairs (figures: the fault above, found here) |
+| `xm4` | **4** window programs, tables moved and poisoned (32 MB) | 3,455 - 3,456 ticks, all 6 pairs |
+| `xc2` | 2 window programs, switch off | 4,935 ticks |
+| `xi5c`, `xi5d` | 5 window programs, a copy taps select | in step (4,845 - 4,852); no inventory opened (player 5 or 2): the inventory change is not exercised |
+| the rig (`check.py`, `rta_app_orig_p8x`) | - | **overhead and first person byte for byte the reference** |
+| the offline route (`cs.rig`) `rta_app_p8x` against `rta_app_next_plain` | - | switch off: **identical** (198 lines, addresses included); `party8=poison`: every value identical (only the moved tables' addresses differ) |
+
+**The launchers** (on the Desktop, not tracked): *Play Champions - REMASTERED (new)* starts `local/godot-p8x` (the build
+for rooms of up to eight; the portal asks the party size); new *Play Champions - native, host online (8 players)* and
+*... join online (8 players)*: `rta_app8` (`--party8`) with `--opt party8=8` (the host also `--opt net2-size=8`, Hardcore,
+aiming by looking, the shoulder view). A game started for four and one started for eight do not play together, so the
+four-player launchers stay as they are.
 
 ## Found on the way
 
@@ -614,5 +677,6 @@ plain program part at tick 1,176 - so the program-against-program identity is sh
 | `tools/recomp/app/party8.{h,cpp}`, `tools/recomp/rt/moved.h`, `rt/recomp.h` (`RECOMP_RELOC_DYN`, `RECOMP_RELOC_CHECK`), `rt/rt.h` (`guest_addr`), `rt/script.cpp`, `app/build.py` (`--party8`, `--party8-check`), `app/app_main.cpp` (`party8::blank`, `app party8`) | C: the move and its checks |
 | the readers through `party8_at` | `net/netshim.cpp`, `net2/launch.cpp`, `app/fpaim.cpp`, `fpcontrols.cpp`, `fpview.cpp`, `gamestate.cpp`, `testerkit.cpp`, `soulscombat.cpp` (its eight memory helpers), `partyscale.cpp` |
 | second round | `reloc.py` (crosses, jump tables, `ori`, sites: `slots`, `last`, `lastoff`, `rows`, `shl+1`, `rxmask`, `memtop`), `reloc_test.py`, `recomp.py --reloc-sites`, `app/party8-sites.txt`, `app/party8-ranges.txt` (65 tables), `rt/ramsize.h`, `rt/moved.h` (wide game, trailer, memory top), `rt/recomp.h`, `rt/runtime.cpp`, `rt/iop.cpp`, `rt/script.cpp`, `render/worldfill.cpp`, `net/netdrv.cpp`, `net/netshim.cpp`, `net/lobbyparty.py`, `net2/{hooks.h,launch.cpp,session.h,session.cpp,session_net.cpp,session_mock.cpp,n2party.py}`, `app/{party8.*,build.py,appmodules.py,app_main.cpp,gamestate.*,soulscombat.cpp,partyscale.cpp,fpcontrols.cpp,fpview.cpp,cinematic.cpp,testerkit.cpp,fpworld.cpp,gfx_rt.cpp,pipeline.h,control.h,guestmap.h}`, `tools/rendezvous/{rendezvous.py,check.py,deploy/STEPS.txt}`, `tools/godot/{build.py,lib/rtag.cpp,lib/skeleton_export.cpp,extension/src/rta_net2.cpp,project/hud/{hud,status}.gd,project/portal/{handover,profile}.gd,project/portal/screens/room.gd}` |
-| `local/party8/` (not tracked) | `v1.rig`, `v8.rig`, `run.sh` (offline), `room.sh`, `n2p8.py` (rooms), `cs.rig`, `cms.rig`, `cmb.rig`, `runt.sh`, `room8.sh` (C), `room8h.sh` (Hardcore rooms of up to eight), `room8g.sh`, `as-godot8.py` (Godot copies), the runs |
+| third round | `app/{fpaim.h,fpaim.cpp,fpcontrols.cpp,fpview.cpp,guestmap.h,party8.cpp,partyscale.cpp}`, `tools/godot/{build.py,lib/rtag.{h,cpp},lib/skeleton_export.cpp,extension/src/{rta_machine.cpp,rta_gamestate.cpp,rta_library.h},project/er_layer.gd,project/hud/{souls,sheet}.gd,project/portal/{portal,handover,profile}.gd,project/portal/screens/room.gd}` |
+| `local/party8/` (not tracked) | `v1.rig`, `v8.rig`, `run.sh` (offline), `room.sh`, `n2p8.py` (rooms), `cs.rig`, `cms.rig`, `cmb.rig`, `runt.sh`, `room8.sh` (C), `room8h.sh` (Hardcore rooms of up to eight), `room8g.sh`, `as-godot8.py` (Godot copies), `room8gx.sh`, `as-godot8x.py`, `n2p8x.py` (Remastered Godot rooms with figures probes), `room-inv.sh`, `as-app-inv.py`, `pt/` (the portal runs), the runs |
 | the census (not tracked) | a scratch script over `local/recomp-out/gen`; its output is A.0's table |

@@ -55,7 +55,12 @@ u32 bits(float v) { u32 b; memcpy(&b, &v, 4); return b; }
 float flt(u32 b) { float v; memcpy(&v, &b, 4); return v; }
 s32 BR(u32 off) { return (s32)RD(AIM_BASE + off); }
 void BW(u32 off, s32 v) { WR(AIM_BASE + off, (u32)v); }
-u32 slot_off(int slot, u32 field) { return AIM_SLOT + (u32)slot * AIM_SLOT_SIZE + field; }
+// players 1..4 in the block, 5..8 (a game of five to eight only) in the second one (fpaim.h AIM_HIGH)
+u32 slot_off(int slot, u32 field) {
+    return slot < 4 ? AIM_SLOT + (u32)slot * AIM_SLOT_SIZE + field : (AIM_HIGH - AIM_BASE) + (u32)(slot - 4) * AIM_SLOT_SIZE + field;
+}
+// the last player slot that aims: 3, or 7 in a game of five to eight (moved.h g_party8_wide; 1..4 exactly as before)
+int last_slot() { return g_party8_wide ? 7 : 3; }
 enum : u32 { H_MAGIC = 0, H_VERSION = 4, H_MODE = 8, H_MESSAGES = 0xc, H_AIMED = 0x10, L_MESSAGE = 0x100 };
 enum : u32 { S_ON = 0, S_PITCH = 4, S_MESSAGES = 8, S_AIMED = 0xc, S_HEADING = 0x10, S_LAST_PITCH = 0x14, S_CLASS = 0x18, S_SPEED = 0x1c };
 
@@ -92,6 +97,7 @@ float sin16(Ctx* c, s32 a) { return flt(call(c, MATH_SIN16, (u32)a).f0); }
 
 void reset_all() {
     for (u32 a = 0; a < 0x100; a += 4) WR(AIM_BASE + a, 0);
+    for (u32 a = 0; a < AIM_HIGH_SIZE; a += 4) WR(AIM_HIGH + a, 0);     // players 5..8 (zero, and unread, in a game of one to four)
     BW(H_MAGIC, (s32)AIM_MAGIC);
     BW(H_VERSION, 1);
 }
@@ -143,7 +149,7 @@ void w_player_run(Ctx* c) {
     u32 P = (u32)c->r[4];
     if (!g_on || !ok(P, 0x590) || (RD(P + O_FLAGS) & FLAG_COPY)) { g_orig_run(c); return; }
     s32 slot = (s32)RD(P + P_SLOT);
-    if (slot < 0 || slot > 3 || BR(slot_off(slot, S_ON)) == 0) { g_orig_run(c); return; }
+    if (slot < 0 || slot > last_slot() || BR(slot_off(slot, S_ON)) == 0) { g_orig_run(c); return; }
     g_runs++;
     u32 front[8];
     int n = 0;
@@ -166,7 +172,7 @@ void w_handler(Ctx* c) {
     s32 count = (s32)c->r[5];
     if (!g_on || count < 5 || RB(bytes) != SUBTYPE) { g_orig_handler(c); return; }
     int slot = RB(bytes + 1);
-    if (slot > 3) return;
+    if (slot > last_slot()) return;
     s32 pitch = (s16)(RB(bytes + 3) | RB(bytes + 4) << 8);
     if (pitch > PITCH_MAX) pitch = PITCH_MAX;
     if (pitch < -PITCH_MAX) pitch = -PITCH_MAX;
@@ -237,7 +243,7 @@ void blank(uint64_t number) {
 void drawn(Ctx* c, int view, bool steering, float pitch_degrees) {
     if (!g_on || !c) return;
     const fpcontrols::Hud& h = fpcontrols::hud();
-    if (h.slot < 0 || h.slot > 3) return;
+    if (h.slot < 0 || h.slot > last_slot()) return;
     bool on = steering && h.playing && (view == fpcontrols::FIRST || view == fpcontrols::SHOULDER);
     s32 pitch = 0;
     if (on) {
@@ -292,7 +298,7 @@ std::string command(const std::string& text) {
     while (!w.empty() && w[0] == ' ') w.erase(0, 1);
     if (w.empty() || w == "info") {
         std::string out = figures();
-        for (int k = 0; k < 4; k++) {
+        for (int k = 0; k <= last_slot(); k++) {
             char one[160];
             snprintf(one, sizeof one, " | p%d on=%d pitch=%d msgs=%d aimed=%d last=%d/%d class=%d speed=%.1f", k, BR(slot_off(k, S_ON)), BR(slot_off(k, S_PITCH)),
                      BR(slot_off(k, S_MESSAGES)), BR(slot_off(k, S_AIMED)), BR(slot_off(k, S_HEADING)), BR(slot_off(k, S_LAST_PITCH)), BR(slot_off(k, S_CLASS)),
