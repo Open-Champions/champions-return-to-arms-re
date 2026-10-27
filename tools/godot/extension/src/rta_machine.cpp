@@ -529,6 +529,24 @@ String RtaMachine::peek_string(int64_t address, int max_bytes) const {
     return String::utf8(out.c_str());
 }
 
+// Test aids for main.gd's control port (--control): a block of the game's memory, and a write into it.  The library
+// hands its memory out read only (rtag.h); a write here is a tester's poke (tools/recomp/app/control.h does the same
+// in the native program), made between the game's frames' reads as it happens - never used by a player's session.
+PackedByteArray RtaMachine::peek_bytes(int64_t address, int64_t length) const {
+    PackedByteArray out;
+    const uint8_t* ram = started ? rta_library().rtag_memory() : nullptr;
+    if (!ram || address < 0 || length <= 0 || length > 0x400000 || address + length > memory_size()) return out;
+    out.resize(length);
+    memcpy(out.ptrw(), ram + address, (size_t)length);
+    return out;
+}
+bool RtaMachine::poke_bytes(int64_t address, const PackedByteArray& bytes) {
+    uint8_t* ram = started ? const_cast<uint8_t*>(rta_library().rtag_memory()) : nullptr;
+    if (!ram || address < 0 || bytes.size() <= 0 || address + bytes.size() > memory_size()) return false;
+    memcpy(ram + address, bytes.ptr(), (size_t)bytes.size());
+    return true;
+}
+
 void RtaMachine::_bind_methods() {
     ClassDB::bind_method(D_METHOD("load_library", "path"), &RtaMachine::load_library);
     ClassDB::bind_method(D_METHOD("change_directory", "path"), &RtaMachine::change_directory);
@@ -572,6 +590,8 @@ void RtaMachine::_bind_methods() {
     ClassDB::bind_method(D_METHOD("peek_u32", "address"), &RtaMachine::peek_u32);
     ClassDB::bind_method(D_METHOD("peek_f32", "address"), &RtaMachine::peek_f32);
     ClassDB::bind_method(D_METHOD("peek_string", "address", "max_bytes"), &RtaMachine::peek_string);
+    ClassDB::bind_method(D_METHOD("peek_bytes", "address", "length"), &RtaMachine::peek_bytes);
+    ClassDB::bind_method(D_METHOD("poke_bytes", "address", "bytes"), &RtaMachine::poke_bytes);
     ClassDB::bind_method(D_METHOD("get_lights", "at", "radius", "max_count"), &RtaMachine::get_lights);
 }
 

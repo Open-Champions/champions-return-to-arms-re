@@ -33,6 +33,7 @@ extends Node
 #   --godot-shots DIR   write Godot's capture for every "app shot" into DIR (by file name) instead
 #   --unpaced           as fast as it goes (tests)
 #   --mute              no sound is heard (the sound side still runs)
+#   --control PORT      test aid: a control port on 127.0.0.1 (dev/control.gd; tools/recomp/app/playtest.py drives it)
 #   --no-sound          the sound side is not driven by Godot's audio at all (rendered on the machine's clock)
 #   --test TEXT         a test run: small window titled "AGENT TEST - TEXT" that takes no keyboard, silent
 #   --stop-after N      quit after N vertical blanks
@@ -140,6 +141,7 @@ var opt := {
 	# cut scenes and films (cinematic.gd, docs/issues/native-cutscenes.md): "" = as the edition says (Remastered on), on | off
 	"cinematic": "",
 	"audio_tap": "",                    # test aid: the master bus into a WAV file (dev/audio_tap.gd)
+	"control": 0,                       # test aid: a control port on 127.0.0.1 (dev/control.gd)
 }
 var speed := {"usec": 0, "cpu": 0.0, "blanks": 0, "last": 0, "late": 0, "worst": 0}
 signal session_over(why: String)
@@ -165,6 +167,7 @@ var tween_back := 0.0                   # 1: the pictures between game frames in
 var tester: Node                        # testerkit.gd: the bug report (F8, L3 + R3), the build line (F9)
 var player: AudioStreamPlayer
 var audio_tap: Node                     # dev/audio_tap.gd (--audio-tap)
+var control: Node                       # dev/control.gd (--control)
 var started := false
 var message := ""
 var clock := 0.0                        # time owed to the machine
@@ -310,6 +313,7 @@ func _parse_arguments() -> void:
 			"--unpaced": opt.unpaced = true
 			"--mute": opt.mute = true
 			"--audio-tap": opt.audio_tap = value; k += 1
+			"--control": opt.control = value.to_int(); k += 1
 			"--no-sound": opt.no_sound = true
 			"--test": opt.test = value; k += 1
 			"--stop-after": opt.stop_after = value.to_int(); k += 1
@@ -604,6 +608,12 @@ func _start() -> void:
 	_display_rate(refresh)
 	started = true
 	started_usec = Time.get_ticks_usec()
+	if opt.control > 0:
+		control = Node.new()
+		control.set_script(load("res://dev/control.gd"))
+		control.set("main", self)
+		add_child(control)
+		control.call("start", opt.control)
 	_apply_cinematic()
 	if opt.net2_flow != "":
 		var flow := Node.new()
@@ -913,6 +923,13 @@ func _read_pad() -> void:
 	if scene_view != null and scene_view.call("takes_input"):
 		rx = 128
 		ry = 128
+	if control != null and control.get("held"):
+		var held_sticks: Array = control.get("sticks")
+		buttons = int(control.get("buttons"))
+		lx = held_sticks[0]
+		ly = held_sticks[1]
+		rx = held_sticks[2]
+		ry = held_sticks[3]
 	last_buttons = buttons
 	last_sticks = [lx, ly, rx, ry]
 	machine.set_pad(0, buttons, lx, ly, rx, ry)
@@ -983,6 +1000,12 @@ func _host_command(text: String) -> void:
 		tester.call("command", w, text)     # the bug report (testerkit.gd)
 	else:
 		push_warning("app command not known: " + text)
+
+
+func frame_mark(text: String) -> void:
+	# test aid: a named moment in the frame log (dev/control.gd marks what its commands cost)
+	if opt.frame_log != "":
+		frame_rows.append("M,%d,%s" % [blanks, text])
 
 
 func _joy_state(bits: int, values: Array) -> void:
@@ -1082,6 +1105,8 @@ func _process(delta: float) -> void:
 		return
 	var t0 := Time.get_ticks_usec()
 	_write_pending_shots()
+	if control != null:
+		control.call("poll")
 	var got_any := false
 	if opt.unpaced:
 		# as fast as it goes: with Godot drawing, one list per rendered frame (every one is drawn);

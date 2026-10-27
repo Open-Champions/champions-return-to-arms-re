@@ -115,8 +115,11 @@ func open_portal(size: Vector2i, setup := {}, options := {}) -> void:
 	add_child(vp)
 	view.texture = vp.get_texture()
 	portal = (load("res://portal/portal.tscn") as PackedScene).instantiate()
-	var o := {"embedded": true, "test": "pictures", "data": data, "mock": true, "mock_speed": speed, "stub_game": true, "service": "",
-		"start": "home" if setup.has("name") else ""}     # (the pictures of before the first screen asked which game: home)
+	# the portal's own defaults first (every key it reads: host_party, join_code ... - a key missing here was a script
+	# error at every frame of a walk), then this walk's
+	var o: Dictionary = (portal.options as Dictionary).duplicate()
+	o.merge({"embedded": true, "test": "pictures", "data": data, "mock": true, "mock_speed": speed, "stub_game": true, "service": "",
+		"start": "home" if setup.has("name") else ""}, true)     # (the pictures of before the first screen asked which game: home)
 	o.merge(options, true)
 	portal.options = o
 	UI.pad_glyphs = bool(setup.get("pad", false))

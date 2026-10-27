@@ -71,6 +71,8 @@ class RtaMachine : public RefCounted {
     int64_t peek_u32(int64_t address) const;
     double peek_f32(int64_t address) const;
     String peek_string(int64_t address, int max_bytes) const;
+    PackedByteArray peek_bytes(int64_t address, int64_t length) const;   // test aid (main.gd --control)
+    bool poke_bytes(int64_t address, const PackedByteArray& bytes);     // test aid (main.gd --control): a write into the game's memory
     // The game's point lights (docs/spec/render-pipeline.md 5.2): the light nodes of its 90 x 90 grid of 256-unit cells
     // (g_lightGrid 0x5d34d8, origin -11520) and of its overflow list, of the current layer, within `radius` of `at` (the
     // game's world: z up).  Each {address, position, colour (the level's, 0x80 = 1), model_colour, radius (+0x1c: what the
