@@ -14,6 +14,9 @@
   python3 tools/recomp/app/playtest.py RUN clear [--timeout S]           # the level: fight, loot, everything reachable
   python3 tools/recomp/app/playtest.py RUN tap BUTTONS [HOLD] [AFTER] | hold BUTTONS FRAMES | stick X Y FRAMES
   python3 tools/recomp/app/playtest.py RUN put X Y [Z]                   # a teleport: the last resort, logged as one
+  python3 tools/recomp/app/playtest.py RUN burst NAME N [--level L] [--press B]   # pictures of N consecutive frames
+                                                                         # (RUN/burst-NAME/), after the level change to L or
+                                                                         # a press of B asked for (all three programs)
   python3 tools/recomp/app/playtest.py RUN quit
 
 RUN is a directory (local/playtest/NAME): the program's output, its data folder (memory card), pictures, run.json (how
@@ -151,7 +154,7 @@ class NativePort:
     def read(self, address, length):
         out = b''
         while length > 0:
-            n = min(length, 0x10000)
+            n = min(length, 0x1000 if self.kind == 'emu' else 0x10000)     # the emulator's peek: 4096 bytes at most
             out += bytes.fromhex(self.c.ok('peek 0x%x hex%d' % (address, n)))
             address += n
             length -= n
@@ -285,6 +288,18 @@ class Run:
                 out.append(o)
         return out
 
+    def creature_at(self, addr):
+        """One creature's record read alone (cheap): None when it is gone, dead or no longer that creature."""
+        raw = self.port.read(addr, OBJ_HP_MAX + 4)
+        x, y, z = struct.unpack_from('<3f', raw, OBJ_POS)
+        hp, top = struct.unpack_from('<2f', raw, OBJ_HP)
+        flags = struct.unpack_from('<I', raw, OBJ_FLAGS)[0]
+        if not (flags & FLAG_CREATURE) or not all(math.isfinite(v) for v in (x, y, z, hp, top)) or hp <= 0 or top <= 0:
+            return None
+        me = self.pos() or (x, y, z)
+        return {'addr': addr, 'cls': self.names.get(struct.unpack_from('<I', raw, OBJ_CLASS)[0], '?'), 'x': x, 'y': y, 'z': z,
+                'hp': hp, 'hp_max': top, 'd': math.hypot(x - me[0], y - me[1]), 'dz': z - me[2]}
+
     def creatures(self, me=None):
         me = me or self.pos()
         found = []
@@ -315,6 +330,68 @@ class Run:
         time.sleep(0.15)
         self._look(path)
         return path
+
+    def burst(self, name, n, level=None, press=None):
+        """Pictures of n consecutive frames as the program shows them (single-frame spacing), into RUN/burst-NAME/: the
+        Godot copy's control port pictures each game frame it draws (f-FRAME-DRAWS.png), the native program each
+        vertical blank (an "app shot" a blank, pipelined), the emulator each presented picture (its own burst).  First,
+        when asked, the game's own level change to `level` (the pending name, as an exit writes it) or a press."""
+        out = os.path.join(self.dir, 'burst-' + name)
+        os.makedirs(out, exist_ok=True)
+        before = []
+        if level:
+            before.append(('pending', level))
+        if press:
+            before.append(('press', press))
+        kind = self.meta['kind']
+        if kind == 'godot':
+            self.port.cmd('frameshots %s %d' % (out, n))
+            for what, value in before:
+                if what == 'pending':
+                    self.port.write(G_PENDING, value.encode('latin-1') + b'\0')
+                else:
+                    self.pad(value.split('+'))
+            time.sleep(0.15)
+            self.pad()
+            time.sleep(n / 30.0 + 2)
+        elif kind == 'native':
+            c = self.port.c
+            lines = []
+            for what, value in before:
+                # (a press held through the first six pictures: "tap" would hold the commands after it until let go)
+                lines.append('poke 0x%x str %s' % (G_PENDING, value) if what == 'pending' else 'press ' + value)
+            for k in range(n):
+                lines += ['app shot %s/f-%04d.png' % (out, k), 'wait 1']
+                if k == 5 and press:
+                    lines.append('release ' + press)
+            c.file.write('\n'.join(lines) + '\n')
+            c.file.flush()
+            for _ in lines:
+                answer = c.file.readline()
+                if not answer.startswith('ok'):
+                    self.log('burst: %s' % answer.strip())
+            time.sleep(1.0)
+        else:
+            for what, value in before:
+                if what == 'pending':
+                    self.port.write(G_PENDING, value.encode('latin-1') + b'\0')
+                else:
+                    self.port.c.ok('press ' + value)
+            self.port.c.ok('burst %s/f %d' % (out, n))
+            if press:
+                self.port.c.ok('release ' + press)
+            time.sleep(1.0)
+            try:
+                from PIL import Image
+                for f in sorted(os.listdir(out)):
+                    if f.endswith('.bmp'):
+                        image = Image.open(os.path.join(out, f))
+                        image.convert('RGB').resize((image.height * 4 // 3, image.height)).save(os.path.join(out, f[:-4] + '.png'))
+                        os.remove(os.path.join(out, f))
+            except Exception as error:
+                self.log('burst: %s' % error)
+        self.log('burst %s: %d frames into %s%s' % (name, n, out, ' after the level change to ' + level if level else ''))
+        return out
 
     def _look(self, path):
         # the picture: wholly black, white or one colour is a suspect (a load's own black is told apart by the caller)
@@ -1086,9 +1163,21 @@ def launch(args):
                    '--rta-test', 'classic playtest reference - silent, no network', '--rta-no-net', '--rta-control', sock]
         meta['socket'] = sock
         env = dict(os.environ)
+        # silent: Play! has no option for it, its settings do (audio.enableoutput); written before the first start, set
+        # to false in a settings file already there
+        config = os.path.join(data, 'config.xml')
+        if not os.path.exists(config):
+            with open(config, 'w') as sink:
+                sink.write('<Config>\n\t<Preference Name="audio.enableoutput" Type="boolean" Value="false" />\n</Config>\n')
+        else:
+            text = open(config).read()
+            quiet = text.replace('"audio.enableoutput" Type="boolean" Value="true"', '"audio.enableoutput" Type="boolean" Value="false"')
+            if quiet != text:
+                open(config, 'w').write(quiet)
     else:
         sock = '/tmp/rta-playtest-%d.sock' % os.getpid()
-        command = [args.program, '--disc', DISC, '--data', data, '--test', 'classic playtest', '--window', '640x448', '--control', sock]
+        command = [args.program, '--disc', DISC, '--data', data, '--test', 'classic playtest', '--window', '640x448', '--control', sock,
+                   '--mute']
         meta['socket'] = sock
         env = dict(os.environ)
     command += args.extra
@@ -1364,8 +1453,13 @@ def boss_fight(r, minutes=12.0):
     r.log('sweep: the boss of %s: %s, %.0f hit points' % (level, boss['cls'], boss['hp_max']))
     r.shot('boss')
     start = time.time()
+    near = {}
     while time.time() - start < minutes * 60 and r.level() == level:
-        b = [c for c in r.creatures() if c['addr'] == boss['addr'] and c['hp'] > 0]
+        # the boss's own record only (a read of the whole pool at every swing left the native program's character a
+        # swing every second or two under load: act bosses outlived the six minutes; the emulator's 4 KB peeks worse)
+        b = r.creature_at(boss['addr'])
+        if b and b['cls'] != boss['cls']:
+            b = None
         if not b:
             r.log('sweep: the %s of %s is down after %.0f s' % (boss['cls'], level, time.time() - start))
             r.shot('boss-down')
@@ -1380,7 +1474,6 @@ def boss_fight(r, minutes=12.0):
                     r.answer(8)
                 time.sleep(2)
             return True
-        b = b[0]
         if time.time() - start > 150 and not r.state.get('weakened_' + level):
             # the last resort, logged: a character of a low level does next to nothing to an act's boss; its hit points
             # written down to a twentieth so that its death, its scene and the level's end come the game's own way
@@ -1389,15 +1482,24 @@ def boss_fight(r, minutes=12.0):
             r.port.write(b['addr'] + OBJ_HP, struct.pack('<f', max(1.0, b['hp_max'] * 0.05)))
             r.log('LAST RESORT: the %s of %s down to %.0f hit points (of %.0f) for the character to finish' % (
                 b['cls'], level, b['hp_max'] * 0.05, b['hp_max']))
-        if b['d'] > 120:
-            if r.travel(b['x'], b['y'], radius=90, timeout=90, label='boss') in ('stuck', 'timeout') and b['d'] > 400:
+        if b['d'] > 120 and not (near.get('wall') and b['d'] < near['wall'] + 60):
+            result = r.travel(b['x'], b['y'], radius=90, timeout=90, label='boss')
+            if result in ('stuck', 'timeout') and b['d'] > 400:
                 r.teleport(b['x'] - 80, b['y'] - 80, b['z'] + 5, 'the way to the boss not found')
+            after = r.creature_at(boss['addr'])
+            if after and after['d'] > 120 and after['d'] > b['d'] - 30 and b['d'] <= 400:
+                near['wall'] = after['d']      # no nearer than this (its body, a ledge): struck from here
+                r.log('sweep: the %s stays %.0f away (its body or the ground between): struck from there' % (b['cls'], after['d']))
             continue
         # the boss itself: beside it, facing it, the attack (the others round it are struck on the way)
         me = r.pos()
         dx, dy = b['x'] - me[0], b['y'] - me[1]
         lx, ly = r.stick_toward(dx, dy)
-        if b['d'] > 50:
+        # a large creature (fire5's dragon) is struck at its body's edge: its own place stays out of reach, so once the
+        # character stops getting closer it swings from where it stands, facing it
+        if b['d'] < near.get('best', 1e9) - 5:
+            near['best'], near['t'] = b['d'], time.time()
+        if b['d'] > 50 and time.time() - near.get('t', time.time()) < 3:
             r.pad((), lx, ly)
             time.sleep(0.15)
             continue
@@ -1476,6 +1578,8 @@ def main():
     parser.add_argument('--near', type=float, default=0)
     parser.add_argument('--cls', default='')
     parser.add_argument('--hold', type=int, default=10)
+    parser.add_argument('--level', default='')
+    parser.add_argument('--press', default='')
     a = parser.parse_args(rest)
     r.log('> %s %s' % (what, ' '.join(rest)))
     try:
@@ -1586,6 +1690,8 @@ def main():
                 if cam:
                     r.port.write(cam + 0x16D, b'\x05')
                 time.sleep(0.08)
+        elif what == 'burst':
+            print(r.burst(a.pos[0], int(a.pos[1]) if len(a.pos) > 1 else 60, level=a.level or None, press=a.press or None))
         elif what == 'app':
             r.port.app(' '.join(a.pos))
         elif what == 'raw':
