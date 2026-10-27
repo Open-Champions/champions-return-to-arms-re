@@ -3,6 +3,7 @@
 #include "rta_variant.h"
 
 #include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/core/class_db.hpp>
@@ -601,6 +602,12 @@ void RtaDrawer::redraw(double t) {
         tween_global = true;            // (scene_view.gd adds the global: only a host that asks for pictures between sets it)
         s->global_shader_parameter_set("rta_tween", Vector4((real_t)t, 0, 0, 0));
     }
+    // In the refresh of a submit its passes are still to be rendered, every one of them: a picture asked for again then
+    // (a cut scene's pictures drawn a frame behind: main.gd tween_back) only moves the camera and the kept models.  Left
+    // to the loop below, it switched off every surface but the world and the one shown - a cut scene's own surfaces (what
+    // the shown one copies from) were then never rendered at all, and its pictures alternated between a nearly black one
+    // and a stale one from before the scene (playtest-remastered.md glitch 3)
+    if (Engine::get_singleton()->get_process_frames() == submit_process_frame) { redraws++; return; }
     for (Pass* pass : all_passes) s->viewport_set_active(pass->viewport, false);
     for (Pass* pass : last_order) {
         s->viewport_set_active(pass->viewport, true);
@@ -903,6 +910,7 @@ void RtaDrawer::submit() {
     // the viewports in order: activated one after the other, each rendered once
     for (Pass* pass : all_passes) s->viewport_set_active(pass->viewport, false);
     last_order.clear();
+    submit_process_frame = Engine::get_singleton()->get_process_frames();
     if (scene_mode && tween_global) s->global_shader_parameter_set("rta_tween", Vector4(0, 0, 0, 0));
     static int pass_log = getenv("RTA_PASS_LOG") ? atoi(getenv("RTA_PASS_LOG")) : 0;    // test aid: the passes of every 600th list
     if (pass_log > 0 && frames % 600 == 0) {

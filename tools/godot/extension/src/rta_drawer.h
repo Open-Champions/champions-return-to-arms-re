@@ -209,6 +209,7 @@ class RtaDrawer : public RefCounted {
     float last_aspect = 0;
     // figures
     uint64_t redraws = 0, passes_skipped = 0;
+    uint64_t submit_process_frame = ~0ull;     // Engine process frame of the last submit (redraw: its passes not yet rendered)
     bool scene_drops_blob(const rtag_frame& f, const rtag_draw& d) const;      // rta_scene.cpp: scene_take leaves this draw out
     bool tween_global = false;                      // redraw has set the global rta_tween: submit puts it back to 0
     uint64_t draws_submitted = 0, vertices_submitted = 0, materials_made = 0, meshes_made = 0, passes_rendered = 0, stale_reads = 0, approximated = 0,

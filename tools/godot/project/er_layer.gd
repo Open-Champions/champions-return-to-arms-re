@@ -753,7 +753,7 @@ func _gltf(path: String) -> Variant:
 						return null
 					var i := materials.size()
 					var m := mesh.surface_get_material(i)
-					materials.append(_armour_material(m, String(m.resource_name) if m != null else "", _surface_turned(mesh, i)))
+					materials.append(_armour_material(m, String(m.resource_name) if m != null else "", _surface_turned(mesh, i), path))
 					ResourceBudget.end(started)
 				ordered_materials[mesh] = materials
 			l.erase("render_mesh")
@@ -1514,6 +1514,22 @@ func _draw_figure(t: Dictionary) -> void:
 			RenderingServer.instance_set_visible(weapons[key].instance, false)
 			depth.visible(weapons[key].instance, false)
 			(weapons[key] as Dictionary).erase("now")
+	# the game's own light on the figure - its level's ambient and sun, the torches near it, its hit flash and poison - as a
+	# fitted outfit takes it (_draw_fitted): without it a creature's pieces had only the scene's light on their full
+	# texture, far brighter than the game's own figures in a dark level (strife's soldiers pale white beside its orcs:
+	# playtest-remastered.md glitch 10).  Every second frame (the light grid walk is the costly part)
+	if now_frame - int(f.get("light_frame", -10)) >= 2 or not f.has("light"):
+		f["light"] = _game_light(int(p.state), root_at)
+		f["light_frame"] = now_frame
+	var light: Dictionary = f.light
+	var lit: Array = []
+	for e in f.instances:
+		lit.append(e.instance)
+	for key in weapons:
+		lit.append(weapons[key].instance)
+	for inst in lit:
+		for key in light:
+			RenderingServer.instance_geometry_set_shader_parameter(inst, key, light[key])
 	f["drawn_frame"] = now_frame
 
 
@@ -2579,7 +2595,7 @@ func _game_light(state: int, at: Vector3) -> Dictionary:
 # (the white streaks); the light the level's own (er_fit.cfg [look] tunes it).
 var _alpha_seen := {}
 const CARD_WORDS := ["hair", "fur", "feather", "cloth", "tatter", "fringe", "lace", "mane", "beard", "leaf", "rope"]
-func _armour_material(src: Material, name: String, flip: bool) -> ShaderMaterial:
+func _armour_material(src: Material, name: String, flip: bool, path := "") -> ShaderMaterial:
 	if armour_shader == null:
 		armour_shader = load("res://shaders/er_armour.gdshader")
 	var sm := ShaderMaterial.new()
@@ -2610,6 +2626,21 @@ func _armour_material(src: Material, name: String, flip: bool) -> ShaderMaterial
 						cut = 0.5
 					break
 	sm.set_shader_parameter("cut", cut)
+	# hair cards whose picture is a dark strand mask, coloured by the other game's hair shader (a colour we do not have):
+	# drawn as they are, the demi-humans' thin near-black strands over their pale hide were a scatter of black specks
+	# (playtest-remastered.md glitch 11).  er_creatures.cfg [hair] gives the model's hair its colour
+	if path.contains("/creatures/"):
+		var folder := path.get_base_dir().get_file()
+		var ccfg := _creature_table()
+		if cut >= 0.0 and name.to_lower().contains("hair") and ccfg.has_section_key("hair", folder):
+			var hc: Array = ccfg.get_value("hair", folder)
+			sm.set_shader_parameter("hair_tint", Color(float(hc[0]), float(hc[1]), float(hc[2]), 1.0))
+		# a model painted much lighter than the game's figures it stands for (the soldier's pale steel for strife's dark
+		# orcs, playtest-remastered.md glitch 10): its colours toned down to sit beside them (er_creatures.cfg [tone])
+		if ccfg.has_section_key("tone", folder):
+			var k := float(ccfg.get_value("tone", folder))
+			var ac: Color = sm.get_shader_parameter("albedo_colour") if sm.get_shader_parameter("albedo_colour") != null else Color(1, 1, 1, 1)
+			sm.set_shader_parameter("albedo_colour", Color(ac.r * k, ac.g * k, ac.b * k, ac.a))
 	# fabric and leather (by the material's name): the soft light along a cape's outline
 	var lname := name.to_lower()
 	for w in ["fab", "cloth", "leather", "cape", "apron", "muffler", "robe", "skirt", "fur", "tatter"]:

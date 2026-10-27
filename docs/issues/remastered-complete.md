@@ -353,3 +353,9 @@ markers over card screens, cut scenes at 120 Hz alternating black and stale pict
 a wide picture, two HUD overlaps, the portal's script error in the test window, the test window's party-size answer.
 Open: the hub's sky above its dome, pale Elden Ring soldiers, speckled demi-human fur, Natasla's round inset, the first
 pause picture without the player, the frame rate on a loaded machine.
+
+Round 2 (same day): the hub's blue cap was the front end's fly-over sky learnt from the frames still in flight at the
+level change (the hub's own dome edge never learnt) - fixed, and with it blood1's and strife's carried-over lavender
+dome; Elden Ring creatures now take the game's light on the figure as the players' outfits do, the soldier toned down
+and the demi-humans' hair coloured; the cut scenes' "frame behind" pictures fixed in `RtaDrawer::redraw` and on again;
+the pause menu's first picture and Natasla's barrel are the game's own. Open: the frame rate on a loaded machine.

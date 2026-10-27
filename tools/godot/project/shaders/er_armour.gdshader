@@ -39,6 +39,7 @@ uniform float form = 1.0;               // round 5: the form light, sky from abo
 uniform float fold_dark = 0.55;         // how dark a deep fold (a strongly turned normal map, a concave bend) gets
 uniform float sheen = 0.5;              // cloth: the soft light along its silhouette (of the game models' rim light)
 uniform bool cloth = false;             // a fabric / leather piece (er_layer.gd by the material's name), not metal
+uniform vec4 hair_tint = vec4(0.0);     // a: 1 - a hair card whose picture is a dark strand mask: its colour (er_creatures.cfg [hair])
 // (round 5) the game's own light change for this figure - the hit flash, poison, chill, status colours (docs/lighting.md
 // section 1) - is in game_amb: er_layer.gd adds it to the figure's ambient as Creature_draw does
 // and the light the game gives the figure's model (er_layer.gd _game_light, docs/lighting.md section 2): ambient (a 1:
@@ -88,6 +89,10 @@ void fragment() {
 	ALPHA = 0.0;
 #else
 	ALPHA = 1.0;
+	if (hair_tint.a > 0.5) {
+		// the strands' own shading kept, round the hair's colour (the mask's strands are 0.08 - 0.16, their soft ends lighter)
+		a.rgb = hair_tint.rgb * (0.6 + 1.4 * dot(a.rgb, vec3(0.3, 0.59, 0.11)));
+	}
 	vec3 base = clamp(a.rgb * gain, vec3(0.0), vec3(1.0));
 	float rough = 0.7;
 	float metal = 0.0;

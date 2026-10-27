@@ -115,6 +115,11 @@ struct RtaDrawer::Scene {
     double bright_sum[4] = {0, 0, 0, 0};    // direction of the dome's light part, weighted
     std::unordered_map<uint32_t, SkyTexture> sky_textures;
     std::unordered_set<uint64_t> ring_done;
+    // the dome learnt is made of these packets (rtag_scene_piece::mesh); at a level's start those of the level before are
+    // not learnt from for a while (`dome_before`, `dome_settle` frames: sky_reset); a level that goes on without a dome
+    // forgets one (`dome_absent`)
+    std::unordered_set<uint64_t> dome_meshes, dome_before;
+    int dome_settle = 0, dome_absent = 0;
     // Where the level's light comes from.  The game's levels are lit in their textures (every placed chunk has its own
     // pre-lit texture: docs/formats/world.md), so the direction is in the picture, not in the data: per texture, how the
     // brightness of its texels goes with the normals of the vertices that carry them (their covariance); summed over the
@@ -123,6 +128,18 @@ struct RtaDrawer::Scene {
     double sun_weight = 0;
     uint64_t sun_samples = 0;
     uint64_t fills_dropped = 0, dome_draws = 0, near_faded = 0;
+    // what was learnt of a dome: its edges, its ring, its textures (RtaDrawer::sky_reset, scene_scan_sky)
+    void forget() {
+        dome = false;
+        top = -10.0f; bottom = 10.0f;
+        memset(ring_sum, 0, sizeof ring_sum); memset(ring_n, 0, sizeof ring_n);
+        memset(bright_sum, 0, sizeof bright_sum);
+        sky_textures.clear();
+        ring_done.clear();
+        dome_meshes.clear();
+        dome_absent = 0;
+        ring_version++;
+    }
     Scene() { memset(ring_sum, 0, sizeof ring_sum); memset(ring_n, 0, sizeof ring_n); memset(ring, 0, sizeof ring); }
     bool packets = true;                // draw the packets' complete geometry where the tap has it (false: the list's own triangles)
     std::unordered_set<uint32_t> hidden;    // objects left out (set_hidden_objects)
@@ -402,16 +419,22 @@ static void pn_triangle(const rtag_scene_full* c[3], const Vector3 wn[3], int n,
 }
 
 
+// A level's start: what was learnt of the dome is forgotten.  The name of the level changes in the game's memory before
+// the last frames of the level before have been drawn and taken, and those frames carry its dome: the hub learnt the
+// front end's blue fly-over sky so (its ring 5b73a2 against the hub dome's own lavender, its top at 90 degrees - the hub
+// dome's own upper edge, at 18, never rose above it, so its ring was never learnt: a blue cap with a hard edge above the
+// dome, playtest-remastered.md glitch 9), and blood1 the hub's dome.  So the packets of the dome before are not learnt from
+// for a while (dome_before, dome_settle: scene_scan_sky), and a level that goes on without a dome forgets one.
 void RtaDrawer::sky_reset() {
     if (!scene) return;
     Scene& sc = *scene;
-    sc.dome = false; sc.have_clear = false;
-    sc.top = -10.0f; sc.bottom = 10.0f;
-    memset(sc.ring_sum, 0, sizeof sc.ring_sum); memset(sc.ring_n, 0, sizeof sc.ring_n);
-    memset(sc.bright_sum, 0, sizeof sc.bright_sum);
-    sc.sky_textures.clear();
-    sc.ring_done.clear();
-    sc.ring_version++;
+    // the frames still to come of the level before (the tap's thread, the list in flight) carry its dome: not this level's
+    if (!sc.dome_meshes.empty()) {
+        sc.dome_before = sc.dome_meshes;
+        sc.dome_settle = 90;
+    }
+    sc.forget();
+    sc.have_clear = false;
     sc.sun_sum[0] = sc.sun_sum[1] = sc.sun_sum[2] = 0;
     sc.sun_weight = 0;
     sc.sun_samples = 0;
@@ -500,8 +523,29 @@ void RtaDrawer::scene_scan_sky(const rtag_frame& f, const Target& world) {
             }
         }
     }
+    // The level before's dome, in the first frames after a level's start (sky_reset): not learnt from - the hub learnt the
+    // front end's fly-over sky so (playtest-remastered.md glitch 9)
+    if (sc.dome_settle > 0) {
+        sc.dome_settle--;
+        bool before = false;
+        for (uint32_t i = 0; i < found.size() && !before; i++) {
+            const rtag_draw& d = f.draws[found[i]];
+            for (uint32_t k = 0; k < d.scene_piece_count && !before; k++) before = sc.dome_before.count(tap->pieces[d.scene_piece_first + k].mesh) != 0;
+        }
+        if (before) return;                             // (drawn as a dome all the same)
+    }
+    // A dome known, and frames without one (the world drawn and cleared all the while) for two seconds: the level has none
+    if (found.empty()) {
+        if (sc.dome && sc.fill_draw >= 0 && ++sc.dome_absent >= 120) sc.forget();
+        return;
+    }
+    sc.dome_absent = 0;
+    for (uint32_t i : found) {
+        const rtag_draw& d = f.draws[i];
+        for (uint32_t k = 0; k < d.scene_piece_count; k++) sc.dome_meshes.insert(tap->pieces[d.scene_piece_first + k].mesh);
+    }
     sc.dome_draws += found.size();
-    if (found.empty() || !sc.have_clear) return;
+    if (!sc.have_clear) return;
     sc.dome = true;
     bool changed = false;
     if (frame_top > sc.top + 0.02f) {                   // a higher ring came into view: the edge is there
