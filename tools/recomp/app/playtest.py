@@ -907,6 +907,9 @@ class Run:
         start = time.time()
         level = self.level()
         skip = set()
+        if self.state.get('unreachable_level') != level:
+            self.unreachable = set()
+            self.state['unreachable'], self.state['unreachable_level'] = [], level
         while time.time() - start < timeout:
             if self.level() != level:
                 return 'level'
@@ -1035,6 +1038,9 @@ class Run:
             self.suspect('load', 'the level %s did not start within %.0f s' % (self.level(), timeout))
             return False
         took = time.time() - start
+        if self.state.get('unreachable_level') != self.level():
+            self.unreachable = set()            # (object addresses are the pool's: a new level's are other creatures)
+            self.state['unreachable'], self.state['unreachable_level'] = [], self.level()
         if self.state.get('invulnerable') and self.state['invulnerable'] != self.level():
             self.port.write(G_INVULNERABLE, struct.pack('<I', 0))
             self.log('invulnerability off again (left %s)' % self.state.pop('invulnerable'))
