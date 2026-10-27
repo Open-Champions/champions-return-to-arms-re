@@ -1021,9 +1021,15 @@ class Run:
     def arrive(self, timeout=180.0):
         """After a level change: until the new level plays (the load, its scene skipped, a notice answered)."""
         start = time.time()
+        held_since = None
         while time.time() - start < timeout:
             if not (self.u32(G_PENDING) & 0xff) and self.pos() and self.u32(G_SIM_FRAME) > 20 and self.player()['hp'] > 0:
                 break
+            # loaded, but the game's clock stands: a notice box holds it ("OK") - answered as a player does
+            if self.pos() and not (self.u32(G_PENDING) & 0xff) and self.u32(G_SIM_FRAME) <= 20:
+                held_since = held_since or time.time()
+                if time.time() - held_since > 4:
+                    self.tap('cross', 6, 30)
             time.sleep(0.5)
         else:
             self.suspect('load', 'the level %s did not start within %.0f s' % (self.level(), timeout))
@@ -1357,8 +1363,26 @@ def boss_fight(r, minutes=12.0):
         if not b:
             r.log('sweep: the %s of %s is down after %.0f s' % (boss['cls'], level, time.time() - start))
             r.shot('boss-down')
+            # what the game does after it: a scene, a message, the mission's end and the way back - watched for 60 s
+            for k in range(30):
+                if r.level() != level:
+                    r.log('sweep: after the boss the game went to %s by itself' % r.level())
+                    r.arrive()
+                    break
+                if not r.camera_follows():
+                    r.shot('after-boss-scene')
+                    r.answer(8)
+                time.sleep(2)
             return True
         b = b[0]
+        if time.time() - start > 150 and not r.state.get('weakened_' + level):
+            # the last resort, logged: a character of a low level does next to nothing to an act's boss; its hit points
+            # written down to a twentieth so that its death, its scene and the level's end come the game's own way
+            r.state['weakened_' + level] = True
+            r.save()
+            r.port.write(b['addr'] + OBJ_HP, struct.pack('<f', max(1.0, b['hp_max'] * 0.05)))
+            r.log('LAST RESORT: the %s of %s down to %.0f hit points (of %.0f) for the character to finish' % (
+                b['cls'], level, b['hp_max'] * 0.05, b['hp_max']))
         if b['d'] > 120:
             if r.travel(b['x'], b['y'], radius=90, timeout=90, label='boss') in ('stuck', 'timeout') and b['d'] > 400:
                 r.teleport(b['x'] - 80, b['y'] - 80, b['z'] + 5, 'the way to the boss not found')

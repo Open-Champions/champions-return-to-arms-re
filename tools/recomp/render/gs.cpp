@@ -1716,6 +1716,14 @@ void Gs::kick(bool draw) {
                     bool field = weave && cmd_fst && !cur.tex_is_target && dy != 0 && fabsf(t1 - t0) * 2 == fabsf(dy) && th >= 4
                                  && fmodf(th, 2) == 0 && std::max(t0, t1) <= th + 0.5f;
                     if (field) {
+                        if (!cur_picture_height) {
+                            // woven by the size that was sent, the game's header not known (yet): when that is not the
+                            // picture's height, the second field is looked for in the wrong rows (garbled letters)
+                            stats.fields_unknown++;
+                            static const bool log_unknown = getenv("RTA_PICTURE_LOG") != nullptr;
+                            if (log_unknown) fprintf(stderr, "gs: field sprite of texture %u woven by the sent height %g (t %g..%g) at frame %llu\n", cur.texture,
+                                                     cur.tex_size[1], t0, t1, (unsigned long long)frames_ended);
+                        }
                         static const bool log_fields = getenv("RTA_GS_FIELDS") != nullptr;
                         if (log_fields) fprintf(stderr, "gs: field sprite y %g..%g t %g..%g picture height %d sent %g x %g tex %u TEX0 %016llx\n", (float)a.y / 16 - ofy / 16, (float)b.y / 16 - ofy / 16,
                                                 t0, t1, cur_picture_height, cur.tex_size[0], cur.tex_size[1], cur.texture,

@@ -40,6 +40,7 @@ struct GsStats {
     uint64_t surface_uploads = 0;       // rectangles sent straight into a displayed buffer
     uint64_t fogged = 0;                // primitives drawn with fogging
     uint64_t targets_held = 0, targets_freed = 0;
+    uint64_t fields_unknown = 0;        // two-field sprites woven by the size that was sent (their picture's height unknown)
     // Primitives drawn with a piece of GS state this model does not apply or only
     // approximates, by kind (Gs::APPROX_NAMES): what a scene needs is known by counting.
     uint64_t approx[16] = {0};
