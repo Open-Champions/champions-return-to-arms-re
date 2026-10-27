@@ -86,6 +86,13 @@ func _ready() -> void:
 	get_tree().quit(0)
 
 
+# Remastered asks a host the party size first (portal.gd host_game): its first entry, "Up to 4 players", is in focus
+func answer_party_size() -> void:
+	await wait(0.6)
+	if portal != null and int(portal.session.room().get("state", 0)) != 2 and not portal.session.in_room():
+		await key(KEY_ENTER)
+
+
 # ---- a portal in an off-screen viewport ----------------------------------------------------
 func open_portal(size: Vector2i, setup := {}, options := {}) -> void:
 	await close_portal()
@@ -750,6 +757,7 @@ func scenario_duo() -> void:
 		await wait(0.3)
 		await focus_key("host")
 		await key(KEY_ENTER)
+		await answer_party_size()
 		await until(func() -> bool: return int(portal.session.room().state) == 2, 20.0)
 		await wait(0.4)
 		me_says("hosting")
@@ -930,6 +938,7 @@ func scenario_duo2() -> void:
 	if role == "a":
 		await focus_key("host")
 		await key(KEY_ENTER)
+		await answer_party_size()
 		await until(func() -> bool: return int(portal.session.room().state) == 2, 30.0)
 		post("room", String(portal.session.room().code))
 		await wait(1.0)
@@ -1017,6 +1026,7 @@ func scenario_room5() -> void:
 		await wait(0.3)
 		await focus_key("host")
 		await key(KEY_ENTER)
+		await answer_party_size()
 		await until(func() -> bool: return int(portal.session.room().state) == 2, 30.0)
 		await wait(0.5)
 		me_says("hosting")
