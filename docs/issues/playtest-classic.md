@@ -45,7 +45,7 @@ character walks, fights and leaves by the game's own exits:
 
 | Run | Program | What |
 |---|---|---|
-| `g1`, `g2`, `g3`, `g4` | Godot Classic, **through the portal's Classic card** (`--portal`; `g1` `--edition classic`) | new game (Barbarian, the card's questions, the class, appearance, abilities, name); the hub: Firiona's offer, the mission portal, the mission menu; **Act 1 by play**: `blood1` fought through (deaths, a level-up through the game's screen, chests, barrels, gold, items, the save point), its exit to `strife`, `strife` fought through to its Orc boss; then `drunarm`, `drundar` (its Ogre "Thud"), `drunare` (the arena's knights and Cazic), `boar1`; acts 2-6 level by level (`innovat1` ... `torment3`, 30 levels in all, 4 bosses killed: Iron Guardian, Sea Monster, Ogre, Tormentor); a load of the card's save from the title (`Load Saved Game`) |
+| `g1`, `g2`, `g3`, `g4` | Godot Classic, **through the portal's Classic card** (`--portal`; `g1` `--edition classic`) | new game (Barbarian, the card's questions, the class, appearance, abilities, name); the hub: Firiona's offer, the mission portal, the mission menu; **Act 1 by play**: `blood1` fought through (deaths, a level-up through the game's screen, chests, barrels, gold, items, the save point), its exit to `strife`, `strife` fought through to its Orc boss; then `drunarm`, `drundar` (its Ogre "Thud"), `drunare` (the arena's knights and Cazic), `boar1`; acts 2-6 level by level (`innovat1` ... `disbonus`, 36 levels in all, 7 bosses killed: Iron Guardian, Sea Monster, Ogre, Tormentor, Black Widow, Gnaw Spawn, Minotaur); a load of the card's save from the title (`Load Saved Game`) |
 | `n4`, `n6` | native Classic program (`rta_app` built from main, `--as rta_app_playc`) | the same new game and mission flow; `blood1` and `strife` played (the strife Orc killed), the other Act 1 levels and acts 7-8 (`valor` ... `firbonus`, 15 levels) |
 | `room1` | two Godot Classic copies in one room (`roomparty.py --godot-control`, a rendezvous of its own on 127.0.0.1) | hub > `blood1`, the host played by the driver through its control port: **every tick in step (14,198)**, both launched and finished, 1 death |
 | `e1` | the emulator (Play!, no patch section) | the reference for each suspect below |
@@ -92,7 +92,7 @@ places; **low** - small, rare, or in test tools only.
 - **The shop**: Firiona's lines, the shop, a purchase (200,000 -> 196,828 gold), the sell list (`sl-g`).
 - **Deaths and restarts** (8 in `blood1` in Godot, 3 natively): the fall, the fade, the restart at the save.
 - **Bosses killed by play**: the strife Orc (both programs), and with the last resort above the Iron Guardian,
-  the Sea Monster, the Ogre of islgoth and the Tormentor (Godot).
+  the Sea Monster, the Ogre of islgoth, the Tormentor, the Black Widow, the Gnaw Spawn and the Minotaur (Godot).
 - **Online**: two Godot Classic copies, hub > blood1, played: 14,198 ticks in step, no shared column different.
 - **Logs**: no script error and no warning of ours in any game run (`godot.out`, `native.out`).
 - **Pictures** (about 4,900 taken, every eighth or so looked at in sheets of 16): no wrong or missing textures, z-fighting, stretched
