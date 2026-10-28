@@ -25,6 +25,7 @@
 // In scene mode (set_scene_mode) the draws the vertex programs made go into a 3-D world
 // instead: see rta_scene.cpp.
 #pragma once
+#include "rta_draw_timing.h"
 #include "rta_machine.h"
 #include "rta_pack.h"
 
@@ -136,9 +137,12 @@ class RtaDrawer : public RefCounted {
     static void _bind_methods();
 
   private:
+    using DrawTiming = rta_draw_timing::Profile<>;
+    DrawTiming draw_timing;
     struct Pass {                                   // one viewport
         RID viewport, scenario, camera, environment, texture;
         std::vector<RID> instances, meshes;
+        std::vector<RID> bases;                     // per instance: the last base assigned, including an unused slot's empty RID
         std::vector<uint64_t> shapes;               // per mesh of the pool: the vertex count and primitive it holds (mesh_for_flat), 0 other
         std::vector<uint8_t> overridden;            // per instance: it carries a material of its own (place_mesh)
         struct KeptInstance { RID rid, material; uint64_t used = 0; bool visible = true; };
@@ -207,6 +211,7 @@ class RtaDrawer : public RefCounted {
     void retire(RID rid);
     void collect_retired();
     struct Material { RID rid; uint64_t last_used = 0; };
+    std::string material_key_scratch;               // lookup scratch only; cached map keys own their bytes
     std::unordered_map<std::string, Material> materials;
     std::vector<Pass*> all_passes;
     Target* shown = nullptr;
@@ -249,6 +254,7 @@ class RtaDrawer : public RefCounted {
     RID place(Pass& pass, RID material, float order);
     RID place_mesh(Pass& pass, RID mesh, RID material, float order);
     RID instance_for(Pass& pass);
+    static void set_instance_base(RID instance, RID base, RID& bound_base);
     RID mesh_for(Pass& pass);
     RID mesh_for_flat(Pass& pass, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count);
     uint64_t flat_reused = 0;

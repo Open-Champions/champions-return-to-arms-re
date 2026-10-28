@@ -166,6 +166,210 @@ struct OutFrame {
 
 struct Note { uint64_t number; uint32_t sim_tick, flags; std::vector<std::string> shots, commands; rtag_view view; double released_ms = 0; };
 
+// Diagnostic only: one frame consumer (rtag.h), no game/decoder/stop-thread access.
+// Complete batches count ALL poll attempts, not rendered frames or Godot blanks.
+enum PollPart { PP_LOCK, PP_CONDITION, PP_POP_NOTIFY, PP_DRAW_HEADER, PP_AUX, PP_SCENE, PP_TOTAL, PP_PARTS };
+enum PollCount { PC_DRAWS, PC_VERTICES, PC_TEXTURES, PC_TARGETS, PC_SCENE_VERTICES, PC_PIECES, PC_FULL, PC_COUNTS };
+struct PollSample {
+    double part[PP_PARTS], begin_ms, end_ms;
+    uint64_t take_seq, native_list, count[PC_COUNTS];
+    uint32_t sim_tick;
+    int result, wait_ms;
+    bool scene_called;
+};
+struct PollTime {
+    uint64_t n = 0;
+    double sum_us = 0, max_us = 0;
+    void add(double us) { n++; sum_us += us; if (us > max_us) max_us = us; }
+};
+struct PollSize {
+    uint64_t n = 0, sum = 0, min = 0, max = 0;
+    void add(uint64_t value) { if (!n || value < min) min = value; if (!n || value > max) max = value; n++; sum += value; }
+};
+struct PollProfile {
+    enum { BATCH = 300, MAX_ROWS = 64 };
+    bool enabled;
+    // Private cut metadata stays on the one frame-consumer thread, outside measured phases.
+    enum { MAX_CUT_ROWS = 16, MAX_CUT_COMMANDS = 256 };
+    uint64_t cut_rows = 0, cut_span_success = 0, cut_span_take_first = 0, cut_span_take_last = 0;
+    uint64_t cut_span_native_first = 0, cut_span_native_last = 0, cut_span_native_steps = 0, cut_span_sim_decreases = 0, cut_span_aborted = 0;
+    uint64_t cut_last_native = 0;
+    uint32_t cut_last_sim = 0;
+    unsigned cut_seen = 0;
+    bool cut_failed = false, cut_context = false;
+    double prior_cut_us = 0;
+    uint64_t rows = 0, total_calls = 0, calls = 0, success = 0, empty = 0, terminal = 0, aborted = 0;
+    uint64_t nonblocking = 0, timed = 0, indefinite = 0, empty_nonblocking = 0, empty_timed = 0, scene_calls = 0;
+    uint64_t take_first = 0, take_last = 0, native_first = 0, native_last = 0, native_decreases = 0, sim_decreases = 0;
+    uint32_t sim_first = 0, sim_last = 0;
+    bool context_valid = false, before_valid = false;
+    uint64_t context_take = 0, context_native = 0, before_take = 0, before_native = 0;
+    uint32_t context_sim = 0, before_sim = 0;
+    double begin_ms = 0, end_ms = 0, prior_emit_us = 0;
+    PollTime time[PP_PARTS];
+    PollSize size[PC_COUNTS];
+    PollProfile() { const char* value = getenv("RTA_POLL_PROFILE"); enabled = value && strcmp(value, "1") == 0; }
+
+    // Fixed buffer; formatting/one stderr write happen only after the poll's queue lock is gone.
+    void emit(bool complete, bool terminal_stop) {
+        const double emit0 = now_ms();
+        char line[4096];
+        using U = unsigned long long;
+        int n = snprintf(line, sizeof line,
+            "rtag_poll_profile v=1 batch=%llu complete=%d terminal_stop=%d cap_trigger=%d calls=%llu call_first=%llu call_last=%llu "
+            "success=%llu empty=%llu terminal=%llu aborted=%llu nonblocking=%llu timed=%llu indefinite=%llu empty_nonblocking=%llu empty_timed=%llu "
+            "have_frames=%d take_first=%llu take_last=%llu native_first=%llu native_last=%llu native_decreases=%llu sim_first=%u sim_last=%u sim_decreases=%llu "
+            "ctx_before_valid=%d ctx_before_take=%llu ctx_before_native=%llu ctx_before_sim=%u ctx_after_valid=%d ctx_after_take=%llu ctx_after_native=%llu ctx_after_sim=%u "
+            "scene_calls=%llu begin_us=%.0f end_us=%.0f prior_emit_us=%.3f",
+            (U)(rows + 1), complete ? 1 : 0, terminal_stop ? 1 : 0, rows + 1 == MAX_ROWS ? 1 : 0,
+            (U)calls, (U)(total_calls - calls + 1), (U)total_calls, (U)success, (U)empty, (U)terminal, (U)aborted,
+            (U)nonblocking, (U)timed, (U)indefinite, (U)empty_nonblocking, (U)empty_timed,
+            success ? 1 : 0, (U)take_first, (U)take_last, (U)native_first, (U)native_last, (U)native_decreases,
+            sim_first, sim_last, (U)sim_decreases, before_valid ? 1 : 0, (U)before_take, (U)before_native, before_sim,
+            context_valid ? 1 : 0, (U)context_take, (U)context_native, context_sim,
+            (U)scene_calls, begin_ms * 1000, end_ms * 1000, prior_emit_us);
+        size_t used = n >= 0 && (size_t)n < sizeof line ? (size_t)n : sizeof line;
+        const char* names[PP_PARTS] = {"lock", "condition", "pop_notify", "draw_header", "aux", "scene_fill", "total"};
+        for (int i = 0; i < PP_PARTS && used < sizeof line; i++) {
+            n = snprintf(line + used, sizeof line - used, " %s_n=%llu %s_sum_us=%.3f %s_max_us=%.3f",
+                         names[i], (U)time[i].n, names[i], time[i].sum_us, names[i], time[i].max_us);
+            used = n >= 0 && (size_t)n < sizeof line - used ? used + (size_t)n : sizeof line;
+        }
+        const char* counts[PC_COUNTS] = {"draws", "vertices", "textures", "targets", "scene_vertices", "pieces", "full"};
+        for (int i = 0; i < PC_COUNTS && used < sizeof line; i++) {
+            n = snprintf(line + used, sizeof line - used, " %s_sum=%llu %s_min=%llu %s_max=%llu",
+                         counts[i], (U)size[i].sum, counts[i], (U)size[i].min, counts[i], (U)size[i].max);
+            used = n >= 0 && (size_t)n < sizeof line - used ? used + (size_t)n : sizeof line;
+        }
+        if (used + 1 < sizeof line) { line[used++] = '\n'; fwrite(line, 1, used, stderr); fflush(stderr); }
+        else { fputs("rtag_poll_profile_error buffer_overflow\n", stderr); enabled = false; }
+        rows++;
+        if (rows == MAX_ROWS || terminal_stop) enabled = false;
+        calls = success = empty = terminal = aborted = nonblocking = timed = indefinite = empty_nonblocking = empty_timed = scene_calls = 0;
+        take_first = take_last = native_first = native_last = native_decreases = sim_decreases = 0;
+        sim_first = sim_last = 0;
+        for (int i = 0; i < PP_PARTS; i++) time[i] = PollTime();
+        for (int i = 0; i < PC_COUNTS; i++) size[i] = PollSize();
+        prior_emit_us += (now_ms() - emit0) * 1000;
+    }
+    void add(const PollSample& sample) {
+        if (!calls) {
+            begin_ms = sample.begin_ms; before_valid = context_valid;
+            before_take = context_take; before_native = context_native; before_sim = context_sim;
+        }
+        end_ms = sample.end_ms; calls++; total_calls++;
+        if (sample.wait_ms == 0) nonblocking++; else if (sample.wait_ms > 0) timed++; else indefinite++;
+        if (sample.result == 1) {
+            if (!cut_span_success) { cut_span_take_first = sample.take_seq; cut_span_native_first = sample.native_list; }
+            if (cut_context && sample.native_list != cut_last_native + 1) cut_span_native_steps++;
+            if (cut_context && sample.sim_tick < cut_last_sim) cut_span_sim_decreases++;
+            cut_span_success++; cut_span_take_last = sample.take_seq; cut_span_native_last = sample.native_list;
+            cut_context = true; cut_last_native = sample.native_list; cut_last_sim = sample.sim_tick;
+            if (!success) {
+                take_first = sample.take_seq; native_first = sample.native_list; sim_first = sample.sim_tick;
+                if (context_valid && sample.native_list < context_native) native_decreases++;
+                if (context_valid && sample.sim_tick < context_sim) sim_decreases++;
+            }
+            else { if (sample.native_list < native_last) native_decreases++; if (sample.sim_tick < sim_last) sim_decreases++; }
+            take_last = sample.take_seq; native_last = sample.native_list; sim_last = sample.sim_tick; success++;
+            context_valid = true; context_take = sample.take_seq; context_native = sample.native_list; context_sim = sample.sim_tick;
+            for (int i = 0; i < PC_COUNTS; i++) size[i].add(sample.count[i]);
+            if (sample.scene_called) scene_calls++;
+        } else if (sample.result == 0) {
+            empty++; if (sample.wait_ms == 0) empty_nonblocking++; else if (sample.wait_ms > 0) empty_timed++;
+        } else if (sample.result == -1) terminal++;
+        else { cut_span_aborted++; aborted++; context_valid = false; context_take = context_native = 0; context_sim = 0; }
+        for (int i = 0; i < PP_PARTS; i++)
+            if (i <= PP_POP_NOTIFY || i == PP_TOTAL || (sample.result == 1 && (i != PP_SCENE || sample.scene_called))) time[i].add(sample.part[i]);
+        if (calls == BATCH || sample.result == -1) emit(calls == BATCH, sample.result == -1);
+    }
+
+    // Called after add(), only for THIS successful frame, before the borrowed frame can recycle.
+    // Exact ASCII commands avoid allocating/parsing caller-controlled tag text.
+    void cut_commands(const std::vector<std::string>& commands, const PollSample& sample, const std::atomic<bool>& ended) {
+        if (cut_failed || commands.empty()) return;
+        if (commands.size() > MAX_CUT_COMMANDS) { fputs("rtag_poll_cut_error command_limit\n", stderr); fflush(stderr); cut_failed = true; return; }
+        static const char* const words[] = {
+            "mark RSM_PERF_mission_START", "mark RSM_PERF_mission_END",
+            "mark RSM_PERF_hub_START", "mark RSM_PERF_hub_END"
+        };
+        for (const std::string& command : commands) {
+            if (command.compare(0, 14, "mark RSM_PERF_") != 0) continue;
+            int kind = -1;
+            for (int i = 0; i < 4; i++) if (command == words[i]) { kind = i; break; }
+            if (kind < 0) { fputs("rtag_poll_cut_error invalid_tag\n", stderr); fflush(stderr); cut_failed = true; return; }
+            const double cut0 = now_ms();
+            const bool duplicate = (cut_seen & (1u << kind)) != 0;
+            const bool cut_cap = cut_rows + 1 == MAX_CUT_ROWS;
+            using U = unsigned long long;
+            char line[1024];
+            int n = snprintf(line, sizeof line,
+                "rtag_poll_cut v=1 seq=%llu tag=%s after_attempt=%llu next_attempt=%llu take_seq=%llu native_list=%llu sim_tick=%u "
+                "profile_enabled=%d profile_capped=%d duplicate=%d cut_cap=%d teardown=%d previous_cut=%llu "
+                "span_success=%llu span_take_first=%llu span_take_last=%llu span_native_first=%llu span_native_last=%llu "
+                "span_native_step_errors=%llu span_sim_decreases=%llu span_aborted=%llu prior_cut_us=%.3f\n",
+                (U)(cut_rows + 1), words[kind] + 5, (U)total_calls, (U)(total_calls + 1), (U)sample.take_seq,
+                (U)sample.native_list, sample.sim_tick, enabled ? 1 : 0, rows == MAX_ROWS ? 1 : 0,
+                duplicate ? 1 : 0, cut_cap ? 1 : 0, ended.load() ? 1 : 0, (U)cut_rows,
+                (U)cut_span_success, (U)cut_span_take_first, (U)cut_span_take_last, (U)cut_span_native_first, (U)cut_span_native_last,
+                (U)cut_span_native_steps, (U)cut_span_sim_decreases, (U)cut_span_aborted, prior_cut_us);
+            if (n >= 0 && (size_t)n < sizeof line) { fwrite(line, 1, (size_t)n, stderr); fflush(stderr); }
+            else { fputs("rtag_poll_cut_error buffer_overflow\n", stderr); fflush(stderr); cut_failed = true; }
+            cut_seen |= 1u << kind; cut_rows++;
+            cut_span_success = cut_span_take_first = cut_span_take_last = cut_span_native_first = cut_span_native_last = 0;
+            cut_span_native_steps = cut_span_sim_decreases = cut_span_aborted = 0;
+            // Keep last native/sim context to verify the first success AFTER this marker is +1.
+            prior_cut_us += (now_ms() - cut0) * 1000;
+            if (cut_cap) cut_failed = true;
+            if (cut_failed) return;
+        }
+    }
+};
+
+struct PollProbe {
+    PollProfile* owner;
+    PollSample sample;                 // initialized only when enabled; no default-off clock/alloc/format work
+    double cursor;
+    bool queued = false;
+    const std::vector<std::string>* cut_commands = nullptr;
+    const std::atomic<bool>* ended;
+    explicit PollProbe(PollProfile& profile, int wait_ms, const std::atomic<bool>& ended_value) :
+        owner(profile.enabled ? &profile : nullptr), ended(&ended_value) {
+        if (!owner) return;
+        sample = {}; sample.result = 2; sample.wait_ms = wait_ms;
+        sample.begin_ms = cursor = now_ms();
+    }
+    bool active() const { return owner != nullptr; }
+    void mark(PollPart part) {
+        if (!owner) return;
+        const double now = now_ms(); sample.part[part] = (now - cursor) * 1000; cursor = now;
+        if (part == PP_POP_NOTIFY) queued = true;
+    }
+    void popped(uint64_t sequence, const OutFrame& frame) {
+        sample.take_seq = sequence; sample.native_list = frame.list.number; sample.sim_tick = frame.sim_tick;
+        cut_commands = &frame.commands;
+    }
+    void filled(const rtag_frame& frame) {
+        sample.count[PC_DRAWS] = frame.draw_count; sample.count[PC_VERTICES] = frame.vertex_count;
+        sample.count[PC_TEXTURES] = frame.texture_count; sample.count[PC_TARGETS] = frame.target_count;
+        sample.scene_called = frame.scene != nullptr;
+        if (frame.scene) {
+            sample.count[PC_SCENE_VERTICES] = frame.scene->vertex_count;
+            sample.count[PC_PIECES] = frame.scene->piece_count; sample.count[PC_FULL] = frame.scene->full_count;
+        }
+    }
+    void result(int value) { if (owner) sample.result = value; }
+    ~PollProbe() {
+        if (!owner) return;
+        sample.end_ms = now_ms();
+        if (!queued) sample.part[PP_POP_NOTIFY] = (sample.end_ms - cursor) * 1000;
+        sample.part[PP_TOTAL] = (sample.end_ms - sample.begin_ms) * 1000;
+        owner->add(sample);             // destructor runs AFTER the nested unique_lock on every early return
+        if (sample.result == 1 && cut_commands) owner->cut_commands(*cut_commands, sample, *ended);
+    }
+};
+
+
 struct Machine;
 Machine* g_m;
 std::string g_report_told;                              // testerkit::start's words about a crash report of the run before
@@ -336,6 +540,7 @@ struct Machine {
     double backend_ms = 0;                              // decoder's thread: the library's own OpenGL calls and read-backs
     double take_ms = 0;                                 // ... the scene and the skeletons handed over (scene::take)
     std::string info;
+    PollProfile poll_profile;          // touched only by the single frame consumer
 };
 
 void GateSink::vblank(unsigned field, uint64_t number) {
@@ -653,7 +858,7 @@ void clock_loop() {
     }
 }
 
-void fill_view(Machine& m) {
+void fill_view(Machine& m, PollProbe* profile = nullptr) {
     OutFrame& f = *m.held;
     const FrameList& l = f.list;
     rtag_frame& v = m.view;
@@ -691,6 +896,7 @@ void fill_view(Machine& m) {
         d.scene_kind = 0;
         d.scene_piece_first = d.scene_piece_count = 0;
     }
+    if (profile) profile->mark(PP_DRAW_HEADER);
     m.textures.resize(l.textures.size());
     for (size_t k = 0; k < l.textures.size(); k++) m.textures[k] = {l.textures[k].id, l.textures[k].width, l.textures[k].height, l.textures[k].rgba.data()};
     m.texture_names.resize(l.textures.size());
@@ -717,10 +923,12 @@ void fill_view(Machine& m) {
     for (auto& s : f.commands) m.command_names.push_back(s.c_str());
     v.host_commands = m.command_names.data(); v.host_command_count = (uint32_t)m.command_names.size();
     v.scene = nullptr;
+    if (profile) profile->mark(PP_AUX);
     if (m.scene3d) {
         scene::fill(f.scene, m.scene_view, m.draws.data(), m.draws.size());
         v.scene = &m.scene_view;
     }
+    if (profile) { profile->mark(PP_SCENE); profile->filled(v); }
 }
 
 }  // namespace
@@ -1037,20 +1245,26 @@ int rtag_poll(int wait_ms, const rtag_frame** frame) {
     if (frame) *frame = nullptr;
     if (!g_m) return -1;
     Machine& m = *g_m;
+    PollProbe profile(m.poll_profile, wait_ms, m.ended);
     {
         std::unique_lock<std::mutex> hold(m.lock);
+        profile.mark(PP_LOCK);
         auto there = [&] { return !m.ready.empty() || m.ended.load(); };
         if (wait_ms < 0) m.changed.wait(hold, there);
         else if (wait_ms > 0) m.changed.wait_for(hold, std::chrono::milliseconds(wait_ms), there);
-        if (m.ready.empty()) return m.ended ? -1 : 0;
+        profile.mark(PP_CONDITION);
+        if (m.ready.empty()) { const int result = m.ended ? -1 : 0; profile.result(result); return result; }
         if (m.held) m.spare.push_back(m.held);
         m.held = m.ready.front();
         m.ready.pop_front();
         m.frames_taken++;
+        if (profile.active()) profile.popped(m.frames_taken.load(), *m.held);
     }
     m.changed.notify_all();
-    fill_view(m);
+    profile.mark(PP_POP_NOTIFY);
+    fill_view(m, profile.active() ? &profile : nullptr);
     if (frame) *frame = &m.view;
+    profile.result(1);
     return 1;
 }
 

@@ -200,6 +200,20 @@ func _draw() -> void:
 
 # Notices are drawn by their own item (the Notice piece shares this script's helper): they must show whatever the
 # playing HUD does - over a menu as well.
+static func notice_rect(hud: Node, age: float) -> Rect2:
+	var s: float = hud.s
+	var area: Rect2 = hud.area
+	var w: float = 350.0 * s
+	var h: float = 86.0 * s
+	var top: float = area.position.y + (166.0 * s if (hud.layout == Hud.LAYOUT_OVERHEAD and hud.setting.radar and hud.show > 0.0) else 0.0)
+	if hud.setting.mode == "original" and hud.ok and (hud.phase & Hud.PH_LEVEL) != 0 and int(hud.frame.get("player_count", 0)) >= 2:
+		# The native upper-right player frame scales with the game picture, not
+		# the custom HUD/font scale. Keep its top fifth free in multiplayer.
+		var picture: Rect2 = hud.picture
+		top = maxf(top, picture.position.y + picture.size.y * 0.20)
+	return Rect2(Vector2(area.end.x - w + (1.0 - Style.ease_out(age / 0.3)) * 40.0 * s, top).round(), Vector2(w, h))
+
+
 static func draw_notice(ci: CanvasItem, hud: Node) -> void:
 	if hud.notices.is_empty():
 		return
@@ -209,12 +223,11 @@ static func draw_notice(ci: CanvasItem, hud: Node) -> void:
 	var age: float = wall - float(n.born)
 	var life: float = float(n.seconds)
 	var a: float = clampf(age / 0.2, 0.0, 1.0) * clampf((life + 0.5 - age) / 0.5, 0.0, 1.0)
-	var w: float = 350.0 * s
-	var h: float = 86.0 * s
-	var area: Rect2 = hud.area
-	var top: float = area.position.y + (166.0 * s if (hud.layout == Hud.LAYOUT_OVERHEAD and hud.setting.radar and hud.show > 0.0) else 0.0)
-	var o := Vector2(area.end.x - w + (1.0 - Style.ease_out(age / 0.3)) * 40.0 * s, top).round()
-	Style.panel(ci, Rect2(o, Vector2(w, h)), s, a, 8.0)
+	var rect := notice_rect(hud, age)
+	var w := rect.size.x
+	var h := rect.size.y
+	var o := rect.position
+	Style.panel(ci, rect, s, a, 8.0)
 	ci.draw_rect(Rect2(o + Vector2(0, 8.0 * s), Vector2(3.0 * s, h - 16.0 * s)), Color(Style.PARTY, a))
 	# who: a disc with the first letter
 	var c := o + Vector2(32.0, 30.0) * s
