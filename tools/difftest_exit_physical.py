@@ -61,6 +61,7 @@ class PhysicalRig:
         want = self.rig.m_new(*args)
         got = self.rig.e_new(*args)
         assert got == want and got, 'constructor/allocation mismatch'
+        assert not self.rig.failures, 'original constructor setup mismatch'
         obj = self.world.objects[got]
         obj.radius, obj.height = F.f32(radius), F.f32(height)
         self.mem.w32(got + 0x1c, obj.radius)
@@ -170,6 +171,7 @@ def run(elf, seed, fpu):
     # A generic competing interactable wins without any exit-class whitelist.
     competitor = p.new((2, 2, 0))
     assert p.check()[1] == competitor
+    assert p.check(result=0)[1] == competitor  # no fallback to a farther prompt
     p.flags(competitor, 0)
     assert p.check()[1] == a
     p.flags(a, 0x120000)  # prediction copy
@@ -210,6 +212,16 @@ def run(elf, seed, fpu):
     giant = p.new((256, 0, 0), radius=300)
     assert p.check()[1] is None
     p.move(giant, (500, 500, 0))
+    # Exact 10,000,000 squared-distance limit: membership is not enough.
+    bounded = p.new((120, 0, -3160), radius=72, height=4000)
+    ordered, chosen = p.check()
+    assert bounded in ordered and chosen is None
+    p.move(bounded, (119, 0, -3160))
+    assert p.check()[1] == bounded
+    p.move(bounded, (120, 0, -3161))
+    ordered, chosen = p.check()
+    assert bounded in ordered and chosen is None
+    p.move(bounded, (500, 500, 0))
     p.move(extent, (3, 3, 0))
     for slot in range(4):
         for health, vehicle, present in ((0, 0, True), (-1, 0, True),

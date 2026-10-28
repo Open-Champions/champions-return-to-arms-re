@@ -50,7 +50,9 @@ none changes the program counter, registers, or instructions.
   prove both forms of ordering; movement in the same cell changes a tie.
 - Selection examines only flag **0x100000**, without an exit-class
   whitelist. It minimizes `(dx² + dy²) + dz²` using EE arithmetic,
-  with strict comparison and initial bound 10,000,000.
+  with strict comparison and initial bound 10,000,000. A synthetic tall
+  object at exactly that squared distance is returned by the query but
+  not selected; just-below/just-above controls distinguish the boundary.
 - **Truncation comes first.** In a 261-object synthetic crowd, 255
   nonusable objects can fill the result and exclude the nearest usable
   object. Relinking that usable object to the front makes it selectable.
@@ -61,6 +63,7 @@ none changes the program counter, registers, or instructions.
 - Only the selected object's virtual slot 13 is called, with the player
   slot. Prompt result and first UTF-16 character are independent inputs.
   An empty prompt blocks dispatch, even if the result is usable.
+  An unusable nearest prompt does not fall through to a farther candidate.
 - A one-space prompt takes the original presentation shortcut at
   **0x1b2834–0x1b283c**; a normal synthetic character exercises the other
   presentation path. No branch is bypassed by a harness hook.
@@ -110,7 +113,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m tools.difftest_exit_physical --seed 20973
 PYTHONDONTWRITEBYTECODE=1 python3 -m tools.difftest_exit_physical --seed 7
 ```
 
-Both seeds **PASS**: **344 cases per FPU model**, four models
-(`ps2`, `ps2g1`, `chop`, `nearest`), **2,752 total comparisons**.
+Both seeds **PASS**: **348 cases per FPU model**, four models
+(`ps2`, `ps2g1`, `chop`, `nearest`), **2,784 total comparisons**.
 The totals include 261-object crowd scenarios. There are zero control-flow
 bypasses. Output contains counts only; no private level data is committed.
