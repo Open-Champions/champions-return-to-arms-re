@@ -115,7 +115,7 @@ func tick() -> void:
 			level_title = hud.frame.get("level_title", "")
 			level_at = now
 	for e in hud.events:
-		if e.kind == 7 and hud.players[e.slot].get("local", false):
+		if e.kind == 7 and not hud.me.is_empty() and int(e.slot) == int(hud.me.get("slot", -1)):
 			levelup_at = now
 			levelup_level = int(e.amount)
 	chat = hud.frame.get("chat", []) if hud.ok else []

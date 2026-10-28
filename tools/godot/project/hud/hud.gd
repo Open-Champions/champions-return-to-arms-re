@@ -529,7 +529,13 @@ func _visibility() -> void:
 	var playing: bool = ok and (phase & PH_LEVEL) != 0 and (phase & (PH_FRONTEND | PH_LOADING | PH_MENU | PH_PAUSE_MENU | PH_CUTSCENE | PH_DIALOGUE | PH_GATE_MENU)) == 0
 	if ok and playing:
 		var view: Dictionary = frame.get("view", {})
-		if view.get("fallback", false) and str(view.get("why", "")) != "death":
+		var why := str(view.get("why", ""))
+		# Multiple local players intentionally keep the game's overhead camera.
+		# RtaGameState's reason field holds15 characters; accept only that exact
+		# truncation or the full reason, with the matching party/view state.
+		var multi_local_overhead := why in ["more than one local player", "more than one l"] \
+			and int(frame.get("player_count", 0)) > 1 and int(view.get("shown", -1)) == 0
+		if view.get("fallback", false) and why != "death" and not multi_local_overhead:
 			playing = false
 	if setting.mode == "original" or me.is_empty():
 		playing = false

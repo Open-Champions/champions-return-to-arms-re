@@ -230,7 +230,7 @@ struct DisplayClock {
 };
 static DisplayClock g_display;
 [[noreturn]] static void end_now(int code) {
-    hostpad::rumble(0, 0);                              // TerminateProcess bypasses normal cleanup
+    hostpad::release_motors();                          // TerminateProcess bypasses normal cleanup
     fflush(stdout);
     fflush(stderr);
     TerminateProcess(GetCurrentProcess(), (UINT)code);
@@ -309,14 +309,26 @@ static WPARAM key_by_name(const std::string& name) {
 struct Pads : rta::PadSource {
     std::atomic<uint32_t> last_buttons{0};
     std::atomic<uint32_t> last_sticks{0x80808080};
+    std::atomic<uint32_t> last_buttons2{0};
+    std::atomic<uint32_t> last_sticks2{0x80808080};
     std::atomic<uint32_t> rumbles{0};
     std::atomic<bool> quit{false};
     void read(unsigned port, uint64_t blank, rta::PadState& state) override {
         if (quit) apprt::finish(0);                     // the window was closed: end from the game's thread
         state = apprt::script_pad(port);
-        if (port != 0) return;
+        if (port >= 2) return;
         rta::PadState pad;
-        bool have_pad = hostpad::read(pad);
+        bool have_pad = hostpad::read(port, pad);
+        if (port == 1) {
+            if (have_pad) {
+                state.buttons |= pad.buttons;
+                if (state.lx == 128 && state.ly == 128) { state.lx = pad.lx; state.ly = pad.ly; }
+                if (state.rx == 128 && state.ry == 128) { state.rx = pad.rx; state.ry = pad.ry; }
+            }
+            last_buttons2 = state.buttons;
+            last_sticks2 = state.lx | state.ly << 8 | state.rx << 16 | (uint32_t)state.ry << 24;
+            return;  // player 2 never receives player 1's keyboard, mouse or camera hooks
+        }
         uint32_t keys = g_keys;
         rta::PadState kb;
         kb.buttons = (uint16_t)keys;
@@ -349,7 +361,7 @@ struct Pads : rta::PadSource {
     }
     void rumble(unsigned port, uint8_t small, uint8_t large) override {
         rumbles++;
-        if (port == 0) hostpad::rumble(small, large);
+        hostpad::rumble(port, small, large);
     }
 };
 static Pads g_pads;
@@ -875,7 +887,7 @@ LRESULT CALLBACK Screen::proc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         g_keyboard.clear();                            // release every physical key, including overlapping aliases
         g_keys = 0;
         fpcontrols::release_all();
-        hostpad::rumble(0, 0);
+        hostpad::release_motors();
         hold_pointer(hwnd, false);
         return 0;
     // the mouse (fpcontrols.h): its buttons are pad buttons in the look views, its motion the look
@@ -1049,10 +1061,10 @@ static void app_command(const std::string& text, uint64_t frame) {
         bool down = w[1] == "down";
         if (!key || !g_screen->window) { log_line("app key: unknown key or no window: " + text); return; }
         PostMessageW(g_screen->window, down ? WM_KEYDOWN : WM_KEYUP, key, down ? 0 : (LPARAM)0xC0000001);
-    } else if (w[0] == "gcpad" && w.size() >= 2) {
+    } else if ((w[0] == "gcpad" || w[0] == "gcpad2") && w.size() >= 2) {
         float v[6] = {0, 0, 0, 0, 0, 0};
         for (size_t k = 3; k < w.size() && k < 9; k++) v[k - 3] = (float)atof(w[k].c_str());
-        hostpad::test(w[1], w.size() >= 3 ? parse_buttons(w[2]) : 0, v);
+        hostpad::test(w[0] == "gcpad2" ? 1u : 0u, w[1], w.size() >= 3 ? parse_buttons(w[2]) : 0, v);
     } else if (w[0] == "music") {
         // app music info | on | off | volume V | dir PATH | rescan | engage on|off|auto  (bossmusic.h)
         printf("[frame %llu] %s\n", (unsigned long long)frame, bossmusic::command(w.size() >= 2 ? text.substr(text.find(w[1])) : std::string()).c_str());
@@ -1066,6 +1078,13 @@ static void app_command(const std::string& text, uint64_t frame) {
         fflush(stdout);
     } else if (w[0] == "fpc" && w.size() >= 2) {
         printf("[frame %llu] fpc: %s\n", (unsigned long long)frame, fpcontrols::command(text.substr(text.find(w[1])), frame).c_str());
+        fflush(stdout);
+    } else if (w[0] == "pads2") {
+        uint32_t sticks = g_pads.last_sticks2;
+        std::string name = hostpad::name(1);
+        printf("[frame %llu] rta_app: controller %s (generation %u; XInput slot %d); port 2 holds buttons %04x, sticks %u %u %u %u; keyboard none\n",
+               (unsigned long long)frame, name.empty() ? "none" : name.c_str(), hostpad::generation(1), hostpad::xinput_slot(1),
+               g_pads.last_buttons2.load(), sticks & 255, (sticks >> 8) & 255, (sticks >> 16) & 255, sticks >> 24);
         fflush(stdout);
     } else if (w[0] == "pads") {
         uint32_t sticks = g_pads.last_sticks;

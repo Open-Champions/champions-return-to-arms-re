@@ -18,7 +18,18 @@ void start(void (*log)(const std::string& line));
 void set_window(void* hwnd);
 // The PS2 small motor is on/off; the large motor is 0..255. Synthetic pads
 // never drive hardware. Focus loss, detach and shutdown release both motors.
-void rumble(uint8_t small, uint8_t large);
+void rumble(uint8_t small, uint8_t large);  // compatibility: port 0
+// Windows couch play: physical PS2 ports 0 and 1, never a multitap. Keyboard stays P1.
+// Controllers claim players in first-use order, ignoring idle virtual devices.
+// Assignments stay distinct; detach never promotes the other port. XInput slot indices
+// are not persistent device IDs if Windows reassigns a controller to a different slot.
+bool read(unsigned port, rta::PadState& state);
+void rumble(unsigned port, uint8_t small, uint8_t large);
+void release_motors();              // both ports on focus loss or shutdown; retries failed stops
+std::string name(unsigned port);
+uint32_t generation(unsigned port);
+int xinput_slot(unsigned port);     // 0..3 backing slot, or -1; synthetic takeover keeps reservation
+void test(unsigned port, const std::string& command, uint16_t buttons, const float values[6]);
 #endif
 
 // Any thread: the first attached controller as a PlayStation 2 pad.  False when none is

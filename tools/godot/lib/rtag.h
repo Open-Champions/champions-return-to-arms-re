@@ -75,6 +75,13 @@ typedef struct rtag_pad {
     uint8_t lx, ly, rx, ry;
 } rtag_pad;
 void rtag_set_pad(int port, const rtag_pad* pad);       /* held until set again; read at the next vertical blank */
+/* Optional since version 6: rtag_has("rumble"). Snapshot the latest motors for local port 0 or 1.
+ * small is the raw 8-bit command (any nonzero means the weak motor is fully on); large is strong amplitude 0..255.
+ * generation advances per command, including repeats, and once for the neutral stop/exit release. Reads do not consume.
+ * All outputs are optional; 1 = valid port of a started machine, 0 = unavailable/invalid (outputs zeroed).
+ * Thread-safe against game writes and stop; after stop/exit every snapshot stays neutral. Hosts own device mapping,
+ * focus/hotplug safety and final physical release. Older libraries may omit this symbol. No ABI structure changes. */
+int rtag_rumble(int port, uint8_t* small, uint8_t* large, uint64_t* generation);
 
 /* ---- a frame ------------------------------------------------------------------------ */
 /* One vertex of the draw list: position in pixels of its target's logical size (1280 x 448 for the 3-D

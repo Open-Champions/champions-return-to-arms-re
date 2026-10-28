@@ -10,7 +10,10 @@
 // library is looked for at run time (xinput1_4.dll of Windows 8 and later, then the older
 // names), so a machine without it still starts and plays from the keyboard.
 //
-// The first of the four XInput slots that has a controller is port 1.  The map and the
+// The first two controllers used claim PS2 ports 1 and 2 independently. Idle virtual
+// devices do not occupy a player merely because Windows assigned them a lower slot. Removing one
+// never promotes the other. A vacant port prefers its previous XInput index on rescan;
+// XInput provides slot indices, not persistent physical device identity. The map and the
 // dead zones are pad_mac.mm's: A B X Y are cross circle square triangle, the bumpers L1 R1,
 // the triggers L2 R2 (pressed from 0.30), the stick buttons L3 R3, Back is Select; a stick
 // inside 0.15 of its centre is at rest and outside it the rest of the travel is spread
@@ -41,24 +44,39 @@ namespace {
 
 const float STICK_DEAD_ZONE = 0.15f;
 const float TRIGGER_PRESSED = 0.30f;
+const unsigned PORT_COUNT = 2;
 
 typedef DWORD(WINAPI* GetState)(DWORD, XINPUT_STATE*);
 typedef DWORD(WINAPI* SetState)(DWORD, XINPUT_VIBRATION*);
 GetState g_get_state;
 SetState g_set_state;
-WORD g_left_motor = 0, g_right_motor = 0;
 void (*g_log)(const std::string&);
 std::mutex g_lock;
-int g_slot = -1;                        // the XInput slot that is port 1; -1: none
-ULONGLONG g_next_scan;                  // GetTickCount64() at which the empty slots are asked again
-std::atomic<uint32_t> g_generation{0};
-std::string g_name;
-HWND g_window;                          // ours, to know whether the application is in front
+ULONGLONG g_next_scan;
+HWND g_window;
+bool g_connected[4] = {};
 
-// a controller made by test(): read wherever the window is, as on the Mac
-bool g_test_attached;
-uint16_t g_test_buttons;
-float g_test_values[6];
+struct Port {
+    int slot = -1;
+    int preferred_slot = -1;
+    WORD left_motor = 0, right_motor = 0;
+    std::atomic<uint32_t> generation{0};
+    std::string name;
+    bool test_attached = false;
+    uint16_t test_buttons = 0;
+    float test_values[6] = {};
+};
+Port g_ports[PORT_COUNT];
+
+// P1 aliases keep the existing isolated production-source regression harness intact.
+int& g_slot = g_ports[0].slot;
+WORD& g_left_motor = g_ports[0].left_motor;
+WORD& g_right_motor = g_ports[0].right_motor;
+std::atomic<uint32_t>& g_generation = g_ports[0].generation;
+std::string& g_name = g_ports[0].name;
+bool& g_test_attached = g_ports[0].test_attached;
+uint16_t& g_test_buttons = g_ports[0].test_buttons;
+float (&g_test_values)[6] = g_ports[0].test_values;
 
 uint8_t axis_byte(float v) {            // -1 .. 1 to 0 .. 255 with 128 in the middle
     float scaled = v >= 0 ? 128.0f + v * 127.0f : 128.0f + v * 128.0f;
@@ -96,33 +114,67 @@ void from_xinput(const XINPUT_GAMEPAD& g, rta::PadState& state) {
 
 void say(const std::string& line) { if (g_log) g_log(line); }
 
-// g_lock held. Remember only successful commands; do not repeatedly write zero
-// while unfocused, or interfere with another application's controller use.
-void motors(uint8_t small, uint8_t large) {
+// g_lock held. Each physical slot has its own successful-command cache and retries.
+void motors(unsigned port, uint8_t small, uint8_t large) {
+    if (port >= PORT_COUNT) return;
+    Port& p = g_ports[port];
     WORD left = WORD(large) * 257u, right = small ? 65535u : 0u;
-    if (left == g_left_motor && right == g_right_motor) return;
-    if (!g_set_state || g_slot < 0) return;
+    if (left == p.left_motor && right == p.right_motor) return;
+    if (!g_set_state || p.slot < 0) return;
     XINPUT_VIBRATION vibration{left, right};
-    DWORD status = g_set_state((DWORD)g_slot, &vibration);
+    DWORD status = g_set_state((DWORD)p.slot, &vibration);
     if (status == ERROR_SUCCESS) {
-        g_left_motor = left; g_right_motor = right;
+        p.left_motor = left; p.right_motor = right;
     } else if (status == ERROR_DEVICE_NOT_CONNECTED) {
-        g_left_motor = g_right_motor = 0;
-    }                                  // retain an outstanding command after a transient failure so a stop can retry
+        p.left_motor = p.right_motor = 0;
+    }                                  // transient failure leaves the command outstanding
 }
 
-// with g_lock held: look through the slots for a controller
+// g_lock held, foreground only. Poll connected devices every frame, including
+// unassigned ones, so a short press can claim a player. Throttle only empty slots.
+// Reconnect existing owners first; another player's controller never changes ports.
 void scan() {
-    g_next_scan = GetTickCount64() + 1000;
     if (!g_get_state) return;
-    for (int slot = 0; slot < 4; slot++) {
-        XINPUT_STATE s;
-        if (g_get_state((DWORD)slot, &s) == ERROR_SUCCESS) {
-            g_slot = slot;
-            g_name = "XInput controller " + std::to_string(slot + 1);
-            g_generation++;
-            say("controller attached: " + g_name + " (port 1)");
-            return;
+    ULONGLONG now = GetTickCount64();
+    bool probe_empty = now >= g_next_scan;
+    if (probe_empty) g_next_scan = now + 1000;
+    bool used[4] = {};
+    for (const Port& p : g_ports) if (p.slot >= 0 && p.slot < 4) used[p.slot] = true;
+    XINPUT_STATE states[4] = {};
+    bool present[4] = {};
+    for (int slot = 0; slot < 4; ++slot) {
+        if (!g_connected[slot] && !used[slot] && !probe_empty) continue;
+        present[slot] = g_get_state((DWORD)slot, &states[slot]) == ERROR_SUCCESS;
+        g_connected[slot] = present[slot];
+    }
+    auto attach = [&](unsigned port, int slot) {
+        Port& p = g_ports[port];
+        p.slot = p.preferred_slot = slot;
+        used[slot] = true;
+        p.name = "XInput controller " + std::to_string(slot + 1);
+        ++p.generation;
+        say("controller attached: " + p.name + " (port " + std::to_string(port + 1) + ")");
+    };
+    auto available = [&](int slot) {
+        if (slot < 0 || slot >= 4 || used[slot]) return false;
+        return present[slot];
+    };
+    for (unsigned port = 0; port < PORT_COUNT; ++port) {
+        Port& p = g_ports[port];
+        if (!p.test_attached && p.slot < 0 && available(p.preferred_slot)) attach(port, p.preferred_slot);
+    }
+    for (unsigned port = 0; port < PORT_COUNT; ++port) {
+        if (g_ports[port].slot >= 0 || g_ports[port].test_attached) continue;
+        for (int slot = 0; slot < 4; ++slot) {
+            bool reserved = false;
+            for (unsigned other = 0; other < PORT_COUNT; ++other)
+                if (other != port && g_ports[other].preferred_slot == slot) reserved = true;
+            if (reserved || !available(slot)) continue;
+            rta::PadState input;
+            from_xinput(states[slot].Gamepad, input);
+            if (!input.buttons && input.lx == 128 && input.ly == 128 && input.rx == 128 && input.ry == 128) continue;
+            attach(port, slot);
+            break;
         }
     }
 }
@@ -150,77 +202,104 @@ void start(void (*log)(const std::string& line)) {
         }
     }
     if (!g_get_state) say("controllers: no XInput library on this machine; keyboard only");
-    scan();
+    say("controllers: press a button on player 1's controller, then player 2's; keyboard also controls player 1");
 }
 
-bool read(rta::PadState& state) {
+bool read(unsigned port, rta::PadState& state) {
+    if (port >= PORT_COUNT) return false;
     std::lock_guard<std::mutex> hold(g_lock);
-    if (g_test_attached) {
-        motors(0, 0);                  // retry a failed stop after synthetic takeover
-        state.buttons = g_test_buttons;
-        if (g_test_values[4] >= TRIGGER_PRESSED) state.buttons |= rta::PAD_L2;
-        if (g_test_values[5] >= TRIGGER_PRESSED) state.buttons |= rta::PAD_R2;
-        stick(g_test_values[0], g_test_values[1], state.lx, state.ly);
-        stick(g_test_values[2], g_test_values[3], state.rx, state.ry);
+    Port& p = g_ports[port];
+    if (p.test_attached) {
+        motors(port, 0, 0);             // retry a failed stop after this port's synthetic takeover
+        state.buttons = p.test_buttons;
+        if (p.test_values[4] >= TRIGGER_PRESSED) state.buttons |= rta::PAD_L2;
+        if (p.test_values[5] >= TRIGGER_PRESSED) state.buttons |= rta::PAD_R2;
+        stick(p.test_values[0], p.test_values[1], state.lx, state.ly);
+        stick(p.test_values[2], p.test_values[3], state.rx, state.ry);
         return true;
     }
-    if (g_slot < 0) {
-        if (GetTickCount64() >= g_next_scan) scan();
-        if (g_slot < 0) return false;
-    }
-    XINPUT_STATE s;
-    if (g_get_state((DWORD)g_slot, &s) != ERROR_SUCCESS) {
-        say("controller detached: " + g_name);
-        motors(0, 0);
-        g_left_motor = g_right_motor = 0;
-        g_slot = -1;
-        g_name.clear();
-        g_generation++;
+    if (!in_front()) { motors(port, 0, 0); return false; }
+    scan();
+    if (p.slot < 0) return false;
+    XINPUT_STATE state_now;
+    if (g_get_state((DWORD)p.slot, &state_now) != ERROR_SUCCESS) {
+        say("controller detached: " + p.name + " (port " + std::to_string(port + 1) + ")");
+        motors(port, 0, 0);
+        p.left_motor = p.right_motor = 0;
+        p.preferred_slot = p.slot;
+        p.slot = -1;
+        p.name.clear();
+        ++p.generation;
         g_next_scan = GetTickCount64() + 1000;
         return false;
     }
     if (!in_front()) {
-        motors(0, 0);                  // a background application must not leave vibration running
+        motors(port, 0, 0);
         return false;
     }
-    from_xinput(s.Gamepad, state);
+    from_xinput(state_now.Gamepad, state);
     return true;
 }
 
-void rumble(uint8_t small, uint8_t large) {
+bool read(rta::PadState& state) { return read(0, state); }
+
+void rumble(unsigned port, uint8_t small, uint8_t large) {
+    if (port >= PORT_COUNT) return;
     std::lock_guard<std::mutex> hold(g_lock);
-    if (g_test_attached) {
-        motors(0, 0);                  // scripted pads may only release an outstanding physical command
+    if (g_ports[port].test_attached) {
+        motors(port, 0, 0);             // synthetic input can only release existing physical motors
         return;
     }
     if (!in_front()) small = large = 0;
-    motors(small, large);
+    motors(port, small, large);
 }
 
-std::string name() {
+void rumble(uint8_t small, uint8_t large) { rumble(0, small, large); }
+
+void release_motors() {
     std::lock_guard<std::mutex> hold(g_lock);
-    return g_test_attached ? std::string("test controller") : g_name;
+    for (unsigned port = 0; port < PORT_COUNT; ++port) motors(port, 0, 0);
 }
 
-uint32_t generation() { return g_generation; }
-
-void test(const std::string& command, uint16_t buttons, const float values[6]) {
+std::string name(unsigned port) {
+    if (port >= PORT_COUNT) return {};
     std::lock_guard<std::mutex> hold(g_lock);
+    return g_ports[port].test_attached ? std::string("test controller") : g_ports[port].name;
+}
+std::string name() { return name(0); }
+
+uint32_t generation(unsigned port) { return port < PORT_COUNT ? g_ports[port].generation.load() : 0; }
+uint32_t generation() { return generation(0); }
+
+int xinput_slot(unsigned port) {
+    if (port >= PORT_COUNT) return -1;
+    std::lock_guard<std::mutex> hold(g_lock);
+    return g_ports[port].slot;           // backing physical slot even during synthetic takeover
+}
+
+void test(unsigned port, const std::string& command, uint16_t buttons, const float values[6]) {
+    if (port >= PORT_COUNT) return;
+    std::lock_guard<std::mutex> hold(g_lock);
+    Port& p = g_ports[port];
     if (command == "connect") {
-        motors(0, 0);                  // a synthetic pad takes over port 1
-        g_test_attached = true;
-        g_test_buttons = 0;
-        for (float& v : g_test_values) v = 0;
-        g_generation++;
-        say("controller attached: test controller (port 1)");
+        motors(port, 0, 0);
+        p.test_attached = true;
+        p.test_buttons = 0;
+        for (float& v : p.test_values) v = 0;
+        ++p.generation;
+        say("controller attached: test controller (port " + std::to_string(port + 1) + ")");
     } else if (command == "disconnect") {
-        if (g_test_attached) { g_generation++; say("controller detached: test controller"); }
-        g_test_attached = false;
+        if (p.test_attached) {
+            ++p.generation;
+            say("controller detached: test controller (port " + std::to_string(port + 1) + ")");
+        }
+        p.test_attached = false;
     } else if (command == "set" || command == "none") {
-        g_test_buttons = command == "none" ? 0 : buttons;
-        for (int k = 0; k < 6; k++) g_test_values[k] = command == "none" ? 0 : values[k];
+        p.test_buttons = command == "none" ? 0 : buttons;
+        for (int k = 0; k < 6; ++k) p.test_values[k] = command == "none" ? 0 : values[k];
     }
 }
+void test(const std::string& command, uint16_t buttons, const float values[6]) { test(0, command, buttons, values); }
 
 void keep_timers() {}
 

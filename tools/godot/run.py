@@ -11,7 +11,8 @@
 
 Godot's own directories (editor settings, user://, caches) are put under local/godot-spike/godot-home through
 XDG_CONFIG_HOME / XDG_DATA_HOME / XDG_CACHE_HOME, which Godot honours on macOS too: nothing lands in ~/Library.
-The process is started at nice 10 unless RTA_NICE says otherwise ("0": as the player's own).
+On Windows APPDATA and LOCALAPPDATA are isolated there as well.
+On POSIX the process is started at nice 10 unless RTA_NICE says otherwise ("0": as the player's own).
 """
 import os
 import subprocess
@@ -21,13 +22,25 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 OUT = os.path.abspath(os.environ.get('RTA_GODOT_OUT', os.path.join(ROOT, 'local', 'godot-spike')))    # as build.py
 PROJECT = os.path.join(OUT, 'project')
-GODOT = os.environ.get('RTA_GODOT', os.path.join(ROOT, 'local', 'godot-spike', 'deps', 'godot-editor', 'Godot.app', 'Contents', 'MacOS', 'Godot'))
+
+
+def default_godot():
+    editor = os.path.join(ROOT, 'local', 'godot-spike', 'deps', 'godot-editor')
+    if sys.platform == 'win32':
+        return os.path.join(editor, 'Godot_v4.5.2-stable_win64.exe')
+    return os.path.join(editor, 'Godot.app', 'Contents', 'MacOS', 'Godot')
+
+
+GODOT = os.environ.get('RTA_GODOT', default_godot())
 
 
 def environment():
     env = dict(os.environ)
     home = os.path.join(OUT, 'godot-home')
-    for key, name in (('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data'), ('XDG_CACHE_HOME', 'cache')):
+    directories = [('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data'), ('XDG_CACHE_HOME', 'cache')]
+    if sys.platform == 'win32':
+        directories += [('APPDATA', 'appdata'), ('LOCALAPPDATA', 'localappdata')]
+    for key, name in directories:
         env[key] = os.path.join(home, name)
         os.makedirs(env[key], exist_ok=True)
     env['RTA_CWD'] = os.getcwd()            # Godot moves into the project's directory; main.gd moves back
@@ -46,7 +59,7 @@ def main():
         print('no staged project: python3 tools/godot/build.py project')
         return 1
     nice = os.environ.get('RTA_NICE', '10')
-    prefix = ['nice', '-n', nice] if nice != '0' else []
+    prefix = ['nice', '-n', nice] if sys.platform != 'win32' and nice != '0' else []
     if args and args[0] == 'import':
         # Godot 4.5.2 can crash when it shuts down after its first import (godotengine/godot#111645);
         # a bounded editor start avoids it (as open-champions-godot's CI does)

@@ -621,7 +621,6 @@ func scenario_settings() -> void:
 		portal.stack = [{"name": "home", "args": {}}]
 		portal.go("settings", {"tab": tab})
 		await shot("settings-" + tab)
-	await focus_key("controls_which")
 	portal.stack = [{"name": "home", "args": {}}]
 	portal.go("settings", {"tab": "controls"})
 	await wait(0.3)

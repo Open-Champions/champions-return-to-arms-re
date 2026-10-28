@@ -8,20 +8,28 @@
 #include "backend.h"
 
 #include <atomic>
-#include <dlfcn.h>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <execinfo.h>
-#include <sys/mman.h>
-#include <unistd.h>
 #include <cstring>
 #include <algorithm>
 #include <cmath>
 #include <string>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#include <execinfo.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 // What the translation made with --reloc defines (tools/recomp/recomp.py: table.cpp); the weak ones here are taken
 // in a program whose translation has no relocations (then nothing can be moved).
@@ -62,6 +70,87 @@ bool areas_free() {
 
 // The trap (a test aid): the whole pages inside the old places made unreadable, so that an access the translator
 // missed stops the program with the host's call stack (the translated function's name, fn_<address>).
+// The Windows trace names the module and offset (the private link map resolves it); POSIX keeps dladdr's symbol.
+uintptr_t describe_site(void* site, char* name, size_t size) {
+#ifdef _WIN32
+    HMODULE module = nullptr;
+    char path[MAX_PATH] = {};
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCSTR>(site), &module) && GetModuleFileNameA(module, path, sizeof path - 1)) {
+        const char* base = strrchr(path, '\\');
+        snprintf(name, size, "%s", base ? base + 1 : path);
+        return reinterpret_cast<uintptr_t>(site) - reinterpret_cast<uintptr_t>(module);
+    }
+    snprintf(name, size, "?");
+    return 0;
+#else
+    Dl_info info{};
+    if (dladdr(site, &info) && info.dli_sname) {
+        snprintf(name, size, "%s", info.dli_sname);
+        return reinterpret_cast<uintptr_t>(site) - reinterpret_cast<uintptr_t>(info.dli_saddr);
+    }
+    snprintf(name, size, "?");
+    return 0;
+#endif
+}
+
+#ifdef _WIN32
+uintptr_t g_trap_page = 0;
+bool trapped_address(uintptr_t address) {
+    if (!g_trap_page || !g_ram) return false;
+    for (int k = 0; k < PARTY8_TABLES; ++k) {
+        if (!size_of(k)) continue;
+        const uintptr_t lo = (reinterpret_cast<uintptr_t>(g_ram + g_reloc_spans[k][0]) + g_trap_page - 1) & ~(g_trap_page - 1);
+        const uintptr_t hi = reinterpret_cast<uintptr_t>(g_ram + g_reloc_spans[k][1]) & ~(g_trap_page - 1);
+        if (address >= lo && address < hi) return true;
+    }
+    return false;
+}
+void trap_line(const char* text) {
+    DWORD written;
+    WriteFile(GetStdHandle(STD_ERROR_HANDLE), text, (DWORD)strlen(text), &written, nullptr);
+}
+LONG CALLBACK on_fault(EXCEPTION_POINTERS* fault) {
+    const auto* record = fault->ExceptionRecord;
+    if (record->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || record->NumberParameters < 2 ||
+        !trapped_address((uintptr_t)record->ExceptionInformation[1])) return EXCEPTION_CONTINUE_SEARCH;
+    char line[512];
+    snprintf(line, sizeof line, "party8: TRAP: an access to the old place of a moved table, guest address 0x%x; the call stack:\n",
+             (u32)((uintptr_t)record->ExceptionInformation[1] - reinterpret_cast<uintptr_t>(g_ram)));
+    trap_line(line);
+    void* frames[24];
+    USHORT count = CaptureStackBackTrace(0, 24, frames, nullptr);
+    for (USHORT k = 0; k < count; ++k) {
+        char name[MAX_PATH];
+        const uintptr_t offset = describe_site(frames[k], name, sizeof name);
+        snprintf(line, sizeof line, "  %s+0x%llx\n", name, (unsigned long long)offset);
+        trap_line(line);
+    }
+    TerminateProcess(GetCurrentProcess(), 70);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+void trap_old_places() {
+    SYSTEM_INFO system;
+    GetSystemInfo(&system);
+    g_trap_page = system.dwPageSize;
+    if (!AddVectoredExceptionHandler(1, on_fault)) {
+        fprintf(stderr, "party8: cannot install the old-place trap (error %lu)\n", GetLastError());
+        fflush(stderr);
+        TerminateProcess(GetCurrentProcess(), 70);
+    }
+    for (int k = 0; k < PARTY8_TABLES; ++k) {
+        if (!size_of(k)) continue;
+        const uintptr_t lo = (reinterpret_cast<uintptr_t>(g_ram + g_reloc_spans[k][0]) + g_trap_page - 1) & ~(g_trap_page - 1);
+        const uintptr_t hi = reinterpret_cast<uintptr_t>(g_ram + g_reloc_spans[k][1]) & ~(g_trap_page - 1);
+        DWORD old;
+        if (hi > lo && !VirtualProtect(reinterpret_cast<void*>(lo), hi - lo, PAGE_NOACCESS, &old)) {
+            fprintf(stderr, "party8: cannot protect an old place (error %lu)\n", GetLastError());
+            fflush(stderr);
+            TerminateProcess(GetCurrentProcess(), 70);
+        }
+    }
+}
+#else
 void on_fault(int sig, siginfo_t* info, void*) {
     char line[160];
     u32 guest = (u32)((u8*)info->si_addr - g_ram);
@@ -88,6 +177,7 @@ void trap_old_places() {
         if (hi > lo) mprotect((void*)lo, hi - lo, PROT_NONE);
     }
 }
+#endif
 
 void move(bool poison, bool trap) {
     if (!available() || g_moved) return;
@@ -253,8 +343,9 @@ void report_hit(u32 address, void* site) {
     std::lock_guard<std::mutex> hold(lock);
     u32& n = seen[site];
     if (n++ || seen.size() > 400) return;
-    Dl_info info;
-    const char* name = dladdr(site, &info) && info.dli_sname ? info.dli_sname : "?";
+    char site_name[512];
+    const uintptr_t offset = describe_site(site, site_name, sizeof site_name);
+    const char* name = site_name;
     const u32 p = address & 0x1FFFFFFF;
     u32 table = 0;
     bool past = false;
@@ -268,15 +359,15 @@ void report_hit(u32 address, void* site) {
         unsigned long fn = 0;
         if (sscanf(name, "_Z11fn_%8lxP3Ctx", &fn) == 1 || sscanf(name, "_ZL13body_%8lxP3Ctxj", &fn) == 1 || sscanf(name, "_Z13orig_%8lxP3Ctx", &fn) == 1)
             if (fn >= 0x14fcd8 && fn < 0x150948) return;
-        fprintf(stderr, "party8: HEAPWATCH: a heap block's header 0x%x reached from %s+0x%lx\n", address, name, (unsigned long)((char*)site - (char*)info.dli_saddr));
+        fprintf(stderr, "party8: HEAPWATCH: a heap block's header 0x%x reached from %s+0x%lx\n", address, name, (unsigned long)offset);
         return;
     }
     if (!table && p >= g_party8_watch_lo && p < g_party8_watch_hi) {
-        fprintf(stderr, "party8: WATCH: 0x%x reached from %s+0x%lx\n", address, name, (unsigned long)((char*)site - (char*)info.dli_saddr));
+        fprintf(stderr, "party8: WATCH: 0x%x reached from %s+0x%lx\n", address, name, (unsigned long)offset);
         return;
     }
     fprintf(stderr, "party8: CHECK: the translated code reached %s 0x%x (table of 0x%x) from %s+0x%lx\n", past ? "PAST the old place, at" : "the old place",
-            address, table, name, (unsigned long)((char*)site - (char*)info.dli_saddr));
+            address, table, name, (unsigned long)offset);
 }
 
 }  // namespace party8

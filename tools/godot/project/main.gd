@@ -36,6 +36,7 @@ extends Node
 #   --control PORT      test aid: a control port on 127.0.0.1 (dev/control.gd; tools/recomp/app/playtest.py drives it)
 #   --no-sound          the sound side is not driven by Godot's audio at all (rendered on the machine's clock)
 #   --test TEXT         a test run: small window titled "AGENT TEST - TEXT" that takes no keyboard, silent
+#   --test-position X,Y place a test window explicitly (Godot consumes its engine --position before scripts see it)
 #   --stop-after N      quit after N vertical blanks
 #   --figures FILE      write the timing figures there at the end
 #   --frame-log FILE    every rendered frame one line (CSV): when its _process began, the gap to the one before, whether
@@ -80,7 +81,8 @@ extends Node
 #
 # Keyboard: W A S D left stick, arrows direction pad, I J K L triangle square cross circle,
 # Q E L1 R1, 1 3 L2 R2, X C L3 R3, Return Start, Backspace Select (the native application's map).
-# The first controller Godot knows is port 1 as well.
+# The first active controller owns port 1, the next owns port 2. Idle virtual
+# controllers do not claim a port. Keyboard also controls port 1.
 
 # options on the shared command line that are other scripts' (each takes a value): the test window's
 # (portal/dev/shots.gd) and the join test's (dev/join_test.gd); --portal-* and --hud-* are the portal's and the HUD's
@@ -109,11 +111,13 @@ const KEY_BUTTONS := {
 	KEY_I: PAD_TRIANGLE, KEY_J: PAD_SQUARE, KEY_K: PAD_CROSS, KEY_L: PAD_CIRCLE,
 	KEY_Q: PAD_L1, KEY_E: PAD_R1, KEY_1: PAD_L2, KEY_3: PAD_R2, KEY_X: PAD_L3, KEY_C: PAD_R3,
 	KEY_ENTER: PAD_START, KEY_KP_ENTER: PAD_START, KEY_BACKSPACE: PAD_SELECT,
+	KEY_SPACE: PAD_SQUARE, KEY_SHIFT: PAD_R1, KEY_TAB: PAD_R3,
 }
 const KEY_NAMES := {
 	"w": KEY_W, "a": KEY_A, "s": KEY_S, "d": KEY_D, "up": KEY_UP, "down": KEY_DOWN, "left": KEY_LEFT, "right": KEY_RIGHT,
 	"i": KEY_I, "j": KEY_J, "k": KEY_K, "l": KEY_L, "q": KEY_Q, "e": KEY_E, "1": KEY_1, "3": KEY_3, "x": KEY_X, "c": KEY_C,
 	"return": KEY_ENTER, "backspace": KEY_BACKSPACE,
+	"space": KEY_SPACE, "shift": KEY_SHIFT, "tab": KEY_TAB,
 }
 const JOY_BUTTONS := {
 	JOY_BUTTON_A: PAD_CROSS, JOY_BUTTON_B: PAD_CIRCLE, JOY_BUTTON_X: PAD_SQUARE, JOY_BUTTON_Y: PAD_TRIANGLE,
@@ -128,11 +132,12 @@ const BUTTON_NAMES := {
 }
 const STICK_DEAD_ZONE := 0.15
 const TRIGGER_THRESHOLD := 0.30
+const LocalPads := preload("res://local_pads.gd")
 
 var opt := {
 	"disc": "", "data": "", "workspace": "", "lib": "", "mode": "picture", "size": Vector2i.ZERO, "window": Vector2i.ZERO,
 	"aspect": 0.0, "aspect_window": false, "samples": 0, "script": "", "godot_shots": "", "unpaced": false, "mute": false,
-	"no_sound": false, "test": "", "stop_after": 0, "figures": "", "args": PackedStringArray(),
+	"no_sound": false, "test": "", "test_position": "", "stop_after": 0, "figures": "", "args": PackedStringArray(),
 	"view": "", "game_hud": true, "light": false, "shadow": false, "pull_back": 1.0, "orbit": 0.0,
 	"look": "", "hud": true, "speed_log": 0, "net2_flow": "", "art_pack": "", "mipmaps": true,
 	"combat": "", "aim": "", "look_presets": "", "frame_log": "", "display_rate": "", "display_upscale": "", "no_vsync": false,
@@ -176,8 +181,13 @@ var blanks := 0
 var pending_shots: PackedStringArray = PackedStringArray()     # Godot's captures still to write (of the frame drawn last)
 var shots_written := 0
 var test_pad := false                   # a script made a controller ("app gcpad connect")
+var test_pad2 := false                  # "app gcpad2": a separate controller on port 2
+var local_pads := LocalPads.new()
 var last_buttons := 0
 var last_sticks := [128, 128, 128, 128]
+var last_buttons2 := 0
+var last_sticks2 := [128, 128, 128, 128]
+var last_devices := [-1, -1]
 var key_events := 0
 var started_usec := 0
 var process_usec := 0                   # time inside _process in all
@@ -219,7 +229,7 @@ var tween_figs := {"dropped": 0, "pictures": 0, "between": 0, "late": 0, "lead_s
 var window_shots: PackedStringArray = PackedStringArray()
 var hud_node: Node                      # res://hud, when it was added
 var art_pictures := 0                   # pictures of the art pack in use
-var gpu_timer: RefCounted               # Metal's completed GPU work (Godot 4.5's Metal query timers are zero)
+var gpu_timer: RefCounted               # completed world GPU work, with frame/epoch freshness
 var gpu_world_drawn := false
 
 
@@ -229,19 +239,20 @@ func _ready() -> void:
 	RenderingServer.frame_pre_draw.connect(_gpu_begin)
 	RenderingServer.frame_post_draw.connect(_gpu_end)
 	var window := get_window()
+	window.set_flag(Window.FLAG_NO_FOCUS, opt.test != "")
 	if opt.test != "":
 		window.title = "AGENT TEST - " + opt.test
-		window.set_flag(Window.FLAG_NO_FOCUS, true)
 		if opt.window == Vector2i.ZERO:
 			opt.window = Vector2i(480, 360)
 	if opt.window != Vector2i.ZERO:
 		window.size = Vector2i(Vector2(opt.window) * window.content_scale_factor * DisplayServer.screen_get_scale())
 	if opt.test != "":
-		# out of the way: the lower right corner of the screen - or, with RTA_TEST_OFFSCREEN=1, a borderless window
+		# Out of the way by default; explicit test positions keep room copies from overlapping.
+		# With RTA_TEST_OFFSCREEN=1, a borderless window
 		# beyond the screen's lower right edge but for its corner's two points, so nobody takes it for the game: wholly
 		# off the screen (or minimised) macOS counts it as hidden and Godot stops drawing it
 		var area := DisplayServer.screen_get_usable_rect()
-		window.position = area.position + area.size - window.size - Vector2i(24, 24)
+		window.position = _test_window_position(String(opt.test_position), area, window.size)
 		if OS.get_environment("RTA_TEST_OFFSCREEN") == "1":
 			window.borderless = true
 			window.position = area.position + area.size - Vector2i(2, 2) * int(DisplayServer.screen_get_scale())
@@ -320,6 +331,7 @@ func _parse_arguments() -> void:
 			"--control": opt.control = value.to_int(); k += 1
 			"--no-sound": opt.no_sound = true
 			"--test": opt.test = value; k += 1
+			"--test-position": opt.test_position = value; k += 1
 			"--stop-after": opt.stop_after = value.to_int(); k += 1
 			"--figures": opt.figures = value; k += 1
 			"--frame-log": opt.frame_log = value; k += 1
@@ -350,6 +362,19 @@ func _parse_arguments() -> void:
 				elif not value.begins_with("--"):
 					k += 1
 		k += 1
+
+
+func _test_window_position(requested: String, area: Rect2i, window_size: Vector2i) -> Vector2i:
+	var parts := requested.split(",")
+	if parts.size() == 2:
+		var x := parts[0].strip_edges()
+		var y := parts[1].strip_edges()
+		if x.is_valid_int() and y.is_valid_int():
+			var px := x.to_int()
+			var py := y.to_int()
+			if px >= -2147483648 and px <= 2147483647 and py >= -2147483648 and py <= 2147483647:
+				return Vector2i(px, py)
+	return area.position + area.size - window_size - Vector2i(24, 24)
 
 
 func _size_of(text: String) -> Vector2i:
@@ -462,6 +487,20 @@ func _picture_size() -> Vector2i:
 	return Vector2i(w, max(h, 224))
 
 
+func _window_size_changed() -> void:
+	# An explicit window aspect follows resizes even with a fixed render size.
+	# The portal's wide/sharpness callback owns its stored settings separately.
+	if opt.aspect_window and not stored.has("wide"):
+		var pixels := _area()
+		var shape: float = max(float(pixels.x) / max(pixels.y, 1), 4.0 / 3.0)
+		if not is_equal_approx(shape, float(opt.aspect)):
+			opt.aspect = shape
+			if machine != null and started:
+				machine.set_option("aspect", "%.5f" % shape)
+	if drawer != null and opt.size == Vector2i.ZERO and not stored.has("sharpness"):
+		drawer.call("set_output_size", _picture_size())
+
+
 # The display rate.  The game is a 60-a-second lockstep and stays one: every game frame is a blank let go and a list
 # taken, as before.  At 60 every picture is a game frame.  On a display that refreshes a whole number of times a game
 # frame (120 Hz: twice) and with the rate above 60, the pictures between two game frames are drawn from the last two
@@ -568,18 +607,14 @@ func _start() -> void:
 		art_pictures = pictures
 		print("rta_godot: art pack %s (%d pictures), mip maps %s" % [pack if pack != "" else "none", pictures, "on" if opt.mipmaps else "off"])
 		view.set("drawer", drawer)
-		if opt.size == Vector2i.ZERO:
-			# the picture is drawn at the window's own pixels, whatever the window becomes (full screen, resized):
-			# never a smaller picture enlarged
-			get_viewport().size_changed.connect(func() -> void:
-				if drawer != null and not stored.has("sharpness"):
-					drawer.call("set_output_size", _picture_size()))
 		if opt.mode == "scene":
 			drawer.call("set_scene_mode", true)
 			scene_view = Node.new()
 			scene_view.set_script(load("res://scene_view.gd"))
 			scene_view.set("main", self)
 			add_child(scene_view)
+	if opt.aspect_window or (drawer != null and opt.size == Vector2i.ZERO):
+		get_viewport().size_changed.connect(_window_size_changed)
 	if drawer != null:
 		cine = Control.new()
 		cine.set_script(load("res://cinematic.gd"))
@@ -649,8 +684,11 @@ func has_character_card() -> bool:
 
 func hold_input(on: bool) -> void:
 	input_held = on
+	if on:
+		_release_pad_motors()
 	if on and machine != null and started:
-		machine.set_pad(0, 0, 128, 128, 128, 128)
+		for port in range(LocalPads.PORTS):
+			machine.set_pad(port, 0, 128, 128, 128, 128)
 
 
 func apply_settings(d: Dictionary) -> void:
@@ -766,6 +804,17 @@ func effective_settings() -> Dictionary:
 	var d := {"edition": String(opt.edition), "mode": String(opt.mode), "paced": not bool(opt.unpaced), "display_rate": rate,
 		"pictures_per_game_frame": tween_n, "views_locked": bool(opt.views_locked), "game_hud_option": bool(opt.game_hud),
 		"art_pack": _art_pack_folder() != "", "art_pictures": art_pictures}
+	d["renderer"] = RenderingServer.get_current_rendering_method()
+	d["rendering_driver"] = RenderingServer.get_current_rendering_driver_name()
+	var pixels := _area()
+	d["viewport_size"] = [pixels.x, pixels.y]
+	var window := get_window()
+	d["window_position"] = [window.position.x, window.position.y]
+	d["window_size"] = [window.size.x, window.size.y]
+	d["samples_requested"] = int(opt.samples)
+	if drawer != null:
+		var output: Vector2i = drawer.call("get_output_size")
+		d["output_size"] = [output.x, output.y]
 	if machine != null and started:
 		var info := String(machine.info())
 		for key in ["souls_want", "souls_on", "aim_want", "aim_on", "cine_want", "cine_on"]:
@@ -790,6 +839,11 @@ func effective_settings() -> Dictionary:
 			shown[key] = look.get(key)
 		d["look"] = shown
 		d["look_preset_applied"] = String(scene_view.get("preset_applied"))
+		# aa_set/scale_set are the last values applied to the scene viewport.
+		# Scene mode can override --samples through look.aa.
+		var aa := int(scene_view.get("aa_set"))
+		d["scene_msaa_samples"] = -1 if aa < 0 else (8 if aa >= 8 else (4 if aa >= 4 else (2 if aa >= 2 else 0)))
+		d["scene_scale_3d"] = float(scene_view.get("scale_set"))
 	return d
 
 
@@ -885,58 +939,80 @@ func _portal_settings(delta: float) -> void:
 
 func _read_pad() -> void:
 	_pointer()
-	if input_held or (tester != null and tester.call("is_open")):    # (the report box has the keyboard and the controller)
-		last_buttons = 0
-		last_sticks = [128, 128, 128, 128]
-		machine.set_pad(0, 0, 128, 128, 128, 128)
-		return
+	var blocked: bool = input_held or (tester != null and tester.call("is_open"))
+	var enabled: bool = not blocked and (get_window().has_focus() or opt.test != "")
+	var devices := {}
+	# Test windows read only their scripted devices; physical input belongs to
+	# the person's focused window and cannot interfere with a test replay.
+	if opt.test == "":
+		for device in Input.get_connected_joypads():
+			devices[device] = LocalPads.sample(device, JOY_BUTTONS, PAD_L2, PAD_R2, STICK_DEAD_ZONE, TRIGGER_THRESHOLD)
+	var pads: Array = local_pads.update(devices, enabled)
+	var scripted := [test_pad, test_pad2]
+	if enabled:
+		for port in range(LocalPads.PORTS):
+			if scripted[port]:
+				pads[port] = LocalPads.sample(LocalPads.TEST_DEVICES[port], JOY_BUTTONS, PAD_L2, PAD_R2, STICK_DEAD_ZONE, TRIGGER_THRESHOLD)
 	var buttons := 0
 	for key in KEY_BUTTONS:
-		if Input.is_physical_key_pressed(key):
+		if enabled and Input.is_physical_key_pressed(key):
 			buttons |= KEY_BUTTONS[key]
-	var lx := 128
-	var ly := 128
-	var rx := 128
-	var ry := 128
-	var left := Input.is_physical_key_pressed(KEY_A)
-	var right := Input.is_physical_key_pressed(KEY_D)
-	var up := Input.is_physical_key_pressed(KEY_W)
-	var down := Input.is_physical_key_pressed(KEY_S)
+	var values: Array = pads[0].sticks
+	var lx: int = values[0]
+	var ly: int = values[1]
+	var rx: int = values[2]
+	var ry: int = values[3]
+	var left := enabled and Input.is_physical_key_pressed(KEY_A)
+	var right := enabled and Input.is_physical_key_pressed(KEY_D)
+	var up := enabled and Input.is_physical_key_pressed(KEY_W)
+	var down := enabled and Input.is_physical_key_pressed(KEY_S)
 	if left != right:
 		lx = 0 if left else 255
 	if up != down:
 		ly = 0 if up else 255
-	var pads := Input.get_connected_joypads()
-	if pads.size() > 0 or test_pad:
-		var device: int = pads[0] if pads.size() > 0 else 0
-		for button in JOY_BUTTONS:
-			if Input.is_joy_button_pressed(device, button):
-				buttons |= JOY_BUTTONS[button]
-		if Input.get_joy_axis(device, JOY_AXIS_TRIGGER_LEFT) > TRIGGER_THRESHOLD:
-			buttons |= PAD_L2
-		if Input.get_joy_axis(device, JOY_AXIS_TRIGGER_RIGHT) > TRIGGER_THRESHOLD:
-			buttons |= PAD_R2
-		var stick := Vector2(Input.get_joy_axis(device, JOY_AXIS_LEFT_X), Input.get_joy_axis(device, JOY_AXIS_LEFT_Y))
-		if stick.length() > STICK_DEAD_ZONE:
-			lx = clampi(int(round(128.0 + stick.x * 127.0)), 0, 255)
-			ly = clampi(int(round(128.0 + stick.y * 127.0)), 0, 255)
-		stick = Vector2(Input.get_joy_axis(device, JOY_AXIS_RIGHT_X), Input.get_joy_axis(device, JOY_AXIS_RIGHT_Y))
-		if stick.length() > STICK_DEAD_ZONE:
-			rx = clampi(int(round(128.0 + stick.x * 127.0)), 0, 255)
-			ry = clampi(int(round(128.0 + stick.y * 127.0)), 0, 255)
+	buttons |= int(pads[0].buttons)
 	if scene_view != null and scene_view.call("takes_input"):
 		rx = 128
 		ry = 128
-	if control != null and control.get("held"):
+	last_devices = [pads[0].device, pads[1].device]
+	if not blocked and control != null and control.get("held"):
 		var held_sticks: Array = control.get("sticks")
 		buttons = int(control.get("buttons"))
 		lx = held_sticks[0]
 		ly = held_sticks[1]
 		rx = held_sticks[2]
 		ry = held_sticks[3]
+		last_devices[0] = -1
 	last_buttons = buttons
 	last_sticks = [lx, ly, rx, ry]
+	last_buttons2 = int(pads[1].buttons)
+	last_sticks2 = pads[1].sticks
 	machine.set_pad(0, buttons, lx, ly, rx, ry)
+	machine.set_pad(1, last_buttons2, last_sticks2[0], last_sticks2[1], last_sticks2[2], last_sticks2[3])
+	var requests := {}
+	if enabled and opt.test == "" and machine.has_method("get_rumble"):
+		var connected := Input.get_connected_joypads()
+		for port in range(LocalPads.PORTS):
+			var device: int = last_devices[port]
+			if not connected.has(device):
+				continue
+			var motors: Dictionary = machine.call("get_rumble", port)
+			if motors.get("supported", false) and motors.get("valid", false):
+				requests[device] = Vector2(float(motors.weak), float(motors.strong))
+	local_pads.apply_rumble(requests, _start_pad_motor, _stop_pad_motor)
+
+
+func _start_pad_motor(device: int, weak: float, strong: float) -> void:
+	Input.start_joy_vibration(device, weak, strong, 0.0)
+
+
+func _stop_pad_motor(device: int) -> void:
+	if Input.get_connected_joypads().has(device):
+		Input.stop_joy_vibration(device)
+
+
+func _release_pad_motors() -> void:
+	local_pads.apply_rumble({}, _start_pad_motor, _stop_pad_motor)
 
 
 func _host_command(text: String) -> void:
@@ -953,13 +1029,16 @@ func _host_command(text: String) -> void:
 		Input.parse_input_event(event)
 		Input.flush_buffered_events()       # now: the next controller read is this script's next line
 		key_events += 1
-	elif w.size() >= 2 and w[0] == "gcpad":
+	elif w.size() >= 2 and w[0] in ["gcpad", "gcpad2"]:
 		# a controller made by the script: connect | disconnect | set BUTTONS|none [lx ly rx ry [l2 r2]] (sticks -1..1)
+		var port := 1 if w[0] == "gcpad2" else 0
 		if w[1] == "connect":
-			test_pad = true
+			if port == 0: test_pad = true
+			else: test_pad2 = true
 		elif w[1] == "disconnect":
-			test_pad = false
-			_joy_state(0, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+			if port == 0: test_pad = false
+			else: test_pad2 = false
+			_joy_state(0, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0], LocalPads.TEST_DEVICES[port])
 		elif w[1] == "set" and w.size() >= 3:
 			var bits := 0
 			for name in w[2].split("+"):
@@ -967,14 +1046,17 @@ func _host_command(text: String) -> void:
 			var values := [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 			for n in range(3, min(w.size(), 9)):
 				values[n - 3] = w[n].to_float()
-			_joy_state(bits, values)
+			_joy_state(bits, values, LocalPads.TEST_DEVICES[port])
 	elif w.size() >= 2 and w[0] == "windowshot":
 		# what is in the Godot window itself (the root viewport), after the frame that is being made now
 		window_shots.append(text.substr(text.find(w[1])))
-	elif w.size() >= 1 and w[0] == "pads":
-		print("[blank %d] rta_godot: controller %s; port 1 holds buttons %04x, sticks %d %d %d %d; %d key events" % [blanks,
-			"made by the script" if test_pad else (Input.get_joy_name(Input.get_connected_joypads()[0]) if Input.get_connected_joypads().size() > 0 else "none"),
-			last_buttons, last_sticks[0], last_sticks[1], last_sticks[2], last_sticks[3], key_events])
+	elif w.size() >= 1 and w[0] in ["pads", "pads2"]:
+		var port := 1 if w[0] == "pads2" else 0
+		var device: int = last_devices[port]
+		var name := "made by the script" if device in LocalPads.TEST_DEVICES else (Input.get_joy_name(device) if Input.get_connected_joypads().has(device) else "none")
+		var values: Array = last_sticks if port == 0 else last_sticks2
+		print("[blank %d] rta_godot: controller %s; port %d holds buttons %04x, sticks %d %d %d %d; %d key events" % [blanks,
+			name, port + 1, last_buttons if port == 0 else last_buttons2, values[0], values[1], values[2], values[3], key_events])
 	elif w.size() >= 1 and (w[0] == "light" or w[0] == "camera" or w[0] == "scene" or w[0] == "look" or w[0] == "card" or w[0] == "er" or w[0] == "remaster") and scene_view != null:
 		scene_view.call("command", w)
 	elif w.size() >= 1 and w[0] == "cinematic" and cine != null:
@@ -1012,17 +1094,17 @@ func frame_mark(text: String) -> void:
 		frame_rows.append("M,%d,%s" % [blanks, text])
 
 
-func _joy_state(bits: int, values: Array) -> void:
+func _joy_state(bits: int, values: Array, device := 1001) -> void:
 	for button in JOY_BUTTONS:
 		var event := InputEventJoypadButton.new()
-		event.device = 0
+		event.device = device
 		event.button_index = button
 		event.pressed = (bits & JOY_BUTTONS[button]) != 0
 		Input.parse_input_event(event)
 	var axes := [JOY_AXIS_LEFT_X, JOY_AXIS_LEFT_Y, JOY_AXIS_RIGHT_X, JOY_AXIS_RIGHT_Y, JOY_AXIS_TRIGGER_LEFT, JOY_AXIS_TRIGGER_RIGHT]
 	for n in range(6):
 		var motion := InputEventJoypadMotion.new()
-		motion.device = 0
+		motion.device = device
 		motion.axis = axes[n]
 		motion.axis_value = values[n]
 		Input.parse_input_event(motion)
@@ -1321,11 +1403,15 @@ func _paced_between(delta: float) -> bool:
 
 func _gpu_begin() -> void:
 	# Classic never creates the timer or changes its drawing schedule.
-	var enabled := String(opt.edition) == "remastered" and scene_view != null and bool(scene_view.call("gpu_quality_enabled"))
+	var enabled := started and String(opt.edition) == "remastered" and scene_view != null and bool(scene_view.call("gpu_quality_enabled"))
 	if enabled and gpu_timer == null and ClassDB.class_exists("RtaGpuTimer"):
 		gpu_timer = ClassDB.instantiate("RtaGpuTimer")
 	if gpu_timer != null:
-		gpu_timer.call("begin_frame", enabled and gpu_world_drawn and not quitting)
+		var world := RID()
+		if enabled and drawer != null and not quitting:
+			world = drawer.call("get_world_viewport")
+		gpu_timer.call("set_viewport", world)
+		gpu_timer.call("begin_frame", enabled and gpu_world_drawn and world.is_valid() and not quitting)
 
 
 func _gpu_end() -> void:
@@ -1483,6 +1569,7 @@ func _finish(code: int) -> void:
 	if quitting:
 		return
 	quitting = true
+	_release_pad_motors()
 	_write_pending_shots()
 	if machine != null and started and not machine_stopped:
 		var text := _figures()
@@ -1534,3 +1621,5 @@ func _unhandled_key_input(event: InputEvent) -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		_finish(0)
+	elif what == NOTIFICATION_APPLICATION_FOCUS_OUT or what == NOTIFICATION_EXIT_TREE:
+		_release_pad_motors()

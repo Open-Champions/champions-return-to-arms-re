@@ -147,6 +147,7 @@ class RtaDrawer : public RefCounted {
         std::unordered_map<uint64_t, std::vector<KeptInstance>> kept_instances;
         size_t used = 0;                            // instances with something to draw this frame
         bool drawn_once = false;
+        int samples = 0;                           // storage mode: reused without discarding another mode's picture
         bool stored = false;                        // its picture holds stored values under Godot's sRGB curve (V_STORED)
         bool stored_next = false;                   // ... what this frame's run draws it as (taken over when it is rendered)
     };
@@ -156,6 +157,7 @@ class RtaDrawer : public RefCounted {
         bool screen = false;
         std::vector<Pass*> passes;
         Pass* latest = nullptr;                     // holds the surface's content as of the end of the last list
+        Pass* carry = nullptr;                      // prior sample mode's picture, copied once before the next draw
     };
     struct Node {                                   // a run of draws rendered by one viewport in one frame
         Target* target = nullptr;
@@ -243,7 +245,7 @@ class RtaDrawer : public RefCounted {
                      const rtag_draw* second = nullptr, RID second_texture = RID(), uint32_t er = 0);
     static bool blend_of(const rtag_draw& d, float& sc, float& sk, float& dc, float& dk, float& fix, int& blend_c, bool& subtract);
     void add_draw(Pass& pass, const rtag_frame& frame, const rtag_draw& draw, const Target& target, RID texture, bool texture_flipped, float order);
-    void add_copy(Pass& pass, const rtag_draw& draw, const Target& target, const Target& source, RID texture, float order);
+    void add_copy(Pass& pass, const rtag_draw& draw, const Target& target, const Target& source, RID texture, float order, bool raw_rows = false);
     RID place(Pass& pass, RID material, float order);
     RID place_mesh(Pass& pass, RID mesh, RID material, float order);
     RID instance_for(Pass& pass);

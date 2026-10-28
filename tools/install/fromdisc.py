@@ -31,6 +31,8 @@ translated here, from the executable on the player's own disc.
      application looks for it (tools/godot/project/gamelib.gd): macOS ~/Library/Application Support/
      Open Champions/RTA Godot/, Linux ~/.local/share/open-champions/rta-godot/, Windows %APPDATA%/Open Champions/RTA Godot/.  The Godot application
      itself holds only our code; this library is the game, made here, and stays on this computer.
+     If --godot is requested and that step fails, the command fails too; the native build stays available
+     and the previous install record/library are preserved.
 
 Everything made from the game (the executable, the translation, objects, programs, the
 player's data) stays under this workspace's local/ folder and SLUS_209.73 at its top, both
@@ -306,7 +308,8 @@ def godot_library(target, jobs):
     elif target == 'windows' and os.path.exists(os.path.join(ROOT, 'tools', 'godot', 'build_lib_win.py')):
         # the same translation and toolchain as build_win.py (llvm-mingw or MinGW-w64): tools/godot/build_lib_win.py
         steps = [[py, os.path.join(ROOT, 'tools', 'godot', 'build_lib_win.py'), '--jobs', str(min(jobs, 8))]]
-        made, name = os.path.join(out, 'windows', 'librta_game.dll'), 'librta_game.dll'
+        variant = 'windows-p8' if env.get('RTA_GODOT_PARTY8') == '1' else 'windows'
+        made, name = os.path.join(out, variant, 'librta_game.dll'), 'librta_game.dll'
     else:
         say('the Godot application\'s game library is not made for %s yet (docs/issues/native-godot.md); the native program is' % target)
         return None
@@ -471,7 +474,17 @@ def main():
     if args.service and args.platform != 'mac':
         set_service(program, args.service)
     progress(80 if args.godot else 97, 'Building the Godot version' if args.godot else 'Making the launcher')
-    library = godot_library(args.platform, args.jobs) if args.godot else None
+    library = None
+    if args.godot:
+        try:
+            library = godot_library(args.platform, args.jobs)
+        except (OSError, subprocess.SubprocessError) as error:
+            say('the requested Godot library could not be installed: %s' % error)
+        if not library or not os.path.isfile(library):
+            say('Godot was requested, but its game library was not installed; the installation is incomplete.')
+            say('the native build remains available: ' + program)
+            say('the existing Godot library and install record are unchanged; no success or launcher is written.')
+            return 1
     os.makedirs(os.path.join(ROOT, 'local'), exist_ok=True)
     with open(os.path.join(ROOT, 'local', 'install.txt'), 'w') as f:
         f.write('disc=%s\nprogram=%s\n' % (disc, program) + ('godot_library=%s\n' % library if library else ''))

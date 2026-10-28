@@ -63,6 +63,7 @@ void RtaDrawer::set_output_size(const Vector2i& size) {
 // ---- surfaces -------------------------------------------------------------------------------
 
 void RtaDrawer::size_target(Target& target) {
+    const int old_pw = target.pw, old_ph = target.ph;
     // as the OpenGL backend: a surface as large as the picture is drawn at the output size,
     // any other at its own size times what the picture is enlarged by
     int scale = std::max(1, (int)std::lround((double)output_size.y / 448.0));
@@ -74,9 +75,12 @@ void RtaDrawer::size_target(Target& target) {
         double shape = machine.is_valid() && machine->current() ? machine->get_frame_aspect() : 4.0 / 3.0;
         target.pw = std::max(16, (int)std::lround(output_size.y * shape));
     }
+    const bool resized = old_pw != target.pw || old_ph != target.ph;
+    if (resized) target.carry = nullptr;             // pending history is invalid after its backing was resized
     for (Pass* pass : target.passes) {
         rs()->viewport_set_size(pass->viewport, target.pw, target.ph);
-        pass->drawn_once = false;
+        // A repeated logical announcement does not discard the kept picture.
+        if (resized) pass->drawn_once = false;
     }
 }
 
@@ -96,8 +100,9 @@ RtaDrawer::Pass* RtaDrawer::make_pass(Target& target) {
     s->viewport_set_clear_mode(pass->viewport, RenderingServer::VIEWPORT_CLEAR_NEVER);
     s->viewport_set_update_mode(pass->viewport, RenderingServer::VIEWPORT_UPDATE_DISABLED);
     s->viewport_set_parent_viewport(pass->viewport, parent_viewport);      // rendered before the window's own viewport
-    if (samples >= 2 && target.screen && target.lw >= 1024)
-        s->viewport_set_msaa_3d(pass->viewport, samples >= 8 ? RenderingServer::VIEWPORT_MSAA_8X : samples >= 4 ? RenderingServer::VIEWPORT_MSAA_4X : RenderingServer::VIEWPORT_MSAA_2X);
+    pass->samples = samples >= 2 && target.screen && target.lw >= 1024 ? (samples >= 8 ? 8 : samples >= 4 ? 4 : 2) : 0;
+    if (pass->samples)
+        s->viewport_set_msaa_3d(pass->viewport, pass->samples >= 8 ? RenderingServer::VIEWPORT_MSAA_8X : pass->samples >= 4 ? RenderingServer::VIEWPORT_MSAA_4X : RenderingServer::VIEWPORT_MSAA_2X);
     pass->texture = s->viewport_get_texture(pass->viewport);
     target.passes.push_back(pass);
     all_passes.push_back(pass);
@@ -645,7 +650,7 @@ void RtaDrawer::redraw(double t) {
 }
 
 // A rectangle of one surface copied into another: a textured quad.
-void RtaDrawer::add_copy(Pass& pass, const rtag_draw& d, const Target& target, const Target& source, RID texture, float order) {
+void RtaDrawer::add_copy(Pass& pass, const rtag_draw& d, const Target& target, const Target& source, RID texture, float order, bool raw_rows) {
     rtag_draw quad;
     memset(&quad, 0, sizeof quad);
     quad.kind = RTAG_DRAW; quad.prim = RTAG_TRIANGLES; quad.count = 6;
@@ -667,7 +672,8 @@ void RtaDrawer::add_copy(Pass& pass, const rtag_draw& d, const Target& target, c
     rtag_frame one;
     memset(&one, 0, sizeof one);
     one.vertices = corners; one.vertex_count = 6;
-    add_draw(pass, one, quad, target, texture, flip_surfaces, order);
+    // Backing-history carries keep framebuffer rows verbatim; GS copies use their surface convention.
+    add_draw(pass, one, quad, target, texture, raw_rows ? false : flip_surfaces, order);
 }
 
 RtaDrawer::Target* RtaDrawer::world_target() {
@@ -737,8 +743,32 @@ void RtaDrawer::submit() {
     for (uint32_t k = 0; k < f.target_count; k++) {
         const rtag_target& info = f.targets[k];
         Target& target = targets[info.id];
+        const bool was_msaa = samples >= 2 && target.screen && target.lw >= 1024;
+        Pass* previous = target.latest;
+        const bool had_picture = previous && previous->drawn_once;
+        const int old_pw = target.pw, old_ph = target.ph;
         target.id = info.id; target.lw = info.width; target.lh = info.height; target.screen = info.screen != 0;
         size_target(target);
+        const bool want_msaa = samples >= 2 && target.screen && target.lw >= 1024;
+        // Changing a viewport's AA selects another backing buffer and loses its
+        // kept colour. Keep one pass per mode and copy the latest picture into
+        // the selected pass before drawing. Scene mode's AA belongs to look.aa.
+        if (!scene_mode && was_msaa != want_msaa && !target.passes.empty()) {
+            const int wanted = want_msaa ? (samples >= 8 ? 8 : samples >= 4 ? 4 : 2) : 0;
+            Pass* selected = nullptr;
+            for (Pass* pass : target.passes) if (pass->samples == wanted) { selected = pass; break; }
+            if (!selected) selected = make_pass(target);
+            auto at = std::find(target.passes.begin(), target.passes.end(), selected);
+            std::iter_swap(target.passes.begin(), at);
+            // A mode announced without drawing may be cancelled: the latest
+            // backing is still current and must not be cleared when reselected.
+            target.carry = nullptr;
+            if (previous != selected) {
+                // Sample layouts do not share depth; clear once, then restore colour.
+                s->viewport_set_clear_mode(selected->viewport, RenderingServer::VIEWPORT_CLEAR_ONLY_NEXT_FRAME);
+                if (had_picture && old_pw == target.pw && old_ph == target.ph) target.carry = previous;
+            }
+        }
         if (target.passes.empty()) target.latest = make_pass(target);
     }
 
@@ -781,7 +811,7 @@ void RtaDrawer::submit() {
                 // a pass nobody used yet this frame, and not the one that holds what the last frame left
                 node.pass = nullptr;
                 for (Pass* pass : target.passes)
-                    if (pass != target.latest && std::find(used_this_frame.begin(), used_this_frame.end(), pass) == used_this_frame.end()) { node.pass = pass; break; }
+                    if (pass->samples == 0 && pass != target.latest && std::find(used_this_frame.begin(), used_this_frame.end(), pass) == used_this_frame.end()) { node.pass = pass; break; }
                 if (!node.pass) node.pass = make_pass(target);
             }
             used_this_frame.push_back(node.pass);
@@ -907,6 +937,15 @@ void RtaDrawer::submit() {
         const rtag_draw& d = f.draws[i];
         Node& node = nodes[node_of[i]];
         float order_in_pass = (float)(i - node.first_draw);
+        if (i == node.first_draw && node.target->carry) {
+            Pass* source = node.target->carry;
+            draw_space = (node.pass->stored_next ? V_STORED : 0) | (source->stored ? V_DECODE : 0);
+            rtag_draw copy{};
+            copy.copy_src[2] = copy.copy_dst[2] = node.target->lw;
+            copy.copy_src[3] = copy.copy_dst[3] = node.target->lh;
+            add_copy(*node.pass, copy, *node.target, *node.target, source->texture, -1.0f, true);
+            node.target->carry = nullptr;
+        }
         draw_space = (node.pass->stored_next ? V_STORED : 0) | (decode_of[i] ? V_DECODE : 0);
         if (d.kind == RTAG_COPY) {
             auto source = targets.find(d.texture);

@@ -165,7 +165,7 @@ var gpu_requested_samples := -1
 var gpu_sample_frame := -1
 var gpu_sample_usec := 0
 var gpu_level := ""
-var gpu_measure_viewport: RID
+var gpu_safe := false
 var gpu_hud_fade := -1
 var sun: RID
 var sun_instance: RID
@@ -914,6 +914,7 @@ func _post() -> void:
 	if not environment.is_valid():
 		return
 	_gpu_quality_update()
+	var target_changed := false
 	var bloom: bool = in_force.get("bloom", false)
 	var strength := float(look.bloom_strength)
 	RenderingServer.environment_set_glow(environment, bloom, PackedFloat32Array([0.0, 0.35, 0.8, 1.0, 0.6, 0.0, 0.0]), 0.55 * strength, 1.0, 0.05, 0.0,
@@ -937,6 +938,7 @@ func _post() -> void:
 		if gpu_quality.quality().y < 0.999 and up == "off" and float(look.scale3d) >= 0.999:
 			mode = RenderingServer.VIEWPORT_SCALING_3D_MODE_BILINEAR
 	if scale3d != scale_set and viewport.is_valid():
+		target_changed = true
 		scale_set = scale3d
 		RenderingServer.viewport_set_scaling_3d_mode(viewport, RenderingServer.VIEWPORT_SCALING_3D_MODE_BILINEAR if scale3d >= 0.999 else mode)
 		RenderingServer.viewport_set_scaling_3d_scale(viewport, scale3d)
@@ -945,9 +947,12 @@ func _post() -> void:
 	if gpu_quality_enabled():
 		samples = int(gpu_quality.quality().x)
 	if samples != aa_set and viewport.is_valid():
+		target_changed = true
 		aa_set = samples
 		RenderingServer.viewport_set_msaa_3d(viewport, RenderingServer.VIEWPORT_MSAA_8X if samples >= 8 else (RenderingServer.VIEWPORT_MSAA_4X if samples >= 4 else (
 			RenderingServer.VIEWPORT_MSAA_2X if samples >= 2 else RenderingServer.VIEWPORT_MSAA_DISABLED)))
+	if target_changed:
+		_gpu_quality_reset_measurement()
 
 
 func gpu_quality_enabled() -> bool:
@@ -958,19 +963,33 @@ func gpu_between_allowed() -> bool:
 	return not gpu_quality_enabled() or gpu_quality.between
 
 
+# A new target/quality or a safe-state boundary invalidates delayed GPU work,
+# even when the world keeps the same viewport RID.
+func _gpu_quality_reset_measurement() -> void:
+	gpu_sample_frame = -1
+	gpu_sample_usec = 0
+	var timer: RefCounted = main.get("gpu_timer") if main != null else null
+	if timer != null:
+		timer.call("reset")
+
+
 func _gpu_quality_update() -> void:
 	if not gpu_quality_enabled() or not viewport.is_valid():
+		if gpu_safe:
+			gpu_safe = false
+			_gpu_quality_reset_measurement()
 		return
 	var requested := int(String(look.aa).to_int())
 	if requested != gpu_requested_samples:
 		gpu_requested_samples = requested
 		gpu_quality.configure(requested)
+		_gpu_quality_reset_measurement()
 	if level != gpu_level:
 		gpu_level = level
 		if gpu_quality.new_level():
 			var q := gpu_quality.quality()
 			print("rta_gpu_quality: level=%s back to samples=%d scale=%.2f (a new level)" % [level, int(q.x), q.y])
-		gpu_sample_usec = 0
+		_gpu_quality_reset_measurement()
 	# Read existing presentation flags only. The HUD fade word can stay at 128
 	# throughout normal play: require a change or an actually submitted overlay
 	# (docs/fade-lifetime.md), not the retained value alone. The display colour
@@ -986,6 +1005,9 @@ func _gpu_quality_update() -> void:
 		and (machine.peek_u32(0x44FCD0) & 0xFF) == 0
 	var info: Dictionary = machine.get_view()
 	safe = safe and bool(info.get("valid", false)) and bool(info.get("active", false)) and not bool(info.get("fallback", false))
+	if safe != gpu_safe:
+		gpu_safe = safe
+		_gpu_quality_reset_measurement()
 	if not safe:
 		gpu_quality.update(0.0, 0.0, false, 1000.0 / 60.0)
 		gpu_sample_usec = 0
@@ -994,16 +1016,20 @@ func _gpu_quality_update() -> void:
 	var measured := -1.0
 	var timer: RefCounted = main.get("gpu_timer")
 	if timer != null and bool(timer.call("is_available")):
+		timer.call("set_viewport", viewport)
 		var sample: Dictionary = timer.call("sample")
 		if sample.is_empty() or int(sample.frame) == gpu_sample_frame:
 			return
 		gpu_sample_frame = int(sample.frame)
 		measured = float(sample.gpu_ms)
 	else:
-		if gpu_measure_viewport != viewport:
-			gpu_measure_viewport = viewport
-			RenderingServer.viewport_set_measure_render_time(viewport, true)
-		measured = RenderingServer.viewport_get_measured_render_time_gpu(viewport)
+		# OpenGL has no RD completed-batch ID. Godot 4.5.2's cached RS time can
+		# freeze when the world renders less often than the window. Keep the
+		# requested quality; cached diagnostics cannot drive adaptation.
+		gpu_quality.update(0.0, 0.0, false, 1000.0 / 60.0)
+		gpu_sample_usec = 0
+		_gpu_quality_log(-1.0, false)
+		return
 	var now := Time.get_ticks_usec()
 	var elapsed := (now - gpu_sample_usec) / 1000000.0 if gpu_sample_usec > 0 else 1.0 / 60.0
 	gpu_sample_usec = now
