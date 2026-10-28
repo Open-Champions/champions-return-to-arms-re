@@ -26,7 +26,8 @@ The real handle clear (`0x1a1698`), handle link (`0x1a1738`), pool allocation an
 release, base construction (`0x14cb10`), and object registries run underneath
 these cases. The comparison checks complete nonempty grid and run chains, all
 name slots, live base-object fields, allocator heads, external handle chains,
-and periodic/final complete node and pool free lists. Nonfreeing destructor
+and periodic/final complete node and pool free lists, including the defined
+16-bit node metadata at `+0x10` (padding at `+0x12` remains unclaimed). Nonfreeing destructor
 cases also compare the surviving base vtable. Derived data beyond the explicitly
 compared fields is not claimed as a complete object-memory comparison.
 
@@ -34,13 +35,16 @@ compared fields is not claimed as a complete object-memory comparison.
 
 `tools/difftest_spell_cleanup.py` retains the earlier uncommitted probe's sound
 core and expands it. The earlier 39 cases passed before editing. The revised
-74 cases include the original flag/link matrix, queue and terminal boundaries,
+78 cases include the original flag/link matrix, queue and terminal boundaries,
 32 combinations of four schedules, grid/off-grid and draw linkage with populated
 synthetic names, filtered deferred deletion, distinct handle targets, and owner
-destruction before projectile destruction. Seeds 20973 and 7 each pass **74
-cases / 210 compared operations / 0 mismatches**. Each run rejects three wrong
-reference contracts: omitted derived handles, inverted release flag, and swapped
-clear order. These controls do not modify executable instructions.
+destruction before projectile destruction, mixed base/derived queues in both
+orders and direct virtual destruction. Seeds 20973 and 7 each pass **78 cases /
+228 compared operations / 0 mismatches**. Each run rejects five wrong reference
+contracts: omitted derived handles, inverted release flag, swapped cleanup
+order, swapped direct-destruction order, and altered handle metadata. The last
+control changes only reference state and is caught without a trace difference.
+These controls do not modify executable instructions.
 
 Run from the worktree with the owner's executable under ignored `local/`:
 

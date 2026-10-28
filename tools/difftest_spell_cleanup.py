@@ -75,6 +75,11 @@ class CleanupRig(DO.Rig):
     def m_dtor(self, obj, flags):
         table = obj.vtable
         if table not in (VT04, VT_PROJECTILE):
+            if table == DO.O.VT_GAMEOBJECT:
+                self.expected_trace.append(('entry', BASE_DTOR, obj.addr, flags & DO.M32))
+                self.expected_trace.extend(('clear', obj.addr + off) for off in (8, 4, 0))
+                if flags & 1:
+                    self.expected_trace.append(('free', obj.addr))
             return super().m_dtor(obj, flags)
         body = DTOR04 if table == VT04 else DTOR_PROJECTILE
         self.expected_trace.append(('entry', body, obj.addr, flags & DO.M32))
@@ -142,10 +147,27 @@ class CleanupRig(DO.Rig):
             self.bad('deferred cleanup call order differs')
         return result
 
+    def m_destroy(self, addr):
+        self.expected_trace = []
+        return super().m_destroy(addr)
+
+    def e_destroy(self, addr):
+        self.cleanup_trace = []
+        result = super().e_destroy(addr)
+        if self.cleanup_trace != self.expected_trace:
+            self.bad('direct destruction call order differs')
+        return result
+
     def check(self, full=False):
         super().check(full)
         for head in getattr(self, 'extra', {}).values():
             self.check_chain(head)
+        if full:
+            for node in self.model.handles.nodes:
+                addr = DO.NODE_BASE + DO.NODE_SIZE * node.index
+                if self.emu.mem.u16(addr + 0x10) != node.tag:
+                    self.bad('defined handle metadata differs')
+                    break
 
     def projectile(self, table, linked=True, then='frame', pkey=0):
         addr = self.do('new', 0x7C, (0, 0, 0), pkey, 0, then, 0, 0)
@@ -182,6 +204,20 @@ def run(executable, seed):
         rig.do('flush')
         if addr in rig.model.objects:
             rig.bad('deferred cleanup did not free its object')
+        cases += 1
+    # The same queue can contain base objects and both derived tables.
+    for reverse in (False, True):
+        base = rig.do('new', 0x4C, (0, 0, 0), 0, 0, 'frame', 0, 0)
+        queued = [base, rig.projectile(VT04), rig.projectile(VT_PROJECTILE)]
+        for addr in reversed(queued) if reverse else queued:
+            rig.do('delete', addr)
+        rig.do('flush')
+        if any(addr in rig.model.objects for addr in queued):
+            rig.bad('mixed queue retained an object')
+        cases += 1
+    for table in (VT_PROJECTILE, VT04):
+        addr = rig.projectile(table)
+        rig.do('destroy', addr)
         cases += 1
     # Synthetic properties are reused from the unchanged object-system corpus.
     # The two populated name entries, schedules, grids and draw lists are real.
@@ -255,9 +291,10 @@ def run(executable, seed):
 
 
 def mutation_controls(executable, seed):
-    """Reject three wrong reference contracts without modifying original code."""
+    """Reject wrong reference contracts without modifying original code."""
     rejected = 0
-    for mutation in ('skip_handle', 'wrong_flag', 'wrong_order'):
+    mutations = ('skip_handle', 'wrong_flag', 'wrong_order', 'destroy_order', 'metadata')
+    for mutation in mutations:
         class Mutant(CleanupRig):
             def m_dtor(self, obj, flags):
                 if obj.vtable == VT04 and mutation == 'skip_handle':
@@ -265,19 +302,25 @@ def mutation_controls(executable, seed):
                 if mutation == 'wrong_flag':
                     flags ^= 1
                 super().m_dtor(obj, flags)
-                if mutation == 'wrong_order':
+                if mutation in ('wrong_order', 'destroy_order'):
                     self.expected_trace[1:3] = reversed(self.expected_trace[1:3])
 
         rig = Mutant(executable, seed)
         rig.owner = rig.obj(rig.do('new', 0x4C, (0, 0, 0), 0, 0, 'none', 0, 0))
         addr = rig.projectile(VT04)
         try:
-            rig.do('cleanup', addr, 3)
+            if mutation == 'metadata':
+                rig.head(addr + 0x58).next.tag ^= 1
+                rig.check(full=True)
+            elif mutation == 'destroy_order':
+                rig.do('destroy', addr)
+            else:
+                rig.do('cleanup', addr, 3)
         except DO.Diverged:
             pass
         rejected += bool(rig.failures)
-    print(json.dumps(dict(mutation_controls=3, rejected=rejected), sort_keys=True))
-    return rejected == 3
+    print(json.dumps(dict(mutation_controls=len(mutations), rejected=rejected), sort_keys=True))
+    return rejected == len(mutations)
 
 
 def main():
