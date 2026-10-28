@@ -168,7 +168,7 @@ struct GlBackend::Impl {
     // ms_fbo and are resolved into fbo before the surface is read (dirty: not yet).
     struct Target {
         GLuint fbo = 0, colour = 0, depth = 0, ms_fbo = 0, ms_colour = 0;
-        int lw = 0, lh = 0, pw = 0, ph = 0, samples = 0;
+        int lw = 0, lh = 0, pw = 0, ph = 0, samples = 0, requested_samples = 0;
         bool screen = false, dirty = false;
     };
     std::unordered_map<uint32_t, Target> targets;
@@ -454,14 +454,19 @@ struct GlBackend::Impl {
     Target& make_target(const TargetInfo& info) {
         Target& t = targets[info.id];
         int pw = info.screen ? out_w : info.width * aux_scale(), ph = info.screen ? out_h : info.height * aux_scale();
+        int requested_samples = info.screen && info.width >= 1024 ? fig.samples : 0;
         t.lw = info.width; t.lh = info.height; t.screen = info.screen;
-        if (t.fbo && t.pw == pw && t.ph == ph) return t;
+        // Logical reuse can change multisampling without changing physical size.
+        // Remember the attempted mode separately so an unsupported MSAA fallback
+        // is reused rather than retried on every identical target announcement.
+        if (t.fbo && t.pw == pw && t.ph == ph && t.requested_samples == requested_samples) return t;
         if (t.fbo) resolve(t);
         GLuint old_fbo = t.fbo, old_colour = t.colour, old_depth = t.depth, old_ms_fbo = t.ms_fbo, old_ms_colour = t.ms_colour;
-        int old_pw = t.pw, old_ph = t.ph;
+        int old_pw = t.pw, old_ph = t.ph, old_samples = t.samples;
         t.pw = pw; t.ph = ph;
         // multisampling: the 3-D surface only (the display buffers get the finished picture)
-        t.samples = info.screen && info.width >= 1024 ? fig.samples : 0;
+        t.requested_samples = requested_samples;
+        t.samples = requested_samples;
         t.ms_fbo = t.ms_colour = 0;
         t.dirty = false;
         f->glGenFramebuffers(1, &t.fbo);
@@ -492,7 +497,7 @@ struct GlBackend::Impl {
                 t.ms_fbo = t.ms_colour = 0;
                 t.samples = 0;
                 f->glBindRenderbuffer(GL_RENDERBUFFER, t.depth);
-            }
+            } else f->glGetIntegerv(GL_SAMPLES, &t.samples); // the driver may round the request up
         }
         if (!t.ms_fbo) {
             f->glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT32F, pw, ph);
@@ -515,6 +520,14 @@ struct GlBackend::Impl {
             f->glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t.ms_fbo ? t.ms_fbo : t.fbo);
             f->glBlitFramebuffer(0, 0, old_pw < pw ? old_pw : pw, old_ph < ph ? old_ph : ph, 0, 0, old_pw < pw ? old_pw : pw, old_ph < ph ? old_ph : ph, GL_COLOR_BUFFER_BIT, GL_NEAREST);
             if (t.ms_fbo) t.dirty = true;
+            // Copy depth only between matching storage. A different sample count
+            // cannot preserve per-sample depth; keep the zero-cleared depth above,
+            // as for physical resizes. Colour is retained independently.
+            if (old_pw == pw && old_ph == ph && old_samples == t.samples) {
+                f->glBindFramebuffer(GL_READ_FRAMEBUFFER, old_ms_fbo ? old_ms_fbo : old_fbo);
+                f->glBindFramebuffer(GL_DRAW_FRAMEBUFFER, t.ms_fbo ? t.ms_fbo : t.fbo);
+                f->glBlitFramebuffer(0, 0, pw, ph, 0, 0, pw, ph, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+            }
             f->glDeleteFramebuffers(1, &old_fbo);
             f->glDeleteTextures(1, &old_colour);
             f->glDeleteRenderbuffers(1, &old_depth);
