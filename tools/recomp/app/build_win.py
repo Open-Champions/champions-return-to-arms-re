@@ -18,7 +18,9 @@
   python3 tools/recomp/app/build_win.py --pngcheck   # win/standin/pngcheck: png_read.h against QImage (app/win/pngcheck.cpp)
   options: --compiler clang|gcc   (default clang when it can target Windows, see below)
            --original             the unpatched game (gen/) instead of the fix set (gen-app/)
-           --no-game              do not translate the game again first (recomp.py, about 2 s)
+           --no-game              do not translate the game again first
+           --translate-only       translate without compiling or packaging
+           --party8               with --translate-only: separate gen-app-p8 for the Godot 64 MB library
            --no-net               rta_app.exe without the network (tools/recomp/net) and without the sign-in patch
            --opt -O1|-O2          --jobs N (default 8, never more: other jobs share the machine)
            --symbols              keep the symbol table in the programs (default: stripped; a map
@@ -222,7 +224,7 @@ def source_jobs(sources, objdir, search):
 
 
 def translate(args):
-    """The game translated into this build's own directory (win/gen-app or win/gen-orig).
+    """The game translated into its own directory (win/gen-app, win/gen-orig or win/gen-app-p8).
 
     Other builds translate into local/recomp-out/gen-app whenever they run; a copy of our own
     cannot change under a compile.  recomp.py writes into a scratch directory and only files
@@ -247,6 +249,11 @@ def translate(args):
                 command += ['--extra-pnach', signin_patch()]
             else:
                 print('no sign-in patch in local/: the program will stop with a network error after "Internet Game"')
+    if getattr(args, 'party8', False):
+        if args.original:
+            raise ValueError('party8 requires the fix-set translation')
+        command += ['--reloc', os.path.join(HERE, 'party8-ranges.txt'),
+                    '--reloc-sites', os.path.join(HERE, 'party8-sites.txt')]
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
         print(result.stdout[-3000:] + result.stderr[-3000:])
@@ -532,6 +539,8 @@ def main():
     parser.add_argument('--jobs', type=int, default=8)
     parser.add_argument('--original', action='store_true', help='the unpatched game (the shared translation in gen/)')
     parser.add_argument('--no-game', action='store_true', help='do not translate the game again (use what win/gen-app holds)')
+    parser.add_argument('--translate-only', action='store_true', help='write this build variant translation, without compiling or packaging')
+    parser.add_argument('--party8', action='store_true', help='with --translate-only: separate win/gen-app-p8 for the Godot eight-player library')
     parser.add_argument('--headless', action='store_true', help='only fpcheck.exe and rta_native.exe')
     parser.add_argument('--standin', action='store_true', help='build the macOS x86-64 stand-in instead')
     parser.add_argument('--reference', action='store_true', help='run the check script in the arm64 Mac build: what rta_native.exe should print')
@@ -542,6 +551,8 @@ def main():
     parser.add_argument('--pngcheck', action='store_true', help='build the comparison of png_read.h with QImage')
     args = parser.parse_args()
     args.jobs = max(1, min(8, args.jobs))
+    if args.party8 and (not args.translate_only or args.original or args.mac or args.standin or args.reference or args.pngcheck):
+        parser.error('--party8 currently requires --translate-only and the Windows fix set; the Godot library builds its own 64 MB variant')
     if args.pngcheck:
         return 0 if build_pngcheck(args) else 1
     if args.mac:
@@ -550,9 +561,11 @@ def main():
         return 0 if build_standin(args) else 1
     if args.reference:
         return 0 if make_reference(args) else 1
-    args.gen = os.path.join(WIN, 'gen-orig' if args.original else 'gen-app')
+    args.gen = os.path.join(WIN, 'gen-app-p8' if args.party8 else 'gen-orig' if args.original else 'gen-app')
     if not translate(args):
         return 1
+    if args.translate_only:
+        return 0
     cxx, linker, windres, what = find_toolchain(args.compiler)
     tag = 'clang' if 'clang' in os.path.basename(cxx[0]) else 'gcc'
     # the programs of the default build have plain names; the others say what they are

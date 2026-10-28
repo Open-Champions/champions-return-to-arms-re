@@ -415,7 +415,7 @@ try {
         if (-not (Test-Path -LiteralPath (Join-Path $desktop "Champions Godot.lnk"))) { Make-Shortcut (Join-Path $desktop "Champions Godot.lnk") $godotExe $godotArg $godotDir }
         Log "the Godot version: $godotExe (game library $godotLibrary); shortcuts: Champions Godot"
     } elseif ($withGodot) {
-        Log "the Godot version is left out: its game library was not built (the lines above say why); Champions itself is ready"
+        throw "The Godot version was requested, but its game library is missing. Setup is incomplete; the native build remains available. See $LogFile for details."
     }
     $ready = if ($godotMade) { "Champions and Champions Godot are ready: on your desktop and in the Start menu. Starting Champions now." } else { "Champions is ready: on your desktop and in the Start menu. Starting it now." }
     Show $ready 100 "Done"

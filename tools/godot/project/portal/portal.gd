@@ -143,6 +143,7 @@ func _ready() -> void:
 	if profile.first_start_done():
 		_open_session()                 # not before the one question is answered: the name is what is registered
 	get_viewport().size_changed.connect(_layout)
+	RenderingServer.frame_pre_draw.connect(_update_notice_visibility)
 	Input.joy_connection_changed.connect(func(_device: int, _connected: bool) -> void: _detect_pad_style())
 	_detect_pad_style()
 	apply_settings()
@@ -213,6 +214,7 @@ func _open_session() -> void:
 	# environment's RTA_NET2_SERVICE, then the first line of <data>/net2-service.txt (Settings -> Online)
 	var config := {
 		"mock": bool(options.mock), "service": String(options.service), "name": profile.name_shown(),
+		"library": profile.library_path(),
 		"data_dir": ProjectSettings.globalize_path(profile.folder), "build": "portal", "local_only": test_mode() and OS.get_environment("RTA_PORTAL_PUBLIC") != "1",     # a test may be let out (RTA_PORTAL_PUBLIC=1)
 	}
 	if not session.open(config):
@@ -445,10 +447,62 @@ func refresh_hints() -> void:
 			hint_bar.left_colour = UI.FAINT
 	if not screen.call("chrome"):
 		hint_bar.left_text = ""         # the first question: nothing about a connection yet
-	notices.visible = screen.call("chrome") or not shown     # nothing interrupts the first question
+	_update_notice_visibility()
 	hint_bar.queue_redraw()
 	notices.glyph_style = glyph_style
 	notices.queue_redraw()
+
+
+func _should_draw_notices() -> bool:
+	if shown:
+		return screen != null and bool(screen.call("chrome")) # nothing interrupts the first question
+	if draw_notices_in_game:
+		return true
+	if not is_instance_valid(handover) or handover.is_queued_for_deletion():
+		return true
+	var game_value: Variant = handover.get("game")
+	if not is_instance_valid(game_value) or not (game_value is Node):
+		return true
+	var game := game_value as Node
+	if game.is_queued_for_deletion():
+		return true
+	var hud_value: Variant = game.get("hud_node")
+	if not is_instance_valid(hud_value) or not (hud_value is CanvasLayer):
+		return true
+	var hud := hud_value as CanvasLayer
+	if hud.is_queued_for_deletion() or not hud.is_inside_tree() or not hud.visible or not hud.is_processing() or not hud.can_process():
+		return true
+	var piece_value: Variant = hud.get("notice_piece")
+	if not is_instance_valid(piece_value) or not (piece_value is Control):
+		return true
+	var piece := piece_value as Control
+	if piece.is_queued_for_deletion() or not piece.is_visible_in_tree():
+		return true
+	# Visibility alone includes a fully transparent startup/fade root. Parent
+	# self_modulate does not affect children, but inherited modulate does.
+	var alpha := piece.self_modulate.a
+	var item: CanvasItem = piece
+	while item != null:
+		alpha *= item.modulate.a
+		if item.is_set_as_top_level():
+			break
+		item = item.get_parent() as CanvasItem
+	if alpha <= 0.0:
+		return true
+	# A card received before the HUD subscribed must remain visible here, with
+	# its existing age/deadline and callbacks. Only cede the current ID when the
+	# HUD is actually painting that same card; do not transfer or restart it.
+	var current: Dictionary = notices.call("current") if notices != null else {}
+	var owned: Variant = hud.get("notices")
+	if current.is_empty() or not (owned is Array) or (owned as Array).is_empty():
+		return true
+	var latest: Variant = (owned as Array)[-1]
+	return not (latest is Dictionary) or String((latest as Dictionary).get("id", "")) != String(current.get("id", ""))
+
+
+func _update_notice_visibility() -> void:
+	if notices != null:
+		notices.visible = _should_draw_notices()
 
 
 # ---- a question or a small menu over the screen -------------------------------------------
@@ -1097,6 +1151,7 @@ func _unhandled_input(event: InputEvent) -> void:
 func _process(delta: float) -> void:
 	if passing:
 		return
+	_update_notice_visibility()
 	if screen != null and shown:
 		screen.call("tick", delta)
 	if starting_since > 0 and Time.get_ticks_msec() - starting_since > (60000 if gameflow.active else 8000):

@@ -18,6 +18,7 @@ var hurt_at := -10.0
 
 
 func tick() -> void:
+	var primary := int(hud.me.get("slot", -1))
 	var moving := false
 	for slot in range(hud.players.size()):
 		var p: Dictionary = hud.players[slot]
@@ -34,7 +35,7 @@ func tick() -> void:
 			shown[slot] = b
 		if hp < b.hp - 0.0005:
 			b.hit_at = hud.now
-			if p.get("local", false):
+			if slot == primary:
 				hurt_at = hud.now
 		if mana < b.mana - 0.0005:
 			b.mana_at = hud.now
@@ -51,17 +52,17 @@ func tick() -> void:
 		if absf(before - (b.hp + b.ghost + b.mana + b.mana_ghost + b.xp)) > 0.00001:
 			moving = true
 	for e in hud.events:
-		if e.kind == 7 and hud.players[e.slot].get("local", false):
+		if e.kind == 7 and primary >= 0 and int(e.slot) == primary:
 			level_flash = hud.now
 	if not hud.me.is_empty():
 		if level_shown >= 0 and hud.me.level > level_shown:
 			level_flash = hud.now
 		level_shown = hud.me.level
 	# drawn again only when something that is shown changed
-	var sig := "%d|%d|%.1f|%s" % [hud.layout, int(hud.s * 100.0), hud.area.size.x, str(hud.area.position)]
+	var sig := "%d|%d|%.1f|%s|%d" % [hud.layout, int(hud.s * 100.0), hud.area.size.x, str(hud.area.position), primary]
 	for p in hud.players:
 		if p.get("present", false):
-			sig += "|%s%d%d%d%d%d%d%d%d" % [p.name, p.level, int(p.health), int(p.health_max), int(p.mana), int(p.mana_max), p.xp, int(p.alive), p.status.size()]
+			sig += "|%d:%d:%s%d%d%d%d%d%d%d%d" % [int(p.slot), int(p.get("local", false)), p.name, p.level, int(p.health), int(p.health_max), int(p.mana), int(p.mana_max), p.xp, int(p.alive), p.status.size()]
 			var st: PackedFloat32Array = p.status
 			for k in range(0, st.size(), 4):
 				sig += "%d:%d" % [int(st[k]), int(st[k + 2] * 4.0)]
@@ -188,31 +189,60 @@ func _status_row(p: Dictionary, at: Vector2, s: float, centred := false) -> void
 		x += widths[k]
 
 
-func _party() -> void:
-	# the other players: compact frames stacked above the player's own
+func _party_slots() -> PackedInt32Array:
+	var slots := PackedInt32Array()
+	var primary := int(hud.me.get("slot", -1))
+	if primary < 0:
+		return slots
+	for slot in range(hud.players.size()):
+		if slot != primary and hud.players[slot].get("present", false):
+			slots.append(slot)
+	return slots
+
+
+func _party_frames() -> Array:
+	# One layout is used by drawing and the authored rectangle regression.
+	var frames: Array = []
+	var slots := _party_slots()
+	var additional_local := false
+	for slot in slots:
+		additional_local = additional_local or bool(hud.players[slot].get("local", false))
 	var s: float = hud.s
-	# four others or fewer: the full frames; five to seven (a game of up to eight): compact ones, so that the stack
-	# keeps to the lower left (name and level on one line with the bars, no mana bar)
-	var others := 0
-	for p in hud.players:
-		if p.get("present", false) and not p.get("local", false):
-			others += 1
-	var compact := others > 3
-	var w: float = 250.0 * s
-	var h: float = (34.0 if compact else 50.0) * s
-	var y: float = hud.area.end.y - (104.0 + 62.0) * s * (0.9 if hud.layout == Hud.LAYOUT_THIRD else 1.0)
+	var k := 0.9 if hud.layout == Hud.LAYOUT_THIRD else 1.0
+	var gap := 62.0 * s * k
+	if additional_local:
+		# Four Hardcore hint lines sit above the primary frame. The pixel floor
+		# also keeps clear of their minimum9px font at small HUD scales.
+		gap = maxf(124.0 * s * k, 80.0)
+	var y: float = hud.area.end.y - 104.0 * s * k - gap
 	if hud.layout == Hud.LAYOUT_FIRST:
-		y = hud.area.end.y + 8.0 * s       # first person has no frame of one's own: the stack starts at the foot
-	for slot in range(hud.players.size() - 1, -1, -1):
+		y = hud.area.end.y + 8.0 * s
+	for index in range(slots.size() - 1, -1, -1):
+		var slot := slots[index]
+		# Additional local players keep mana even in a large remote party.
+		var compact := slots.size() > 3 and not bool(hud.players[slot].get("local", false))
+		var h := (34.0 if compact else 50.0) * s
+		y -= h
+		frames.append({"slot": slot, "compact": compact,
+			"rect": Rect2(Vector2(hud.area.position.x, y).round(), Vector2(250.0 * s, h))})
+		y -= (5.0 if compact else 8.0) * s
+	return frames
+
+
+func _party() -> void:
+	# Other slots include other locally controlled players, not the primary.
+	var s: float = hud.s
+	for frame in _party_frames():
+		var slot: int = frame.slot
 		var p: Dictionary = hud.players[slot]
-		if not p.get("present", false) or p.get("local", false):
-			continue
 		var b: Dictionary = shown.get(slot, {})
 		if b.is_empty():
 			continue
-		y -= h
-		var o := Vector2(hud.area.position.x, y).round()
-		y -= (5.0 if compact else 8.0) * s
+		var compact: bool = frame.compact
+		var rect: Rect2 = frame.rect
+		var w := rect.size.x
+		var h := rect.size.y
+		var o := rect.position
 		var alpha: float = 1.0 if p.alive else 0.6
 		Style.panel(self, Rect2(o, Vector2(w, h)), s, alpha, 6.0)
 		draw_rect(Rect2(o + Vector2(0, 6.0 * s), Vector2(3.0 * s, h - 12.0 * s)), Color(Style.PARTY, alpha))

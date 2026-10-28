@@ -109,6 +109,21 @@ void RtaMachine::set_pad(int port, int buttons, int lx, int ly, int rx, int ry) 
     rta_library().rtag_set_pad(port, &pad);
 }
 
+Dictionary RtaMachine::get_rumble(int port) const {
+    const RtaLibrary& lib = rta_library();
+    const bool supported = lib.loaded && lib.rtag_rumble;
+    uint8_t small = 0, large = 0;
+    uint64_t generation = 0;
+    const bool valid = supported && started && lib.rtag_rumble(port, &small, &large, &generation) != 0;
+    Dictionary d;
+    d["supported"] = supported;
+    d["valid"] = valid;
+    d["small"] = (int)small; d["large"] = (int)large;
+    d["weak"] = small != 0 ? 1.0 : 0.0; d["strong"] = (double)large / 255.0;
+    d["generation"] = (int64_t)generation;
+    return d;
+}
+
 int RtaMachine::step(int wait_ms) {
     if (!started) return -1;
     const rtag_frame* next = nullptr;
@@ -554,6 +569,7 @@ void RtaMachine::_bind_methods() {
     ClassDB::bind_method(D_METHOD("has", "feature"), &RtaMachine::has);
     ClassDB::bind_method(D_METHOD("start", "config"), &RtaMachine::start);
     ClassDB::bind_method(D_METHOD("set_pad", "port", "buttons", "lx", "ly", "rx", "ry"), &RtaMachine::set_pad);
+    ClassDB::bind_method(D_METHOD("get_rumble", "port"), &RtaMachine::get_rumble);
     ClassDB::bind_method(D_METHOD("step", "wait_ms"), &RtaMachine::step);
     ClassDB::bind_method(D_METHOD("poll", "wait_ms"), &RtaMachine::poll);
     ClassDB::bind_method(D_METHOD("run", "hz"), &RtaMachine::run);

@@ -11,6 +11,7 @@
 // host lets it go (Gate), finished frames wait in a short queue for the host (Outbox), and
 // the end of the run stops the machine instead of the process (host_godot.cpp).
 #include "rtag.h"
+#include "rumble_state.h"
 #include <cstddef>
 #include "ramsize.h"          // RAM_SIZE (rtag_memory_size)
 #include "moved.h"            // the moved tables (rtag_moved_get)
@@ -207,6 +208,7 @@ struct Pads : rta::PadSource {
     rtag_pad held[2] = {{0, 128, 128, 128, 128}, {0, 128, 128, 128, 128}};
     std::atomic<bool> quit{false};
     std::atomic<uint32_t> rumbles{0};
+    rtag_detail::RumbleState motors;
     std::atomic<bool> controls_on{true};
     std::mutex hud_lock;
     rtag_controls hud;
@@ -277,7 +279,11 @@ struct Pads : rta::PadSource {
         (void)blank;
 #endif
     }
-    void rumble(unsigned, uint8_t, uint8_t) override { rumbles++; }
+    void rumble(unsigned port, uint8_t small, uint8_t large) override {
+        rumbles++;
+        motors.command(port, small, large);
+    }
+    void stop() { motors.stop(); quit = true; }
 };
 
 struct Machine {
@@ -627,6 +633,7 @@ void final_report() {                                   // on the game's thread,
 
 void on_quit(int code) {                                // host_godot.cpp: the runtime has ended the run
     Machine& m = *g_m;
+    m.pads.stop();                                      // natural exits release motors too
     m.exit_code = code;
     m.ended = true;
     m.changed.notify_all();
@@ -792,6 +799,7 @@ int rtag_has(const char* feature) {
     }
     if (f == "films") return apprt::films_linked() ? 1 : 0;
     if (f == "picture") return 1;
+    if (f == "rumble") return 1;
     if (f == "scene3d") return 1;
     if (f == "texture_names") return 1;
     if (f == "skeletons") return 1;
@@ -1013,6 +1021,16 @@ void rtag_set_pad(int port, const rtag_pad* pad) {
     if (!g_m || port < 0 || port > 1 || !pad) return;
     std::lock_guard<std::mutex> hold(g_m->pads.lock);
     g_m->pads.held[port] = *pad;
+}
+
+int rtag_rumble(int port, uint8_t* small, uint8_t* large, uint64_t* generation) {
+    if (!g_m) {
+        if (small) *small = 0;
+        if (large) *large = 0;
+        if (generation) *generation = 0;
+        return 0;
+    }
+    return g_m->pads.motors.read(port, small, large, generation);
 }
 
 int rtag_poll(int wait_ms, const rtag_frame** frame) {
@@ -1296,8 +1314,8 @@ int rtag_exit_code(void) { return g_m ? g_m->exit_code.load() : 0; }
 void rtag_stop(void) {
     if (!g_m) return;
     Machine& m = *g_m;
+    m.pads.stop();                                      // neutral immediately, even if shutdown times out
     if (m.ended) return;
-    m.pads.quit = true;
     m.run_hz = 0;
     double until = now_ms() + 2000;
     while (!m.ended && now_ms() < until) {

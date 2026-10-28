@@ -8,7 +8,7 @@
   python3 tools/godot/build.py extension       # the GDExtension (cmake + ninja, against the pinned godot-cpp)
   python3 tools/godot/build.py extension --release   # ... for an exported application (template_release)
   python3 tools/godot/build.py project         # stage the Godot project: local/godot-spike/project/
-  python3 tools/godot/build.py all             # snapshot (if there is none), lib, extension, project
+  python3 tools/godot/build.py all             # lib, extension, project (macOS also takes a snapshot)
   python3 tools/godot/build.py export [--platform macos|windows|linux] [--arch arm64|x86_64]
                                                # an application of our code only (no game library, no game data):
                                                # OUT/export/<platform>/; it asks for the disc on its first start and
@@ -37,13 +37,14 @@ What goes where.  Nothing derived from the game leaves local/:
                                        Contents/Frameworks afterwards - the application holds the translated
                                        game and stays on this machine
 The export needs Godot's export templates for 4.5.2 (deps/godot-templates/Godot_v4.5.2-stable_export_templates.tpz,
-from the same release as the editor, checked against its SHA-512); only templates/macos.zip is taken out of it.
+from the same release as the editor, checked against its SHA-512); only the selected platform template is extracted.
 Why a snapshot: tools/recomp is another agent's and changes while this is built; the library is
 made from one consistent copy, and what it needs changed there is tools/godot/recomp.patch.
 
 The translated game itself is not compiled here: `python3 tools/recomp/app/build.py` (and
 `--original`) makes it from your own disc's executable; this script takes its objects.
-Uses the compiler, cmake and ninja already on the machine; nothing is downloaded (the two
+Windows lib/all delegates to build_lib_win.py; extension uses Ninja or llvm-mingw make.
+Uses the compiler, cmake and build tools already on the machine; nothing is downloaded (the two
 downloads the Godot side needs - the editor and godot-cpp - are described in
 docs/issues/native-godot.md).
 """
@@ -56,6 +57,8 @@ import shutil
 import subprocess
 import sys
 import time
+import tempfile
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -86,7 +89,7 @@ EXPORTS = ['rtag_api_version', 'rtag_has', 'rtag_start', 'rtag_set_pad', 'rtag_s
            'rtag_memory', 'rtag_fields', 'rtag_info', 'rtag_ended', 'rtag_exit_code', 'rtag_stop', 'rtag_set_option',
            'rtag_controls_hud', 'rtag_mouse', 'rtag_mouse_button', 'rtag_fill_get', 'rtag_texture_names',
            'rtag_report_begin', 'rtag_report_finish', 'rtag_build_line', 'rtag_report_told', 'rtag_skeletons_get',
-           'rtag_frame_age_ms', 'rtag_frame_since_release_ms', 'rtag_release', 'rtag_film_now', 'rtag_memory_size', 'rtag_moved_get']
+           'rtag_frame_age_ms', 'rtag_frame_since_release_ms', 'rtag_release', 'rtag_film_now', 'rtag_memory_size', 'rtag_moved_get', 'rtag_rumble']
 # A room of our own (tools/recomp/net2/session.h, game.h): the fix-set library carries the one copy of net2 in the
 # process - the session client, the carrier of the game's datagrams and the direct launch - and hands out its plain-C
 # functions under their own names, for the portal (docs/issues/native-rendezvous.md 5.1).
@@ -97,6 +100,84 @@ NET2_EXPORTS = ['net2_block', 'net2_blocked', 'net2_chat', 'net2_close', 'net2_d
                 'net2_join_friend', 'net2_kick', 'net2_leave', 'net2_local_characters', 'net2_me', 'net2_next_event', 'net2_open', 'net2_poll',
                 'net2_ready', 'net2_recent', 'net2_requests', 'net2_room', 'net2_session', 'net2_set', 'net2_set_character', 'net2_set_game',
                 'net2_set_name', 'net2_set_options', 'net2_start', 'net2_unblock']
+
+
+def default_platform():
+    return 'windows' if sys.platform == 'win32' else 'macos'
+
+
+def default_godot():
+    editor = os.path.join(DEPS, 'godot-editor')
+    if sys.platform == 'win32':
+        return os.path.join(editor, 'Godot_v4.5.2-stable_win64.exe')
+    return os.path.join(editor, 'Godot.app', 'Contents', 'MacOS', 'Godot')
+
+
+def build_priority():
+    return [] if sys.platform == 'win32' else NICE
+
+
+def export_environment():
+    env = dict(os.environ)
+    directories = [('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data'), ('XDG_CACHE_HOME', 'cache')]
+    if sys.platform == 'win32':
+        directories += [('APPDATA', 'appdata'), ('LOCALAPPDATA', 'localappdata')]
+    for key, name in directories:
+        env[key] = os.path.join(OUT, 'godot-home', name)
+        os.makedirs(env[key], exist_ok=True)
+    return env
+
+
+def unpack_template(archive, member):
+    # Only these pinned release names can be written. Unrelated archive entries
+    # (including path traversal names) never reach the filesystem.
+    if member not in ('macos.zip', 'windows_release_x86_64.exe', 'linux_release.arm64', 'linux_release.x86_64'):
+        raise ValueError('unsupported export template: ' + member)
+    base = os.path.dirname(os.path.abspath(archive))
+    names = ('templates/' + member, 'templates/version.txt')
+    with zipfile.ZipFile(archive) as package:
+        selected = [package.getinfo(name) for name in names]
+        for item in selected:
+            if item.is_dir() or ((item.external_attr >> 16) & 0o170000) not in (0, 0o100000):
+                raise ValueError('export template is not a regular file: ' + item.filename)
+            target = os.path.join(base, *item.filename.split('/'))
+            if os.path.commonpath([os.path.realpath(base), os.path.realpath(target)]) != os.path.realpath(base):
+                raise ValueError('export template destination leaves its dependency folder')
+        for item in selected:
+            target = os.path.join(base, *item.filename.split('/'))
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            temporary = None
+            try:
+                with package.open(item) as source, tempfile.NamedTemporaryFile(dir=os.path.dirname(target), delete=False) as output:
+                    temporary = output.name
+                    shutil.copyfileobj(source, output)
+                mode = (item.external_attr >> 16) & 0o777
+                if mode:
+                    os.chmod(temporary, mode)
+                os.replace(temporary, target)
+            finally:
+                if temporary and os.path.exists(temporary):
+                    os.remove(temporary)
+
+
+
+def export_errors(log):
+    with open(log, encoding='utf-8', errors='replace') as stream:
+        text = re.sub(r'\x1b\[[0-9;]*m', '', stream.read())
+    return [line for line in text.splitlines() if re.match(r'\s*(?:SCRIPT ERROR:|ERROR:|Parse Error:)', line)]
+
+
+def extension_generator(build):
+    # CMake remembers its generator. Do not force Ninja over an existing MinGW
+    # build, or require extra software when llvm-mingw already supplies make.
+    if os.path.isfile(os.path.join(build, 'CMakeCache.txt')):
+        return []
+    if sys.platform == 'win32' and not shutil.which('ninja'):
+        make = shutil.which('mingw32-make')
+        if not make:
+            raise ValueError('extension build needs Ninja or llvm-mingw mingw32-make on PATH')
+        return ['-G', 'MinGW Makefiles', '-DCMAKE_MAKE_PROGRAM=' + make]
+    return ['-G', 'Ninja']
 
 
 def copy_sources(to, recomp):
@@ -232,6 +313,13 @@ def compile_all(jobs, objdir, dirs, workers):
 
 
 def build_lib(args):
+    if args.platform == 'windows':
+        if args.original:
+            print('the Windows original library is not supported by build_lib_win.py')
+            return 1
+        command = [sys.executable, '-B', os.path.join(HERE, 'build_lib_win.py'),
+                   '--jobs', str(args.jobs), '--opt=' + args.opt]
+        return subprocess.run(command, cwd=ROOT, env=dict(os.environ, RTA_GODOT_OUT=OUT)).returncode
     if not os.path.isdir(SNAP):
         print('no snapshot: python3 tools/godot/build.py snapshot')
         return 1
@@ -402,9 +490,12 @@ def build_extension(args):
         out_dir = os.path.join(OUT, 'project', 'bin')
         prefix, extra = [], []
     elif platform_ == 'windows':
+        # Pinned godot-cpp uses global realloc/free without including cstdlib;
+        # llvm-mingw needs the declaration explicitly, including for a clean build.
         build = os.path.join(OUT, 'build', 'extension-windows-' + target)
         out_dir = os.path.join(OUT, 'xbin', 'windows')
-        prefix, extra = [], ['-DCMAKE_TOOLCHAIN_FILE=' + os.path.join(HERE, 'extension', 'cmake', 'mingw-x86_64.cmake')]
+        prefix, extra = [], ['-DCMAKE_TOOLCHAIN_FILE=' + os.path.join(HERE, 'extension', 'cmake', 'mingw-x86_64.cmake'),
+                             '-DGODOTCPP_ARCH=x86_64', '-DCMAKE_CXX_FLAGS=-include cstdlib']
     else:
         arch = args.arch
         build = os.path.join(OUT, 'build', 'extension-linux-%s-%s' % (arch, target))
@@ -425,10 +516,16 @@ def build_extension(args):
                            '-e', 'GIT_CONFIG_COUNT=1', '-e', 'GIT_CONFIG_KEY_0=safe.directory', '-e', 'GIT_CONFIG_VALUE_0=*',
                            '-v', '%s:%s' % (ROOT, ROOT), '-w', ROOT, image]
         extra = []
-    command = ['cmake', '-S', os.path.join(HERE, 'extension'), '-B', build, '-G', 'Ninja', '-DGODOT_CPP_DIR=' + cpp, '-DCMAKE_BUILD_TYPE=Release',
-               '-DGODOTCPP_TARGET=' + target, '-DRTA_GODOT_OUTPUT_DIR=' + out_dir] + extra
+    try:
+        generator = ['-G', 'Ninja'] if prefix else extension_generator(build)
+    except ValueError as error:
+        print(error)
+        return 1
+    command = ['cmake', '-S', os.path.join(HERE, 'extension'), '-B', build] + generator + [
+               '-DGODOT_CPP_DIR=' + cpp, '-DCMAKE_BUILD_TYPE=Release', '-DGODOTCPP_TARGET=' + target,
+               '-DRTA_GODOT_OUTPUT_DIR=' + out_dir] + extra
     for step in (command, ['cmake', '--build', build, '--parallel', str(args.jobs)]):
-        result = subprocess.run((prefix or NICE) + step, capture_output=True, text=True)
+        result = subprocess.run((prefix or build_priority()) + step, capture_output=True, text=True)
         if result.returncode != 0:
             print((result.stdout[-6000:] + result.stderr[-3000:]))
             return 1
@@ -440,6 +537,11 @@ def stage_project(args):
     """The project as Godot runs it: scripts, scenes and shaders from tools/godot/project (copied, so that
     Godot's import cache and its .uid files stay out of the repository), bin/ with the libraries."""
     source, to = os.path.join(HERE, 'project'), os.path.join(OUT, 'project')
+    windows_variant = 'windows-p8' if os.environ.get('RTA_GODOT_PARTY8') == '1' else 'windows'
+    windows_library = os.path.join(OUT, windows_variant, 'librta_game.dll')
+    if windows_variant == 'windows-p8' and getattr(args, 'platform', default_platform()) == 'windows' and not os.path.isfile(windows_library):
+        print('missing requested Windows party8 library: %s (build.py lib with RTA_GODOT_PARTY8=1)' % windows_library)
+        return 1
     count = 0
     for folder, dirs, files in os.walk(source):
         dirs[:] = [d for d in dirs if d not in ('.godot', 'bin')]
@@ -453,20 +555,29 @@ def stage_project(args):
                 shutil.copy2(a, b)
                 count += 1
     os.makedirs(os.path.join(to, 'bin'), exist_ok=True)
-    for name in ('librta_game.dylib', 'librta_game_orig.dylib'):
-        a, b = os.path.join(OUT, 'lib', name), os.path.join(to, 'bin', name)
-        if os.path.exists(a) and (not os.path.exists(b) or os.path.getmtime(a) > os.path.getmtime(b)):
-            # a new file put over the name (not written into the old one): a program that has the old one loaded
-            # (another agent's test, the portal's) keeps running on it
+    # A staging source can change while preserving size and timestamps.
+    filecmp.clear_cache()
+    libraries = [(os.path.join(OUT, 'lib', name), name)
+                 for name in ('librta_game.dylib', 'librta_game_orig.dylib')]
+    libraries.append((windows_library, 'librta_game.dll'))
+    for target in ('template_debug', 'template_release'):
+        name = 'rta_godot.windows.%s.x86_64.dll' % target
+        libraries.append((os.path.join(OUT, 'xbin', 'windows', name), name))
+    for a, name in libraries:
+        b = os.path.join(to, 'bin', name)
+        if os.path.exists(a) and (not os.path.exists(b) or not filecmp.cmp(a, b, shallow=False)):
+            # Replace through a new file; identical libraries are left alone.
+            # Windows requires a changed DLL to be unloaded before replacement.
             shutil.copy2(a, b + '.new%d' % os.getpid())
             os.replace(b + '.new%d' % os.getpid(), b)
             count += 1
     # (the per-level look presets are tracked: project/presets/levels.cfg, staged with the rest of the project)
     # The staged copy is the one test runs start: its window is small and says what it is from the first
     # moment (the script gives it its final title).  An exported application is made from a copy without this.
-    open(os.path.join(to, 'override.cfg'), 'w').write(
-        '[application]\n\nconfig/name="AGENT TEST - the translated game in Godot"\n\n[display]\n\nwindow/size/viewport_width=480\n'
-        'window/size/viewport_height=360\nwindow/size/no_focus=true\n')
+    with open(os.path.join(to, 'override.cfg'), 'w') as settings:
+        settings.write(
+            '[application]\n\nconfig/name="AGENT TEST - the translated game in Godot"\n\n[display]\n\nwindow/size/viewport_width=480\n'
+            'window/size/viewport_height=360\nwindow/size/no_focus=true\n')
     print('project staged: %s (%d files copied)' % (to, count))
     return 0
 
@@ -475,9 +586,22 @@ def export_app(args):
     """An application of our own code only: Godot's official release template, the extension, the project's scripts and
     shaders and look presets (our own numbers).  No game library, no art: on its first start it asks for the
     player's disc image and finds the game library the installer built from it (project/gamelib.gd; tools/install/
-    fromdisc.py --godot).  --platform macos (default) | windows | linux [--arch arm64|x86_64].  --with-game (macOS):
+    fromdisc.py --godot).  --platform macos | windows | linux [--arch arm64|x86_64].  --with-game (macOS):
     the old private export, with this machine's game library inside - it must not leave this machine."""
-    godot = os.environ.get('RTA_GODOT', os.path.join(DEPS, 'godot-editor', 'Godot.app', 'Contents', 'MacOS', 'Godot'))
+    godot = os.environ.get('RTA_GODOT', default_godot())
+    if not os.path.isfile(godot):
+        print('no Godot editor at %s (set RTA_GODOT to the pinned editor)' % godot)
+        return 1
+    if args.with_game and args.platform != 'macos':
+        print('--with-game is supported only for a private macOS export')
+        return 1
+    export_folder = {'macos': 'macos', 'windows': 'windows', 'linux': 'linux-' + args.arch}[args.platform] + ('-with-game' if args.with_game else '')
+    export = os.path.join(OUT, 'export')
+    destination = getattr(args, 'export_dir', None)
+    where = os.path.abspath(os.path.expanduser(destination)) if destination else os.path.join(export, export_folder)
+    if os.path.exists(where):
+        print('export destination already exists: %s; choose a fresh RTA_GODOT_OUT to preserve it' % where)
+        return 1
     tpz = os.path.join(DEPS, 'godot-templates', 'Godot_v4.5.2-stable_export_templates.tpz')
     platform_, arch = args.platform, args.arch
     member = {'macos': 'macos.zip', 'windows': 'windows_release_x86_64.exe', 'linux': 'linux_release.' + arch}[platform_]
@@ -486,17 +610,30 @@ def export_app(args):
         if not os.path.exists(tpz):
             print('no export templates at %s (the official 4.5.2 templates, docs/issues/native-godot.md, "Export")' % tpz)
             return 1
-        subprocess.run(['unzip', '-q', '-o', tpz, 'templates/' + member, 'templates/version.txt', '-d', os.path.dirname(tpz)], check=True)
+        try:
+            unpack_template(tpz, member)
+        except (OSError, ValueError, KeyError, zipfile.BadZipFile) as error:
+            print('cannot unpack the pinned export template: %s' % error)
+            return 1
     ext = {'macos': [os.path.join(OUT, 'project', 'bin', 'rta_godot.macos.template_%s.dylib' % t) for t in ('release', 'debug')],
            'windows': [os.path.join(OUT, 'xbin', 'windows', 'rta_godot.windows.template_release.x86_64.dll')],
            'linux': [os.path.join(OUT, 'xbin', 'linux', 'rta_godot.linux.template_release.%s.so' % arch)]}[platform_]
+    # The host editor loads its debug extension during import, even when the
+    # final package uses a release extension (or targets another platform).
+    host_ext = []
+    if sys.platform == 'win32':
+        name = 'rta_godot.windows.template_debug.x86_64.dll'
+        host_ext = [next((path for path in [os.path.join(OUT, 'xbin', 'windows', name), os.path.join(OUT, 'project', 'bin', name)]
+                          if os.path.isfile(path)), os.path.join(OUT, 'xbin', 'windows', name))]
+        if not os.path.isfile(host_ext[0]):
+            print('missing Windows editor extension: build.py extension --platform windows before export')
+            return 1
     game = os.path.join(OUT, 'lib', 'librta_game.dylib')
     with_game = args.with_game and platform_ == 'macos'
     for needed in ext[:1] + ([game] if with_game else []):
         if not os.path.exists(needed):
             print('missing %s (build.py extension --release [--platform %s]%s)' % (needed, platform_, ', build.py lib' if with_game else ''))
             return 1
-    export = os.path.join(OUT, 'export')
     project = os.path.join(export, 'project')
     shutil.rmtree(project, ignore_errors=True)
     source = os.path.join(HERE, 'project')
@@ -508,33 +645,33 @@ def export_app(args):
             if not name.endswith(('.uid', '.import')) and name not in ('.DS_Store', 'override.cfg'):
                 shutil.copy2(os.path.join(folder, name), os.path.join(project, rel, name))
     os.makedirs(os.path.join(project, 'bin'))
-    # the editor that runs the export is this Mac's and loads the extension for itself: the macOS one is always there (an
-    # export takes only its own platform's library out of bin/)
+    # Keep the host editor's extension beside the target release extension.
+    # Godot exports only the selected platform's libraries from bin/.
     mac_ext = [os.path.join(OUT, 'project', 'bin', 'rta_godot.macos.template_%s.dylib' % t) for t in ('release', 'debug')]
-    for path in ext + [m for m in mac_ext if m not in ext]:
+    for path in ext + host_ext + [m for m in mac_ext if m not in ext]:
         if os.path.exists(path):
             shutil.copy2(path, os.path.join(project, 'bin', os.path.basename(path)))
     presets = os.path.join(project, 'export_presets.cfg')
-    text = open(presets).read().replace('custom_template/release=""', 'custom_template/release="%s"' % template)
+    with open(presets, encoding='utf-8') as settings:
+        text = settings.read().replace('custom_template/release=""', 'custom_template/release="%s"' % template.replace('\\', '/'))
     if platform_ == 'linux':
         text = text.replace('binary_format/architecture="arm64"', 'binary_format/architecture="%s"' % arch)
-    open(presets, 'w').write(text)
-    env = dict(os.environ)
-    for key, name in (('XDG_CONFIG_HOME', 'config'), ('XDG_DATA_HOME', 'data'), ('XDG_CACHE_HOME', 'cache')):
-        env[key] = os.path.join(OUT, 'godot-home', name)
-        os.makedirs(env[key], exist_ok=True)
-    folder = {'macos': 'macos', 'windows': 'windows', 'linux': 'linux-' + arch}[platform_] + ('-with-game' if with_game else '')
-    where = os.path.join(export, folder)
-    shutil.rmtree(where, ignore_errors=True)
+    with open(presets, 'w', encoding='utf-8') as settings:
+        settings.write(text)
+    env = export_environment()
     os.makedirs(where)
     target = os.path.join(where, {'macos': 'RtaGodot.app', 'windows': 'RtaGodot.exe', 'linux': 'RtaGodot.%s' % arch}[platform_])
     name = {'macos': 'macOS', 'windows': 'Windows', 'linux': 'Linux'}[platform_]
-    log = os.path.join(export, 'export-%s.log' % folder)
+    log = where + '.export.log' if destination else os.path.join(export, 'export-%s.log' % export_folder)
     with open(log, 'w') as sink:
         # the bounded editor start fills the import cache (and avoids the first-import shutdown crash), then the export
-        subprocess.run(NICE + [godot, '--headless', '--path', project, '--editor', '--quit-after', '120', '--frame-delay', '50'], env=env, stdout=sink, stderr=sink)
-        result = subprocess.run(NICE + [godot, '--headless', '--path', project, '--export-release', name, target], env=env, stdout=sink, stderr=sink)
-    if result.returncode != 0 or not os.path.exists(target):
+        imported = subprocess.run(build_priority() + [godot, '--headless', '--path', project, '--editor', '--quit-after', '120', '--frame-delay', '50'], env=env, stdout=sink, stderr=sink)
+        sink.flush()
+        if imported.returncode != 0 or export_errors(log):
+            print('the editor import failed (%d): see %s' % (imported.returncode, log))
+            return 1
+        result = subprocess.run(build_priority() + [godot, '--headless', '--path', project, '--export-release', name, target], env=env, stdout=sink, stderr=sink)
+    if result.returncode != 0 or not os.path.exists(target) or export_errors(log):
         print('the export failed (%d): see %s' % (result.returncode, log))
         return 1
     if platform_ == 'macos':
@@ -569,13 +706,14 @@ def main():
     parser.add_argument('--refresh', action='store_true')
     parser.add_argument('--from', dest='source', default='', help='snapshot: another root (tools/recomp + local/recomp-out) to take sources and objects from')
     parser.add_argument('--jobs', type=int, default=8)
-    parser.add_argument('--platform', choices=['macos', 'windows', 'linux'], default='macos', help='extension, export: for which system')
-    parser.add_argument('--arch', choices=['arm64', 'x86_64'], default='arm64', help='--platform linux: which processor')
+    parser.add_argument('--platform', choices=['macos', 'windows', 'linux'], default=default_platform(), help='lib, extension, export: target system (default: Windows on Windows, macOS otherwise)')
+    parser.add_argument('--arch', choices=['arm64', 'x86_64'], default='x86_64' if sys.platform == 'win32' else 'arm64', help='--platform linux: which processor (Windows always x86_64)')
+    parser.add_argument('--export-dir', help='export: a fresh client destination; reuse build caches without replacing earlier exports')
     parser.add_argument('--with-game', action='store_true', help='export (macOS): the private export with this machine\'s game library inside')
     args = parser.parse_args()
     args.jobs = max(1, min(args.jobs, 8))               # never more: other jobs share the machine
     steps = {'snapshot': [snapshot], 'patch': [make_patch], 'lib': [build_lib], 'extension': [build_extension], 'project': [stage_project],
-             'all': [snapshot, build_lib, build_extension, stage_project], 'export': [export_app]}[args.what]
+             'all': ([snapshot] if args.platform != 'windows' else []) + [build_lib, build_extension, stage_project], 'export': [export_app]}[args.what]
     for step in steps:
         code = step(args)
         if code:

@@ -252,10 +252,10 @@ void vertex() {
 #if CURRENT_RENDERER == RENDERER_COMPATIBILITY
 	POSITION = vec4(VERTEX.x / target_size.x * 2.0 - 1.0, (VERTEX.y / target_size.y * 2.0 - 1.0) * flip_y, VERTEX.z * 2.0 - 1.0, 1.0);
 #else
-	// Forward+ / Mobile (Metal, Vulkan): depth 0..1 and reversed (near is 1) - the same winner of every depth test as
-	// in the Compatibility renderer.  The surfaces then hold their pictures bottom up, as Godot's own 3-D does there:
+	// Forward+ / Mobile: depth 0..1, near is 1. The GS already uses greater depth for nearer fragments;
+	// keep it, as the Compatibility branch does after its -1..1 conversion. The surfaces hold their pictures bottom up:
 	// the drawer turns them over where they are read (rta_drawer.cpp, `rd`)
-	POSITION = vec4(VERTEX.x / target_size.x * 2.0 - 1.0, (VERTEX.y / target_size.y * 2.0 - 1.0) * flip_y, 1.0 - VERTEX.z, 1.0);
+	POSITION = vec4(VERTEX.x / target_size.x * 2.0 - 1.0, (VERTEX.y / target_size.y * 2.0 - 1.0) * flip_y, VERTEX.z, 1.0);
 #endif
 #endif
 }

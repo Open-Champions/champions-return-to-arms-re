@@ -36,7 +36,7 @@ def main():
         parser.error('Keep private build outputs under local/ or outside the repository.')
     out.mkdir(parents=True, exist_ok=True)
     reports = []
-    for name in ('input_state_test', 'pad_rumble_test', 'pad_mapping_test'):
+    for name in ('input_state_test', 'pad_rumble_test', 'pad_mapping_test', 'pad_assignment_test'):
         exe = out / (name + '.exe')
         command = [compiler, '-std=c++17', '-O2', '-fno-fast-math', '-ffp-contract=off', '-static',
                    '-I', str(APP.parent / 'rt'), '-I', str(APP),

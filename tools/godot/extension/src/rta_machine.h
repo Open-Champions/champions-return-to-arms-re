@@ -28,6 +28,9 @@ class RtaMachine : public RefCounted {
     bool has(const String& feature) const;
     int start(const Dictionary& config);
     void set_pad(int port, int buttons, int lx, int ly, int rx, int ry);
+    // Latest local-port motors: supported/valid, weak (small != 0), strong (large / 255), raw small/large, generation.
+    // Neutral before start, after stop/exit or with an old library. The host applies/releases physical devices.
+    Dictionary get_rumble(int port) const;
     int step(int wait_ms);
     int poll(int wait_ms);
     void run(double hz);

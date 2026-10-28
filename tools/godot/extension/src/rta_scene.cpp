@@ -28,6 +28,7 @@
 // the vertical through that point), raise DEGREES (tilt), focus D (distance of that point
 // along the view axis; default: where the player stands in the game's own view, 390).
 #include "rta_drawer.h"
+#include <algorithm>
 #include "rta_variant.h"
 
 #include <godot_cpp/classes/rendering_server.hpp>

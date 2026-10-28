@@ -17,7 +17,9 @@ The Windows twin of `tools/godot/build.py lib` and build_lib_linux.py: the same 
                                      gl_offscreen_win.cpp (a hidden window and a WGL core context)
   tools/recomp/app/win/              wgl.cpp / wgl.h and the two Qt-named headers backend_gl.cpp is compiled against
 What it makes, in OUT/windows/: librta_game.dll, and obj/ (the other objects, the .def file, the map).
-Nothing derived from the game leaves local/.
+Nothing derived from the game leaves local/. By default this builds the ordinary 32 MB translation.
+RTA_GODOT_PARTY8=1 builds win/gen-app-p8 with dynamic relocations and 64 MB into OUT/windows-p8/,
+leaving OUT/windows/ and the ordinary Windows translation untouched.
 """
 import argparse
 import os
@@ -52,16 +54,18 @@ LIBS = ['-lopengl32', '-lgdi32', '-luser32', '-lole32', '-lwinmm', '-lshell32', 
 
 def has(path, word):
     try:
-        return word in open(path, errors='replace').read()
+        with open(path, errors='replace') as stream:
+            return word in stream.read()
     except OSError:
         return False
 
 
-def game_objects(cxx, tag, rt_flags, args):
+def game_objects(cxx, tag, rt_flags, args, gen=None, windows=None, party8=False):
     """The translated game's objects: build_win.py's when current (the same flags), else our own."""
-    theirs = os.path.join(ROOT, 'local', 'recomp-out', 'win', 'obj-' + tag)
+    gen, windows = gen or GEN, windows or WINDOWS
+    theirs = os.path.join(ROOT, 'local', 'recomp-out', 'win', 'obj-' + tag + ('_p8' if party8 else ''))
     if not args.no_game_objects:
-        jobs = bw.game_jobs(GEN, theirs, rt_flags)
+        jobs = bw.game_jobs(gen, theirs, rt_flags)
         line = ' '.join(cxx + rt_flags)
         current = all(os.path.exists(target) and os.path.exists(target + '.flags') and open(target + '.flags').read() == line and
                       all(os.path.getmtime(p) <= os.path.getmtime(target) for p in [source] + deps if os.path.exists(p))
@@ -70,38 +74,52 @@ def game_objects(cxx, tag, rt_flags, args):
             print('the translated game: %d objects of build_win.py (%s)' % (len(jobs), os.path.relpath(theirs, ROOT)))
             return [j[2] for j in jobs]
         print('build_win.py\'s objects of the game are missing, older than the translation or made with other flags: compiling them here')
-    own = os.path.join(WINDOWS, 'obj-game-' + tag)
+    own = os.path.join(windows, 'obj-game-' + tag)
     os.makedirs(own, exist_ok=True)
-    jobs = bw.game_jobs(GEN, own, rt_flags)
+    jobs = bw.game_jobs(gen, own, rt_flags)
     if not bw.compile_all(jobs, cxx, args.jobs):
         return None
     return [j[2] for j in jobs]
 
 
 def build(args):
+    party8 = os.environ.get('RTA_GODOT_PARTY8') == '1'
+    gen, windows = GEN + '-p8' if party8 else GEN, WINDOWS + '-p8' if party8 else WINDOWS
+    if party8:
+        from types import SimpleNamespace
+        if not bw.translate(SimpleNamespace(gen=gen, original=False, no_game=False, no_net=False, party8=True)):
+            return 1
+        if not has(os.path.join(gen, 'funcs.h'), 'g_party8_slots'):
+            print('the requested Windows party8 translation has no player-slot relocation definitions')
+            return 1
     snap, vu, online = gb.SNAP, os.path.join(gb.SRC, 'gen-vu'), os.path.join(gb.SRC, 'play-net', 'src', 'RtaOnline.cpp')
     if not os.path.isdir(snap):
         snap, vu, online = os.path.join(ROOT, 'tools', 'recomp'), os.path.join(ROOT, 'local', 'recomp-out', 'gen-vu'), bw.ONLINE
         print('no snapshot in %s: compiling tools/recomp as it is' % os.path.relpath(gb.SNAP, ROOT))
-    if not os.path.exists(os.path.join(GEN, 'funcs.h')):
-        print('no Windows translation of the game (%s): python3 tools/recomp/app/build_win.py' % os.path.relpath(GEN, ROOT))
+    if not os.path.exists(os.path.join(gen, 'funcs.h')):
+        print('no Windows translation of the game (%s): python3 tools/recomp/app/build_win.py' % os.path.relpath(gen, ROOT))
         return 1
     cxx, linker, _, what = bw.find_toolchain(args.compiler)
     tag = 'clang' if 'clang' in os.path.basename(cxx[0]) else 'gcc'
     print('toolchain: ' + what)
-    objdir = os.path.join(WINDOWS, 'obj-' + tag)
+    objdir = os.path.join(windows, 'obj-' + tag)
     os.makedirs(objdir, exist_ok=True)
     rt, render, sound, app, net, net2 = (os.path.join(snap, p) for p in ('rt', 'render', 'sound', 'app', 'net', 'net2'))
     opt, fp, wd = args.opt, bw.FP, bw.WIN_DEFINES
     # the game's objects are build_win.py's: the runtime flags are exactly its own (its RT and GEN paths)
-    game_flags = ['-std=c++17', opt, '-fwrapv', '-w'] + fp + wd + ['-I', bw.RT, '-I', GEN]
-    rt_flags = ['-std=c++17', opt, '-fwrapv', '-w'] + fp + wd + ['-I', rt, '-I', GEN]
+    game_flags = ['-std=c++17', opt, '-fwrapv', '-w'] + fp + wd + ['-I', bw.RT, '-I', gen]
+    rt_flags = ['-std=c++17', opt, '-fwrapv', '-w'] + fp + wd + ['-I', rt, '-I', gen]
     render_flags = ['-std=c++17', opt, '-Wall', '-Wno-unused-function'] + fp + wd + ['-I', render]
     lib_flags = ['-std=c++17', opt, '-Wall', '-Wno-unused-function'] + fp + wd + ['-I', LIB, '-I', app, '-I', render, '-I', rt,
                                                                                  '-DRTA_PNG_NO_ZLIB']
+    memory_flags = ['-DRAM_SIZE=0x04000000u'] if party8 else []
+    game_flags += memory_flags + (['-DRECOMP_RELOC_DYN'] if party8 else [])
+    rt_flags += memory_flags
+    render_flags += memory_flags
+    lib_flags += memory_flags
     if has(os.path.join(sound, 'drivers.cpp'), 'rta_sound_set_music_gain'):
         lib_flags.append('-DRTAG_HAVE_MUSIC_GAIN')
-    funcs = os.path.join(GEN, 'funcs.h')
+    funcs = os.path.join(gen, 'funcs.h')
     hud_text = has(os.path.join(render, 'gs.h'), 'hide_text') and has(funcs, 'orig_001d93b0')
     if hud_text:
         lib_flags.append('-DRTAG_HAVE_HUD_TEXT')
@@ -125,13 +143,19 @@ def build(args):
     if world:
         sources.append((os.path.join(app, 'fpworld.cpp'), rt_flags + ['-I', app, '-I', render], 'a_'))
     if os.path.exists(os.path.join(app, 'fpcontrols.cpp')):
-        sources.append((os.path.join(app, 'fpcontrols.cpp'), ['-std=c++17', opt, '-Wall'] + wd + ['-I', app, '-I', rt], 'a_'))
+        sources.append((os.path.join(app, 'fpcontrols.cpp'), ['-std=c++17', opt, '-Wall'] + wd + memory_flags + ['-I', app, '-I', rt], 'a_'))
         if os.path.exists(os.path.join(app, 'soulscombat.cpp')):
             sources.append((os.path.join(app, 'soulscombat.cpp'), rt_flags + ['-I', app, '-I', render], 'a_'))
             lib_flags.append('-DRTAG_HAVE_SOULS')
         if os.path.exists(os.path.join(app, 'fpaim.cpp')):
             sources.append((os.path.join(app, 'fpaim.cpp'), rt_flags + ['-I', app], 'a_'))
             lib_flags.append('-DRTAG_HAVE_AIM')
+    if party8:
+        if not os.path.exists(os.path.join(app, 'party8.cpp')):
+            print('the requested Windows party8 library has no party8 implementation in its source snapshot')
+            return 1
+        sources.append((os.path.join(app, 'party8.cpp'), rt_flags + ['-I', app, '-I', render], 'a_'))
+        lib_flags.append('-DRTAG_HAVE_PARTY8')
     if os.path.exists(os.path.join(app, 'testerkit.cpp')):         # the tester's kit (app/testerkit.h): reports, the build line
         sources.append((os.path.join(app, 'testerkit.cpp'), rt_flags + ['-I', app, '-I', render, bw.buildid.define()], 'a_'))
         lib_flags.append('-DRTAG_HAVE_TESTERKIT')
@@ -139,6 +163,14 @@ def build(args):
         lib_flags.append('-DRTAG_NO_CONTROLS')
     if os.path.exists(bw.FILM) and os.path.exists(bw.FILM_HLE):
         sources.append((os.path.join(app, 'film.cpp'), rt_flags + ['-I', app, '-include', 'ctime'], 'a_'))
+    # Match the fix-set library's gameplay modules, only when this translation leaves their originals open.
+    # Link each wrapper together with its implementation: a missing pair must keep the original weak fallback.
+    if all(os.path.exists(os.path.join(app, n)) for n in ('cinematic.cpp', 'cinematic_hle.cpp')) and has(funcs, 'orig_00199944'):
+        sources += [(os.path.join(app, n), rt_flags + ['-I', app], 'a_') for n in ('cinematic.cpp', 'cinematic_hle.cpp')]
+        lib_flags.append('-DRTAG_HAVE_CINE')
+    if '-DRTAG_HAVE_SOULS' in lib_flags and has(funcs, 'orig_0010a620') \
+            and all(os.path.exists(os.path.join(app, n)) for n in ('partyscale.cpp', 'partyscale_hle.cpp')):
+        sources += [(os.path.join(app, n), rt_flags + ['-I', app], 'a_') for n in ('partyscale.cpp', 'partyscale_hle.cpp')]
     has_net2 = os.path.exists(os.path.join(net2, 'launch.cpp')) and has(os.path.join(net, 'netdrv.cpp'), 'net2hook') and os.path.exists(online)
     if has_net2:
         sources += [(os.path.join(net, n), rt_flags, 'n_') for n in ('netdrv.cpp', 'online.cpp')]
@@ -155,18 +187,18 @@ def build(args):
     sources.append((os.path.join(LIB, 'skeleton_export.cpp'), rt_flags + ['-I', LIB, '-I', render, '-I', app], 'g_'))     # skeleton_export.h
     sources.append((os.path.join(LIB, 'gl_offscreen_win.cpp'), lib_flags + ['-I', WINSRC], 'g_'))
     sources.append((os.path.join(WINSRC, 'wgl.cpp'), lib_flags + ['-I', WINSRC], 'g_'))
-    search = [LIB, WINSRC, app, render, rt, sound, net, net2, GEN, vu]
+    search = [LIB, WINSRC, app, render, rt, sound, net, net2, gen, vu]
     jobs = bw.source_jobs(sources, objdir, search)
     if not bw.compile_all(jobs, cxx, args.jobs):
         return 1
-    game = game_objects(cxx, tag, game_flags, args)
+    game = game_objects(cxx, tag, game_flags, args, gen, windows, party8)
     if game is None:
         return 1
     names = gb.EXPORTS + (gb.NET2_EXPORTS if has_net2 else [])
     definition = os.path.join(objdir, 'librta_game.def')
     open(definition, 'w').write('LIBRARY librta_game.dll\nEXPORTS\n' + ''.join('    %s\n' % n for n in names))
-    os.makedirs(WINDOWS, exist_ok=True)
-    final = os.path.join(WINDOWS, 'librta_game.dll')
+    os.makedirs(windows, exist_ok=True)
+    final = os.path.join(windows, 'librta_game.dll')
     temporary = final + '.link%d' % os.getpid()
     command = linker + ['-shared', '-static', '-s', '-Wl,-Map,' + os.path.join(objdir, 'librta_game.map'), definition]
     if not bw.link(command, [j[2] for j in jobs] + game, LIBS, temporary):
