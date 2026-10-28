@@ -1063,6 +1063,16 @@ func _host_command(text: String) -> void:
 		print("[blank %d] rta_godot: %s" % [blanks, cine.call("info_text")])
 	elif w.size() >= 1 and w[0] == "cinematic":
 		pass
+	elif w.size() >= 2 and w[0] == "drawer-figures":
+		# Test aid: snapshot existing aggregate totals without submitting a frame.
+		if machine == null or drawer == null:
+			return
+		var path := text.substr(text.find(w[0]) + w[0].length()).strip_edges()
+		var f := FileAccess.open(path, FileAccess.WRITE)
+		if f != null:
+			var d := {"schema": 1, "host_blank": blanks, "current_native_frame": machine.get_frame_number(),
+				"drawer_instance_id": str(drawer.get_instance_id()), "drawer_figures": str(drawer.call("figures"))}
+			f.store_string(JSON.stringify(d, "  "))
 	elif w.size() >= 2 and w[0] == "effective":
 		# test aid: what is in force now (effective_settings) as JSON into a file
 		var f := FileAccess.open(text.substr(text.find(w[1])), FileAccess.WRITE)

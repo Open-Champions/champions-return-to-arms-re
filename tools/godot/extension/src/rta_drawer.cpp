@@ -276,6 +276,8 @@ bool RtaDrawer::blend_of(const rtag_draw& d, float& sc, float& sk, float& dc, fl
 
 RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inverted, RID texture, bool texture_flipped, uint32_t extra,
                             const rtag_draw* second, RID second_texture, uint32_t er) {
+    DrawTiming::Scope timing_scope(draw_timing, rta_draw_timing::Material);
+    if (second) draw_timing.add(rta_draw_timing::MaterialFused);
     float sc, sk, dc, dk, fix;
     int blend_c;
     bool subtract;
@@ -332,12 +334,15 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
             }
         }
     }
-    std::string bytes((const char*)&key, sizeof key);
     // a fused pair (rta_scene.cpp, the level's batches): the first pass's state too, as the "2" parameters
     struct Key2 {
         int64_t texture; uint8_t textured, tfx, tcc, wrap_s, wrap_t, texa_mode, ta0, ta1, aem, blend_c;
         float st_scale[2], tex_size[2], tex_offset[2], region[4], weave_half, blend[4], fix;
     } key2;
+    std::string& bytes = material_key_scratch;
+    const size_t key_capacity = sizeof key + sizeof key2;
+    if (bytes.capacity() < key_capacity) bytes.reserve(key_capacity);
+    bytes.assign((const char*)&key, sizeof key);
     float sc2 = 0, sk2 = 1, dc2 = 0, dk2 = 0, fix2 = 1;
     int blend_c2 = 2;
     if (second) {
@@ -361,7 +366,8 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
         bytes.append((const char*)&key2, sizeof key2);
     }
     auto found = materials.find(bytes);
-    if (found != materials.end()) { found->second.last_used = frames; return found->second.rid; }
+    if (found != materials.end()) { draw_timing.add(rta_draw_timing::MaterialHit); found->second.last_used = frames; return found->second.rid; }
+    draw_timing.add(rta_draw_timing::MaterialMiss);
 
     RenderingServer* s = rs();
     RID material = s->material_create();
@@ -497,7 +503,7 @@ RID RtaDrawer::place(Pass& pass, RID material, float order) {
     s->mesh_surface_set_material(mesh, 0, material);
     RID instance = instance_for(pass);
     if (pass.overridden[pass.used]) { s->instance_geometry_set_material_override(instance, RID()); pass.overridden[pass.used] = 0; }
-    s->instance_set_base(instance, mesh);
+    set_instance_base(instance, mesh, pass.bases[pass.used]);
     // the transparent pass draws far to near; a larger offset is "nearer": the list's order
     s->instance_set_pivot_data(instance, order, false);
     pass.used++;
@@ -538,7 +544,7 @@ RID RtaDrawer::place_mesh(Pass& pass, RID mesh, RID material, float order) {
     }
     s->instance_geometry_set_material_override(instance, material);
     pass.overridden[pass.used] = 1;
-    s->instance_set_base(instance, mesh);
+    set_instance_base(instance, mesh, pass.bases[pass.used]);
     s->instance_set_pivot_data(instance, order, false);
     pass.used++;
     return instance;
@@ -554,9 +560,19 @@ RID RtaDrawer::instance_for(Pass& pass) {
         s->instance_set_ignore_culling(instance, true);
         s->instance_geometry_set_cast_shadows_setting(instance, RenderingServer::SHADOW_CASTING_SETTING_OFF);
         pass.instances.push_back(instance);
+        pass.bases.push_back(RID());
         pass.overridden.push_back(0);
     }
     return instance;
+}
+
+// These pools own their instances' base assignments; cache the full RID, including its generation.
+// Unused slots are cleared through the same helper. Mesh uploads, material changes and clear/re-add
+// notify Godot independently, so a mesh that keeps its RID does not need its instance rebound.
+void RtaDrawer::set_instance_base(RID instance, RID base, RID& bound_base) {
+    if (bound_base == base) return;
+    rs()->instance_set_base(instance, base);
+    bound_base = base;
 }
 
 void RtaDrawer::add_surface_bytes(RID mesh, int primitive, const PackedByteArray& positions, const PackedByteArray& attributes, int count, bool normals, const AABB* box, bool carry) {
@@ -651,6 +667,7 @@ void RtaDrawer::redraw(double t) {
 
 // A rectangle of one surface copied into another: a textured quad.
 void RtaDrawer::add_copy(Pass& pass, const rtag_draw& d, const Target& target, const Target& source, RID texture, float order, bool raw_rows) {
+    DrawTiming::Scope timing_scope(draw_timing, rta_draw_timing::Copy);
     rtag_draw quad;
     memset(&quad, 0, sizeof quad);
     quad.kind = RTAG_DRAW; quad.prim = RTAG_TRIANGLES; quad.count = 6;
@@ -686,6 +703,7 @@ RtaDrawer::Target* RtaDrawer::world_target() {
 void RtaDrawer::submit() {
     if (machine.is_null() || !machine->current()) return;
     const rtag_frame& f = *machine->current();
+    DrawTiming::Frame timing_frame(draw_timing, frames + 1, f.number, f.sim_tick, f.host_commands, f.host_command_count);
     RenderingServer* s = rs();
     uint64_t t0 = Time::get_singleton()->get_ticks_usec();
     frames++;
@@ -736,6 +754,7 @@ void RtaDrawer::submit() {
     }
     pack_frame(f);                                      // the art pack's pictures and mip maps (rta_pack.h)
     if (slow_log) t_textures = Time::get_singleton()->get_ticks_usec();
+    draw_timing.mark(rta_draw_timing::Graph);
     if (scene_mode && std::fabs(f.aspect - last_aspect) > 0.001f) {     // the view's shape changed: the 3-D surface's viewport follows
         last_aspect = f.aspect;
         for (auto& entry : targets) if (entry.second.screen) size_target(entry.second);
@@ -925,13 +944,16 @@ void RtaDrawer::submit() {
     for (Pass* pass : all_passes) pass->used = 0;
     Target* world = scene_mode ? world_target() : nullptr;
     frame_texture_of = &texture_of;
+    draw_timing.mark(rta_draw_timing::SceneBegin);
     if (scene_mode) scene_begin(f);
+    draw_timing.mark(rta_draw_timing::WorldWait);
     world_finish();
     // scene mode: the last draw of the 3-D scene in the world's surface; the 2-D layer after it is over the world
     int64_t last_scene_draw = -1;
     if (world)
         for (uint32_t i = 0; i < f.draw_count; i++)
             if (node_of[i] >= 0 && nodes[node_of[i]].target == world && f.draws[i].scene_first >= 0) last_scene_draw = i;
+    draw_timing.mark(rta_draw_timing::Traversal);
     for (uint32_t i = 0; i < f.draw_count; i++) {
         if (node_of[i] < 0 || skip[node_of[i]]) continue;
         const rtag_draw& d = f.draws[i];
@@ -953,27 +975,33 @@ void RtaDrawer::submit() {
             continue;
         }
         if (scene_mode && node.target == world) {
-            if (scene_take(*node.pass, f, d, *node.target, texture_of[i], order_in_pass)) continue;
+            if (scene_take(*node.pass, f, d, *node.target, texture_of[i], order_in_pass)) { draw_timing.add(rta_draw_timing::SceneHandled); continue; }
             if (letterbox_off && is_letterbox(f, d, *node.target)) { letterbox_left_out++; continue; }
             // the 2-D layer over (or behind) the world: in the list's order, without the GS's depth, which is not the world's
             rtag_draw flat = d;
             flat.ztst = 1; flat.depth_write = 0; flat.depth_test = 0;
+            { DrawTiming::Scope flat_timing(draw_timing, rta_draw_timing::FlatDirect);
             draw_over = (int64_t)i > last_scene_draw;
             add_draw(*node.pass, f, flat, *node.target, texture_of[i], d.tex_is_target && flip_surfaces, order_in_pass);
             draw_over = false;
+            }
             continue;
         }
+        { DrawTiming::Scope flat_timing(draw_timing, rta_draw_timing::FlatDirect);
         add_draw(*node.pass, f, d, *node.target, texture_of[i], d.tex_is_target && flip_surfaces, order_in_pass);
+        }
     }
     draw_space = 0;
+    draw_timing.mark(rta_draw_timing::SceneEnd);
     if (slow_log) t_draws = Time::get_singleton()->get_ticks_usec();
     if (scene_mode) scene_end(f);
+    draw_timing.mark(rta_draw_timing::Rest);
     if (slow_log) t_end = Time::get_singleton()->get_ticks_usec();
     frame_texture_of = nullptr;
 
     // instances left over from a frame with more draws show nothing
     for (Pass* pass : all_passes) {
-        for (size_t k = pass->used; k < pass->instances.size(); k++) s->instance_set_base(pass->instances[k], RID());
+        for (size_t k = pass->used; k < pass->instances.size(); k++) set_instance_base(pass->instances[k], RID(), pass->bases[k]);
         for (auto entry = pass->kept_instances.begin(); entry != pass->kept_instances.end();) {
             auto& kept = entry->second;
             for (auto k = kept.begin(); k != kept.end();) {
@@ -1044,6 +1072,7 @@ void RtaDrawer::submit() {
     collect_retired();
     const uint64_t t1 = Time::get_singleton()->get_ticks_usec();
     submit_usec += (double)(t1 - t0);
+    timing_frame.seal();
     if (slow_log && t1 - t0 > (uint64_t)slow_log * 1000)
         UtilityFunctions::print(vformat("rta_drawer: list %d took %.1f ms: textures %.1f (%d new), runs and draws %.1f, scene end %.1f, rest %.1f; %d materials, %d shaders, %d meshes made",
                                         (int64_t)frames, (t1 - t0) / 1000.0, (t_textures - t0) / 1000.0, (int64_t)f.texture_count, (t_draws - t_textures) / 1000.0,

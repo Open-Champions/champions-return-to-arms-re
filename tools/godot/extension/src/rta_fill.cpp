@@ -302,6 +302,7 @@ void RtaDrawer::fill_frame(const rtag_frame& f, const Vector3& eye, RID scenario
 
 // A level chunk drawn this frame (scene_take): perhaps a swatch is cut from it.
 void RtaDrawer::fill_learn(const rtag_scene* tap, const rtag_draw& d, const rtag_scene_piece* pieces, uint32_t piece_count, const Vector3& eye) {
+    draw_timing.add(rta_draw_timing::FillCalls);
     if (!fill || fill->learn_budget <= 0 || fill->blocks.empty() || fill->gw == 0) return;
     Fill& fl = *fill;
     if ((int)fl.swatches.size() >= MAX_SWATCHES) return;
@@ -322,6 +323,7 @@ void RtaDrawer::fill_learn(const rtag_scene* tap, const rtag_draw& d, const rtag
     if (!want_ceiling && !want_skirt) return;
     fl.learn_budget--;
     fl.tried++;
+    draw_timing.add(rta_draw_timing::FillAttempts);
     // the triangles: walls (normal level with the ground) whose top is the ceiling's lid, and ground (normal up) at the rim
     std::vector<const rtag_scene_full*> walls, ground;
     float wall_top = -1e9f;

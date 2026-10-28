@@ -215,6 +215,7 @@ struct RtaDrawer::Scene {
     Transform3D game_camera, camera;
     double fov_y = 50.0;
     std::vector<RID> casters;           // shadow-only instances, in the world's scenario
+    std::vector<RID> caster_bases;      // per caster: the last base assigned (same ownership as Pass::bases)
     size_t casters_used = 0;
     RID caster_scenario;
     // The level's batches.  The game draws its level chunk by chunk, each with its texture: 1,700 draws a list in fire1's
@@ -923,6 +924,8 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
 }
 
 bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, const Target& target, RID texture, float order) {
+    DrawTiming::Scope timing_scope(draw_timing, rta_draw_timing::SceneTake);
+    DrawTiming::Scope pre_timing(draw_timing, rta_draw_timing::ScenePre);
     Scene& sc = *scene;
     const size_t index = (size_t)(&d - f.draws);
     if ((int64_t)index == sc.fused_skip) return true;      // the second pass of a two-pass chunk: drawn with its first (batches)
@@ -988,6 +991,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     // colour over the clouds: playtest-classic.md G3)
     const bool dome_here = index < sc.is_dome.size() && sc.is_dome[index];
     const bool packets = sc.packets && !dome_here;
+    pre_timing.seal();
     if (sc.batch_on && normals && packets && batch_take(pass, f, d, target, texture, order)) {
         // (test aid, RTA_BATCH_SINGLE=1: each chunk a batch of its own, at its own place - fused, but not gathered)
         static const bool single = getenv("RTA_BATCH_SINGLE") && atoi(getenv("RTA_BATCH_SINGLE")) != 0;
@@ -1007,7 +1011,9 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     // the mesh's real box: Godot pairs its lights with what they reach, and culls the shadow casters by it
     AABB box;
     bool box_known = false;
+    DrawTiming::Scope geometry_timing(draw_timing, rta_draw_timing::Geometry);
     if (normals && packets && d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count) {
+        draw_timing.add(rta_draw_timing::PacketPrepared);
         // The packets' own geometry: every triangle of every strip drawn with this state - the list's triangles and the
         // ones the game's vertex programs dropped whole near the eye (Godot clips them as triangles should be clipped).
         const rtag_scene_piece* pieces = sc.tap->pieces + d.scene_piece_first;
@@ -1032,6 +1038,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         for (uint32_t k = 0; k < d.scene_piece_count; k++) corners += (int)pieces[k].full_count * (curved(pieces[k]) ? smooth * smooth : 1);
         if (model) sc.model_draws++;
         if (sc.keep) {
+            DrawTiming::Scope probe_timing(draw_timing, rta_draw_timing::KeptProbe);
             // a figure over the packets as they are this frame: their identity, the colours the game lit them with and their
             // texels exactly, their positions to 1/16 unit (the tap takes them back through the camera of the frame, so they
             // differ in the last bits from frame to frame while the camera moves)
@@ -1064,6 +1071,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
             if (found != sc.kept.end() && found->second.content == sc.kept_key && found->second.used != frames) {
                 found->second.used = frames;
                 sc.kept_hits++;
+                draw_timing.add(rta_draw_timing::KeptHit);
                 sc.kept_corners += corners;
                 sc.kept_mesh = found->second.mesh;
                 sc.kept_box = found->second.box;
@@ -1115,6 +1123,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         if (pieces[0].kind == 1) { sc.level_draws++; scene_learn_level(d, pieces); }
         else card_take(sc.tap, d, pieces, d.scene_piece_count);   // the character card (rta_card.cpp)
     } else {
+        draw_timing.add(rta_draw_timing::RawPrepared);
         corners = (int)d.count;
         // a big one is written into the pool mesh's room in place (mesh_for_big): the rest of the room, triangles of no area
         room = !normals && corners >= BIG_DRAW ? big_capacity(pass, corners) : corners;
@@ -1155,25 +1164,35 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
             }
         };
         if (room > corners) {
-            // a big one (islsm1's sea, 1.26 million corners a frame): in eight parts at once, its box with it
+            // A big one (islsm1's sea, 1.26 million corners a frame): eight ranges, with each range's box.
             enum { PARTS = 8 };
             float lo[PARTS][3], hi[PARTS][3];
+#ifndef _WIN32
             std::thread workers[PARTS - 1];
+#endif
             const uint32_t per = (d.count + PARTS - 1) / PARTS;
             for (int t = 0; t < PARTS; t++) {
                 for (int c = 0; c < 3; c++) { lo[t][c] = 1e30f; hi[t][c] = -1e30f; }
                 const uint32_t from = std::min(d.count, per * t), to = std::min(d.count, per * (t + 1));
+#ifdef _WIN32
+                fill(from, to, lo[t], hi[t]);
+#else
                 if (t < PARTS - 1) workers[t] = std::thread(fill, from, to, lo[t], hi[t]);
                 else fill(from, to, lo[t], hi[t]);
+#endif
             }
+#ifndef _WIN32
             for (auto& worker : workers) worker.join();
+#endif
             for (int t = 1; t < PARTS; t++)
                 for (int c = 0; c < 3; c++) { lo[0][c] = std::min(lo[0][c], lo[t][c]); hi[0][c] = std::max(hi[0][c], hi[t][c]); }
             box_known = true;
             box = AABB(Vector3(lo[0][0], lo[0][1], lo[0][2]), Vector3(hi[0][0] - lo[0][0] + 0.01f, hi[0][1] - lo[0][1] + 0.01f, hi[0][2] - lo[0][2] + 0.01f));
         } else fill(0, d.count, nullptr, nullptr);
     }
+    geometry_timing.seal();
     if (!corners) return true;
+    DrawTiming::Scope upload_timing(draw_timing, rta_draw_timing::MeshUpload);
     if (d.depth_write) fill_note_level(order);              // the level begins: the fill is drawn right before it
     RID mesh;
     if (sc.kept_mesh.is_valid()) {
@@ -1191,6 +1210,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
                 it->second.attributes = a;
                 it->second.moving = false;
                 sc.tween_stopped++;
+                draw_timing.add(rta_draw_timing::TweenStopped);
             }
         }
     } else {
@@ -1236,6 +1256,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
                 slot->second.box = box; slot->second.used = frames; slot->second.content = sc.kept_key;
                 if (carry) { slot->second.positions = positions; slot->second.attributes = attributes; slot->second.moving = moving; }
                 sc.kept_updates++;
+                draw_timing.add(rta_draw_timing::KeptUpdated);
             } else {
                 if (slot != sc.kept.end()) s->free_rid(slot->second.mesh);
                 mesh = s->mesh_create();
@@ -1244,6 +1265,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
                 made = Scene::Kept{mesh, box, frames, sc.kept_key, corners, normals};
                 if (carry) { made.carry = true; made.positions = positions; made.attributes = attributes; made.moving = moving; }
                 sc.kept_misses++;
+                draw_timing.add(rta_draw_timing::KeptCreated);
             }
         } else if (room > corners || (!normals && corners >= BIG_DRAW)) {
             mesh = mesh_for_big(pass, positions, attributes, room, box);
@@ -1253,6 +1275,8 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
             add_surface_bytes(mesh, RenderingServer::PRIMITIVE_TRIANGLES, positions, attributes, corners, normals, &box);
         }
     }
+    upload_timing.seal();
+    DrawTiming::Scope place_timing(draw_timing, rta_draw_timing::Placement);
     // the level under the player's feet (scene_view.gd's backdrop, for a level that has none there)
     // (any solid draw that is not a model's: the level is drawn in packets, and in places through the CPU's own projection)
     if (d.depth_write && !(d.scene_piece_count && sc.tap->pieces[d.scene_piece_first].kind == 2)) {
@@ -1279,8 +1303,10 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     if (sc.kept_key) place_mesh(pass, mesh, material_for(d, target, false, texture, false, extra, nullptr, RID(), er), order);
     else place(pass, material_for(d, target, false, texture, false, extra, nullptr, RID(), er), order);
     // what is opaque also throws a shadow: a twin of the same mesh that Godot only draws into its shadow maps
-    if (sc.shadows && d.depth_write && (!d.blend || d.alpha_test))
+    if (sc.shadows && d.depth_write && (!d.blend || d.alpha_test)) {
+        DrawTiming::Scope caster_timing(draw_timing, rta_draw_timing::Caster);
         scene_caster(pass, mesh, material_for(d, target, false, texture, false, V_WORLD | V_CASTER | (normals ? V_NORMALS : 0)));
+    }
     sc.world_draws++;
     sc.world_vertices += d.count;
     draws_submitted++;
@@ -1291,12 +1317,15 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
 // What the level's chunks teach, whether they are drawn by themselves or in a batch: the fill's swatches (rta_fill.cpp)
 // and the painted light (see Scene::sun_sum)
 void RtaDrawer::scene_learn_level(const rtag_draw& d, const rtag_scene_piece* pieces) {
+    DrawTiming::Scope timing_scope(draw_timing, rta_draw_timing::Learn);
+    draw_timing.add(rta_draw_timing::LearnCalls);
     Scene& sc = *scene;
     fill_learn(sc.tap, d, pieces, d.scene_piece_count, sc.camera.origin);
     // the painted light (see Scene::sun_sum): level chunks with a texture whose brightness is known
     if (pieces[0].kind == 1 && d.texture && d.depth_write && sc.sun_samples < 400000) {
         auto thumb = thumbs.find(d.texture);
         if (thumb != thumbs.end() && d.tex_size[0] > 0 && d.tex_size[1] > 0) {
+            draw_timing.add(rta_draw_timing::SunScans);
             double sn[3] = {0, 0, 0}, sl = 0, sln[3] = {0, 0, 0};
             int count = 0;
             for (uint32_t k = 0; k < d.scene_piece_count; k++) {
@@ -1312,6 +1341,7 @@ void RtaDrawer::scene_learn_level(const rtag_draw& d, const rtag_scene_piece* pi
                 }
             }
             if (count >= 24) {
+                draw_timing.add(rta_draw_timing::SunAccepted);
                 for (int a = 0; a < 3; a++) sc.sun_sum[a] += sln[a] - sl * sn[a] / count;
                 sc.sun_weight += count;
                 sc.sun_samples += count;
@@ -1339,23 +1369,28 @@ void RtaDrawer::scene_caster(Pass& pass, RID mesh, RID material) {
     if (sc.caster_scenario != pass.scenario) {          // the surface was made again: instances of the old scenario are gone with it
         for (RID old : sc.casters) s->free_rid(old);
         sc.casters.clear();
+        sc.caster_bases.clear();
         sc.caster_scenario = pass.scenario;
     }
+    size_t slot = sc.casters_used;
     if (sc.casters_used < sc.casters.size()) caster = sc.casters[sc.casters_used];
     else {
         caster = s->instance_create();
         s->instance_set_scenario(caster, pass.scenario);
         s->instance_geometry_set_cast_shadows_setting(caster, RenderingServer::SHADOW_CASTING_SETTING_SHADOWS_ONLY);
+        slot = sc.casters.size();
         sc.casters.push_back(caster);
+        sc.caster_bases.push_back(RID());
     }
     sc.casters_used++;
-    s->instance_set_base(caster, mesh);
+    set_instance_base(caster, mesh, sc.caster_bases[slot]);
     s->instance_geometry_set_material_override(caster, material);
 }
 
 // The level's batches (see Scene::batch_on): a level chunk drawn whole from its packets that commutes - or the first pass
 // of a two-pass chunk, taken with its second - goes into the batch of its state.  Returns whether it was taken.
 bool RtaDrawer::batch_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, const Target& target, RID texture, float order) {
+    DrawTiming::Scope timing_scope(draw_timing, rta_draw_timing::BatchTake);
     Scene& sc = *scene;
     const rtag_scene* tap = sc.tap;
     const size_t index = (size_t)(&d - f.draws);
@@ -1443,7 +1478,10 @@ bool RtaDrawer::batch_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     const int stride = b->fused ? 48 : 32;
     int corners = 0;
     for (uint32_t k = 0; k < d.scene_piece_count; k++) corners += (int)pieces[k].full_count;
-    if (!corners) { if (second) sc.fused_skip = (int64_t)index + 1; return true; }
+    if (!corners) { draw_timing.add(rta_draw_timing::BatchAccepted); draw_timing.add(rta_draw_timing::BatchZero); if (second) sc.fused_skip = (int64_t)index + 1; return true; }
+    DrawTiming::Scope pack_timing(draw_timing, rta_draw_timing::BatchPack);
+    draw_timing.add(rta_draw_timing::PackCorners, (uint64_t)corners);
+    draw_timing.add(rta_draw_timing::PackBytes, (uint64_t)corners * (12 + stride));
     size_t p0 = b->pos.size(), a0 = b->attr.size();
     b->pos.resize(p0 + (size_t)corners * 12);
     b->attr.resize(a0 + (size_t)corners * stride);
@@ -1469,6 +1507,7 @@ bool RtaDrawer::batch_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         }
     }
     for (int c = 0; c < 3; c++) { b->lo[c] = std::min(b->lo[c], lo[c]); b->hi[c] = std::max(b->hi[c], hi[c]); }
+    pack_timing.seal();
     b->corners += corners;
     b->members++;
     // what scene_take does for every draw of the level
@@ -1487,6 +1526,8 @@ bool RtaDrawer::batch_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     vertices_submitted += d.count + (second ? second->count : 0);
     sc.batch_members += draws;
     if (second) { sc.batch_fused++; sc.fused_skip = (int64_t)index + 1; }
+    draw_timing.add(rta_draw_timing::BatchAccepted);
+    if (second) draw_timing.add(rta_draw_timing::BatchFused);
     return true;
 }
 
@@ -1494,6 +1535,7 @@ bool RtaDrawer::batch_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
 // (positions that moved less than a hundredth of a unit are left as they were: the tap's positions come back through the
 // camera of each frame and differ in their last bits)
 void RtaDrawer::batch_flush(Pass& pass) {
+    DrawTiming::Scope timing_scope(draw_timing, rta_draw_timing::BatchFlush);
     Scene& sc = *scene;
     RenderingServer* s = RenderingServer::get_singleton();
     bool opaque = false;
@@ -1589,7 +1631,7 @@ void RtaDrawer::scene_end(const rtag_frame&) {
     Scene& sc = *scene;
     RenderingServer* s = RenderingServer::get_singleton();
     if (Target* world = world_target(); world && sc.valid) batch_flush(*world->passes[0]);
-    for (size_t k = sc.casters_used; k < sc.casters.size(); k++) s->instance_set_base(sc.casters[k], RID());
+    for (size_t k = sc.casters_used; k < sc.casters.size(); k++) set_instance_base(sc.casters[k], RID(), sc.caster_bases[k]);
     fill_order();
     if (Target* world = world_target()) card_end(*world);
     // kept meshes nothing drew for half a second go
