@@ -115,6 +115,11 @@ struct RtaDrawer::Scene {
     double bright_sum[4] = {0, 0, 0, 0};    // direction of the dome's light part, weighted
     std::unordered_map<uint32_t, SkyTexture> sky_textures;
     std::unordered_set<uint64_t> ring_done;
+    // the dome learnt is made of these packets (rtag_scene_piece::mesh); at a level's start those of the level before are
+    // not learnt from for a while (`dome_before`, `dome_settle` frames: sky_reset); a level that goes on without a dome
+    // forgets one (`dome_absent`)
+    std::unordered_set<uint64_t> dome_meshes, dome_before;
+    int dome_settle = 0, dome_absent = 0;
     // Where the level's light comes from.  The game's levels are lit in their textures (every placed chunk has its own
     // pre-lit texture: docs/formats/world.md), so the direction is in the picture, not in the data: per texture, how the
     // brightness of its texels goes with the normals of the vertices that carry them (their covariance); summed over the
@@ -123,6 +128,18 @@ struct RtaDrawer::Scene {
     double sun_weight = 0;
     uint64_t sun_samples = 0;
     uint64_t fills_dropped = 0, dome_draws = 0, near_faded = 0;
+    // what was learnt of a dome: its edges, its ring, its textures (RtaDrawer::sky_reset, scene_scan_sky)
+    void forget() {
+        dome = false;
+        top = -10.0f; bottom = 10.0f;
+        memset(ring_sum, 0, sizeof ring_sum); memset(ring_n, 0, sizeof ring_n);
+        memset(bright_sum, 0, sizeof bright_sum);
+        sky_textures.clear();
+        ring_done.clear();
+        dome_meshes.clear();
+        dome_absent = 0;
+        ring_version++;
+    }
     Scene() { memset(ring_sum, 0, sizeof ring_sum); memset(ring_n, 0, sizeof ring_n); memset(ring, 0, sizeof ring); }
     bool packets = true;                // draw the packets' complete geometry where the tap has it (false: the list's own triangles)
     std::unordered_set<uint32_t> hidden;    // objects left out (set_hidden_objects)
@@ -209,9 +226,11 @@ struct RtaDrawer::Scene {
     // batches gather: what comes after it goes into new ones.  A two-pass chunk is one draw of both passes (GS_FUSED).
     bool batch_on = true;
     bool prepass = true;                // the solid batches' depth first (GS_PREPASS): each pixel of them shaded once
+    bool opaque = false;
+    bool opaque_prefix = false;        // never move a surface ahead of an earlier ordered foreground draw
     RID prepass_material;
     struct BatchBuild {
-        uint64_t key = 0; RID material, caster_material; float order = 0; bool fused = false, solid = false; uint32_t segment = 0;
+        uint64_t key = 0; RID material, caster_material; float order = 0; bool fused = false, solid = false, opaque = false; uint32_t segment = 0;
         std::vector<uint8_t> pos, attr; float lo[3], hi[3]; int corners = 0, members = 0;
     };
     std::vector<BatchBuild> builds;     // this frame's (kept for their buffers)
@@ -254,6 +273,7 @@ bool RtaDrawer::scene_lit() const { return scene && scene->lit; }
 void RtaDrawer::set_scene_option(const String& name, double value) {
     if (name == "letterbox_off") { letterbox_off = value != 0; return; }     // the drawer's own (no scene needed)
     if (name == "stored_world") { stored_world = value != 0; return; }       // ... and this (rta_drawer.h)
+    if (name == "stable_instances") { stable_instances = value != 0; return; }
     if (!scene) scene = new Scene;
     if (name.begins_with("fill")) { fill_option(name, value); return; }
     if (name == "lit") scene->lit = value != 0;
@@ -281,6 +301,7 @@ void RtaDrawer::set_scene_option(const String& name, double value) {
     else if (name == "tween") scene->tween_on = value != 0;
     else if (name == "batch") scene->batch_on = value != 0;
     else if (name == "prepass") scene->prepass = value != 0;
+    else if (name == "opaque") scene->opaque = value != 0;
     else if (name == "tween_jump") scene->tween_jump = value;
     else if (name == "feet_x") scene->feet.x = (real_t)value;
     else if (name == "feet_y") scene->feet.y = (real_t)value;
@@ -399,16 +420,22 @@ static void pn_triangle(const rtag_scene_full* c[3], const Vector3 wn[3], int n,
 }
 
 
+// A level's start: what was learnt of the dome is forgotten.  The name of the level changes in the game's memory before
+// the last frames of the level before have been drawn and taken, and those frames carry its dome: the hub learnt the
+// front end's blue fly-over sky so (its ring 5b73a2 against the hub dome's own lavender, its top at 90 degrees - the hub
+// dome's own upper edge, at 18, never rose above it, so its ring was never learnt: a blue cap with a hard edge above the
+// dome, playtest-remastered.md glitch 9), and blood1 the hub's dome.  So the packets of the dome before are not learnt from
+// for a while (dome_before, dome_settle: scene_scan_sky), and a level that goes on without a dome forgets one.
 void RtaDrawer::sky_reset() {
     if (!scene) return;
     Scene& sc = *scene;
-    sc.dome = false; sc.have_clear = false;
-    sc.top = -10.0f; sc.bottom = 10.0f;
-    memset(sc.ring_sum, 0, sizeof sc.ring_sum); memset(sc.ring_n, 0, sizeof sc.ring_n);
-    memset(sc.bright_sum, 0, sizeof sc.bright_sum);
-    sc.sky_textures.clear();
-    sc.ring_done.clear();
-    sc.ring_version++;
+    // the frames still to come of the level before (the tap's thread, the list in flight) carry its dome: not this level's
+    if (!sc.dome_meshes.empty()) {
+        sc.dome_before = sc.dome_meshes;
+        sc.dome_settle = 90;
+    }
+    sc.forget();
+    sc.have_clear = false;
     sc.sun_sum[0] = sc.sun_sum[1] = sc.sun_sum[2] = 0;
     sc.sun_weight = 0;
     sc.sun_samples = 0;
@@ -497,8 +524,29 @@ void RtaDrawer::scene_scan_sky(const rtag_frame& f, const Target& world) {
             }
         }
     }
+    // The level before's dome, in the first frames after a level's start (sky_reset): not learnt from - the hub learnt the
+    // front end's fly-over sky so (playtest-remastered.md glitch 9)
+    if (sc.dome_settle > 0) {
+        sc.dome_settle--;
+        bool before = false;
+        for (uint32_t i = 0; i < found.size() && !before; i++) {
+            const rtag_draw& d = f.draws[found[i]];
+            for (uint32_t k = 0; k < d.scene_piece_count && !before; k++) before = sc.dome_before.count(tap->pieces[d.scene_piece_first + k].mesh) != 0;
+        }
+        if (before) return;                             // (drawn as a dome all the same)
+    }
+    // A dome known, and frames without one (the world drawn and cleared all the while) for two seconds: the level has none
+    if (found.empty()) {
+        if (sc.dome && sc.fill_draw >= 0 && ++sc.dome_absent >= 120) sc.forget();
+        return;
+    }
+    sc.dome_absent = 0;
+    for (uint32_t i : found) {
+        const rtag_draw& d = f.draws[i];
+        for (uint32_t k = 0; k < d.scene_piece_count; k++) sc.dome_meshes.insert(tap->pieces[d.scene_piece_first + k].mesh);
+    }
     sc.dome_draws += found.size();
-    if (found.empty() || !sc.have_clear) return;
+    if (!sc.have_clear) return;
     sc.dome = true;
     bool changed = false;
     if (frame_top > sc.top + 0.02f) {                   // a higher ring came into view: the edge is there
@@ -741,6 +789,16 @@ Dictionary RtaDrawer::get_scene_info() const {
         info["hidden_orders"] = per;
     }
     info["hidden_draws"] = (int64_t)scene->hidden_draws;
+    int opaque_batches = 0, opaque_members = 0, ordered_batches = 0;
+    for (size_t i = 0; i < scene->builds_used; i++) {
+        const auto& b = scene->builds[i];
+        if (!b.corners) continue;
+        if (b.opaque) { opaque_batches++; opaque_members += b.members * (b.fused ? 2 : 1); }
+        else ordered_batches++;
+    }
+    info["opaque_batches"] = opaque_batches;
+    info["opaque_members"] = opaque_members;
+    info["ordered_batches"] = ordered_batches;
     info["focus"] = scene->game_camera.origin - scene->game_camera.basis.get_column(2) * (real_t)scene->focus;
     double n = scene->frames ? (double)scene->frames : 1;
     info["figures"] = vformat("scene: %d lists (%d without a camera); per list %.1f draws and %.0f vertices in the world (%.1f of the draws from the vertex programs' inputs, "
@@ -783,6 +841,7 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
     sc.builds_used = 0;
     sc.build_of.clear();
     sc.segment = 0;
+    sc.opaque_prefix = false;
     sc.fused_skip = -1;
     Target* world = world_target();
     sc.fill_clears = false;
@@ -794,6 +853,7 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
     }
     scene_scan_sky(f, *world);
     sc.sky_active = sc.sky && sc.fill_draw >= 0;
+    sc.opaque_prefix = sc.opaque && rd && sc.lit && !stored_world && sc.sky_active;
     if (sc.packets && f.scene->full && (sc.model_smooth > 1 || sc.contacts_on)) scene_models_scan(f.scene, sc.weld, sc.contacts, sc.model_look && sc.model_smooth > 1,
                                                                                                    Vector3(f.scene->camera_position[0], f.scene->camera_position[1], f.scene->camera_position[2]),
                                                                                                    sc.model_near + 300.0, sc.hidden);
@@ -869,11 +929,12 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     if (!sc.valid || d.scene_first < 0 || !d.count || (uint32_t)d.scene_first + d.count > sc.tap->vertex_count || d.first + d.count > f.vertex_count) {
         sc.flat_draws++;
         sc.segment++;
+        sc.opaque_prefix = false;
         return false;
     }
     RenderingServer* s = RenderingServer::get_singleton();
     if (!world_dump_path.empty()) world_dump_take(d, sc.tap, index);     // (app er world dump: rta_world.cpp)
-    if (fill_drops(f, d)) return true;                      // the library's plain fill: drawn here by rta_fill.cpp instead
+    if (fill_drops(f, d)) { sc.opaque_prefix = false; return true; } // its replacement keeps its ordered position
     if (d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count && d.texture && !d.tex_is_target) {
         for (uint32_t k = 0; k < d.scene_piece_count; k++) {
             const rtag_scene_piece& pc = sc.tap->pieces[d.scene_piece_first + k];
@@ -900,6 +961,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         if (hidden == d.scene_piece_count) {
             sc.hidden_draws++;
             sc.segment++;
+            sc.opaque_prefix = false;
             if (sc.hidden_order < 0 || order < sc.hidden_order) sc.hidden_order = order;
             for (uint32_t k = 0; k < d.scene_piece_count; k++) {
                 auto it = sc.hidden_orders.find(sc.tap->pieces[d.scene_piece_first + k].object);
@@ -917,6 +979,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     if (world_on && normals && d.blend) world_decal(d, sc.tap);                      // ... no grass under a painted decal
     if (world_on && !world_hide.empty() && world_hidden(d, sc.tap, order) >= 0) {   // ... a shape the rebuild draws instead
         sc.segment++;
+        sc.opaque_prefix = false;
         return true;
     }
     // the game's painted dome is drawn as the list has it, never as whole packets: the triangles its vertex programs drop
@@ -930,6 +993,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         if (single) sc.segment++;
         return true;
     }
+    if (!dome_here) sc.opaque_prefix = false;
     if (!draw_commutes(d)) sc.segment++;
     // kept meshes are made only of whole packets with normals: with tween on they carry 16 bytes more a corner (CUSTOM2)
     const bool carry = sc.tween_on && sc.keep && normals && packets && d.scene_piece_count && d.scene_piece_first + d.scene_piece_count <= sc.tap->piece_count;
@@ -1206,6 +1270,7 @@ bool RtaDrawer::scene_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     const bool ground = sc.contacts_on && normals && d.depth_write && !is_dome && d.scene_piece_count && sc.tap->pieces[d.scene_piece_first].kind == 1;
     uint32_t extra = V_WORLD | (sc.lit && d.depth_write ? V_LIT : 0) | (normals ? V_NORMALS : 0) | (is_dome ? V_NOFOG : 0) | (sprite ? V_NEARFADE : 0) |
                      (model ? V_MODEL : 0) | (ground ? V_CONTACT : 0);
+    if (is_dome && !d.depth_write && sc.opaque && sc.sky_active && sc.lit && rd && !stored_world) extra |= V_BACKGROUND;
     if (normals) sc.exact_draws++;
     // the Elden Ring world layer: a solid piece of the level (not the dome, not a cut-out card) takes its texture's class
     const uint32_t er = (world_on && normals && d.depth_write && !is_dome && !sprite && !(d.alpha_test && d.atst != 1) && d.scene_piece_count &&
@@ -1298,7 +1363,23 @@ bool RtaDrawer::batch_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     const rtag_scene_piece* pieces = tap->pieces + d.scene_piece_first;
     for (uint32_t k = 0; k < d.scene_piece_count; k++)
         if (pieces[k].kind != 1 || pieces[k].full_first + pieces[k].full_count > tap->full_count) return false;
-    if (!draw_commutes(d)) return false;
+    bool commutes = draw_commutes(d);
+    // In Remastered's safe prefix, also prove constant blend factors. Do not
+    // infer an opaque texture from its name, mean alpha, or alpha-test enable.
+    if (!commutes && sc.opaque_prefix && d.depth_write && (d.ztst == 2 || d.ztst == 3) && !d.mask_rgb) {
+        float a, b, c, e, fix; int factor; bool subtract;
+        if (blend_of(d, a, b, c, e, fix, factor, subtract) && !subtract && factor != 1) {
+            bool constant = factor == 2;
+            if (factor == 0 && (!texture.is_valid() || !d.tcc)) {
+                constant = true; fix = 1.0f;
+                for (uint32_t k = 0; constant && k < d.scene_piece_count; k++)
+                    for (uint32_t n = 0; n < pieces[k].full_count; n++)
+                        if (tap->full[pieces[k].full_first + n].a != 128) { constant = false; break; }
+            }
+            commutes = constant && c * fix + e == 0.0f;
+        }
+    }
+    if (!commutes) return false;
     // a two-pass chunk: this is its first pass (it covers: commutes), the next draw its second over the same packets
     const rtag_draw* second = nullptr;
     RID second_texture;
@@ -1324,6 +1405,12 @@ bool RtaDrawer::batch_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
     const bool cut_out = sc.near_fade && d.alpha_test && d.depth_write;
     RID material, caster_material;
     const bool solid = second || (!(d.alpha_test && d.atst != 1) && !cut_out);
+    // Render priority preserves the existing batch order, including equal-depth
+    // ties. Its 256 values bound this prefix; the remainder stays ordered.
+    // Even if the old shader approximates destination alpha as one, do not use
+    // that approximation as an opacity proof for a promoted draw.
+    if (!solid || (d.blend && d.bc == 1) || sc.builds_used >= 256) sc.opaque_prefix = false;
+    const uint32_t opaque = sc.opaque_prefix ? V_OPAQUE : 0;
     if (second) {
         // the material is the second pass's (blended over the first: GS_FUSED does the blend), with the first's depth test
         rtag_draw top = *second;
@@ -1331,10 +1418,10 @@ bool RtaDrawer::batch_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         const bool lit = sc.lit;
         // the Elden Ring world layer: the second pass's texture (drawn over) and the first's, each with its own class
         const uint32_t er = world_on && d.depth_write ? (world_code(second->texture) | (world_code(d.texture) << 16)) : 0;
-        material = material_for(top, target, false, second_texture, false, V_WORLD | V_SOLID | (lit ? V_LIT : 0) | V_NORMALS | (ground ? V_CONTACT : 0), &d, texture, er);
+        material = material_for(top, target, false, second_texture, false, V_WORLD | V_SOLID | opaque | (lit ? V_LIT : 0) | V_NORMALS | (ground ? V_CONTACT : 0), &d, texture, er);
     } else {
         const uint32_t er = world_on && d.depth_write && !cut_out && !(d.alpha_test && d.atst != 1) ? world_code(d.texture) : 0;
-        material = material_for(d, target, false, texture, false, V_WORLD | (solid ? V_SOLID : 0) | (sc.lit ? V_LIT : 0) | V_NORMALS | (cut_out ? V_NEARFADE : 0) | (ground ? V_CONTACT : 0),
+        material = material_for(d, target, false, texture, false, V_WORLD | opaque | (solid ? V_SOLID : 0) | (sc.lit ? V_LIT : 0) | V_NORMALS | (cut_out ? V_NEARFADE : 0) | (ground ? V_CONTACT : 0),
                                 nullptr, RID(), er);
     }
     if (sc.shadows && (!d.blend || d.alpha_test)) caster_material = material_for(d, target, false, texture, false, V_WORLD | V_CASTER | V_NORMALS);
@@ -1348,7 +1435,7 @@ bool RtaDrawer::batch_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
         b = &sc.builds[sc.builds_used];
         sc.build_of[key] = sc.builds_used++;
         b->key = key; b->material = material; b->caster_material = caster_material; b->order = order; b->fused = second != nullptr;
-        b->solid = solid; b->segment = sc.segment;
+        b->solid = solid; b->opaque = opaque != 0; b->segment = sc.segment;
         b->pos.clear(); b->attr.clear(); b->corners = 0; b->members = 0;
         for (int a = 0; a < 3; a++) { b->lo[a] = 1e30f; b->hi[a] = -1e30f; }
     } else b = &sc.builds[at->second];
@@ -1408,6 +1495,9 @@ bool RtaDrawer::batch_take(Pass& pass, const rtag_frame& f, const rtag_draw& d, 
 void RtaDrawer::batch_flush(Pass& pass) {
     Scene& sc = *scene;
     RenderingServer* s = RenderingServer::get_singleton();
+    bool opaque = false;
+    for (size_t i = 0; i < sc.builds_used; i++) opaque |= sc.builds[i].opaque && sc.builds[i].corners;
+    fill_opaque_background(opaque);
     // the depth of a stretch's solid batches goes first, before the first of them (GS_PREPASS)
     std::unordered_map<uint32_t, float> first_of;
     if (sc.prepass) {
@@ -1418,7 +1508,7 @@ void RtaDrawer::batch_flush(Pass& pass) {
         }
         for (size_t i = 0; i < sc.builds_used; i++) {
             const Scene::BatchBuild& b = sc.builds[i];
-            if (!b.solid || !b.corners) continue;
+            if (!b.solid || b.opaque || !b.corners) continue;
             auto f = first_of.find(b.segment);
             if (f == first_of.end() || b.order < f->second) first_of[b.segment] = b.order;
         }
@@ -1426,6 +1516,7 @@ void RtaDrawer::batch_flush(Pass& pass) {
     for (size_t i = 0; i < sc.builds_used; i++) {
         Scene::BatchBuild& b = sc.builds[i];
         if (!b.corners) continue;
+        if (b.opaque) s->material_set_render_priority(b.material, -128 + (int)i);
         const int stride = b.fused ? 48 : 32;
         Scene::Batch& m = sc.batches[b.key];
         AABB box(Vector3(b.lo[0], b.lo[1], b.lo[2]), Vector3(b.hi[0] - b.lo[0] + 0.01f, b.hi[1] - b.lo[1] + 0.01f, b.hi[2] - b.lo[2] + 0.01f));
@@ -1480,7 +1571,7 @@ void RtaDrawer::batch_flush(Pass& pass) {
         m.corners = b.corners;
         m.used = frames;
         place_mesh(pass, m.mesh, b.material, b.order);
-        if (sc.prepass && b.solid) { place_mesh(pass, m.mesh, sc.prepass_material, first_of[b.segment] - 0.5f); sc.batch_prepass++; }
+        if (sc.prepass && b.solid && !b.opaque) { place_mesh(pass, m.mesh, sc.prepass_material, first_of[b.segment] - 0.5f); sc.batch_prepass++; }
         if (b.caster_material.is_valid()) scene_caster(pass, m.mesh, b.caster_material);
         sc.batch_draws++;
     }

@@ -38,6 +38,7 @@ var drawer: Object
 var rm: RefCounted              # RtaRemaster
 var cfg: ConfigFile
 var shader: Shader
+var depth := preload("res://model_depth.gd").new()
 var scenario: RID
 var on := false
 var bakes := {}                 # model key -> {state: running|ready|failed, name, levels: [[packet arrays]], piece_keys, merged}
@@ -539,6 +540,7 @@ func frame(to_scenario: RID) -> void:
 	for id in figs:
 		if int(figs[id].seen) != frame_no:
 			RenderingServer.instance_set_visible(figs[id].instance, false)
+			depth.visible(figs[id].instance, false)
 			if frame_no - int(figs[id].seen) > 300:
 				gone.append(id)
 	for id in gone:
@@ -659,12 +661,15 @@ func _figure_material(g: Dictionary, sig: String) -> RID:
 	if e.is_empty():
 		var rid := RenderingServer.material_create()
 		RenderingServer.material_set_shader(rid, shader.get_rid())
-		e = {"rid": rid, "version": -1}
+		var depth_rid := RenderingServer.material_create()
+		RenderingServer.material_set_shader(depth_rid, depth.depth_shader(shader).get_rid())
+		e = {"rid": rid, "depth": depth_rid, "version": -1}
 		own[sig] = e
 	var tm: Dictionary = templates.get(sig, {})
 	if not tm.is_empty() and int(e.version) != int(tm.version):
 		for k in tm.params:
 			RenderingServer.material_set_param(e.rid, k, tm.params[k])
+			RenderingServer.material_set_param(e.depth, k, tm.params[k])
 		e["version"] = tm.version
 	return e.rid
 
@@ -775,9 +780,11 @@ func _draw(f: Dictionary, cam: Transform3D, orders: Dictionary) -> void:
 	if g.is_empty():
 		g = {"instance": RenderingServer.instance_create(), "skeleton": RenderingServer.skeleton_create(), "gkey": "", "level": -1, "seen": 0, "order": -1.0, "mats": {}}
 		RenderingServer.instance_set_scenario(g.instance, scenario)
+		depth.create(g.instance, RID(), scenario)
 		RenderingServer.instance_set_layer_mask(g.instance, 1 | OWN_LAYER)
 		RenderingServer.instance_geometry_set_cast_shadows_setting(g.instance, RenderingServer.SHADOW_CASTING_SETTING_ON)
 		RenderingServer.instance_attach_skeleton(g.instance, g.skeleton)
+		depth.skeleton(g.instance, g.skeleton)
 		figs[String(f.id)] = g
 	var o := _opt(String(f.get("name", "")))
 	var root: Vector3 = f.root
@@ -799,9 +806,13 @@ func _draw(f: Dictionary, cam: Transform3D, orders: Dictionary) -> void:
 	if String(g.gkey) != String(m.gkey) or was != level:
 		var mesh: ArrayMesh = meshes[level]
 		RenderingServer.instance_set_base(g.instance, mesh.get_rid())
+		depth.base(g.instance, mesh.get_rid())
 		var sg: PackedInt32Array = mesh.get_meta("surface_group")
 		for s in mesh.get_surface_count():
-			RenderingServer.instance_set_surface_override_material(g.instance, s, _figure_material(g, String(m.sigs[sg[s]])))
+			var sig := String(m.sigs[sg[s]])
+			RenderingServer.instance_set_surface_override_material(g.instance, s, _figure_material(g, sig))
+			depth.surface(g.instance, s, g.mats[sig].depth)
+		depth.allow(g.instance, true)
 		g["gkey"] = m.gkey
 		g["level"] = level
 	rm.call("pose", machine, int(f.skeleton), g.skeleton)
@@ -838,14 +849,19 @@ func _draw(f: Dictionary, cam: Transform3D, orders: Dictionary) -> void:
 			var rid := _figure_material(g, String(sig))
 			for k in light:
 				RenderingServer.material_set_param(rid, k, light[k])
+				if k == "shrink" or k == "lift":
+					RenderingServer.material_set_param(g.mats[sig].depth, k, light[k])
 		g["light"] = light
 		g["light_gkey"] = g.gkey
 	# at the place of the figure's own first draw among the world's (the drawer's transparent pass keeps the list's order)
 	if orders.has(obj):
 		g["order"] = float(orders[obj])
 	RenderingServer.instance_set_pivot_data(g.instance, float(g.order) + 0.5 if float(g.order) >= 0.0 else 1.0e6, false)
+	depth.order(g.instance, float(g.order) + 0.5 if float(g.order) >= 0.0 else 1.0e6)
 	RenderingServer.instance_set_custom_aabb(g.instance, AABB(root - Vector3(160, 160, 160), Vector3(320, 320, 320)))
+	depth.bounds(g.instance, AABB(root - Vector3(160, 160, 160), Vector3(320, 320, 320)))
 	RenderingServer.instance_set_visible(g.instance, true)
+	depth.visible(g.instance, true)
 	g["seen"] = frame_no
 
 
@@ -981,15 +997,18 @@ func tween(t: float) -> void:
 func _hide_all() -> void:
 	for id in figs:
 		RenderingServer.instance_set_visible(figs[id].instance, false)
+		depth.visible(figs[id].instance, false)
 
 
 func _free_fig(g: Dictionary) -> void:
+	depth.free_instance(g.instance)
 	RenderingServer.free_rid(g.instance)
 	if rm != null:
 		rm.call("forget", g.skeleton)
 	RenderingServer.free_rid(g.skeleton)
 	for sig in g.mats:
 		RenderingServer.free_rid(g.mats[sig].rid)
+		RenderingServer.free_rid(g.mats[sig].depth)
 
 
 # a new level (scene_view.gd): the figures' ids are the game's addresses, handed out again
@@ -1002,6 +1021,7 @@ func release() -> void:
 	for id in figs:
 		_free_fig(figs[id])
 	figs.clear()
+	depth.release()
 
 
 func info_text() -> String:

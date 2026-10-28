@@ -77,8 +77,22 @@ void Renderer::set_memory(const uint8_t* ram, uint32_t size) {
         // a block nothing was found for is asked for again only when more headers are
         // known (each failed lookup makes whoever keeps the list look through memory)
         auto failed = picture_failed.find(tbp);
-        if (failed != picture_failed.end() && failed->second.headers == index.headers.size() && blanks - failed->second.blank < 30) return false;
-        if (!index.resident_at(tbp, h)) { picture_failed[tbp] = {index.headers.size(), blanks}; return false; }
+        // (where the list is kept by somebody else a lookup is a walk over the known headers, cheap: asked again at the
+        // next blank - the frames in between draw the picture woven by the sent size, garbled; where a failed lookup
+        // looks through memory itself, at most every 30 blanks)
+        static const uint64_t retry = getenv("RTA_PICTURE_RETRY") ? strtoull(getenv("RTA_PICTURE_RETRY"), nullptr, 10) : 1;   // (a test aid)
+        const uint64_t again = index.auto_rescan ? 30 : retry;
+        if (failed != picture_failed.end() && failed->second.headers == index.headers.size() && blanks - failed->second.blank < again) return false;
+        static const bool log = getenv("RTA_PICTURE_LOG") != nullptr;      // (debugging: which lookups fail, and for how long)
+        if (!index.resident_at(tbp, h)) {
+            if (log && failed == picture_failed.end()) fprintf(stderr, "picture: block %u not found at blank %llu (%zu headers)\n", tbp, (unsigned long long)blanks, index.headers.size());
+            uint64_t first = failed != picture_failed.end() ? failed->second.first : blanks;
+            picture_failed[tbp] = {index.headers.size(), blanks, first};
+            return false;
+        }
+        if (log && failed != picture_failed.end())
+            fprintf(stderr, "picture: block %u found at blank %llu after %llu blanks: %u x %u (header 0x%x)\n", tbp, (unsigned long long)blanks,
+                    (unsigned long long)(blanks - failed->second.first), h.width, h.height, h.address);
         picture_failed.erase(tbp);
         width = h.width; height = h.height;
         return true;

@@ -141,6 +141,10 @@ class RtaDrawer : public RefCounted {
         std::vector<RID> instances, meshes;
         std::vector<uint64_t> shapes;               // per mesh of the pool: the vertex count and primitive it holds (mesh_for_flat), 0 other
         std::vector<uint8_t> overridden;            // per instance: it carries a material of its own (place_mesh)
+        struct KeptInstance { RID rid, material; uint64_t used = 0; bool visible = true; };
+        // A retained mesh need not change its render instance when earlier draws
+        // enter or leave the list. Multiple draws of that mesh get separate entries.
+        std::unordered_map<uint64_t, std::vector<KeptInstance>> kept_instances;
         size_t used = 0;                            // instances with something to draw this frame
         bool drawn_once = false;
         bool stored = false;                        // its picture holds stored values under Godot's sRGB curve (V_STORED)
@@ -209,7 +213,9 @@ class RtaDrawer : public RefCounted {
     float last_aspect = 0;
     // figures
     uint64_t redraws = 0, passes_skipped = 0;
+    uint64_t submit_process_frame = ~0ull;     // Engine process frame of the last submit (redraw: its passes not yet rendered)
     bool scene_drops_blob(const rtag_frame& f, const rtag_draw& d) const;      // rta_scene.cpp: scene_take leaves this draw out
+    bool stable_instances = false;                // Remastered only; Classic uses the original ordered pool
     bool tween_global = false;                      // redraw has set the global rta_tween: submit puts it back to 0
     uint64_t draws_submitted = 0, vertices_submitted = 0, materials_made = 0, meshes_made = 0, passes_rendered = 0, stale_reads = 0, approximated = 0,
              depth_always_writes = 0, textures_made = 0, skipped = 0;
@@ -223,6 +229,9 @@ class RtaDrawer : public RefCounted {
     bool flip_surfaces = false;
     bool rd = false;                                // Forward+ / Mobile: surfaces stored the other way up (setup)
     uint32_t draw_space = 0;                        // V_STORED / V_DECODE for the draw being added (submit sets it)
+    bool draw_over = false;                         // scene mode: the draw being added is of the 2-D layer after the last draw of
+                                                    // the 3-D scene (a menu, a dialogue box): its material sorts after every world
+                                                    // instance, ours too (render priority 1), whatever their place in the world
     bool stored_colours = true;
     float world_bias = 0.00002f;                    // scene mode: draws that do not write depth come this much nearer (clip space)
 
@@ -412,6 +421,7 @@ private:
     void fill_frame(const rtag_frame& f, const Vector3& eye, RID scenario);
     void fill_learn(const rtag_scene* tap, const rtag_draw& d, const rtag_scene_piece* pieces, uint32_t piece_count, const Vector3& eye);
     void fill_order();
+    void fill_opaque_background(bool on);
     void fill_option(const String& name, double value);
     void fill_note_level(float order);
     bool fill_drops(const rtag_frame& f, const rtag_draw& d);

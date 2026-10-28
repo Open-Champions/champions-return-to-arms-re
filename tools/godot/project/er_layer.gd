@@ -67,6 +67,9 @@ var self_instance: RID
 var self_skeleton: RID
 var self_mesh: ArrayMesh
 var self_material: StandardMaterial3D
+var placed_materials := {}      # instance RID -> immutable material list last installed
+var sent_light := {}            # instance RID -> exact parameter values last sent
+var pose_writer: RefCounted     # optional native palette submission; older extensions use the same script loop
 # the Elden Ring figures
 # A figure's identity (docs/issues/native-cutscenes.md): the object whose animation state poses it is a Player (its
 # vtable) of a slot (Player +0x3c8) - the player itself or this machine's prediction copy of it.  A cut scene's story
@@ -89,6 +92,7 @@ const ResourceBudget := preload("res://resource_budget.gd")
 var fits := {}                  # outfit|build|class -> {"task", "out"} while fitting, then the fitted figure (er_fit.gd) or {"failed"}
 var fit_cfg: ConfigFile         # er_fit.cfg
 var armour_shader: Shader
+var depth := preload("res://model_depth.gd").new()
 var figures := {}               # key ("slot0".. or "local") -> figure: {set, instances, globals, springs, weapons, used}
 var targets: Array = []         # this frame's: [{key, skeleton, set, slot, wclass, held: [...]}]
 var game_weapons := {}          # signature -> {axis, side} of a game weapon in its own model space (from its vertices)
@@ -118,9 +122,16 @@ var part_us := {"get": 0, "find": 0, "draw": 0}
 func _ready() -> void:
 	machine = main.machine
 	drawer = main.drawer
+	if ClassDB.class_exists("RtaRemaster"):
+		pose_writer = ClassDB.instantiate("RtaRemaster")
+		if not pose_writer.has_method("skin_palette"):
+			pose_writer = null
 
 
 func release() -> void:
+	depth.release()
+	placed_materials.clear()
+	sent_light.clear()
 	for pair in own_lights:
 		RenderingServer.free_rid(pair[1])
 		RenderingServer.free_rid(pair[0])
@@ -154,9 +165,15 @@ func _free_figure(f: Dictionary) -> void:
 	for m in f.get("instances", []):
 		for key in ["instance", "skeleton"]:
 			if (m[key] as RID).is_valid():
+				placed_materials.erase(m[key])
+				sent_light.erase(m[key])
+				depth.free_instance(m[key])
 				RenderingServer.free_rid(m[key])
 	for w in f.get("weapons", {}).values():
 		if (w.instance as RID).is_valid():
+			placed_materials.erase(w.instance)
+			sent_light.erase(w.instance)
+			depth.free_instance(w.instance)
 			RenderingServer.free_rid(w.instance)
 	f["instances"] = []
 	f["weapons"] = {}
@@ -749,7 +766,7 @@ func _gltf(path: String) -> Variant:
 						return null
 					var i := materials.size()
 					var m := mesh.surface_get_material(i)
-					materials.append(_armour_material(m, String(m.resource_name) if m != null else "", _surface_turned(mesh, i)))
+					materials.append(_armour_material(m, String(m.resource_name) if m != null else "", _surface_turned(mesh, i), path))
 					ResourceBudget.end(started)
 				ordered_materials[mesh] = materials
 			l.erase("render_mesh")
@@ -848,8 +865,10 @@ func _hide_drawn() -> void:
 func _hide_figure(f: Dictionary) -> void:
 	for m in f.get("instances", []):
 		RenderingServer.instance_set_visible(m.instance, false)
+		depth.visible(m.instance, false)
 	for w in f.get("weapons", {}).values():
 		RenderingServer.instance_set_visible(w.instance, false)
+		depth.visible(w.instance, false)
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -1488,21 +1507,47 @@ func _draw_figure(t: Dictionary) -> void:
 		var w: Dictionary = weapons.get(key, {})
 		if w.is_empty() or w.what != h.what:
 			if not w.is_empty():
+				placed_materials.erase(w.instance)
+				sent_light.erase(w.instance)
+				depth.free_instance(w.instance)
 				RenderingServer.free_rid(w.instance)
 			w = {"what": h.what, "instance": RenderingServer.instance_create2((wm.mesh as Mesh).get_rid(), scenario)}
+			depth.create(w.instance, (wm.mesh as Mesh).get_rid(), scenario)
 			weapons[key] = w
 		var size := k * float(wm.size)
 		var place := Transform3D(turn.scaled(Vector3(size, size, size)), grip)
 		w["before"] = w.get("now", place) if before_ok and w.has("now") else place
 		w["now"] = place
 		RenderingServer.instance_set_transform(w.instance, place)
+		depth.transform(w.instance, place)
 		_place(w.instance, wm.materials, t)
 		RenderingServer.instance_set_visible(w.instance, true)
+		depth.visible(w.instance, true)
 		shown[key] = true
 	for key in weapons:
 		if not shown.has(key):
 			RenderingServer.instance_set_visible(weapons[key].instance, false)
+			depth.visible(weapons[key].instance, false)
 			(weapons[key] as Dictionary).erase("now")
+	# the game's own light on the figure - its level's ambient and sun, the torches near it, its hit flash and poison - as a
+	# fitted outfit takes it (_draw_fitted): without it a creature's pieces had only the scene's light on their full
+	# texture, far brighter than the game's own figures in a dark level (strife's soldiers pale white beside its orcs:
+	# playtest-remastered.md glitch 10).  Every second frame (the light grid walk is the costly part)
+	if now_frame - int(f.get("light_frame", -10)) >= 2 or not f.has("light"):
+		f["light"] = _game_light(int(p.state), root_at)
+		f["light_frame"] = now_frame
+	var light: Dictionary = f.light
+	var lit: Array = []
+	for e in f.instances:
+		lit.append(e.instance)
+	for key in weapons:
+		lit.append(weapons[key].instance)
+	for inst in lit:
+		if sent_light.has(inst) and sent_light[inst] == light:
+			continue
+		for key in light:
+			RenderingServer.instance_geometry_set_shader_parameter(inst, key, light[key])
+		sent_light[inst] = light.duplicate()
 	f["drawn_frame"] = now_frame
 
 
@@ -1515,19 +1560,24 @@ func _skin(f: Dictionary, m: Dictionary, g: Array, root_at: Vector3, t: Dictiona
 			var sk_rid := RenderingServer.skeleton_create()
 			RenderingServer.skeleton_allocate_data(sk_rid, (mesh.binds as PackedInt32Array).size())
 			var inst := RenderingServer.instance_create2((mesh.mesh as Mesh).get_rid(), scenario)
+			depth.create(inst, (mesh.mesh as Mesh).get_rid(), scenario)
 			RenderingServer.instance_attach_skeleton(inst, sk_rid)
+			depth.skeleton(inst, sk_rid)
 			instances.append({"instance": inst, "skeleton": sk_rid})
 		var binds: PackedInt32Array = mesh.binds
 		var poses: Array = mesh.poses
 		var rid: RID = instances[i].skeleton
-		for q in binds.size():
-			var bone := binds[q]
-			RenderingServer.skeleton_bone_set_transform(rid, q, (g[bone] as Transform3D) * (poses[q] as Transform3D) if bone >= 0 and g[bone] != null else Transform3D())
+		if pose_writer == null or not pose_writer.call("skin_palette", rid, binds, g, poses):
+			for q in binds.size():
+				var bone := binds[q]
+				RenderingServer.skeleton_bone_set_transform(rid, q, (g[bone] as Transform3D) * (poses[q] as Transform3D) if bone >= 0 and g[bone] != null else Transform3D())
 		if t.has("tween"):
 			continue                    # between game frames: only the bones move (the order and the box are the frame's)
 		_place(instances[i].instance, mesh.materials, t)
 		RenderingServer.instance_set_visible(instances[i].instance, true)
+		depth.visible(instances[i].instance, true)
 		RenderingServer.instance_set_custom_aabb(instances[i].instance, AABB(root_at - Vector3(120, 120, 120), Vector3(240, 240, 240)))
+		depth.bounds(instances[i].instance, AABB(root_at - Vector3(120, 120, 120), Vector3(240, 240, 240)))
 
 
 # A picture between game frames (main.gd, the display rate above 60): every figure drawn in the last game frame posed T
@@ -1568,6 +1618,7 @@ func tween(t: float) -> void:
 			var wd: Dictionary = f.weapons[wk]
 			if wd.has("now") and wd.has("before"):
 				RenderingServer.instance_set_transform(wd.instance, (wd.before as Transform3D).interpolate_with(wd.now as Transform3D, w))
+				depth.transform(wd.instance, (wd.before as Transform3D).interpolate_with(wd.now as Transform3D, w))
 
 
 const SPRING_PULL := 140.0          # 1/s^2: how hard the pose pulls the weight back
@@ -1626,13 +1677,24 @@ var orders_frame := -1
 var first_order := -1.0
 var orders := {}                    # this frame's drawer: per object left out, the place of its first draw
 func _place(instance: RID, materials: Array, t: Dictionary = {}) -> void:
-	RenderingServer.instance_set_layer_mask(instance, 1 | OWN_LAYER)
-	for i in materials.size():
-		RenderingServer.instance_set_surface_override_material(instance, i, (materials[i] as Material).get_rid())
+	# A creature keeps its mesh/materials for the instance's lifetime. Reinstalling
+	# them every game frame dirties Godot's instance dependencies across the crowd.
+	# Compare the actual resources, and forget the entry whenever its RID is freed.
+	if not placed_materials.has(instance) or placed_materials[instance] != materials:
+		RenderingServer.instance_set_layer_mask(instance, 1 | OWN_LAYER)
+		for i in materials.size():
+			RenderingServer.instance_set_surface_override_material(instance, i, (materials[i] as Material).get_rid())
+		var depth_ok := not materials.is_empty() and materials.all(func(m): return m is ShaderMaterial and m.shader == armour_shader)
+		depth.allow(instance, depth_ok)
+		if depth_ok:
+			for i in materials.size():
+				depth.surface(instance, i, depth.depth_material(materials[i]).get_rid())
+		placed_materials[instance] = materials.duplicate()
 	if t.has("fit"):
 		# a fitted figure's pieces: over the player's own figure, which is not left out (so has no place of its own in
 		# the list): after the world's draws, depth tested against them - the figure under it and whatever stands in front
 		RenderingServer.instance_set_pivot_data(instance, 1.0e6, false)
+		depth.order(instance, 1.0e6)
 		return
 	# each figure at the place of the first of its own draws the drawer left out (a creature drawn before the leaves over it
 	# stays under them; the first hidden draw of the whole frame may be another figure's); without one this frame (the
@@ -1659,6 +1721,7 @@ func _place(instance: RID, materials: Array, t: Dictionary = {}) -> void:
 	else:
 		order = last_order
 	RenderingServer.instance_set_pivot_data(instance, order + 0.5 if order >= 0.0 else 1.0e6, false)
+	depth.order(instance, order + 0.5 if order >= 0.0 else 1.0e6)
 
 
 func _collect(node: Node, out: Array, found: Dictionary) -> void:
@@ -2414,7 +2477,9 @@ func _draw_fitted(t: Dictionary) -> void:
 	for key in light:
 		RenderingServer.instance_geometry_set_shader_parameter(inst, key, light[key])
 	RenderingServer.instance_set_visible(inst, true)
+	depth.visible(inst, true)
 	RenderingServer.instance_set_custom_aabb(inst, AABB(root_at - Vector3(120, 120, 120), Vector3(240, 240, 240)))
+	depth.bounds(inst, AABB(root_at - Vector3(120, 120, 120), Vector3(240, 240, 240)))
 	f["drawn_frame"] = now_frame
 
 
@@ -2425,7 +2490,9 @@ func _skin_fitted(f: Dictionary, pal: Array) -> void:
 		var sk_rid := RenderingServer.skeleton_create()
 		RenderingServer.skeleton_allocate_data(sk_rid, pal.size())
 		var inst := RenderingServer.instance_create2((fit.mesh as Mesh).get_rid(), scenario)
+		depth.create(inst, (fit.mesh as Mesh).get_rid(), scenario)
 		RenderingServer.instance_attach_skeleton(inst, sk_rid)
+		depth.skeleton(inst, sk_rid)
 		instances.append({"instance": inst, "skeleton": sk_rid})
 	var rid: RID = instances[0].skeleton
 	for q in pal.size():
@@ -2552,7 +2619,7 @@ func _game_light(state: int, at: Vector3) -> Dictionary:
 # (the white streaks); the light the level's own (er_fit.cfg [look] tunes it).
 var _alpha_seen := {}
 const CARD_WORDS := ["hair", "fur", "feather", "cloth", "tatter", "fringe", "lace", "mane", "beard", "leaf", "rope"]
-func _armour_material(src: Material, name: String, flip: bool) -> ShaderMaterial:
+func _armour_material(src: Material, name: String, flip: bool, path := "") -> ShaderMaterial:
 	if armour_shader == null:
 		armour_shader = load("res://shaders/er_armour.gdshader")
 	var sm := ShaderMaterial.new()
@@ -2583,6 +2650,21 @@ func _armour_material(src: Material, name: String, flip: bool) -> ShaderMaterial
 						cut = 0.5
 					break
 	sm.set_shader_parameter("cut", cut)
+	# hair cards whose picture is a dark strand mask, coloured by the other game's hair shader (a colour we do not have):
+	# drawn as they are, the demi-humans' thin near-black strands over their pale hide were a scatter of black specks
+	# (playtest-remastered.md glitch 11).  er_creatures.cfg [hair] gives the model's hair its colour
+	if path.contains("/creatures/"):
+		var folder := path.get_base_dir().get_file()
+		var ccfg := _creature_table()
+		if cut >= 0.0 and name.to_lower().contains("hair") and ccfg.has_section_key("hair", folder):
+			var hc: Array = ccfg.get_value("hair", folder)
+			sm.set_shader_parameter("hair_tint", Color(float(hc[0]), float(hc[1]), float(hc[2]), 1.0))
+		# a model painted much lighter than the game's figures it stands for (the soldier's pale steel for strife's dark
+		# orcs, playtest-remastered.md glitch 10): its colours toned down to sit beside them (er_creatures.cfg [tone])
+		if ccfg.has_section_key("tone", folder):
+			var k := float(ccfg.get_value("tone", folder))
+			var ac: Color = sm.get_shader_parameter("albedo_colour") if sm.get_shader_parameter("albedo_colour") != null else Color(1, 1, 1, 1)
+			sm.set_shader_parameter("albedo_colour", Color(ac.r * k, ac.g * k, ac.b * k, ac.a))
 	# fabric and leather (by the material's name): the soft light along a cape's outline
 	var lname := name.to_lower()
 	for w in ["fab", "cloth", "leather", "cape", "apron", "muffler", "robe", "skirt", "fur", "tatter"]:

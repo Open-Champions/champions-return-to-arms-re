@@ -1103,6 +1103,8 @@ func _take_frame() -> void:
 		frame_draw_usec += Time.get_ticks_usec() - t0
 		for path in machine.get_shots():
 			pending_shots.append(path)
+	if control != null:
+		control.call("after_frame")         # test aid (dev/control.gd): the frame just taken, pictured exactly when asked
 
 
 func _process(delta: float) -> void:

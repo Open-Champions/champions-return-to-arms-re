@@ -89,8 +89,10 @@ struct RtaDrawer::Fill {
     bool on = false, ceilings = true, skirts = true, rims = true;
     double light = 0.36, scale = 1.0;
     bool params_dirty = true;
+    bool opaque_background = false;
     Ref<Shader> shader;
     Ref<Shader> skirt_shader;           // the skirts' (no depth written: shaders/fill_skirt.gdshader); none: `shader`
+    Ref<Shader> skirt_depth_shader;
     // figures
     uint64_t frames = 0, blocks_drawn = 0, tried = 0, cut = 0, builds = 0, library_dropped = 0;
 
@@ -105,6 +107,10 @@ void RtaDrawer::set_fill_shader(const Ref<Shader>& shader, const Ref<Shader>& sk
     if (!fill) fill = new Fill;
     fill->shader = shader;
     fill->skirt_shader = skirt_shader;
+    if (skirt_shader.is_valid()) {
+        fill->skirt_depth_shader.instantiate();
+        fill->skirt_depth_shader->set_code(skirt_shader->get_code().replace("shader_type spatial;", "shader_type spatial;\n#define FILL_OPAQUE_BACKGROUND"));
+    }
 }
 
 Dictionary RtaDrawer::get_fill_info() const {
@@ -148,7 +154,8 @@ RID RtaDrawer::fill_material(Fill& fl, uint8_t kind, RID texture) {
     RenderingServer* s = rs();
     RID m = s->material_create();
     // a skirt, a rim are backgrounds (docs/issues/native-first-person-world.md 8.8, cause 3): their shader writes no depth
-    const Ref<Shader>& shader = kind != RTAG_FILL_CEILING && fl.skirt_shader.is_valid() ? fl.skirt_shader : fl.shader;
+    const Ref<Shader>& shader = kind != RTAG_FILL_CEILING && fl.skirt_shader.is_valid() ?
+        (fl.opaque_background ? fl.skirt_depth_shader : fl.skirt_shader) : fl.shader;
     s->material_set_shader(m, shader->get_rid());
     s->material_set_param(m, "kind", (int)kind);
     s->material_set_param(m, "has_swatch", texture.is_valid() ? 1 : 0);
@@ -443,6 +450,22 @@ void RtaDrawer::fill_order() {
     fl.order_set = at;
     RenderingServer* s = rs();
     for (auto& b : fl.blocks) s->instance_set_pivot_data(b.instance, at - (b.kind == RTAG_FILL_SKIRT ? 0.7f : 0.5f), false);
+}
+
+// Skirts/rims are ordered backgrounds, not translucent surfaces laid over the
+// level. When its initial solid stretch moves to opaque, keep those backgrounds
+// behind it even where their generated geometry is physically nearer.
+void RtaDrawer::fill_opaque_background(bool on) {
+    if (!fill || fill->opaque_background == on) return;
+    Fill& fl = *fill;
+    fl.opaque_background = on;
+    RenderingServer* s = rs();
+    if (fl.skirt_shader.is_null() || fl.skirt_depth_shader.is_null()) return;
+    RID shader = (on ? fl.skirt_depth_shader : fl.skirt_shader)->get_rid();
+    for (int k = 1; k < 4; k++)
+        if (k != RTAG_FILL_CEILING && fl.stone[k].is_valid()) s->material_set_shader(fl.stone[k], shader);
+    for (const auto& w : fl.swatches)
+        if (w.kind != RTAG_FILL_CEILING) s->material_set_shader(w.material, shader);
 }
 
 void RtaDrawer::fill_option(const String& name, double value) {

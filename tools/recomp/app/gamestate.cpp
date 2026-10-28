@@ -43,6 +43,7 @@ const u32 G_PAUSE_MENU_OPEN = 0x44F208;                 // u8: 1 at 0x18e3f4 (pa
 const u32 G_LOCAL_MENU_OPEN = 0x41B69D;                 // g_localMenuOpen u8 (names.tsv): inventory / character sheet of this machine
 const u32 G_MENU_OPEN_FLAG = 0x41B4F8;                  // s32: any full-screen menu of this machine (first test of hud_drawPlayerStatus 0x1d9cd4)
 const u32 G_HUD_SUPPRESSED = 0x4F66A8;                  // s8: cutscene, dialogue, mission menu, jump gate (second test there)
+const u32 G_MEMCARD_STATE = 0x88D3A0;                  // g_memcardState s32 (symbols/audio-save.tsv): -1 idle, else a card screen (save, load, options)
 const u32 G_SHOP_OPEN = 0x41B50C;                       // s32 (third test there)
 const u32 G_LOCAL_CAMERA = 0x4F8450;                    // pointer; +0x34 mode: 1 follow, 0 held, 3..5 free (docs/issues/native-first-person.md 2)
 const u32 G_CUTSCENE_ACTIVE = 0x44FCD0;                 // g_cutsceneActive s8 (names.tsv)
@@ -1083,7 +1084,8 @@ const rta_gamestate* rta_gs_update(rta_gs_reader* reader, const uint8_t* ram) {
     if (pending[0] || m.sb(G_LOADSCREEN) || m.i(G_WARMUP_FRAMES) || !m.b(G_WORLD_PIECES_DRAWN)) phase |= RTA_GS_PH_LOADING;
     if (m.i(G_PAUSED)) phase |= RTA_GS_PH_PAUSED;
     if (m.b(G_PAUSE_MENU_OPEN) || has_task(r, FN_PAUSE_MENU)) phase |= RTA_GS_PH_PAUSE_MENU;
-    if (m.b(G_LOCAL_MENU_OPEN) || m.i(G_SHOP_OPEN) || has_task(r, FN_INVENTORY) || has_task(r, FN_SHOP) || (m.i(G_MENU_OPEN_FLAG) && !(phase & RTA_GS_PH_PAUSE_MENU)))
+    if (m.b(G_LOCAL_MENU_OPEN) || m.i(G_SHOP_OPEN) || has_task(r, FN_INVENTORY) || has_task(r, FN_SHOP) || (m.i(G_MENU_OPEN_FLAG) && !(phase & RTA_GS_PH_PAUSE_MENU)) ||
+        (!frontend && m.i(G_MEMCARD_STATE) >= 0))     // a card screen in a level: the save point's save, the pause menu's load
         phase |= RTA_GS_PH_MENU;
     if (m.sb(G_CUTSCENE_ACTIVE)) phase |= RTA_GS_PH_CUTSCENE;
     if (m.w(G_DIALOG_DATA) || m.b(G_HELP_OPEN)) phase |= RTA_GS_PH_DIALOGUE;

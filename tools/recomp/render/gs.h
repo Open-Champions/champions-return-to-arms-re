@@ -40,6 +40,7 @@ struct GsStats {
     uint64_t surface_uploads = 0;       // rectangles sent straight into a displayed buffer
     uint64_t fogged = 0;                // primitives drawn with fogging
     uint64_t targets_held = 0, targets_freed = 0;
+    uint64_t fields_unknown = 0;        // two-field sprites woven by the size that was sent (their picture's height unknown)
     // Primitives drawn with a piece of GS state this model does not apply or only
     // approximates, by kind (Gs::APPROX_NAMES): what a scene needs is known by counting.
     uint64_t approx[16] = {0};
@@ -121,6 +122,7 @@ class Gs {
     // ---- registers ----
     uint64_t reg[0x64];
     uint64_t pmode = 0, smode2 = 0, dispfb[2] = {0, 0}, display[2] = {0, 0};
+    bool pmode_written = false;         // the game has set PMODE (before that the display is not held back)
     struct Queued { uint32_t x, y, z; float s, t, q; uint32_t u, v; uint8_t rgba[4]; uint8_t fog; };
     uint8_t cur_fog = 0;                // the FOG register's coefficient (for vertices that carry none)
     Queued vq[3];

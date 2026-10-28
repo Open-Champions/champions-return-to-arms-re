@@ -37,6 +37,7 @@ const TIERS := ["LIGHT", "MEDIUM", "HEAVY", "OVERLOADED"]
 
 var hud: Node
 var on := false
+var text_top := -1.0                # the top of the lines drawn over the stamina bar (window units), -1 when none
 var stamina := 1.0
 var shown := 1.0
 var flags := 0
@@ -161,6 +162,7 @@ func _process(_delta: float) -> void:
 
 
 func _draw() -> void:
+	text_top = -1.0
 	if not on or hud.show <= 0.01:
 		return
 	var s: float = hud.s
@@ -228,6 +230,8 @@ func _draw() -> void:
 		draw_string(font, Vector2(rect.position.x, ty - 2.0 * line_h), upgrade_line, HORIZONTAL_ALIGNMENT_LEFT, -1, cs, Color(0.63, 0.9, 1.0, a))
 	if level_line != "":
 		draw_string(font, Vector2(rect.position.x, ty - (3.0 if upgrade_line != "" else 2.0) * line_h), level_line, HORIZONTAL_ALIGNMENT_LEFT, -1, cs, Color(0.94, 0.85, 0.5, a))
+	var lines := 2.0 + (1.0 if upgrade_line != "" else 0.0) + (1.0 if level_line != "" else 0.0)
+	text_top = ty - (lines - 1.0) * line_h - float(cs)
 	# the death drop: a pale green upright diamond over the spot
 	if drop and hud.gs != null:
 		var dc: Vector3 = hud.gs.project(drop_at)

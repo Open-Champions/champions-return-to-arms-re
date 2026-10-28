@@ -161,10 +161,22 @@ static std::map<u32, u32> g_hw;
 static u64 g_frames_wanted = ~0ull;
 static u64 g_dma_qwords[10], g_dma_starts[10], g_gs_finish, g_nothing_writes;
 
+// These links live in guest RAM.  G11 reached rt_sleep with a link of 0xccdbdc:
+// using it as a thread number read far beyond RAM.  Stop at the damaged link, without
+// repairing the queue or advancing the machine.  A valid queue visits at most 256 nodes.
+static u32 queued_thread(u32 slot, unsigned& visited) {
+    u32 id = W(slot);
+    if (id && (id > MAX_THREAD || ++visited > MAX_THREAD))
+        rt_die("invalid thread ready queue: link at 0x%x is 0x%x (visited %u, current %u, field %llu)",
+               slot, id, visited, t_self ? t_self->id : 0, (unsigned long long)g_fields);
+    return id;
+}
+
 static void link_thread(u32 id) {       // into the schedule queue, after equal priorities
     u32 pri = W(thr(id) + T_PRI);
     u32 prev_slot = ST_BASE + ST_THREADQ;
-    for (u32 cur = W(prev_slot); cur; cur = W(prev_slot)) {
+    unsigned visited = 0;
+    for (u32 cur = queued_thread(prev_slot, visited); cur; cur = queued_thread(prev_slot, visited)) {
         if (W(thr(cur) + T_PRI) > pri) break;
         prev_slot = thr(cur) + T_NEXT;
     }
@@ -173,13 +185,15 @@ static void link_thread(u32 id) {       // into the schedule queue, after equal 
 }
 static void unlink_thread(u32 id) {
     u32 prev_slot = ST_BASE + ST_THREADQ;
-    for (u32 cur = W(prev_slot); cur; cur = W(prev_slot)) {
+    unsigned visited = 0;
+    for (u32 cur = queued_thread(prev_slot, visited); cur; cur = queued_thread(prev_slot, visited)) {
         if (cur == id) { W(prev_slot) = W(thr(id) + T_NEXT); W(thr(id) + T_NEXT) = 0; return; }
         prev_slot = thr(cur) + T_NEXT;
     }
 }
 static u32 pick_thread() {
-    for (u32 cur = W(ST_BASE + ST_THREADQ); cur; cur = W(thr(cur) + T_NEXT)) {
+    unsigned visited = 0;
+    for (u32 cur = queued_thread(ST_BASE + ST_THREADQ, visited); cur; cur = queued_thread(thr(cur) + T_NEXT, visited)) {
         if (cur == W(ST_BASE + ST_IDLE)) continue;
         if (W(thr(cur) + T_STATUS) != TH_RUNNING) continue;
         if (g_foreign.count(cur)) continue;
@@ -762,7 +776,8 @@ void rt_syscall(Ctx* c, u32 pc) {
         break;
     }
     case 0x2B: case 0x2C: {                             // RotateThreadReadyQueue(priority)
-        for (u32 cur = W(ST_BASE + ST_THREADQ); cur; cur = W(thr(cur) + T_NEXT))
+        unsigned visited = 0;
+        for (u32 cur = queued_thread(ST_BASE + ST_THREADQ, visited); cur; cur = queued_thread(thr(cur) + T_NEXT, visited))
             if (W(thr(cur) + T_PRI) == a0) { unlink_thread(cur); link_thread(cur); break; }
         result = a0;
         yield = n == 0x2B;

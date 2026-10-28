@@ -58,12 +58,14 @@ void fragment() {
 // a twin of an opaque draw of the scene that only goes into Godot's shadow maps
 render_mode unshaded, cull_disabled;
 #else
-#ifdef GS_BLEND_SUB
+#ifdef GS_OPAQUE
+render_mode blend_mix;
+#elif defined(GS_BLEND_SUB)
 render_mode blend_sub;
 #else
 render_mode blend_premul_alpha;
 #endif
-#ifdef GS_DEPTH_ALWAYS
+#if defined(GS_DEPTH_ALWAYS) && !defined(GS_BACKGROUND)
 render_mode depth_test_disabled;
 #endif
 #ifdef GS_DEPTH_INVERTED
@@ -241,6 +243,9 @@ void vertex() {
 	POSITION.z += depth_bias * POSITION.w;
 #else
 	POSITION.z -= depth_bias * POSITION.w * 0.5;        // Forward+ / Mobile: depth 0..1 and reversed (near is 1)
+#endif
+#ifdef GS_BACKGROUND
+	POSITION.z = 0.0; // Forward+ reverse Z: ordered background, tested after opaque colour
 #endif
 #else
 	v_pos = VERTEX.xy;
@@ -569,10 +574,12 @@ void fragment() {
 #endif
 #endif
 #endif
+#ifndef GS_OPAQUE
 #if defined(GS_BLEND_SUB) || defined(GS_FUSED)
 	ALPHA = 1.0;                                        // destination - source; a fused pair covers
 #else
 	ALPHA = 1.0 - destination;                          // source + destination x (1 - alpha)
+#endif
 #endif
 #endif
 }

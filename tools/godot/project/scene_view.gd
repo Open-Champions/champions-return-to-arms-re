@@ -89,6 +89,9 @@ const G_PLAYERS := 0x4D8AF0             # symbols: g_players; +0x43d8 the first 
 const G_LEVEL_NAME := 0x41B721          # g_levelName
 const G_WORLD_LIGHT := 0x5D347C         # g_worldLightLevel: 0x80, or 0x40 / 0x20 in dark levels
 const G_FAR_CLIP := 0x7D8A04            # g_farClip
+const G_PAUSED := 0x41B4F4              # g_paused (s32)
+const G_MEMCARD_STATE := 0x88D3A0       # g_memcardState: -1 idle, else a card screen
+const G_WARMUP := 0x506048              # the game's wait after a load (the picture is blanked)
 const VIEW_CHASE := 2
 const SUN_CLEAR := 0.004                # how clearly a level's textures must say where its light comes from
 
@@ -170,6 +173,8 @@ var lamp: RID
 var lamp_instance: RID
 var sky_mesh: SphereMesh
 var sky_material: ShaderMaterial
+var sky_ordered_shader: Shader
+var sky_depth_shader: Shader
 var sky_instance: RID
 var ring_texture: ImageTexture
 var ring_image: Image
@@ -248,7 +253,10 @@ func _ready() -> void:
 	sky_mesh.radial_segments = 48
 	sky_mesh.rings = 24
 	sky_material = ShaderMaterial.new()
-	sky_material.shader = load("res://shaders/sky.gdshader")
+	sky_ordered_shader = load("res://shaders/sky.gdshader")
+	sky_depth_shader = Shader.new()
+	sky_depth_shader.code = sky_ordered_shader.code.replace("shader_type spatial;", "shader_type spatial;\n#define OPAQUE_WORLD")
+	sky_material.shader = sky_ordered_shader
 	drawer.call("set_fill_shader", load("res://shaders/fill.gdshader"), load("res://shaders/fill_skirt.gdshader"))
 	card = Node.new()
 	card.set_script(load("res://card.gd"))
@@ -441,6 +449,12 @@ func before_frame() -> void:
 	# the level's draws gathered into batches, a two-pass chunk drawn as one (rta_scene.cpp, Scene::batch_on); off: each by itself
 	drawer.call("set_scene_option", "batch", 0.0 if String(look.batch) == "off" or OS.get_environment("RTA_BATCH") == "0" else 1.0)
 	drawer.call("set_scene_option", "prepass", 0.0 if String(look.prepass) == "off" or OS.get_environment("RTA_PREPASS") == "0" else 1.0)
+	# Only the proven initial opaque stretch moves ahead of the ordered pass.
+	# Classic keeps its original shader variants and ordering.
+	var opaque_world := not _classic_look_in_force() and OS.get_environment("RTA_OPAQUE_WORLD") != "0" and RenderingServer.get_current_rendering_method() == "forward_plus"
+	drawer.call("set_scene_option", "opaque", 1.0 if opaque_world else 0.0)
+	drawer.call("set_scene_option", "stable_instances", 1.0 if String(main.opt.edition) == "remastered" else 0.0)
+	sky_material.shader = sky_depth_shader if opaque_world else sky_ordered_shader
 	drawer.call("set_scene_option", "fill", 1.0 if in_force.fill else 0.0)
 	for key in ["fill_light", "fill_scale"]:
 		if fill_sent.get(key, -1.0) != float(look[key]):
@@ -833,6 +847,15 @@ func _backdrop(info: Dictionary) -> void:
 	# bare: none of the level's own pieces reaches under the player's feet (some arenas, entered alone, put the
 	# character where the game has no ground at all)
 	var bare := int(info.get("ground_near", 1)) == 0
+	# while the game is paused (the mission map, a gate's menu, offline menus), a card screen is up or the picture is the
+	# game's blank after a load, a list without the level says nothing about the ground: the backdrop is neither started
+	# nor kept (it was laid in the mission map's wide margins and in a level's first moments)
+	if int(info.get("level_draws", 1)) == 0 and (machine.peek_u32(G_PAUSED) != 0 or int(machine.peek_u32(G_MEMCARD_STATE)) != 0xFFFFFFFF \
+			or machine.peek_u32(G_WARMUP) != 0):
+		if backdrop_instance.is_valid():
+			RenderingServer.instance_set_visible(backdrop_instance, false)
+		backdrop_on = false
+		return
 	backdrop_bare = maxi(backdrop_bare, 0) + 1 if bare else mini(backdrop_bare, 0) - 1
 	var mode := String(look.backdrop)
 	# on after half a second without ground under the feet, off after a second with it again
@@ -944,7 +967,9 @@ func _gpu_quality_update() -> void:
 		gpu_quality.configure(requested)
 	if level != gpu_level:
 		gpu_level = level
-		gpu_quality.reset_observations()
+		if gpu_quality.new_level():
+			var q := gpu_quality.quality()
+			print("rta_gpu_quality: level=%s back to samples=%d scale=%.2f (a new level)" % [level, int(q.x), q.y])
 		gpu_sample_usec = 0
 	# Read existing presentation flags only. The HUD fade word can stay at 128
 	# throughout normal play: require a change or an actually submitted overlay

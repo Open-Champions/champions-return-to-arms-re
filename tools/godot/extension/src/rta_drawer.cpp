@@ -3,6 +3,7 @@
 #include "rta_variant.h"
 
 #include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/core/class_db.hpp>
@@ -106,6 +107,8 @@ RtaDrawer::Pass* RtaDrawer::make_pass(Target& target) {
 void RtaDrawer::free_pass(Pass* pass) {
     RenderingServer* s = rs();
     last_order.erase(std::remove(last_order.begin(), last_order.end(), pass), last_order.end());
+    for (auto& entry : pass->kept_instances)
+        for (auto& instance : entry.second) s->free_rid(instance.rid);
     for (RID instance : pass->instances) s->free_rid(instance);
     for (RID mesh : pass->meshes) s->free_rid(mesh);
     s->viewport_set_active(pass->viewport, false);
@@ -144,6 +147,8 @@ RID RtaDrawer::shader_for(uint32_t variant) {
     if (variant & V_SOLID) code += "#define GS_SOLID\n";
     if (variant & V_PREPASS) code += "#define GS_PREPASS\n";
     if (variant & V_ER) code += "#define GS_ER\n";
+    if (variant & V_OPAQUE) code += "#define GS_OPAQUE\n";
+    if (variant & V_BACKGROUND) code += "#define GS_BACKGROUND\n";
     if (stored_colours) code += "#define GS_STORED_COLOURS\n";
     code += shader_code;
     Ref<Shader> shader;
@@ -293,7 +298,7 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
     if (er) variant |= V_ER;
     struct Key {
         uint32_t variant; uint32_t er; int64_t texture; uint32_t target; float scissor[4];
-        uint8_t textured, tfx, tcc, wrap_s, wrap_t, texa_mode, ta0, ta1, aem, atst, aref, fog, fog_colour[3], blend_c, mask_rgb, flipped;
+        uint8_t textured, tfx, tcc, wrap_s, wrap_t, texa_mode, ta0, ta1, aem, atst, aref, fog, fog_colour[3], blend_c, mask_rgb, flipped, over;
         float st_scale[2], tex_size[2], tex_offset[2], region[4], weave_half, blend[4], fix, scale[2];
     } key;
     memset(&key, 0, sizeof key);
@@ -301,6 +306,7 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
     key.scissor[0] = x0; key.scissor[1] = y0; key.scissor[2] = x1; key.scissor[3] = y1;
     key.textured = textured; key.atst = d.alpha_test ? d.atst : 1; key.aref = d.aref; key.fog = d.fog; memcpy(key.fog_colour, d.fog_colour, 3);
     key.blend_c = (uint8_t)blend_c; key.mask_rgb = d.mask_rgb; key.flipped = texture_flipped;
+    key.over = draw_over && !(extra & (V_WORLD | V_CASTER)) ? 1 : 0;
     key.blend[0] = sc; key.blend[1] = sk; key.blend[2] = dc; key.blend[3] = dk; key.fix = fix;
     key.scale[0] = sx; key.scale[1] = sy;
     if (textured) {
@@ -355,6 +361,10 @@ RID RtaDrawer::material_for(const rtag_draw& d, const Target& target, bool inver
     RenderingServer* s = rs();
     RID material = s->material_create();
     s->material_set_shader(material, shader_for(variant));
+    // Godot's transparent pass sorts by priority first, then by the distance of each instance's origin less its sorting
+    // offset: the world's draws all have their origin at the world's, the figures, outfits, grass and pieces of ours
+    // theirs where they stand, so the list's order alone does not keep a menu over them; the priority does
+    if (key.over) s->material_set_render_priority(material, 1);
     s->material_set_param(material, "target_size", Vector2((float)target.lw, (float)target.lh));
     s->material_set_param(material, "target_scale", Vector2(sx, sy));
     s->material_set_param(material, "flip_y", flip_y);
@@ -495,6 +505,32 @@ RID RtaDrawer::place_mesh(Pass& pass, RID mesh, RID material, float order) {
     RenderingServer* s = rs();
     if (pass.used >= pass.meshes.size()) { pass.meshes.push_back(s->mesh_create()); meshes_made++; }
     RID instance = instance_for(pass);
+    if (stable_instances) {
+        // Keep the pool's slot empty: a flat/dynamic draw may use it next frame.
+        // Only retained meshes use the separate instances, keyed by their RID
+        // (including its generation), never by an address or a draw-list index.
+        s->instance_set_base(instance, RID());
+        auto& kept = pass.kept_instances[mesh.get_id()];
+        auto at = std::find_if(kept.begin(), kept.end(), [&](const Pass::KeptInstance& k) { return k.used != frames; });
+        if (at == kept.end()) {
+            Pass::KeptInstance k;
+            k.rid = s->instance_create2(mesh, pass.scenario);
+            s->instance_set_ignore_culling(k.rid, true);
+            s->instance_geometry_set_cast_shadows_setting(k.rid, RenderingServer::SHADOW_CASTING_SETTING_OFF);
+            kept.push_back(k);
+            at = kept.end() - 1;
+        }
+        if (at->material != material) {
+            s->instance_geometry_set_material_override(at->rid, material);
+            at->material = material;
+        }
+        s->instance_set_pivot_data(at->rid, order, false);
+        if (!at->visible) s->instance_set_visible(at->rid, true);
+        at->visible = true;
+        at->used = frames;
+        pass.used++;
+        return at->rid;
+    }
     s->instance_geometry_set_material_override(instance, material);
     pass.overridden[pass.used] = 1;
     s->instance_set_base(instance, mesh);
@@ -594,6 +630,12 @@ void RtaDrawer::redraw(double t) {
         tween_global = true;            // (scene_view.gd adds the global: only a host that asks for pictures between sets it)
         s->global_shader_parameter_set("rta_tween", Vector4((real_t)t, 0, 0, 0));
     }
+    // In the refresh of a submit its passes are still to be rendered, every one of them: a picture asked for again then
+    // (a cut scene's pictures drawn a frame behind: main.gd tween_back) only moves the camera and the kept models.  Left
+    // to the loop below, it switched off every surface but the world and the one shown - a cut scene's own surfaces (what
+    // the shown one copies from) were then never rendered at all, and its pictures alternated between a nearly black one
+    // and a stale one from before the scene (playtest-remastered.md glitch 3)
+    if (Engine::get_singleton()->get_process_frames() == submit_process_frame) { redraws++; return; }
     for (Pass* pass : all_passes) s->viewport_set_active(pass->viewport, false);
     for (Pass* pass : last_order) {
         s->viewport_set_active(pass->viewport, true);
@@ -855,6 +897,11 @@ void RtaDrawer::submit() {
     frame_texture_of = &texture_of;
     if (scene_mode) scene_begin(f);
     world_finish();
+    // scene mode: the last draw of the 3-D scene in the world's surface; the 2-D layer after it is over the world
+    int64_t last_scene_draw = -1;
+    if (world)
+        for (uint32_t i = 0; i < f.draw_count; i++)
+            if (node_of[i] >= 0 && nodes[node_of[i]].target == world && f.draws[i].scene_first >= 0) last_scene_draw = i;
     for (uint32_t i = 0; i < f.draw_count; i++) {
         if (node_of[i] < 0 || skip[node_of[i]]) continue;
         const rtag_draw& d = f.draws[i];
@@ -872,7 +919,9 @@ void RtaDrawer::submit() {
             // the 2-D layer over (or behind) the world: in the list's order, without the GS's depth, which is not the world's
             rtag_draw flat = d;
             flat.ztst = 1; flat.depth_write = 0; flat.depth_test = 0;
+            draw_over = (int64_t)i > last_scene_draw;
             add_draw(*node.pass, f, flat, *node.target, texture_of[i], d.tex_is_target && flip_surfaces, order_in_pass);
+            draw_over = false;
             continue;
         }
         add_draw(*node.pass, f, d, *node.target, texture_of[i], d.tex_is_target && flip_surfaces, order_in_pass);
@@ -884,11 +933,23 @@ void RtaDrawer::submit() {
     frame_texture_of = nullptr;
 
     // instances left over from a frame with more draws show nothing
-    for (Pass* pass : all_passes)
+    for (Pass* pass : all_passes) {
         for (size_t k = pass->used; k < pass->instances.size(); k++) s->instance_set_base(pass->instances[k], RID());
+        for (auto entry = pass->kept_instances.begin(); entry != pass->kept_instances.end();) {
+            auto& kept = entry->second;
+            for (auto k = kept.begin(); k != kept.end();) {
+                if (k->used != frames && k->visible) { s->instance_set_visible(k->rid, false); k->visible = false; }
+                if (frames - k->used > 30) { retire(k->rid); k = kept.erase(k); }
+                else ++k;
+            }
+            if (kept.empty()) entry = pass->kept_instances.erase(entry);
+            else ++entry;
+        }
+    }
     // the viewports in order: activated one after the other, each rendered once
     for (Pass* pass : all_passes) s->viewport_set_active(pass->viewport, false);
     last_order.clear();
+    submit_process_frame = Engine::get_singleton()->get_process_frames();
     if (scene_mode && tween_global) s->global_shader_parameter_set("rta_tween", Vector4(0, 0, 0, 0));
     static int pass_log = getenv("RTA_PASS_LOG") ? atoi(getenv("RTA_PASS_LOG")) : 0;    // test aid: the passes of every 600th list
     if (pass_log > 0 && frames % 600 == 0) {

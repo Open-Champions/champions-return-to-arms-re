@@ -4,6 +4,7 @@ extends RefCounted
 # 2x AA at native resolution to resampling the whole picture. If that still does
 # not fit, native pixels without MSAA preserve more detail than a scaled image.
 const BUDGET_MS := 14.0                 # leave time for handoff/display in a 16.67 ms game frame
+const ACUTE := 1.3                     # ema over BUDGET_MS x this: a sudden overload (see update)
 const SCALES := [1.0, 0.95, 0.90, 0.85, 0.80, 0.75]
 var levels: Array[Vector2] = []         # samples, render scale (relative to requested scale)
 var rung := 0
@@ -36,6 +37,15 @@ func reset_observations() -> void:
 	low_for = 0.0
 	between_low_for = 0.0
 	cool_for = 0.5
+
+# A new level starts from the requested quality again: what the level before could not afford says nothing of this
+# one (the steps down are quick, the way back up takes long seconds of headroom)
+func new_level() -> bool:
+	reset_observations()
+	if rung == 0:
+		return false
+	rung = 0
+	return true
 
 func quality() -> Vector2:
 	return levels[rung] if not levels.is_empty() else Vector2(4, 1.0)
@@ -73,6 +83,17 @@ func update(gpu_ms: float, elapsed: float, safe: bool, refresh_ms: float) -> boo
 	if cool_for > 0.0:
 		return false
 	high_for = high_for + dt if ema > BUDGET_MS else 0.0
+	# Far over budget (a cloud of the game's sprites at the eye, a level's heavy opening): straight to native pixels
+	# without MSAA - the rung the steps below would reach anyway - instead of a second and a half at each step
+	if high_for >= 0.2 and ema > BUDGET_MS * ACUTE and rung + 1 < levels.size():
+		var to := rung + 1
+		while to + 1 < levels.size() and levels[to].x > 0.0:
+			to += 1
+		rung = to
+		high_for = 0.0
+		low_for = 0.0
+		cool_for = 1.0
+		return true
 	if high_for >= 0.4 and rung + 1 < levels.size():
 		rung += 1
 		high_for = 0.0

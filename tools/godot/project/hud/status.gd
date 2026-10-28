@@ -155,7 +155,12 @@ func _frame(p: Dictionary) -> void:
 	Style.bar(self, xr, b.xp, 0.0, Style.XP_A, Style.XP_B, s)
 	Style.text(self, Vector2(right, o.y + 94.5 * s), xp_text, 12.0 * s, Style.TEXT_DIM, 2)
 	if pending:
-		Style.text(self, Vector2(o.x + 16.0 * s, o.y - 44.0 * s), "Level up - open the character screen", 14.0 * s, Color(Style.XP_B, 0.75 + 0.25 * sin(hud.now * 5.0)), 0, true)
+		# above Hardcore's lines over the stamina bar (hud/souls.gd), which sit in the same place
+		var hy := o.y - 44.0 * s
+		var panel: Control = hud.get("souls_panel")
+		if panel != null and float(panel.get("text_top")) > 0.0:
+			hy = minf(hy, float(panel.get("text_top")) - 8.0 * s)
+		Style.text(self, Vector2(o.x + 16.0 * s, hy), "Level up - open the character screen", 14.0 * s, Color(Style.XP_B, 0.75 + 0.25 * sin(hud.now * 5.0)), 0, true)
 	_status_row(p, Vector2(o.x + 2.0 * s, o.y - 22.0 * s), s)
 
 

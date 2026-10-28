@@ -7,11 +7,13 @@
 //
 // Commands: wait, at, until, press, release, tap, tapuntil, stick, pad, "<frame> buttons
 // [lx ly [rx ry]]" (input table), the same with a trailing 1 or 2 for a controller port,
-// poke, dump, show, echo, sync, log (ignored), quit.  Commands of the rig that belong to
+// poke, dump, show, echo, sync, log (ignored), quit, follow FILE (a test aid: the lines a driver appends to
+// FILE run as they come, until a line "unfollow").  Commands of the rig that belong to
 // the emulator (save, load, break, pnach, netshim, fuzz, ontick, A:/B:) are refused.
 #include "rt.h"
 #include "moved.h"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
@@ -181,7 +183,7 @@ Value parse_literal(const std::string& word, const Type& type) {
 }
 
 struct Command {
-    enum Kind { WAIT, AT, UNTIL, PRESS, RELEASE, TAP, TAPUNTIL, STICK, PAD, POKE, DUMP, SHOW, ECHO, APP, CALL, QUIT } kind = WAIT;
+    enum Kind { WAIT, AT, UNTIL, PRESS, RELEASE, TAP, TAPUNTIL, STICK, PAD, POKE, DUMP, SHOW, ECHO, APP, CALL, FOLLOW, QUIT } kind = WAIT;
     int line = 0, port = 0;
     u16 buttons = 0;
     s64 number = 0, number2 = 0;
@@ -324,6 +326,10 @@ void add_line(const std::string& raw) {
     else if (word == "call") {                          // a test aid: call a function of the game
         if (w.size() < 2) rt_die("script line %d: call <address> [a0 [a1]]", g_line);
         c.kind = Command::CALL; c.words = w;
+    }
+    else if (word == "follow") {                        // a test aid: go on with the lines appended to a file, as they come
+        if (w.size() < 2) rt_die("script line %d: follow <file>", g_line);
+        c.kind = Command::FOLLOW; c.words = w;
     }
     else if (word == "log") return;
     else if (word == "quit") c.kind = Command::QUIT;
@@ -495,6 +501,44 @@ void script_vblank(u64 frame) {
             printf("[frame %" PRIu64 "] call 0x%x(%u, %u)\n", frame, address, a0, a1);
             rt_call_handler(address, a0, a1);
             break;
+        }
+        case Command::FOLLOW: {
+            // A driver outside (a test) appends lines to the file; each complete line becomes the next command, and
+            // the line "unfollow" ends the following.  Waits a blank when nothing new has come; stdout is flushed
+            // so that the driver sees what its "show" lines printed.
+            static FILE* f = nullptr;
+            static std::string partial;
+            if (!c.started) {
+                c.started = true;
+                f = fopen(c.words[1].c_str(), "r");
+                if (!f) rt_die("script line %d: cannot read %s", c.line, c.words[1].c_str());
+            }
+            char buf[4096];
+            size_t n;
+            clearerr(f);
+            while ((n = fread(buf, 1, sizeof(buf), f)) > 0) partial.append(buf, n);
+            std::vector<std::string> lines;
+            size_t nl;
+            bool done = false;
+            while ((nl = partial.find('\n')) != std::string::npos) {
+                std::string one = partial.substr(0, nl);
+                partial.erase(0, nl + 1);
+                if (one.compare(0, 8, "unfollow") == 0) { done = true; break; }
+                lines.push_back(one);
+            }
+            size_t at = g_position, before = g_commands.size();
+            for (auto& one : lines) add_line(one);
+            if (g_commands.size() > before)             // the new commands go before this one (c is not used after this)
+                std::rotate(g_commands.begin() + (long)at, g_commands.begin() + (long)before, g_commands.end());
+            fflush(stdout);
+            if (done) {
+                size_t self = at + (g_commands.size() - before);
+                fclose(f); f = nullptr;
+                g_commands.erase(g_commands.begin() + (long)self);
+                continue;
+            }
+            if (g_commands.size() > before) continue;
+            return;
         }
         case Command::QUIT: rt_finish(0);
         }

@@ -12,9 +12,9 @@ extends Control
 #              the scene is seen at the window's full width
 #   skip       "Hold START to skip": the hold of this player and of every other player of the room, read from the
 #              library's block (CINE_BASE: cinematic.h), as a ring that fills in a second
-#   between    true while a cut scene plays: main.gd then draws the pictures between game frames from the two frames
-#              before (interpolated, a frame behind) instead of carried on past the last (main.gd tween_back): a
-#              camera that eases to a stop does not overshoot
+#   between    true while a cut scene plays in Remastered (RTA_CINE_BETWEEN=0 off, =1 on in Classic too): main.gd then draws
+#              the pictures between game frames from the two frames before (interpolated, a frame behind) instead of
+#              carried on past the last (main.gd tween_back): a camera that eases to a stop does not overshoot
 #
 # The films folder: $RTA_FILMS, else the user data folder tools/install/films.py writes (macOS ~/Library/Application
 # Support/Play-RTA/films, Windows %APPDATA%/Play-RTA/films, Linux ~/.local/share/Play-RTA/films).
@@ -108,7 +108,12 @@ func _process(delta: float) -> void:
 		figures.scenes += 1
 		scene_time = 0.0
 	in_scene = cut
-	between = cut and OS.get_environment("RTA_CINE_BETWEEN") != "0"
+	# (off from b7b3287 until the cause was found: the game frame's own picture was asked again in the refresh it was taken,
+	# and RtaDrawer.redraw then switched off every surface of the frame but the world and the one shown - a cut scene's
+	# pictures alternated between a nearly black one and the loading picture from before the scene.  Fixed there; Classic
+	# keeps the plain pictures between, as it always had, unless asked)
+	var ask := OS.get_environment("RTA_CINE_BETWEEN")
+	between = cut and ask != "0" and (ask == "1" or String(main.get("opt").get("edition", "")) == "remastered")
 	scene_time += delta
 	bars = move_toward(bars, 1.0 if (cut and framing_on) else 0.0, delta / 0.35)
 	# the game's own letterbox (narrower, and lower than high) is left out of the picture while ours frames it

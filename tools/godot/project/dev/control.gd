@@ -12,6 +12,9 @@ extends Node
 #   shot FILE.png                    the Godot window's own picture after this frame ("app windowshot")
 #   app TEXT                         an "app ..." script line for the host (main.gd _host_command)
 #   sceneopt NAME VALUE              a scene option of the drawer (rta_scene.cpp set_scene_option; a test aid)
+#   fewshots DIR                     a picture of every frame that draws next to nothing after a scene, and of the next
+#   frameshots DIR N                 a picture of each of the next N game frames as the window shows it, named
+#                                    f-FRAME-DRAWS.png (single-frame spacing: what a player sees, frame by frame)
 #   quit                             end the program as a script's quit does
 #
 # Commands are carried out in _process, before the controller is read for the frame let go in it.
@@ -37,6 +40,8 @@ var last_frame := -1
 var shot_dir := ""                      # where the pictures of such frames go (the driver says: "fewshots DIR")
 var few_shots := 0
 var pending_next := -1
+var frame_dir := ""                     # "frameshots DIR N": every game frame pictured
+var frame_left := 0
 
 
 func poll() -> void:
@@ -63,6 +68,12 @@ func poll() -> void:
 				peer.put_data((_run(line) + "\n").to_utf8_buffer())
 
 
+func after_frame() -> void:
+	# main.gd _take_frame: the game frame just handed to the drawer.  A picture asked for here is the window's after this
+	# very frame is drawn (main.gd takes it at frame_post_draw of the same turn), so the frame and its picture match
+	_watch_frames()
+
+
 func _watch_frames() -> void:
 	# a frame of the game whose list draws next to nothing while the one before drew a scene (a black or empty picture
 	# shown for a frame - a flicker a player sees): marked in the frame log and printed, with the level
@@ -74,6 +85,12 @@ func _watch_frames() -> void:
 		return
 	last_frame = frame
 	var draws := int(machine.call("get_draw_count"))
+	if frame_left > 0:
+		frame_left -= 1
+		main.call("_host_command", "windowshot %s/f-%07d-%d.png" % [frame_dir, frame, draws])
+	if pending_next >= 0 and frame > pending_next:
+		main.call("_host_command", "windowshot %s/few-%d-next-%d.png" % [shot_dir, pending_next, draws])
+		pending_next = -1
 	if last_draws >= 40 and draws <= 2:
 		var level: String = machine.call("peek_string", G_LEVEL_NAME, 16)
 		print("rta_godot: control: frame %d of %s drew %d (the one before %d)" % [frame, level, draws, last_draws])
@@ -83,9 +100,6 @@ func _watch_frames() -> void:
 			few_shots += 1
 			main.call("_host_command", "windowshot %s/few-%d-%d.png" % [shot_dir, frame, draws])
 			pending_next = frame
-	if pending_next >= 0 and frame > pending_next:
-		main.call("_host_command", "windowshot %s/few-%d-next-%d.png" % [shot_dir, pending_next, draws])
-		pending_next = -1
 	last_draws = draws
 
 
@@ -139,6 +153,12 @@ func _run(line: String) -> String:
 		"fewshots":
 			shot_dir = line.substr(line.find(w[1])) if w.size() >= 2 else ""
 			few_shots = 0
+			return "ok"
+		"frameshots":
+			if w.size() < 3:
+				return "err frameshots DIR N"
+			frame_dir = w[1]
+			frame_left = w[2].to_int()
 			return "ok"
 		"sceneopt":
 			# a scene option of the drawer (rta_scene.cpp set_scene_option: keep, batch, prepass, packets, near_fade ...)

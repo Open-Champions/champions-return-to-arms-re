@@ -64,8 +64,10 @@ signal notice(d: Dictionary)
 signal notice_gone(id: String)
 signal shown_changed(is_shown: bool)
 
-var options := {"test": "", "data": "", "mock": false, "service": "", "stub_game": false, "start": "", "embedded": false, "mock_speed": "", "shot": "", "quit_after": 0.0,
+const OPTION_DEFAULTS := {"test": "", "data": "", "mock": false, "service": "", "stub_game": false, "start": "", "embedded": false, "mock_speed": "",
+	"shot": "", "quit_after": 0.0,
 	"host_party": 0, "join_code": ""}     # after a restart for another party size: host / join again at once (restart_for_party)
+var options := OPTION_DEFAULTS.duplicate()     # a host that embeds the portal may hand its own (_parse_arguments fills what it leaves out)
 var session: Node
 var profile: RefCounted
 var handover: Node
@@ -152,6 +154,9 @@ func _ready() -> void:
 
 
 func _parse_arguments() -> void:
+	for key in OPTION_DEFAULTS:         # options handed by an embedding host (the test window) without the newer keys
+		if not options.has(key):
+			options[key] = OPTION_DEFAULTS[key]
 	var args := OS.get_cmdline_user_args()
 	var given := {}
 	var k := 0
