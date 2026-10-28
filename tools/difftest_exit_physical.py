@@ -266,8 +266,16 @@ def main():
             parser.error('executable hash mismatch')
     models = ('ps2', 'ps2g1', 'chop', 'nearest') if args.fpu == 'all' else (args.fpu,)
     for fpu in models:
-        run(args.elf, args.seed, fpu)
+        try:
+            run(args.elf, args.seed, fpu)
+        except Exception as exc:
+            # Emulator diagnostics can contain original instruction values.
+            # Keep those private even when a new case fails unexpectedly.
+            print(f'FAIL exit physical seed={args.seed} fpu={fpu} '
+                  f'error_type={type(exc).__name__} failures=1')
+            return 1
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())
