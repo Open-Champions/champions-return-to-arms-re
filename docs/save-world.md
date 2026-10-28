@@ -112,6 +112,16 @@ loading. The table below records the earlier pin's evidence boundary; its
 those specifically tested branches by the later document. Full world services,
 real-resource reconstruction and end-to-end death reload remain Unknown.
 
+**Executed, bounded:** round 2 at audited base `0e3afdb8` executes linked Creature registry,
+animation and base death-handler effects; cached portal light/state effects;
+selected container/trigger factory reconstruction in a nonempty synthetic world;
+and a separate original level-state reload pipeline. See the four round 2 links
+in [the death-reload evidence](death-reload.md#round-2-evidence-2026-10-27).
+Its original lethal-damage/frame-task/checkpoint sequence reaches the real
+world-loader entry but stops at kernel SYSCALL `0x352e14` (v1 = 124), before
+world reconstruction. Supplied resources and separate bounded probes do not
+establish a continuous playable reload; the client refusal remains required.
+
 ## State examples and script limits
 
 | Case | Original treatment and evidence |

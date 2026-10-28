@@ -7,6 +7,36 @@ Executable SHA-256:
 synthetic original-function execution in `tools/ee_emu.py`; **Inferred** and
 **Unknown** are not execution claims. No console or whole-game run is claimed.
 
+## Round 2 evidence, 2026-10-27
+
+The sections below retain the audited round 1 boundary. **Executed, bounded:**
+new additive probes extend it in four addressed documents:
+
+- [Continuous synthetic sequence](death-reload-sequence.md): original lethal
+  pending damage, 240 countdown frames, 32 fade frames, real task dispatch,
+  act lookup and checkpoint restoration execute without service stubs. Original
+  world loading then stops at kernel SYSCALL `0x352e14`, v1 = 124, before
+  reconstruction. The registered death task protects the saved-world buffer;
+  a no-task control reaches the checkpoint writer. This is not completed reload.
+- [Creature effects](death-reload-creature.md): original model-mask, animation,
+  base death-handler, run/target-list removal, deferred-delete and type-equality
+  effects execute with linked synthetic objects. Name/spatial memberships are
+  retained; spatial query exclusion depends on its mask. The virtual `+0xe0`
+  call formerly called “motion” below is the base death handler `0x10beb8` in
+  the supplied configuration. Nonzero motion fields remain unchanged.
+- [Portal effects](death-reload-portals.md): original light, cached-resource,
+  animation, grid/run-list and distinct state-portal effects are tested.
+- [World-present object effects](death-reload-objects.md): original nonempty
+  record dispatch, constructors and class loads are tested for selected
+  container/trigger paths; item and door coverage preserves explicit constructor
+  boundaries. A separate cached-resource level-state pipeline executes.
+
+**Unknown remains:** complete class/subclass constructor and resource behavior,
+script-bearing worlds, platform services, full world reconstruction plus player
+creation, and continuous death-to-playable completion. The four probes are
+separate fixtures; their results must not be concatenated into a whole-game
+claim. The native `blocked_death_reload` gate is still not resolved.
+
 ## Automatic action after the countdown
 
 **Observed / Executed:** `game_checkAllDead` 0x1e7438 with one offline player,
