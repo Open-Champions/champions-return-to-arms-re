@@ -22,23 +22,97 @@ All game libraries, discs, cards, captures and raw receipts remain private.
 
 ## Five-view gameplay check
 
-**Ran:** the unchanged selected Windows candidate06 player (`9756a87`) loads a
-private copy of the 1,888-XP test save, exercises Blood1, returns through the
-ordinary pause-menu Exit to the Hub, and closes normally. In both scenes,
-overhead, action, chase, shoulder and first-person views pass actual-view,
+**Ran on Vulkan and D3D12:** the unchanged selected Windows candidate06 player
+(`9756a87`) loads a private copy of the 1,888-XP test save, exercises Blood1,
+returns through the ordinary pause-menu Exit to the Hub, and closes normally.
+In both scenes, overhead, action, chase, shoulder and first-person views pass actual-view,
 live-actor, movement, neutral-release, current-world geometry and surface/window
-capture checks. All ten window captures were visually inspected.
-The 167 existing owning checks and 61 additional checks pass; the private card
-and packaged runtime hashes stay unchanged. Effective snapshots show 4x MSAA
+capture checks. All ten window captures per API were visually inspected.
+Each case passes 167 existing owning checks and 61 additional checks; the private
+card and packaged runtime hashes stay unchanged. Effective snapshots show 4x MSAA
 and scale 1.
 
 An earlier, longer itinerary ended with the character's health reaching zero
 during the extra mission checks. Its test timeout and failed verdict are
 preserved. The fresh passing route removes the unrelated timing/combat windows
 and shortens settling/capture waits while retaining live-state guards. This is
-a Vulkan functional check under recorded ambient load, with no timing windows
-or performance acceptance. Other APIs, aimed projectiles, physical controls,
+a functional check under recorded ambient load, with no timing windows
+or performance acceptance. OpenGL gameplay, aimed projectiles, physical controls,
 long sessions and a full campaign are outside this check.
+
+An initial D3D12 attempt never launched the game: its Windows counter subprocess
+exceeded the old 20-second bound. A fresh case uses an owned 60-second preflight
+with separate raw output, actual exit/timeout/cleanup records and strict typed
+sample validation. It completes in 18.318 seconds, followed by a normal game
+exit. Ambient admission applies only to this functional check; the separate
+performance protocol retains its quiet limits. The failed attempt is preserved.
+
+## Bounded Hub soak
+
+**Ran on Vulkan:** the same unchanged candidate06 completes the compact mission
+route and remains live in the Hub for 741.17 host seconds (12 minutes 21 seconds).
+The 44,041 consecutive live, unpaused Hub observations span 44,040 simulation
+advances with the same player actor and positive health. Twelve checkpoints cycle
+through all five views, apply short balanced movement, and verify neutral release,
+current world geometry, and surface/window captures. All twelve Hub checkpoint
+window images were visually inspected; the independent audit decodes all 44
+images from the complete route.
+
+The game and its owner exit normally. All 395 owning, 61 compact-route and 84
+soak checks pass, with no logged runtime errors; the cards and packaged runtime
+stay unchanged. Effective snapshots retain 4x MSAA and scale 1. Each checkpoint
+interval has at least ten distinct completed world GPU samples, but the overhead
+intervals contain only 20--22: this does not establish continuously fresh GPU
+coverage or a frame-rate target. The check covers bounded Hub rendering and
+lifecycle survival. Sustained mission combat, campaign play and resource-count
+or VRAM stability remain unqualified.
+
+## First-person bow aiming
+
+**Ran on Vulkan:** two unchanged candidate06 runs load separate private copies
+of a legitimate level-one Ranger save, return normally to the Hub, and fire one
+arrow at each of two opposite first-person camera pitches. The ordinary aim
+option is off in one run and `look` in the other; no guest-state writes are used.
+
+| Measured camera pitch | Arrow pitch, aim off | Arrow pitch, aim look |
+|---|---:|---:|
+| +24.9 degrees | +0.69 degrees | +25.00 degrees |
+| -24.9 degrees | +1.03 degrees | -25.00 degrees |
+
+The audit follows each actual player-owned `MissileWeapon` through at least three
+consecutive simulation ticks. Across the first three, raw velocity remains
+constant, speed is near 1,000 units/second, and two observed position deltas agree
+with velocity/60 within 0.000006 units. Aim-on heading and pitch match the measured look direction;
+the aim log corroborates the same object and velocity. Both runs exit normally,
+all eight images decode, and cards/runtime hashes remain unchanged. Four window
+images were visually inspected; the projectile proof comes from the raw tracks.
+
+This qualifies four offline Ranger arrows, including the aim-off control. It
+does not establish whole-simulation byte identity, other projectile classes,
+target hits, physical controls, online room agreement or lockstep behaviour.
+
+## Windows presentation capture
+
+**Ran:** the official standalone [PresentMon 2.6.0 console tool](https://github.com/GameTechDev/PresentMon/releases/tag/v2.6.0),
+verified against the release digest and its Intel signature, runs a ten-second
+capture against one owned candidate06 process. The display/QPC profile uses
+`--no_track_gpu --no_track_input --v1_metrics`; display tracking stays enabled.
+All 1,170 CSV rows name the actual game PID and one swapchain. The 28 dropped
+and 1,142 non-dropped markers are retained, along with display timings and QPC.
+The tracer and game exit normally, and the unique trace session is absent
+afterward. No nonzero ETW loss or unknown diagnostic is reported.
+
+The installed FrameView SDK helper exits before producing CSV in both tested
+working directories. An earlier standalone capture with GPU/input tracking
+reports 4,515 lost ETW events: its raw output is preserved and rejected for
+performance use. The admission reader rejects reported event/buffer/present
+loss and unknown diagnostics. Its ten pure controls include that actual loss
+message and malformed output. The observed process-query privilege warning is
+accepted only for a verified, live process owned by this test, targeted by PID.
+
+This establishes the capture path during title/load under ambient conditions.
+It does not establish complete gameplay coverage, alignment with engine timing
+windows, a sustained FPS result or the project's 60 FPS requirement.
 
 ## Completed GPU timing
 
@@ -411,7 +485,7 @@ checks do not qualify other platforms, complete gameplay or a player release.
 
 ### Scene preparation split (schema 2)
 
-The current diagnostic stream uses version 2. It adds coarse pre-batch,
+These measurements use diagnostic version 2. It adds coarse pre-batch,
 geometry, retained-mesh probe, mesh-update, placement and caster scopes. The
 probe belongs to geometry; caster belongs to placement. Mesh-update time
 includes CPU AABB/tween preparation and RenderingServer calls, not measured
@@ -448,6 +522,149 @@ controls; the separate strict version-2 reader passes 40 controls. The private
 runner's 43 mocked guard/execution controls include owned-process-tree timeout
 cleanup and preservation of actual exits and failed verdicts.
 
+### Coarse scene setup (schema 3)
+
+The current opt-in diagnostic adds five call scopes inside scene setup: sky,
+models, warm-up/retirement, world preparation and fill. Existing calls, order,
+array lifetimes and rendering features stay unchanged. There are no new vertex
+or worker clocks. Schema 3 records each scope's scene-setup context; the
+[strict reader](../../tools/godot/tests/draw_rows.py) checks that accounting and
+retains the original independent native/submit interval checks.
+
+**Ran:** a private Release extension built from `f694b6c` plus these changes,
+with all 14 translation units rebuilt, using the unchanged candidate06 engine
+and game library and the common diagnostic pack. OFF/ON normal-Load runs each
+pass 89 owning checks, eleven effective-quality observations, both guarded
+600-submission phases and four attacks per phase. Both exit normally, cards and
+runtime hashes remain stable, and all ten window captures were visually
+inspected. Vulkan, 1920x1080 targets, 4x MSAA and scale 1 remain applied. OFF emits
+no profiling records; ON has two complete 300-submission rows per phase.
+
+| Instrumented mean, ms/submission | Mission | Hub |
+|---|---:|---:|
+| Sky | 0.001233 | 0.049777 |
+| Model preparation (scan/clear group) | 1.284096 | 1.670224 |
+| Warm-up and retirement | 0.009038 | 0.009712 |
+| World preparation | 0.000385 | 0.000379 |
+| Fill | 0.005737 | 0.002805 |
+| Remaining scene setup | 0.057325 | 0.065499 |
+| Total scene setup | 1.357813 | 1.798396 |
+
+All five groups execute 600 times per phase. Model preparation dominates this
+measured setup cost; the substeps inside that group remain unisolated. Both
+runs use recorded ambient admission, and timer/bookkeeping overhead is
+uncalibrated. This is wall-cost localization, with no OFF/ON speedup, sustained
+FPS or explanation of the earlier adverse Hub comparison claimed.
+
+The portable C++ helper passes 16 controls, including disabled-profile silence.
+An executed native fake-clock emitter and the reader agree on all 167 fields,
+four cuts and two 600-submission windows; these authored costs are not game
+timings. The [Python reader controls](../../tools/test_godot_draw_rows.py) use
+authored fake-clock fixtures and require no game data.
+
+### Authored model and contact fixture
+
+The [model fixture](../../tools/godot/tests/model_scan_test.gd) sends authored
+skinned packets and a ground receiver through the production drawer. Its 13
+phases keep one scene alive through repeated, moved, larger, empty, smaller,
+hidden and far figures. Ordered contact floats must match exact authored bytes;
+hidden and far figures still contribute contacts. Far geometry is offscreen, so
+its retention is checked through contact bytes rather than pixels.
+
+Positive curved-model figures and a smooth-1 pixel control establish PN output;
+a zero-contact-texture control must change the ground image. These controls
+cannot isolate shared-normal welding or inspect the complete weld table. Model
+and curved totals are inferred from rounded averages using this fixture's even
+draw-count invariant. Generated corners count rebuilds rather than retained hits.
+Readback is RGB8 stored as RGBA8 with opaque alpha; original alpha is unqualified.
+
+**Ran on Windows:** Vulkan and OpenGL pass all 13 phases. D3D12 passes every
+individual phase's contact, count and visibility checks, but fails the exact
+repeat-image guard: one blue byte changes by one between the first near image
+and subsequent near images. That case remains failed; the guard has no tolerance
+or driver exception. These are authored correctness checks, with no optimization
+gain or FPS acceptance established.
+
+Use a fresh authored project stage containing the built extension and shader
+dependencies, with no game library, and a fresh output for each API:
+
+```powershell
+python -B tools/godot/tests/run_retained_base.py --fixture model_scan --godot PATH/TO/GODOT --cxx PATH/TO/CXX --project PATH/TO/AUTHORED_STAGE --driver vulkan --out PATH/TO/NEW_OUTPUT
+```
+
+Repeat with `--driver opengl3` and `--driver d3d12`. The runner owns bounded
+import/render processes and rechecks all 26 capture hashes, phase order, contact
+bytes, RGB visibility and actual raw-image controls. Its default fixture remains
+`retained`. The mocked admission and CLI controls require no engine or game.
+
+### Private Windows model-key investigation
+
+**Executed:** a separate CPU study tests a Windows x64 scalar-conversion fast
+path for the welded-normal key, with the original three `lrintf` calls retained
+as fallback. Eligibility is checked before floating-point arithmetic; the path
+preserves the current rounding mode and requires masked SSE exceptions. The
+production translation unit uses the original Release flags, while a separate
+strict control unit observes its results without defining the timed algorithm.
+All 107,901 assertions pass, including 13,440 key, errno, exception-status and
+floating-point-state observations, plus complete authored scan-state checks.
+Additional isolated controls compare 24,828 paired keys, errno values and FP
+control/status records (x87 CW/SW and MXCSR) across all 64 x87 exception-mask
+patterns, three precision modes and independent x87/SSE rounding modes, with
+SSE exceptions masked and an empty x87 stack. All pairs
+match. Separate headless Godot runs verify that both actual Release DLLs bind
+`lrintf` to the same local UCRT export as the new CPU control. This verifies those
+live bindings, rather than retrospectively certifying earlier game processes.
+Six genuine x87 operation controls confirm pending hardware flags and traps;
+this Windows installation reports that denormal control as `INVALID`. The earlier
+synthetic control's different expected code remains a failed attempt.
+Arbitrary x87 stack/status combinations and other runtime math-library
+implementations remain unqualified. Authored scan timings do not establish game
+performance.
+
+**Ran:** fresh baseline and candidate Release extensions, each rebuilding all
+14 translation units from `89e2f9f`; the candidate changes only this helper and
+its guarded intrinsic include. All 39 same-API baseline/candidate images match
+exactly. Vulkan and OpenGL each pass both 13-phase fixtures; both D3D12 fixtures
+retain the existing repeat-image failure. Separate full-quality Vulkan game
+runs each pass 89 owning checks, eleven effective-quality observations and
+guarded 600-submission mission and Hub windows with four attacks per phase.
+Both close normally, retain 4x MSAA and scale 1, and preserve the cards and
+runtime artifacts. All ten window captures were visually inspected.
+
+A separate counted probe reaches the fast branch during the completed
+full-quality Vulkan game route. Its bounded final totals agree between the
+figures file and runtime log. These are caller-thread aggregates across model
+scan and lookup; they do not attribute phase cost. The counted DLL is excluded
+from performance evidence.
+
+These private candidates are correctness experiments. Recorded ambient load
+prevents performance acceptance; the installed player and production helper
+remain unchanged.
+
+The D3D12 discrepancy also survives a single explicit world-viewport redraw
+with native frame, submitted scene, geometry, contacts and options frozen.
+The one-blue-byte change is present in the RGB8 image returned by
+`RenderingServer.texture_2d_get`, before the fixture's conversion and Y flip.
+This excludes those fixture operations as necessary causes; it does not expose
+the GPU attachment before readback or identify a driver or shader cause.
+The exact-repeat guard remains failed and unchanged.
+
+**Ran, 2026-10-28:** two bounded RenderDoc captures of the authored fixture
+retain the same one-byte discrepancy and all original phase images. Recorded
+model draws use Godot's uber shader on the first render and its specialized
+shader on the frozen rerender. Both packets use the same pipeline within each
+captured frame; corresponding consumed vertex and attribute bytes match.
+The normal, form, rim and stored-colour calculation sequences in RenderDoc's
+captured pixel-shader pseudocode match after temporary-value renaming.
+Selected-event replays also find identical post-vertex bytes, consumed material,
+global, instance and scene values, and recorded raster, depth and blend state.
+The only changed dumped buffer field is engine time, which these captured
+shaders do not read. Texture pixels, hardware interpolation and attachment
+values remain unqualified, so the pipeline transition is an observation, not
+an established numerical cause or a repair. Removing either form or rim
+lighting suppresses this fixture's discrepancy; those private controls are
+not production changes or acceptable quality reductions.
+
 ### Windows large raw-mesh scheduling
 
 On Windows, a large raw mesh now fills its eight fixed ranges on the caller
@@ -482,6 +699,11 @@ establish the cause of the Hub change. Counts also vary slightly between runs.
 This establishes the observed mission-region result, with no general speedup,
 sustained FPS target or player-release acceptance claimed. A cleaner comparison
 must resolve the Hub result before promotion.
+
+A later strict six-run cohort accepts its first candidate, then declines the
+first baseline before launch for CPU/GPU load. The remaining cases stay unused;
+no comparison is admitted from that partial cohort and the quiet limits remain
+unchanged.
 
 The candidate repeats the 144 retained phases, 69 identical OFF/ON RGB
 comparisons and 60 MSAA phases. A separate authored large-raw fixture runs

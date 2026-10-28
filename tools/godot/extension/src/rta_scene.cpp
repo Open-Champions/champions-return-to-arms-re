@@ -853,18 +853,24 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
         if (world) s->environment_set_background(world->passes[0]->environment, RenderingServer::ENV_BG_KEEP);
         return;
     }
+    { DrawTiming::Scope begin_timing(draw_timing, rta_draw_timing::BeginSky);
     scene_scan_sky(f, *world);
+    }
     sc.sky_active = sc.sky && sc.fill_draw >= 0;
     sc.opaque_prefix = sc.opaque && rd && sc.lit && !stored_world && sc.sky_active;
+    { DrawTiming::Scope begin_timing(draw_timing, rta_draw_timing::BeginModels);
     if (sc.packets && f.scene->full && (sc.model_smooth > 1 || sc.contacts_on)) scene_models_scan(f.scene, sc.weld, sc.contacts, sc.model_look && sc.model_smooth > 1,
                                                                                                    Vector3(f.scene->camera_position[0], f.scene->camera_position[1], f.scene->camera_position[2]),
                                                                                                    sc.model_near + 300.0, sc.hidden);
     else { sc.weld.clear(); sc.contacts.clear(); }
+    }
     Pass* pass = world->passes[0];
+    { DrawTiming::Scope begin_timing(draw_timing, rta_draw_timing::BeginWarm);
     warm_up(pass->scenario);                            // the variants of earlier sessions, built before they are needed
     if (!warm_rids.empty() && warm_next == warm_todo.size() && frames > warm_frame + 3) {
         for (auto it = warm_rids.rbegin(); it != warm_rids.rend(); ++it) retire(*it);
         warm_rids.clear();
+    }
     }
     // The game's camera space is x right, y down, z forward; Godot's is x right, y up, z back.  world_to_view's
     // rows are the camera's axes in the world.
@@ -914,8 +920,12 @@ void RtaDrawer::scene_begin(const rtag_frame& f) {
     sc.near_now = f.scene->near_plane;
     sc.far_now = far_plane;
     s->camera_set_perspective(pass->camera, (float)sc.fov_y, f.scene->near_plane, (float)far_plane);
+    { DrawTiming::Scope begin_timing(draw_timing, rta_draw_timing::BeginWorld);
     world_prepare(f, world->id);                         // private CPU classification jobs; joined before drawing
+    }
+    { DrawTiming::Scope begin_timing(draw_timing, rta_draw_timing::BeginFill);
     fill_frame(f, camera.origin, pass->scenario);           // the level's generated ceilings and skirts (rta_fill.cpp)
+    }
     if (sc.lit) s->environment_set_ambient_light(pass->environment, Color(1, 1, 1), RenderingServer::ENV_AMBIENT_SOURCE_COLOR, (float)sc.ambient);
     // a camera that is not the game's sees past what the game drew: black there, not last frame's picture; and a list
     // that begins with the game's clearing rectangle draws the whole picture anew (fill_clears)

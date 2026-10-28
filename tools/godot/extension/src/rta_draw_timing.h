@@ -14,7 +14,7 @@ struct Sink {
     static void write(const char* text, size_t n) { std::fwrite(text, 1, n, stderr); std::fflush(stderr); }
 };
 enum Top { Textures, Graph, SceneBegin, WorldWait, Traversal, SceneEnd, Rest, TopCount };
-enum Stage { SceneTake, BatchTake, Material, BatchPack, Learn, FlatDirect, Copy, BatchFlush, ScenePre, Geometry, KeptProbe, MeshUpload, Placement, Caster, StageCount };
+enum Stage { SceneTake, BatchTake, Material, BatchPack, Learn, FlatDirect, Copy, BatchFlush, ScenePre, Geometry, KeptProbe, MeshUpload, Placement, Caster, BeginSky, BeginModels, BeginWarm, BeginWorld, BeginFill, StageCount };
 enum Count { SceneHandled, BatchAccepted, BatchZero, BatchFused, PackCorners, PackBytes, MaterialHit, MaterialMiss,
              MaterialFused, LearnCalls, FillCalls, FillAttempts, SunScans, SunAccepted, PacketPrepared, RawPrepared, KeptHit, KeptUpdated, KeptCreated, TweenStopped, CountCount };
 
@@ -144,15 +144,15 @@ template<class C = Clock, class S = Sink> class Profile {
         const uint64_t emit_start = C::now();
         using U = unsigned long long;
         Buffer b;
-        b.put("rta_draw_profile v=2 row=%llu complete=%u boundary=%u n=%llu submit_first=%llu submit_last=%llu native_first=%llu native_last=%llu sim_first=%u sim_last=%u submit_errors=%llu native_errors=%llu sim_decreases=%llu invalid=%llu capped=%u total_ns=%llu clocks=%llu prior_emit_ns=%llu",
+        b.put("rta_draw_profile v=3 row=%llu complete=%u boundary=%u n=%llu submit_first=%llu submit_last=%llu native_first=%llu native_last=%llu sim_first=%u sim_last=%u submit_errors=%llu native_errors=%llu sim_decreases=%llu invalid=%llu capped=%u total_ns=%llu clocks=%llu prior_emit_ns=%llu",
               (U)(rows+1), complete?1u:0u, boundary, (U)row_n, (U)first_submit, (U)submit, (U)first_native, (U)native,
               first_sim, sim, (U)row_submit_errors, (U)row_native_errors, (U)row_sim_decreases, (U)row.invalid,
               rows+1==MaxRows?1u:0u, (U)row.total, (U)row.clocks, (U)prior_emit_ns);
         const char* top_names[] = {"textures","graph","scene_begin","world_wait","traversal","scene_end","rest"};
-        const char* names[] = {"scene","batch","material","pack","learn","flat","copy","flush","pre","geometry","probe","upload","place","caster"};
+        const char* names[] = {"scene","batch","material","pack","learn","flat","copy","flush","pre","geometry","probe","upload","place","caster","begin_sky","begin_models","begin_warm","begin_world","begin_fill"};
         const char* counts[] = {"scene_handled","batch_accepted","batch_zero","batch_fused","pack_corners","pack_bytes","material_hit","material_miss","material_fused","learn_calls","fill_calls","fill_attempts","sun_scans","sun_accepted","packet_prepared","raw_prepared","kept_hit","kept_updated","kept_created","tween_stopped"};
         for (unsigned t=0;t<TopCount;t++) b.put(" top_%s_ns=%llu root_%s_ns=%llu",top_names[t],(U)row.top[t],top_names[t],(U)row.roots[t]);
-        for (unsigned s=0;s<StageCount;s++) b.put(" %s_n=%llu %s_inc_ns=%llu %s_exc_ns=%llu traversal_%s_ns=%llu end_%s_ns=%llu", names[s],(U)row.calls[s],names[s],(U)row.inc[s],names[s],(U)row.exc[s],names[s],(U)row.by_top[Traversal][s],names[s],(U)row.by_top[SceneEnd][s]);
+        for (unsigned s=0;s<StageCount;s++) b.put(" %s_n=%llu %s_inc_ns=%llu %s_exc_ns=%llu traversal_%s_ns=%llu end_%s_ns=%llu begin_%s_ns=%llu", names[s],(U)row.calls[s],names[s],(U)row.inc[s],names[s],(U)row.exc[s],names[s],(U)row.by_top[Traversal][s],names[s],(U)row.by_top[SceneEnd][s],names[s],(U)row.by_top[SceneBegin][s]);
         for (unsigned c=0;c<CountCount;c++) b.put(" %s=%llu",counts[c],(U)row.count[c]);
         b.put("%s", "\n");
         if (b.ok) S::write(b.text,b.used); else error("buffer_overflow");
@@ -171,7 +171,7 @@ template<class C = Clock, class S = Sink> class Profile {
             if(kind<0){error("invalid_cut_tag");cut_failed=true;return;}
             if(row_n) emit(false,1);
             using U=unsigned long long; Buffer b;
-            b.put("rta_draw_cut v=2 seq=%llu tag=%s after_submit=%llu next_submit=%llu native=%llu sim=%u enabled=%u capped=%u duplicate=%u cut_cap=%u previous_cut=%llu span_n=%llu span_submit_first=%llu span_submit_last=%llu span_native_first=%llu span_native_last=%llu span_submit_errors=%llu span_native_errors=%llu span_sim_decreases=%llu span_invalid=%llu\n",
+            b.put("rta_draw_cut v=3 seq=%llu tag=%s after_submit=%llu next_submit=%llu native=%llu sim=%u enabled=%u capped=%u duplicate=%u cut_cap=%u previous_cut=%llu span_n=%llu span_submit_first=%llu span_submit_last=%llu span_native_first=%llu span_native_last=%llu span_submit_errors=%llu span_native_errors=%llu span_sim_decreases=%llu span_invalid=%llu\n",
                   (U)(cut_rows+1),words[kind]+5,(U)submit,(U)(submit+1),(U)native,sim,enabled?1u:0u,rows==MaxRows?1u:0u,(cut_seen&(1u<<kind))?1u:0u,cut_rows+1==MaxCuts?1u:0u,(U)cut_rows,
                   (U)cut_count,(U)(cut_count?cut_first_submit:0),(U)(cut_count?submit:0),(U)(cut_count?cut_first_native:0),(U)(cut_count?native:0),(U)cut_submit_errors,(U)cut_native_errors,(U)cut_sim_decreases,(U)cut_invalid);
             if(b.ok)S::write(b.text,b.used);else error("cut_buffer_overflow");

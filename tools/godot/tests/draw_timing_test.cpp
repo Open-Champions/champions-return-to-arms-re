@@ -23,7 +23,13 @@ static uint64_t num(const std::map<std::string,std::string>&r,const char*k){retu
 static void reset(){Capture::lines.clear();FakeClock::time=FakeClock::calls=0;}
 static void one(P&p,uint64_t n,const char* command=nullptr,uint64_t native=0,uint32_t sim=100){
     const char* words[]={command};P::Frame f(p,n,native?native:n,sim,command?words:nullptr,command?1:0);
-    FakeClock::work(10);p.mark(Graph);FakeClock::work(10);p.mark(SceneBegin);FakeClock::work(10);p.mark(WorldWait);
+    FakeClock::work(10);p.mark(Graph);FakeClock::work(10);p.mark(SceneBegin);FakeClock::work(10);
+    {P::Scope sky(p,BeginSky);FakeClock::work(2);}
+    {P::Scope models(p,BeginModels);FakeClock::work(3);}
+    {P::Scope warm(p,BeginWarm);FakeClock::work(4);}
+    {P::Scope world(p,BeginWorld);FakeClock::work(5);}
+    {P::Scope fill(p,BeginFill);FakeClock::work(6);}
+    p.mark(WorldWait);
     FakeClock::work(10);p.mark(Traversal);
     {P::Scope scene(p,SceneTake);{P::Scope pre(p,ScenePre);FakeClock::work(2);}
       FakeClock::work(20);{P::Scope batch(p,BatchTake);FakeClock::work(10);
@@ -47,6 +53,13 @@ static void accounting(){reset();P p(true);one(p,1,"mark RSM_PERF_mission_START"
     need(num(r,"n")==1&&num(r,"complete")==0&&num(r,"boundary")==1&&num(r,"invalid")==0,"partial metadata");
     uint64_t top=0;for(auto k:{"textures","graph","scene_begin","world_wait","traversal","scene_end","rest"})top+=std::stoull(r.at(std::string("top_")+k+"_ns"));
     need(top==num(r,"total_ns"),"top partition");
+    need(num(r,"v")==3,"schema3 output");
+    uint64_t begin_sum=0;
+    const char* begin_names[]={"begin_sky","begin_models","begin_warm","begin_world","begin_fill"};
+    for(unsigned i=0;i<5;i++){const std::string name=begin_names[i];const uint64_t duration=i+3;
+      need(std::stoull(r.at(name+"_n"))==1&&std::stoull(r.at(name+"_inc_ns"))==duration&&std::stoull(r.at(name+"_exc_ns"))==duration,"exact coarse duration/count");
+      need(std::stoull(r.at("begin_"+name+"_ns"))==duration&&std::stoull(r.at("traversal_"+name+"_ns"))==0&&std::stoull(r.at("end_"+name+"_ns"))==0,"coarse context");begin_sum+=duration;}
+    need(num(r,"root_scene_begin_ns")==begin_sum&&num(r,"top_scene_begin_ns")>begin_sum,"coarse root/residual");
     need(num(r,"scene_inc_ns")>num(r,"scene_exc_ns"),"nested scene");
     // Each child includes its explicit fake work plus the one tick at scope end.
     need(num(r,"material_inc_ns")==16+8+4+7+5,"material exact mock durations");
