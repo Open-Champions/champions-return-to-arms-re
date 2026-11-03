@@ -435,6 +435,7 @@ def hub2_boundary(iso):
     action = entries[next(item[7:] for item in props if item.startswith('action='))]
     key = entries[next(item[4:] for item in props if item.startswith('key='))]
     assert (action, key) == (0x54, 0x98)
+    assert len(rows) == 21
     return len(rows)
 
 
