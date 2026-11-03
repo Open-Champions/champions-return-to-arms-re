@@ -84,11 +84,14 @@ context and persistence. They do not demonstrate an uninterrupted dispatch,
 script VM, save, teardown, destination construction and placement chain.
 
 **Unknown:** actual BLOOD1 predicate/item/quest effects, full script execution,
-live vehicle state, all competing object constructors/grid order, campaign hub
-lifecycle, menu states 0–4 and real confirmation, destination blocking geometry,
-post-constructor seed/facing installation, and mixed living/dead derived-object
-save/reentry. `walk_in_exit_trigger` and `blood1_keyed_exit_host_action` remain
-consumer acceptance requirements; no current client state was verified here.
+live vehicle state, all competing object constructors/grid order, menu states
+0–4 and real confirmation, destination blocking geometry, and mixed living/dead
+derived-object bytes inside the level writer. Round four executes the
+level-to-level consumer around those gaps: act selection, the departure
+directory, request splitting, orientation, and player-construction gates.
+See `docs/exits-r4-travel.md`. `walk_in_exit_trigger` and
+`blood1_keyed_exit_host_action` remain consumer acceptance requirements; no
+current client state was verified here.
 
 The consumer should implement the evidenced paths, retain refusal before
 mutation for unsupplied inputs, and compare real action effects, departure,
