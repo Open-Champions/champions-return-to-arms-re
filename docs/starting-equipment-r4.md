@@ -76,9 +76,11 @@ Weapon formatter output executes but has no independent formatting model here.
 **Observed, Executed:** header loader `0x1a2680` reads the primary header selected
 by player count and override, plus the secondary header. Identifier addresses
 are `0x535c08` for the single-player primary, `0x535bf8` for the alternative,
-and `0x535c28` for the secondary. Current private group counts are respectively
-243, 245 and 155. All four count/override combinations from round 2 now read
-actual headers and compare their complete transformed bytes.
+and `0x535c28` for the secondary. The original loader's group-count words for
+those identifier addresses are 243, 245 and 155. The four count/override
+combinations, repeated at selection seeds 7 and 20973, select those same three
+counts. All four combinations read actual headers and compare their complete
+transformed bytes.
 
 Each header begins with a group count and twelve-byte group records. The first
 two words of each record are relocated by the allocation base; the third is a
@@ -102,6 +104,9 @@ described below.
 The following are observed byte offsets of the matching armor metadata records
 within the single-player primary header. They identify records without copying
 resource names. Each cell is an address relative to that header's start.
+`resource_mapping` asserts each cell as the original metadata address minus
+that header's base, for slots 4, 10 and 12 on all 12 bodies. Seeds 7 and 20973
+print the same addresses and no resource names.
 
 | Body | Slot 4 | Slot 10 | Slot 12 |
 |---|---|---|---|
@@ -231,10 +236,12 @@ Result: 12 bodies, 36 cold armor pairs and 36 incomplete controls PASS;
 `local/starting-scan-r4.log` contains counts only.
 
 Original retained evidence is implemented in
-[initialization and formatter, lines 39–117](../tools/difftest_starting_equipment_r4.py#L39),
-[headers and metadata, lines 160–201](../tools/difftest_starting_equipment_r4.py#L160),
-[exact cache pair, lines 225–288](../tools/difftest_starting_equipment_r4.py#L225), and
-[generic weapon/scanner, lines 291–388](../tools/difftest_starting_equipment_r4.py#L291).
+[initialization and formatter, lines 56–130](../tools/difftest_starting_equipment_r4.py#L56),
+[headers and group counts, lines 177–260](../tools/difftest_starting_equipment_r4.py#L177),
+[exact cache pair, lines 263–326](../tools/difftest_starting_equipment_r4.py#L263),
+[armor header deltas, lines 366–394](../tools/difftest_starting_equipment_r4.py#L366),
+[generic weapon, lines 329–363](../tools/difftest_starting_equipment_r4.py#L329), and
+[original scanner, lines 407–449](../tools/difftest_starting_equipment_r4.py#L407).
 
 ## Adapters, remaining unknowns and verification
 
@@ -264,7 +271,11 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_starting_equipment_r4.py local/
 Expected evidence counts: 48 initializations; 364 parser comparisons; 144 armor
 formatter comparisons; four real-header selections/relocations; 96 metadata
 comparisons; 36 exact specialized pairs; 12 generic weapon pairs; 24 pending,
-24 ready and two missing-pointer scanner cases. All output is counts only.
+24 ready and two missing-pointer scanner cases. The four header combinations
+are repeated at seeds 7 and 20973 and print group counts 243, 245 and 155 for
+identifier addresses `0x535c08`, `0x535bf8` and `0x535c28`. Armor header deltas
+print 12 bodies by slots 4, 10 and 12 at each of those seeds; those lines are
+addresses only. The printed case counts above stay the same.
 The ELF digest is checked before execution. Omitting the folder argument runs
 only the initializer/parser/formatter matrix and must not be reported as private
 resource or scanner verification.
