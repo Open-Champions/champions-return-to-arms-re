@@ -50,6 +50,19 @@ reconstruction and player construction are still not reached. Details and the
 native-client limit are in
 [the sequence note](death-reload-sequence.md#round-3-diagnostic-syscall-124-2026-11-03).
 
+## Round 4 evidence, 2026-11-03
+
+**Executed, bounded:** `EE.install_terminate_thread` is a second opt-in. It
+accepts syscall 37 only at the eight callers that do not read v0, writes v0 = 0,
+and leaves the thread-id word unchanged. The default trap, the round-2 vectors
+and the round-3 `TerminateThread` stop stay in place. With both opt-ins, and
+only after the harness calls `particle_init`, teardown passes syscall 37 and
+stops at a 2-byte write to address `0x18` in `texcache_reset` `0x179b30`.
+The ring slot at `0x7cfd40` is 0. `particle_init` is called from `engine_init`,
+which is called from startup, not from `game_clearLevel`. World reconstruction
+and player construction are still not reached. Details are in
+[round 4 of the sequence note](death-reload-sequence.md#round-4-terminatethread-syscall-37-2026-11-03).
+
 ## Automatic action after the countdown
 
 **Observed / Executed:** `game_checkAllDead` 0x1e7438 with one offline player,

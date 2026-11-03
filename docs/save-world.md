@@ -126,6 +126,11 @@ only. The same sequence then enters teardown and stops again, first on the
 particle-pool reset and, after original `particle_init`, on `TerminateThread`.
 World reconstruction is still not reached. See
 [round 3 of the sequence note](death-reload-sequence.md#round-3-diagnostic-syscall-124-2026-11-03).
+Round 4, 2026-11-03, adds an opt-in handler for syscall 37 at the callers that
+do not read its result. The same sequence then passes that call and stops in
+`texcache_reset` on a zero ring slot. `particle_init` remains a boot call, not
+a call the reload makes. See
+[round 4 of the sequence note](death-reload-sequence.md#round-4-terminatethread-syscall-37-2026-11-03).
 
 ## State examples and script limits
 
