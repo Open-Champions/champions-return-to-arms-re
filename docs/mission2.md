@@ -12,7 +12,10 @@ call containment are now asserted. The original dialog selector, objective
 VM, deferred completion, death callback and portal request gates execute on
 controlled state; actual inventory effects, physical use and completed loads
 remain **Unknown**. See [the addressed route handoff](mission2-route.md) for
-the new tests, controls and precise boundaries.
+the new tests, controls and precise boundaries. The
+[2026-11-02 offer/hub continuation](mission2-offer-hub.md) adds the ordinary
+hub second-offer binding, trigger action/menu request, and controlled hub-return
+requests; full loading and physical use remain Unknown.
 
 The four archives and their object/script records were **Observed** in the
 owner's read-only disc. `tools/difftest_mission2.py` asserts the counts,
@@ -35,7 +38,7 @@ authored identity and pending requests, not physical exit reachability.
 
 | From | Record, entry and native-call cell | Request and limit |
 |---|---|---|
-| Mission menu | Row 1 story pointer `innovat1` | The menu requires mission 2 availability; the hub dialog path is not executed here. |
+| Mission menu | Row 1 story pointer `innovat1` | The ordinary hub dialog and record-11 action/menu path now execute on controlled state; see the offer/hub continuation. Physical use and arrival remain Unknown. |
 | `innovat1` | Record 263 → `0x128`; call `0x154` | `inmine1`; physical use and load untested. |
 | `inmine1` | Records 139/140 → `0x000`/`0x044`; calls `0x02c`/`0x070` | `innovat1`/`inmine2`; original pending writes execute. |
 | `inmine2` | Records 38/102 → `0x000`/`0x044`; calls `0x02c`/`0x070` | `inmine1`/`innovat2`; original pending writes execute. |

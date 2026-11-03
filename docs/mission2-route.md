@@ -266,4 +266,6 @@ refusals it still needs original/native comparisons of actual bag effects
 and boss-item pickup, physical NPC/Trigger/Portal dispatch, loaded boss
 identity/combat, full transition/arrival with carried records, and save/load
 through those exits. This research provides no mission-3 unlock rule and
-does not resolve the separate hub offer or cross-act inventory handoffs.
+does not resolve cross-act inventory handoffs. The subsequent
+[2026-11-02 offer and hub-request tests](mission2-offer-hub.md) establish
+bounded hub dialog/menu requests, with physical use and full arrival still Unknown.
