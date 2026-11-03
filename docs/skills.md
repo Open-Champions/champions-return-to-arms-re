@@ -11,6 +11,12 @@ and the live game the project now has — the Play! emulator, which is not a Pla
 not been used to look at a skill. No test patch has been run on a live game.
 "Observed" means read at the address given; "Inferred" and "Unknown" are marked.
 
+The later [round-3 player-spell handoff](spec/player-spells-r3.md) adds bounded
+original-function difftests for IDs 16, 23, 49 and 55, and original ID-4 projectile
+cleanup. The [numeric contract](spec/player-spells-numeric-r3.md) continues those hits
+through damage, creature HP, cold and stun timers, the heal product, and the cast
+helper's debit and recast. It states the executed contracts and remaining gameplay unknowns.
+
 ## What the area contains
 
 | Range | Contents |
