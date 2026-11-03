@@ -83,9 +83,10 @@ output is empty. Thus usable return and nonempty text are independent gates
 for physical use. Active and selected context globals are preserved by the
 prompt itself for the supplied nonmutating predicates. Real property lookup
 reads lowercase serialized keys; localization, text formatting and script
-predicate bodies are supplied. The 768 cases vary slot, host, network,
-host-only, message presence and six predicate vectors; see
-`tools/difftest_exit_handoff.py:94` and `tools/ref_exit_handoff.py:12`.
+predicate bodies are supplied. Prompt cases are the product
+2×2×4×4×2×6 = 768 (network, host-only, slot, host, message presence, and the
+six key vectors). Dropping message presence yields 384, which is not the loop
+at `tools/difftest_exit_handoff.py:94`. Reference: `tools/ref_exit_handoff.py:12`.
 
 **Inferred composition:** combine this prompt contract with original
 `Player_interact` `0x1b2640`, its active-slot write `0x1b2b70`, and use dispatch
@@ -184,6 +185,10 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m tools.difftest_exit_handoff --seed 7
 Per seed: walk-in **90 entry calls / 309 assertions**, 8 initial lookups,
 32 edge cases and 10 save/rearm cases; handoff **1,725 entry calls / 8,617
 assertions**, 800 host cases, 768 prompts, 144 requests, 7 direct orientation
-cases and 6 side-buffer cases. All pass with zero failures. Original nested
-callees are not counted as entry calls. Retained round-three/pinned regressions
-and full unittest results are recorded in `work/cursor-report.md`.
+cases and 6 side-buffer cases. Those handoff counters are what the committed
+probe prints (800+768+144+7+6 entry calls). A 2026-11-03 rerun on seeds 20973
+and 7 printed the same line; the logs are
+`local/exit-handoff-r3/handoff-20973-rerun.log` and `handoff-7-rerun.log`.
+All pass with zero failures. Original nested callees are not counted as entry
+calls. Retained round-three/pinned regressions and full unittest results are
+recorded in `work/cursor-report.md`.
