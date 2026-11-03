@@ -188,6 +188,54 @@ real scanner executions over real generated inventory and exact private resource
 data, **not** an all-ready stub, an empty equipment table or an inferred scanner
 result from independently successful direct cache calls.
 
+## November 2 extension: the scanner drives cold armor caches
+
+**Observed, Executed:** `tools/difftest_starting_scan_r4.py` begins with original
+generated inventory, both real headers and the exact generic weapon resources.
+The three armor caches start invalid and unsubmitted. The host allocates backing
+buffers sized from each item's exact metadata; no original cache-allocation owner
+is claimed. Original scanner `0x1a30b0` alone calls the formatter, header lookup,
+cache `0x1a2d48`, transport and fixups during the loading sequence. There are no
+direct cache/fixup calls from the test's loading loop.
+Evidence: [setup, lines 22–46](../tools/difftest_starting_scan_r4.py#L22) and
+[scanner loop, lines 67–107](../tools/difftest_starting_scan_r4.py#L67).
+
+**Observed, Executed:** all 12 body fixtures submit slots 4, 10, 12 in that order,
+using caches `0x8659e8`, `0x865b48`, `0x865f68`. Each request is checked against
+its exact private source role `0x535d30`, destination, byte length, sector offset
+and completion address `0x4ef3e8`. The host reads that range and withholds
+completion for an extra scan. All 36 incomplete controls stay pending with
+unchanged raw resource bytes and invalid cache state. After host completion,
+original texture/model transformations `0x179e10` then `0x179130` occur exactly
+once per pair; all 5,650,432 bytes match the independent models and trailing guards
+remain intact. Evidence: [transport/model checks, lines 48–65](../tools/difftest_starting_scan_r4.py#L48),
+[publication and repeat checks, lines 83–107](../tools/difftest_starting_scan_r4.py#L83).
+
+**Observed, Executed:** with frames sampled at `100 + 4*step`, each body takes
+seven pending main-loop scans, plus three extra incomplete controls, before its
+first ready scan; a repeat stays ready without reads or fixups. Across bodies
+that is 84 pending main-loop scans and 36 incomplete controls. The complete player
+record remains unchanged. Only transport `0x1729e8` is stubbed within these
+scanner executions; it performs the exact checked read. The frame spacing and
+completion schedule are fixture inputs, **not observed physical-device timing**.
+
+**Inferred:** the baseline mapping can supply actual specialized armor and generic
+weapon resources to the original scanner. It does not depend on an empty equipment
+table or an all-ready substitute. **Unknown:** normal constructor/cache-allocation
+ownership, bootstrap order, real device behavior, retention across destination
+changes, renderer consumption and actual client arrival. Those remain separate
+requirements; this evidence alone does not remove either client refusal.
+
+Run: `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_starting_scan_r4.py local/SLUS_209.73 local/disc`.
+Result: 12 bodies, 36 cold armor pairs and 36 incomplete controls PASS;
+`local/starting-scan-r4.log` contains counts only.
+
+Original retained evidence is implemented in
+[initialization and formatter, lines 39–117](../tools/difftest_starting_equipment_r4.py#L39),
+[headers and metadata, lines 160–201](../tools/difftest_starting_equipment_r4.py#L160),
+[exact cache pair, lines 225–288](../tools/difftest_starting_equipment_r4.py#L225), and
+[generic weapon/scanner, lines 291–388](../tools/difftest_starting_equipment_r4.py#L291).
+
 ## Adapters, remaining unknowns and verification
 
 The header-loading adapters replace only file-size lookup `0x1724fc`, tagged
