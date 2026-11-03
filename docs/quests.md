@@ -314,8 +314,11 @@ are this machine's.
 
 ## 7. What still blocks a start-to-finish campaign
 
-In order. The first items are why a client that already has combat, movement
-and the script commands in `ref_natives` still cannot play the story through.
+In order, as of this note. Later research closed some of these rows;
+[the inventory note](inventory-reset.md) records which, and executes the bag
+rules a mission change actually uses. The first items are why a client that
+already has combat, movement and the script commands in `ref_natives` still
+cannot play the story through.
 
 1. **Dialog.** The calls in §2 sit inside conversation branches. `dialog_runTask`
    0x22ff48 is a separate machine and was not entered. The file-to-mission
@@ -354,5 +357,7 @@ unknown: the quest-variable rules, the mission bits, `quest_add` /
 `quest_remove`, the gold split, `player_giveExp`, the hub name, the act
 prefix match (including `hub2` not changing the act you are in), the quest-list
 clear, and the flag-39 keep list. `setCFlag` does not belong in that list.
-State 4's countdown was not followed to 0, and a tick with two buttons held
-was not tested. Neither is on the path that writes the pending level.
+State 4's countdown was not followed to 0 in this note, and a tick with two
+buttons held was not tested. Neither is on the path that writes the pending
+level. The countdown is executed on `t3/research-mission-unlocks` `e5c6176`;
+see [the inventory note](inventory-reset.md).
