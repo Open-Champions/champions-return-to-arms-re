@@ -32,6 +32,17 @@ class ProbeFailure(Exception):
     pass
 
 
+def exact_count_discrepancy(model_calls, original_calls, model_bytes,
+                            original_bytes, extra_bytes, first_calls):
+    """Permit just the second recipient's callback and prescribed writes."""
+    return (model_calls[:2] == first_calls
+            and original_calls == model_calls[:1] + model_calls[2:]
+            and set(model_bytes) - set(original_bytes) == set(extra_bytes)
+            and not set(original_bytes) - set(model_bytes)
+            and all(model_bytes[a] == value for a, value in original_bytes.items())
+            and all(model_bytes.get(a) == value for a, value in extra_bytes.items()))
+
+
 class Probe:
     def __init__(self, elf):
         B.OPTIONS.update(seed=4955, fpu='ps2', trace_first=False)
@@ -453,8 +464,22 @@ class Probe:
         self.alive([0, 1])
         m.w32(SB.G_PVP_MODE_A, 1)
         previous = w.on_Creature_v22
+        views = {}
+        owner, other = w.players[:2]
+        recipient = RC.G_PLAYERS + RC.REC_SIZE
+        percent = self.stat(55, 2, 1)
+        share = C.mul(C.mul(m.u32(recipient + 0xB0), SB.Model.F_HEAL_RATE),
+                      C.mul(C.from_int(percent), SB.F_0_01))
+        extra = {}
+        for addr, size, value in [(recipient + 0xAC, 4, C.add(m.u32(recipient + 0xAC), share))] + [
+                (other + off, 2, value) for off, value in SB.Model.HEAL_TINT]:
+            extra.update({addr + i: (value >> (8 * i)) & 255 for i in range(size)})
+        before_extra = {addr: m.load(addr, 1) for addr in extra}
+        first_health = C.add(m.u32(RC.G_PLAYERS + 0xAC), m.u32(obj + 0x1C))
 
         def shrink(args, view, rng):
+            if isinstance(view, B.ModelView):
+                views['model'] = view
             view.poke(SB.G_ALIVE_COUNT, 4, 0)
             return B.Res(1)
 
@@ -476,6 +501,35 @@ class Probe:
                    'model_uses_initial_count')
         self.check(m.u32(RC.G_PLAYERS + 0xAC) != 0 and
                    m.u32(RC.G_PLAYERS + RC.REC_SIZE + 0xAC) == 0, 'original_recipient_set')
+        self.check(m.u32(RC.G_PLAYERS + 0xAC) == first_health, 'exact_first_health')
+        self.check(all(m.load(a, 1) == value for a, value in before_extra.items()),
+                   'second_recipient_unchanged')
+        view = views['model']
+        keep = lambda addr: not B.is_stack(addr) and not B.is_model_stack(addr)
+        model_bytes = {a: view.load(a, 1) for a in view.bytes if keep(a)}
+        original_bytes = {a: m.load(a, 1) for a in
+                          self.rig.stored_bytes() | self.rig.eview.touched if keep(a)}
+        first_calls = [('Creature.v22', (owner, owner)), ('Creature.v22', (owner, other))]
+        args = (out['model_calls'], out['emu_calls'], model_bytes,
+                original_bytes, extra, first_calls)
+        self.check(exact_count_discrepancy(*args), 'only_diagnosed_difference')
+        # Negative controls must reject extra faults without changing original code.
+        bad_health = dict(original_bytes)
+        bad_health[RC.G_PLAYERS + 0xAC] ^= 1
+        bad_calls = list(out['emu_calls'])
+        name, call_args = bad_calls[-1]
+        bad_calls[-1] = (name, (call_args[0] ^ 1,) + call_args[1:])
+        bad_store = dict(original_bytes)
+        bad_store[obj + 0x1C] = m.load(obj + 0x1C, 1)
+        bad_extra = dict(model_bytes)
+        bad_extra[recipient + 0xAC] ^= 1
+        for altered in (
+                (args[0], args[1], model_bytes, bad_health, extra, first_calls),
+                (args[0], bad_calls, model_bytes, original_bytes, extra, first_calls),
+                (args[0], args[1], model_bytes, bad_store, extra, first_calls),
+                (args[0], args[1], bad_extra, original_bytes, extra, first_calls)):
+            self.check(not exact_count_discrepancy(*altered), 'reject_extra_discrepancy')
+            self.counts['discrepancy_mutations_rejected'] += 1
         self.counts['documented_model_discrepancies'] += 1
 
     def execute(self):

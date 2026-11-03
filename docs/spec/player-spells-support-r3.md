@@ -22,11 +22,11 @@ From the worktree root:
 PYTHONDONTWRITEBYTECODE=1 python3 -c 'import unittest, runpy, sys; sys.path.append("tools"); sys.argv = ["tools/difftest_spell_support_r3.py"]; runpy.run_path(sys.argv[0], run_name="__main__")'
 ```
 
-**Executed:** exit 0, `PASS_WITH_MODEL_DISCREPANCY`; 5,164 assertions, zero
-unexpected failures, zero unknown call targets. There are **559 matching
+**Executed:** exit 0, `PASS_WITH_MODEL_DISCREPANCY`; 5,178 assertions, zero
+unexpected failures, zero unknown call targets. There are **560 matching
 function comparisons**, **37 animation comparisons**, and **one separate
 adversarial function comparison with a documented disagreement**. These are
-597 top-level original calls being checked, not a count of gameplay actions or
+598 top-level original calls being checked, not a count of gameplay actions or
 independently exercised branches. Startup and nested calls are not separately
 counted. Constructors run inside the cast comparisons.
 
@@ -47,10 +47,10 @@ tables, instruction listings, game text or bytes.
 | `0x2e8e94` | 20 | 55 cost, ranks 1–20 |
 | `0x2e90b8` | 345 | 55 matching effect and timing cases |
 | `0x3c8218` | 3 | 55 base gate |
-| `0x3c85fc` | 28 | Supporting statistic queries |
+| `0x3c85fc` | 29 | Supporting statistic queries |
 
 `0x16d748` adds 37 animation comparisons against `ref_anim.anim_advance`.
-The extra adversarial comparison is at `0x2e90b8` and is excluded from the 559.
+The extra adversarial comparison is at `0x2e90b8` and is excluded from the 560.
 The exact group counts are retained in the counts artifact; comparisons include
 setup casts and supporting getters, not just the final boundary calls.
 
@@ -76,8 +76,9 @@ representable, so the assertion is exact bit equality, not a tolerance or host
 approximation of the underlying statistic arithmetic. The original startup
 functions at `0x16ac74` and `0x1ebca0` construct the objects and statistics in
 memory. No source table is reproduced in either new file. The cost getters reach
-`0x3c88e4` and `0x3c85fc` in the existing harness. Mana spending and affordability
-through the outer player cast route are **Unknown in this run**.
+`0x3c88e4` and `0x3c85fc` in the existing harness. The cast helper's debit and
+recast, including a below-cost debit, are executed separately in the
+[numeric contract](player-spells-numeric-r3.md), with the cast slot returning 0.
 
 ## 49: gate, targeting, effect and timing
 
@@ -104,7 +105,10 @@ consume the cap in supplied list order. The independently asserted cap is
 are exact float representations of 80% and 120% of that centre. The tested flags
 are `0x40040` at ranks 1–5, `0x80040` at 6–15 and `0x200040` at 16–20, including
 both sides of each transition. Each creature hit passes no-critical flag 1.
-The damage callback records these arguments; actual damage delivery is **Unknown**.
+The damage callback records these arguments. The handed amount, creature HP
+subtraction and stun-timer store are **Executed** in the
+[numeric contract](player-spells-numeric-r3.md). Death and knock-back after that
+subtraction remain **Unknown**.
 
 **Executed stun boundary (`0x2deb4c–0x2deba0`):** at rank 5, deterministic shared
 seeds produce a roll exactly equal to chance and one above it. Equality stuns;
@@ -193,6 +197,17 @@ matching comparison. No reference repair or vector edit was made. Whether any
 actual callback can mutate this count during a call is **Unknown**. This test
 does not establish a gameplay defect, concurrent mutation or network desync.
 
+The permitted discrepancy is checked exactly: removing only the second
+recipient's slot-22 callback makes the entire callback trace equal, and the
+only extra reference stores are that recipient's four health bytes and sixteen
+tint bytes with their prescribed values. All remaining stored bytes and values
+must agree; the original's second-recipient state must remain unchanged, and
+its first-recipient health must equal the cached increment added to prior
+health. Four controls reject an altered nonzero first-recipient amount, an
+unrelated known callback's changed argument, an extra store, and an altered
+second-recipient reference amount. The comparison captures the existing
+copy-on-write view via the scripted callback; it changes no reference API.
+
 ## Stubs, borrowed assumptions and remaining unknowns
 
 The original startup, registered family functions, shared/private generators,
@@ -224,10 +239,13 @@ Everything outside `Rig.real` remains a recording stub inherited from
   integer cost and damage/cap assertions add separate compact oracles; no raw
   statistic table is used as an expected vector.
 
-**Unknown:** outer player affordability/recast/prediction gates, actual spatial
-queries, actual team predicates, animation resource validity and movement,
-damage application, destructor/free behavior, scheduling of dead owners, and
-composed gameplay. Default resource headers and authored animation tracks are
-fixtures, not disc evidence. No public server or gameplay client was contacted.
+**Unknown:** actual spatial queries, actual team predicates, animation resource
+validity and movement, the player damage slot, death and knock-back, destructor
+and free behavior, scheduling of dead owners, and composed gameplay. The cast
+helper's debit, recast and prediction-copy refusal, the creature HP subtraction,
+and the stun-timer store are executed in the
+[numeric contract](player-spells-numeric-r3.md). Default resource headers and
+authored animation tracks are fixtures, not disc evidence. No public server or
+gameplay client was contacted.
 Cleanup testing, repository-wide tests and the combined handoff are reported
 separately in [the round-3 handoff](player-spells-r3.md).
