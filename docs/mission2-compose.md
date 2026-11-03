@@ -102,9 +102,10 @@ original action effect, not a decoded variable name.
 ## Admission uses the registered task, including counter 0
 
 **Observed / Executed:** the same trigger-opened menu is placed at state 4
-with counter 16. That counter is the audited last positive value from
-`e5c6176`, constructed again here rather than remeasured. One original
-`missionMenu_run` stores counter 0 and leaves both tasks registered.
+with counter 16. Counter 16 is the constructed start that lands on a
+still-registered 0. One original `missionMenu_run` stores counter 0 and
+leaves both tasks registered. Counter 15 is the last positive countdown
+value from `e5c6176` and is not remeasured here.
 `task_isRunning` on the registered name returns 1. A new dialog open calls
 `task_isRunning` with pointer `0x540c70`. That pointer and `0x5410e8` name
 the same task. No offer script is entered and the availability writer does

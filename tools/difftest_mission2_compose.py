@@ -361,7 +361,11 @@ def offer_session(executable, iso, seed):
 
 
 def admit_session(executable, iso, seed):
-    """Counter 16 is the audited last positive value, constructed here."""
+    """16 is the constructed start that lands on a still-registered 0.
+
+    15 is the last positive countdown value from e5c6176. This does not
+    remeasure that countdown.
+    """
     image, dialog, hub, actor, controls, row, key = O.inputs(executable, iso)
     probe = O.H.Probe(executable, image, dialog, seed, 3, 0, 0)
     assert O.open_bound(probe, hub, actor, controls) == 7
