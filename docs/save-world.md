@@ -121,6 +121,11 @@ Its original lethal-damage/frame-task/checkpoint sequence reaches the real
 world-loader entry but stops at kernel SYSCALL `0x352e14` (v1 = 124), before
 world reconstruction. Supplied resources and separate bounded probes do not
 establish a continuous playable reload; the client refusal remains required.
+Round 3, 2026-11-03, adds an opt-in handler for that syscall's function `0x10`
+only. The same sequence then enters teardown and stops again, first on the
+particle-pool reset and, after original `particle_init`, on `TerminateThread`.
+World reconstruction is still not reached. See
+[round 3 of the sequence note](death-reload-sequence.md#round-3-diagnostic-syscall-124-2026-11-03).
 
 ## State examples and script limits
 

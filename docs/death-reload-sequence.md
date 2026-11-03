@@ -112,3 +112,79 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_death_reload_sequence.py local/
 Each seed: four sequences with 273 frame calls apiece, including two exact
 world-loader trap checks, plus four separate completion controls and one
 checkpoint-store reachability control. Success output reports counts only.
+
+## Round 3: diagnostic syscall 124, 2026-11-03
+
+The round-2 trap remains the default. `EE.install_deci2_kputs` is opt-in and
+does not change that test. `tools/difftest_death_reload_kputs.py` repeats the
+successful sequence, installs the handler, and continues
+`mainloop_loadRequestedWorld`.
+
+**Observed:** `Deci2Call` `0x352e10` loads v1 = `0x7c` (124) and executes
+`SYSCALL` at `0x352e14`, then `jr` at `0x352e18`. Twelve wrappers at
+`0x35e218`–`0x35e438` pass a function number in a0 and a stack parameter block
+in a1, and return v0 unchanged. The teardown diagnostic uses function `0x10`
+only: `game_clearLevel` calls `dbg_printf` `0x355490` at `0x1e4ec0`; that calls
+formatter `0x354590` with callback `0x355300`; the callback calls buffered putc
+`0x354240`; putc calls wrapper `0x35e428` for byte `0x0a` or when the count at
+`0x507504` has reached `0x7e`. The wrapper stores the string pointer as
+parameter word 0 and sets a0 = `0x10`. The branch at `0x354280` does not read
+v0, and `0x35531c` replaces v0 with 1. This path does not observe a kernel
+result or a status word. Other function numbers at those wrappers, including
+1 at `0x35e218`, 3 at `0x35e288` and 4 at `0x35e2b8`, are not this call.
+
+**Executed:** the handler accepts only v1 = 124 and a0 = `0x10`. It writes
+v0 = 0 and does not read the string. The retail return value is **Unknown**;
+no caller on this path reads v0, so the written 0 is not a recovered kernel
+result. Any other syscall number still raises the original unhandled-syscall
+`CpuTrap`. Any other Deci2 function number raises `CpuTrap` and names a0.
+Both seeds, simple and qualified, return from `0x352e10` once. The checkpoint,
+directory and saved-world bytes stay unchanged, and the checkpoint writer
+`0x21777c` is not entered.
+
+**Executed, no `particle_init`:** teardown `0x1e4e88` is entered and does not
+return. The next stop is a 4-byte write to address `0x4` at pc `0x18ec10`,
+with return address `0x1e502c` (call at `0x1e5024`). `0x18ebb8` loads the id at
+`0x82c40c` and the pointer at `0x82c4e8`. Both are 0. Both addresses lie past
+the ELF file bytes, in the zeroed tail of the loaded segment. The id is not the
+`-1` sentinel the comparison at `0x18ec04` requires, so the following store uses
+the null pointer. World reconstruction `0x14e808` and `Player_ctor` `0x1a1d28`
+are not called. `g_taskCount` stays 1.
+
+**Observed:** `particle_init` `0x18e648` is the function that stores `-1` across
+`0x82c408`–`0x82c484` at `0x18e6e4`, then calls the same reset at `0x18e7d0`.
+The reset's first load is `0x82c40c`, not `0x82c408`. `0x195c1c`, called from
+init at `0x18e708`, stores 1 at `0x82c408` after that fill.
+
+**Executed, original `particle_init` before the loader:** the call returns 3.
+What 3 represents is **Unknown**. Afterwards `0x82c40c`–`0x82c484` are `-1`,
+`0x82c400` is `0x82c300` (the store at `0x18ee18`), `0x82c408` is 1, and
+`g_taskCount` is 3 after the two `task_add` calls at `0x18e7fc` and `0x18e818`.
+The same loader passes the null-pointer store. Teardown still does not return.
+The next stop is `TerminateThread` `0x352830`: syscall v1 = 37 (`0x25`) at
+`0x352834`, a0 = 0, return address `0x17e480`. That call is in `0x17e2c8`,
+reached from teardown at `0x1e5088`. a0 is the word at `0x7cfd04`, which is 0.
+The instructions at `0x17e480` do not read v0; they call `0x353b20` with the
+same id. `0x17a1d0` has not been entered. The kernel result of terminating id 0
+is **Unknown**, so this syscall is not modelled.
+
+**Unknown:** Deci2 function numbers other than `0x10`, the retail result of
+function `0x10`, use of the diagnostic text, finishing `0x18ebb8` from the
+zeroed BSS, `TerminateThread` for an id this fixture never created, file
+loading, world reconstruction, player construction and playable arrival.
+These host calls are a synthetic sequence,
+not game-main. Keep the native `blocked_death_reload` boundary.
+
+A native client can implement syscall 124 function `0x10` as a no-effect return
+for this diagnostic. That does not restore a world or construct a player. The
+original teardown still stops before both, so the client refusal stays.
+
+## Reproduce, round 3
+
+```
+PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_death_reload_kputs.py local/SLUS_209.73 --seed 20973
+PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_death_reload_kputs.py local/SLUS_209.73 --seed 7
+```
+
+Each seed: four continued loaders, two exact particle-reset faults and two
+exact `TerminateThread` stops. No stubs. Success output reports counts only.

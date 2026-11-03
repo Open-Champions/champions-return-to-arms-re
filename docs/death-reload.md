@@ -37,6 +37,19 @@ creation, and continuous death-to-playable completion. The four probes are
 separate fixtures; their results must not be concatenated into a whole-game
 claim. The native `blocked_death_reload` gate is still not resolved.
 
+## Round 3 evidence, 2026-11-03
+
+**Executed, bounded:** the same continuous sequence can return from the
+round-2 syscall when `EE.install_deci2_kputs` is installed. That handler is
+only syscall 124 function `0x10`, the teardown diagnostic. It leaves the default trap,
+the round-2 vectors and every other syscall number unchanged. Teardown is
+entered and does not return. Without original `particle_init` `0x18e648`, the
+next stop is the null write at `0x18ec10`. After that original init, the next
+stop is `TerminateThread` syscall 37 at `0x352834`, with thread id 0. World
+reconstruction and player construction are still not reached. Details and the
+native-client limit are in
+[the sequence note](death-reload-sequence.md#round-3-diagnostic-syscall-124-2026-11-03).
+
 ## Automatic action after the countdown
 
 **Observed / Executed:** `game_checkAllDead` 0x1e7438 with one offline player,
