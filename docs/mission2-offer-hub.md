@@ -103,10 +103,17 @@ Evidence: [prompt, menu and preservation, lines 49–98](../tools/difftest_missi
 mission-2 completion. Boss death opens it before actual item pickup is established;
 turn-in and deferred `grantMission(2)` are separate executed paths in
 [the route handoff](mission2-route.md#deferred-completion-and-auxiliary-branches).
-The portal does not call the hub resolver to choose its destination in this test;
-the harness registers and selects that row. Hub discovery, destination-list
-persistence, physical navigation, loading, hub/hub2 arrival and saving are
-**Unknown**. No return-to-hub completion or playable mission claim is made.
+This test does not call the hub resolver to choose its destination; the harness
+registers and selects that row.
+
+The [route-list continuation](mission2-compose.md) executes
+`jumpgate_resetDestinations` `0x27db00` and `jumpgate_addCurrentLevel`
+`0x27db60` instead of planting the hub name. With the card latch clear, reset
+stores the resolver hub, and arrival at the four route levels leaves that hub
+at row 0. The same final portal, given that list, writes the hub request, and
+the retained pre-load stop accepts it. Physical navigation, the loader body,
+arrival, and saving the list remain **Unknown**. No return-to-hub completion
+or playable mission claim is made.
 
 ## Reproduction and client handoff
 

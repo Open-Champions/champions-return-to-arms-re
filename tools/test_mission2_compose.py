@@ -1,0 +1,47 @@
+"""Pure route-list vectors. Original calls live in difftest_mission2_compose."""
+import unittest
+
+import ref_mission2 as M
+import ref_mission2_compose as C
+
+
+class RouteList(unittest.TestCase):
+    def test_resolver_requires_every_bit(self):
+        for evil, decision, complete in (
+                (0, 0, 0), (1, 0, 1), (1, 1, 0), (0, 1, 1), (1, 1, 1)):
+            hub = 'hub2' if evil and decision and complete else 'hub'
+            self.assertEqual(C.resolver_hub(evil, decision, complete), hub)
+
+    def test_latch_keeps_the_previous_list(self):
+        previous = ['keep', 'also']
+        self.assertEqual(C.reset_destinations(1, previous, 'hub2'), previous)
+        self.assertEqual(C.reset_destinations(0, previous, 'hub'), ['hub'])
+
+    def test_route_keeps_the_resolver_hub_ahead_of_the_four_levels(self):
+        for hub in C.HUBS:
+            self.assertEqual(C.route_list(hub, M.LEVELS), [hub, *M.LEVELS])
+
+    def test_already_present_is_not_rewritten(self):
+        self.assertEqual(C.add_current(['hub2', 'innovat1'], 'innovat1', 'hub'),
+                         ['hub2', 'innovat1'])
+        self.assertEqual(C.add_current(['hub2'], 'hub2', 'hub'), ['hub2'])
+
+    def test_new_arrival_drops_the_other_hub_and_appends(self):
+        cases = (
+            ('hub', [], 'hub2', []),
+            ('hub', [], 'innovat1', ['innovat1']),
+            ('hub', ['hub', 'hub2'], 'innovat1', ['hub', 'innovat1']),
+            ('hub', ['hub2', 'hub'], 'inmine1', ['hub', 'inmine1']),
+            ('hub', ['innovat1', 'hub2', 'hub'], 'innovat2', ['innovat1', 'hub', 'innovat2']),
+            ('hub', ['hub2'], 'hub', ['hub']),
+            ('hub2', [], 'hub', []),
+            ('hub2', ['hub', 'hub2'], 'innovat1', ['hub2', 'innovat1']),
+            ('hub2', ['hub2', 'hub'], 'inmine1', ['hub2', 'inmine1']),
+            ('hub2', ['innovat2', 'hub'], 'hub2', ['innovat2', 'hub2']),
+        )
+        for hub, start, current, expected in cases:
+            self.assertEqual(C.add_current(start, current, hub), expected, (hub, start, current))
+
+
+if __name__ == '__main__':
+    unittest.main()

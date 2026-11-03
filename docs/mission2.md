@@ -15,7 +15,10 @@ remain **Unknown**. See [the addressed route handoff](mission2-route.md) for
 the new tests, controls and precise boundaries. The
 [2026-11-02 offer/hub continuation](mission2-offer-hub.md) adds the ordinary
 hub second-offer binding, trigger action/menu request, and controlled hub-return
-requests; full loading and physical use remain Unknown.
+requests. The [2026-11-03 route-list continuation](mission2-compose.md) builds
+the return list with the original reset and current-level insertion, then
+stops that hub request at the same pre-load boundary. Full loading, physical
+use, and a same-session offer remain Unknown.
 
 The four archives and their object/script records were **Observed** in the
 owner's read-only disc. `tools/difftest_mission2.py` asserts the counts,
