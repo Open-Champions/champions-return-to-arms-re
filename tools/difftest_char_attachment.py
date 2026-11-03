@@ -18,6 +18,10 @@ Executed boundaries:
   hide-bit update, then resume the final gates. Other iterations are omitted.
 * Direct complete 0x178c28: header+0x13, override, parent+0x22 table selection,
   matrix packet copies, mesh-table clamp and 64-bit show-mask range selection.
+* Added, same entry rules: definition-slot 3 shield selection 0x1a3cfc–0x1a3d84
+  for every body model, the published 12-body starting pointer slots (class
+  word unread), shell block 0x1068d8, and the f12 clamp 0x1a4cac–0x1a4d08.
+  Shell primitive 0x174e78 is not entered (part flag 0x20 stays clear).
 
 Only 0x16b7f0 (sorted renderer queue submission) is stubbed. It records calls
 but never renders. Synthetic relocated models, parent records and packet
@@ -441,6 +445,190 @@ def linked_cases(f):
     return counts, draw_count
 
 
+def _projection_bits(value):
+    return struct.unpack('<I', struct.pack('<f', float(value)))[0]
+
+
+def _expect_shell(e, flag33, argument, fill):
+    pointer, count, fields = ref.shell_fields(flag33, argument)
+    assert e.mem.u32(ref.SHELL_POINTER) == pointer
+    assert e.mem.u32(ref.SHELL_COUNT) == count
+    blob = bytearray(e.mem.read(ref.SHELL_BLOCK, 16))
+    if fields is None:
+        assert bytes(blob) == bytes([fill]) * 16
+        return
+    for offset, value in fields.items():
+        if offset in (4, 12):
+            assert int.from_bytes(blob[offset:offset + 4], 'little') == value
+        else:
+            assert blob[offset] == value
+    written = set(fields) | {5, 6, 7, 13, 14, 15}
+    for offset, byte in enumerate(blob):
+        if offset not in written:
+            assert byte == fill
+
+
+def visual_cases(f):
+    """Shield bits, published starting slots, and shell words. Not a 17-slot loop."""
+    e, rng = f.e, f.rng
+    records = tuple((1 << i, 1 << (i + 17)) for i in range(10))
+    hidden = 0x1111111111111111
+    shield = starting = shell_rows = 0
+    for model, enabled, flag33 in itertools.product(
+            list(range(12)) + [-1, 12, 15], (False, True), (False, True)):
+        f.reset()
+        argument = ref.equipped_draw_argument(_projection_bits(200 if flag33 else 0))
+        e.f[20] = argument
+        e.mem.write(ref.SHELL_BLOCK, bytes([0xa5]) * 16)
+        f.strings()
+        e.mem.w32(f.record + 0x50, 0x15)
+        e.mem.w32(f.record + 0x54, model & 0xffffffff)
+        e.mem.w8(f.definition + 0x1c, 3)
+        e.mem.w64(f.item + 8, (1 << 33) if flag33 else 0)
+        header = (model * 3 + 5) & 15
+        f.model(f.equipment, header, 4, 1, flags=2 if enabled else 0)
+        e.mem.w8(f.equipment + 0x21, 4)
+        e.mem.w64(f.equipment + 8, hidden)
+        for index, (show, hide) in enumerate(records):
+            e.mem.w64(f.equipment + 0x40 + index * 16, show)
+            e.mem.w64(f.equipment + 0x48 + index * 16, hide)
+        hide_mask = rng.getrandbits(64)
+        e.mem.w64(f.equipment, hide_mask)
+        initial = rng.getrandbits(64)
+        e.mem.w64(f.obj + 0x220, initial)
+        e.mem.w32(e.r[29], f.equipment)
+        e.mem.w32(e.r[29] + 4, f.equipment_texture)
+        e.r[18], e.r[19], e.r[21] = f.item, f.obj, f.record
+        e.r[22], e.r[23], e.r[30] = 0, 3, f.context
+        assert e.run(0x1a3b90, until=(0x1a3df8,), max_steps=8000) == 'stop'
+        selection = ref.shield_selection(model)
+        assert [c.args[:2] for c in e.calls if c.target == BUILD_MASK] == [
+            (f.equipment, selection)]
+        show = ref.variant_show_mask(hidden, enabled, selection, records)
+        draws = [c for c in e.calls if c.target == DRAW_PART]
+        assert len(draws) == 1
+        assert draws[0].args == (f.equipment, f.equipment_texture, 1, f.body,
+                                 f.context, show, ref.U64, 0)
+        f.check_attachment(header, -1)
+        assert e.mem.u64(f.obj + 0x220) == ref.clear_drawn_hide_bits(initial, [hide_mask])
+        assert not [row for row in e.reads if row[1] <= f.record + 0x50 < row[1] + row[2]]
+        _expect_shell(e, flag33, argument, 0xa5)
+        assert e.mem.u32(DRAW_FLAGS) == 0
+        f.check()
+        shield += 1
+    # Published pointer slots. Class is stored and must not be read. None is slot 1,
+    # so the second-weapon override and the model-2 mirror stay off.
+    for body in range(12):
+        class_index, slots = ref.starting_visual_slots(body)
+        for slot in slots:
+            f.reset()
+            e.f[20] = ref.equipped_draw_argument(_projection_bits(5))
+            e.mem.write(ref.SHELL_BLOCK, bytes([0xa5]) * 16)
+            f.strings()
+            e.mem.w32(f.record + 0x50, class_index ^ 0xff)
+            e.mem.w32(f.record + 0x54, body)
+            e.mem.w8(f.definition + 0x1c, slot)
+            e.mem.w64(f.item + 8, 0)
+            header = (body + slot) & 15
+            f.model(f.equipment, header, 4, 1)
+            hide_mask = rng.getrandbits(64)
+            e.mem.w64(f.equipment, hide_mask)
+            initial = rng.getrandbits(64)
+            e.mem.w64(f.obj + 0x220, initial)
+            e.mem.w32(e.r[29], f.equipment)
+            e.mem.w32(e.r[29] + 4, f.equipment_texture)
+            e.r[18], e.r[19], e.r[21] = f.item, f.obj, f.record
+            e.r[22], e.r[23], e.r[30] = 0, slot, f.context
+            assert e.run(0x1a3b90, until=(0x1a3df8,), max_steps=8000) == 'stop'
+            assert not [c for c in e.calls if c.target == BUILD_MASK]
+            draws = [c for c in e.calls if c.target == DRAW_PART]
+            assert draws[0].args == (f.equipment, f.equipment_texture, 1, f.body,
+                                     f.context, ref.U64, ref.U64, 0)
+            f.check_attachment(header, -1)
+            assert not [c for c in e.calls if c.target == 0x179860]
+            assert e.mem.u64(f.obj + 0x220) == ref.clear_drawn_hide_bits(initial, [hide_mask])
+            assert not [row for row in e.reads if row[1] <= f.record + 0x50 < row[1] + row[2]]
+            _expect_shell(e, False, e.f[20], 0xa5)
+            f.check()
+            starting += 1
+    # Off-hand pointer composes with the shield bit, and model 2 mirrors then resets.
+    for model, slot in ((2, 3), (2, 0), (4, 1)):
+        f.reset()
+        argument = ref.equipped_draw_argument(_projection_bits(330))
+        e.f[20] = argument
+        e.mem.write(ref.SHELL_BLOCK, bytes([0xa5]) * 16)
+        f.strings()
+        e.mem.w32(f.record + 0x54, model)
+        e.mem.w8(f.definition + 0x1c, slot)
+        e.mem.w64(f.item + 8, 1 << 33)
+        header = 4
+        f.model(f.equipment, header, 4, 1, flags=2)
+        e.mem.w8(f.equipment + 0x21, 4)
+        e.mem.w64(f.equipment + 8, hidden)
+        for index, (show, hide) in enumerate(records):
+            e.mem.w64(f.equipment + 0x40 + index * 16, show)
+            e.mem.w64(f.equipment + 0x48 + index * 16, hide)
+        e.mem.w64(f.equipment, 0)
+        e.mem.w64(f.obj + 0x220, ref.U64)
+        e.mem.w32(e.r[29], f.equipment)
+        e.mem.w32(e.r[29] + 4, f.equipment_texture)
+        e.r[18], e.r[19], e.r[21] = f.item, f.obj, f.record
+        e.r[22], e.r[23], e.r[30] = 0, 1, f.context
+        assert e.run(0x1a3b90, until=(0x1a3df8,), max_steps=8000) == 'stop'
+        override = ref.equipped_override(1)
+        mirrored = model == 2
+        if slot == 3:
+            selection = ref.shield_selection(model)
+            show = ref.variant_show_mask(hidden, True, selection, records)
+            assert [c.args[:2] for c in e.calls if c.target == BUILD_MASK] == [
+                (f.equipment, selection)]
+        else:
+            show = ref.U64
+            assert not [c for c in e.calls if c.target == BUILD_MASK]
+        draws = [c for c in e.calls if c.target == DRAW_PART]
+        assert draws[0].args[5:8] == (show, override & ref.U64, 0)
+        f.check_attachment(header, override, mirrored)
+        assert bool([c for c in e.calls if c.target == 0x179860]) == mirrored
+        assert e.mem.u32(DRAW_FLAGS) == 0
+        # The mirror reset replaces the shell pointer and clears the count.
+        assert e.mem.u32(ref.SHELL_POINTER) == 0x41c150
+        assert e.mem.u32(ref.SHELL_COUNT) == 0
+        f.check()
+        shell_rows += 1
+    return shield, starting, shell_rows
+
+
+def shell_cases(f):
+    e = f.e
+    direct = argument = 0
+    values = (0.0, 0.5, 1.0, 1.5, 5.0, -1.0, 100.0, 200.0, 360.0, -1000.0)
+    for flag33, value in itertools.product((False, True), values):
+        f.reset()
+        argument_bits = ref.equipped_draw_argument(_projection_bits(value))
+        e.mem.w64(f.item + 8, (1 << 33) if flag33 else 0)
+        e.mem.write(ref.SHELL_BLOCK, bytes([0xa5]) * 16)
+        e.f[12] = argument_bits
+        e.call(0x1068d8, f.item, max_steps=2000)
+        _expect_shell(e, flag33, argument_bits, 0xa5)
+        f.check()
+        direct += 1
+    for value in values:
+        f.reset()
+        raw = _projection_bits(value)
+        e.f[0] = raw
+        e.f[1] = e.f[2] = e.f[6] = 0
+        assert e.run(0x1a4cac, until=(0x1a3580,), max_steps=40) == 'stop'
+        assert e.f[12] == ref.equipped_draw_argument(raw)
+        f.check()
+        argument += 1
+    f.reset()
+    e.f[12] = 0
+    assert e.run(0x1c0c64, until=(0x1a3580,), max_steps=20) == 'stop'
+    assert e.f[12] == ref.inventory_draw_argument()
+    f.check()
+    return direct, argument + 1
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('elf', nargs='?', default=os.path.join(_TOOL_DIR, '..', 'local', 'SLUS_209.73'))
@@ -456,8 +644,12 @@ def main():
         cover_count = cover_cases(f)
         gate_count, draws = appearance_cases(f)
         linked_count, linked_draws = linked_cases(f)
-        print('PASS seed=%d mask=%d initialization=%d direct_part=%d cover=%d appearance=%d draws=%d linked=%d linked_draws=%d' %
-              (seed, mask_count, initial_count, direct_count, cover_count, gate_count, draws, linked_count, linked_draws))
+        shield_count, starting_count, composed_count = visual_cases(f)
+        shell_count, argument_count = shell_cases(f)
+        print('PASS seed=%d mask=%d initialization=%d direct_part=%d cover=%d appearance=%d draws=%d linked=%d linked_draws=%d shield=%d starting=%d composed=%d shell=%d argument=%d' %
+              (seed, mask_count, initial_count, direct_count, cover_count, gate_count, draws,
+               linked_count, linked_draws, shield_count, starting_count, composed_count,
+               shell_count, argument_count))
 
 
 if __name__ == '__main__':
