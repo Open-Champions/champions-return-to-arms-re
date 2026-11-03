@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """ee_emu.py - a function-level interpreter for the PS2 Emotion Engine CPU (MIPS R5900).
 
-This is NOT a console emulator.  It has no timing, no hardware registers, no kernel, no
-IOP, no VU units and no BIOS.  It loads the segments of an ELF into a sparse memory, lets
+This is NOT a console emulator.  It has no timing, no hardware registers, no general
+kernel, no IOP, no VU units and no BIOS.  It loads the segments of an ELF into a sparse
+memory, lets
 you prepare registers and memory, runs ONE function (or a stretch of one) instruction by
 instruction, and reports what the code did: return value, calls made, memory written.
 Callees can be run for real, replaced by Python functions, or stubbed wholesale.
@@ -41,7 +42,9 @@ An instruction that is not implemented stops the run with UnimplementedInstructi
 names the address and the word.  Nothing is guessed.  The same goes for a load or store
 that touches memory nobody mapped (MemoryFault), an unaligned access, an integer overflow
 trap, BREAK, SYSCALL and an integer division by zero (which does not trap on this CPU but
-has no defined result).
+has no defined result).  SYSCALL still stops unless the caller installed
+syscall_handler.  install_deci2_kputs models only syscall 124 function 0x10,
+the level-teardown diagnostic.  Every other number still raises CpuTrap.
 
 Floating point (where this is an approximation)
   The R5900 FPU is not IEEE 754.  There are no NaNs, infinities or denormals: an exponent
@@ -651,6 +654,39 @@ class EE:
                 self.patch(addr, value)
                 count += 1
         return count
+
+    def install_deci2_kputs(self):
+        """Opt in to the observed Deci2 function-0x10 contract.  Default runs are unchanged.
+
+        Observed at 0x352e10–0x352e1c: Deci2Call loads v1 = 0x7c (124) and executes
+        SYSCALL, then returns through jr ra.  The level-teardown diagnostic reaches
+        that stub only as function 0x10, through dbg_printf 0x355490, the formatter
+        0x354590, callback 0x355300, buffered putc 0x354240 and wrapper 0x35e428.
+        Wrapper 0x35e428 stores its string pointer as the first parameter word and
+        passes a0 = 0x10.  The branch at 0x354280 ignores v0, and 0x35531c overwrites
+        v0 with 1, so this path does not observe the kernel result.  The retail
+        result and the bytes of the string are therefore not part of the contract.
+        This handler writes v0 = 0 and does not read guest memory.  Any other
+        syscall number raises the same CpuTrap as an unhandled syscall.  Any other
+        Deci2 function number, including the open/send/poll wrappers at
+        0x35e218–0x35e420, raises CpuTrap and names a0.  Assigning the bound method
+        would pass the emulator twice; this stores the unbound function.
+        """
+        if self.syscall_handler is not None:
+            raise EmuError('a syscall handler is already installed')
+        self.syscall_handler = EE.deci2_kputs
+
+    def deci2_kputs(self):
+        number = s64(self.r[3])
+        if number != 124:
+            raise CpuTrap('SYSCALL at 0x%08x (v1 = %d); no kernel is modelled'
+                          % (self.cur, number))
+        function = s32(self.r[4])
+        if function != 0x10:
+            raise CpuTrap('SYSCALL at 0x%08x (v1 = 124, a0 = %d); '
+                          'Deci2 function is outside the observed kputs contract'
+                          % (self.cur, function))
+        self.r[2] = 0
 
     def hook(self, addr, function):
         """Call function(emu) whenever execution reaches addr.  The instruction at addr
