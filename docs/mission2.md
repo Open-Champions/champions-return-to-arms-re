@@ -1,13 +1,18 @@
 # Mission 2 story levels: Plane of Innovation (SLUS-20973 US v2.00)
 
-2026-10-23. **Research handoff, not a playable native mission.** The mission
+2026-10-27. **Partial research handoff, not a playable native mission.** The mission
 menu's row 1 story pointer is `innovat1` (`t3/research-story-route`,
 `76d4447`); the separate medal and bonus pointers are `innmedal` and
 `innpit`. Mission 2 must first be made available by one of the hub actions
 identified in `t3/research-quest-log` (`03c2304`); mission 1 completion by
 itself does not prove that action ran. The shipped story object/script cells
-support an **Inferred** `innovat1` → `inmine1` → `inmine2` → `innovat2`
-route; the exact record-to-entry links and call containment remain Unknown.
+support an **Executed request route** `innovat1` → `inmine1` → `inmine2` →
+`innovat2`, with the three reverse exits. Exact record-to-entry links and
+call containment are now asserted. The original dialog selector, objective
+VM, deferred completion, death callback and portal request gates execute on
+controlled state; actual inventory effects, physical use and completed loads
+remain **Unknown**. See [the addressed route handoff](mission2-route.md) for
+the new tests, controls and precise boundaries.
 
 The four archives and their object/script records were **Observed** in the
 owner's read-only disc. `tools/difftest_mission2.py` asserts the counts,
@@ -15,50 +20,50 @@ class selections and addressed exit/script cells below. Its original
 `world_loadRecords`, factory and four derived → `Creature_ctor` →
 `GameObject_ctor` chains are **Executed** by `ee_emu.py` on synthetic state,
 seeds 20973 and 7. Allocations, resource returns, animation/model services,
-combat and actual scene transitions are stubbed. `newWorld(0)` is a null
-script argument; this check does not resolve its runtime destination.
+combat and actual scene transitions are stubbed in that older test.
+**Correction:** `newWorld(0)` supplies AMX string offset zero, not a null
+destination. The new original-VM test resolves it to `innovat1` from
+`inmine1`, and to `inmine1` from `inmine2`.
 
 ## Story route and objectives
 
-The difftest checks each addressed call cell and the aggregate action-link
-set separately. It does not establish which individual record carries each
-link or that a call cell lies inside the listed entry. Those pairings are
-**Unknown** until checked against per-record properties and parsed entry
-boundaries.
+`difftest_mission2_links.py` checks twelve individual record links, one
+Portal without a script property, and 35 complete argument/call/cleanup
+packets within parsed entry bounds. `difftest_mission2_travel.py` executes
+all six exit entries through the original native command. These establish
+authored identity and pending requests, not physical exit reachability.
 
-| From | Addressed call cell and aggregate action link | Limit |
+| From | Record, entry and native-call cell | Request and limit |
 |---|---|---|
 | Mission menu | Row 1 story pointer `innovat1` | The menu requires mission 2 availability; the hub dialog path is not executed here. |
-| `innovat1` | `PushTrigger` action-link set includes entry `0x128`; `newWorld('inmine1')` call cell is at `0x154` | Physical use and level load untested. |
-| `inmine1` | Action-link set includes entries `0x000`, `0x044`; `newWorld(0)` and `newWorld('inmine2')` cells are at `0x02c`, `0x070` | The zero argument's resolved destination is Unknown here. |
-| `inmine2` | Action-link set includes entries `0x000`, `0x044`; `newWorld(0)` and `newWorld('innovat2')` cells are at `0x02c`, `0x070` | The zero argument's resolved destination is Unknown here. |
-| `innovat2` | Action-link set includes entry `0x044`; `newWorld('inmine2')` cell is at `0x070`; its `Portal` script link is separately checked | The destination selected by the portal is Unknown. |
+| `innovat1` | Record 263 → `0x128`; call `0x154` | `inmine1`; physical use and load untested. |
+| `inmine1` | Records 139/140 → `0x000`/`0x044`; calls `0x02c`/`0x070` | `innovat1`/`inmine2`; original pending writes execute. |
+| `inmine2` | Records 38/102 → `0x000`/`0x044`; calls `0x02c`/`0x070` | `inmine1`/`innovat2`; original pending writes execute. |
+| `innovat2` | Record 31 → `0x044`; call `0x070` | `inmine2`; Portal record 57 separately runs gate `0x110` and chooses a runtime destination-list entry, not a fixed script destination. |
 
-**Observed and statically asserted** in `innovat1`: `start` begins at
-`0x0b00`; addressed cells call `setMissionAvailable(2,1)` at `0x0b34`, set
-two distinct mission variables to 1 and 2, and post the entry at `0x0be0`.
-A `cutScene('innovat1')` call cell is at `0x0c4c`. The combined properties
-of two NPC records include two distinct dialog entries; **which record
-links to which entry is Unknown** to this test. Two addressed `addQuest`
-cells use the same title key and different body keys. Addressed cells
-remove that quest and a `coppersprocket`, defer the entry at `0x0c98`, give
-an item, and call `grantMission(2)` at `0x0d00`. Assigning those cells to
-specific branch or turn-in entries is **Inferred** until entry containment
-is asserted. Dialog choices, conditions, execution and other branch
-reachability remain Unknown.
+**Observed and Executed on controlled state:** `innovat1` NPC records
+72/73 link to entries `0x000`/`0x094`. Their shipped dialog tables select
+offer actions `0x2e0`/`0x910` and the shared turn-in `0x418` through
+original native open/confirm messages and the VM. The start entry `0xb00`
+sets availability and two mission variables and posts `0xbe0`; the latter
+requests its cutscene only before its guard variable is set. Turn-in writes
+its finish variable, requests item removal, removes the journal title and
+queues `0xc98`. With an initially empty queue the first deferred task call
+promotes it, the second executes its item-give handler and mission-2 grant.
+Completion is unchanged before that execution. Inventory and presentation
+services remain controlled; completed item delivery is not established.
 
-**Observed and statically asserted** in `innovat2`: the one
-`IronGuardian` record has a `coppersprocket` drop property and a deathscript
-link. The combined properties of two `Trigger` records include links to
-entries at `0x150` and `0x194`; **which record carries which link is
-Unknown** to this test. Addressed cells at `0x17c` and `0x1c0` call the
-boss and portal-message entries. Other addressed cells call the `iron`
-cutscene and save inhibit on. The entry at `0x46c` is asserted separately
-from cells that set the variable read by the portal gate and call save
-inhibit off. Which entry contains each call cell is **Unknown** to this
-test. The miniboss flag call is **Observed**, not asserted by this test. No
-script entry, boss death or portal is executed here; actual item drop,
-quest completion, save behavior and portal travel remain Unknown.
+**Observed and Executed on controlled state:** `innovat2` boss record 30
+links death entry `0x000` → `0x46c` and the same item used by turn-in.
+Trigger records 58/59 link to `0x150`/`0x194`. The first boss branch posts
+`0x32c`, which enables save inhibition then sets creature flag 0 through
+`0x39c`; the repeat branch calls `0x39c` directly and leaves save inhibition
+unchanged. Original `Creature_onDeath` at `0x10beb8` runs the death script
+before the named-item drop call: the portal gate becomes 1 and save
+inhibition clears even for quiet death, which suppresses the drop call.
+The item-spawn callee remains stubbed. Portal prompt/menu execution reaches
+a pending request; full loader `0x1e55c0`, arrival, physical boss death,
+item pickup, save behavior and playable completion remain **Unknown**.
 
 ## Authored object census and required constructors
 
@@ -131,7 +136,7 @@ leave residency, loaded model, animation and fighting behavior Unknown.
 | `Blocker`, `PushTrigger`, `Trigger`, `Weather`, `smokeBomb` | Bounded direct constructor probes make zero named `res_find` calls with lower services stubbed. They may still need effect, world or script resources later. |
 | `Rat`, `Seagull` | Their `Critter` constructor has no class-definition pointer and formats resource names dynamically. Matching member presence and exact ordered requests are **Unknown** to this difftest. |
 | `gbarrel`, `lavakeg`, `gearbox` | They use `AutoContainer` or `AutoChest` fallback constructors. Exact instance request strings and archive residency are **Unknown** because the stubbed formatting service does not resolve them. |
-| `NPC`, `Portal`, `Savepoint`, lights and markers | Instance-specific resource requests are **Unknown** here. The `innovat2` portal script link is asserted; destination behavior remains Unknown. |
+| `NPC`, `Portal`, `Savepoint`, lights and markers | Instance-specific resource residency remains **Unknown** here. The route handoff executes the final Portal's predicate/menu request; completed travel remains Unknown. |
 
 **Native snapshot, 2026-10-23.** The inspected
 `open-champions/worktrees/playable-integration` script host has a
@@ -156,13 +161,13 @@ IronGuardian construction here.
    `innovat1` load. Preserve all 699 object records and metadata side
    effects, the seven conditional `Player1` markers and the real level seed.
    Refuse any unsupported selected class explicitly.
-2. Before native objective claims, assert each NPC, `PushTrigger` and
-   `innovat2` `Trigger` link per record, and locate each claimed call cell
-   inside its parsed entry bounds. Then execute the start, two NPC branches,
-   turn-in/deferred grant, boss/portal wrappers, and both boss gate states
-   through the original script host on controlled state. Compare native
-   effects and prove both Trigger links reach their entries. Static cells
-   alone do not establish ordering or reachability.
+2. Use the now-asserted per-record links and contained calls plus the
+   executed start, NPC choices, turn-in/deferred grant and boss/portal
+   contracts in `mission2-route.md`. Preserve completion-at-consumption,
+   the distinct first/repeat boss behavior and original dialog selection.
+   Physical NPC/Trigger dispatch and actual inventory effects still need
+   original/native comparisons; the controlled fixtures do not settle
+   those integration boundaries.
 3. Port blockers, three character-light markers, save points, triggers,
    portals, NPC dialog hooks, weather, smoke effects, PowderKegs,
    AutoContainers and AutoChests with their property/resource and save
@@ -176,13 +181,18 @@ IronGuardian construction here.
    `IronGuardian` constructor, Droid spawn budget, boss AI, junk/missile
    attacks, death and `coppersprocket` drop in `innovat2`. Preserve the
    shared object/grid/seed and real player damage, item pickup and credit.
-6. Execute the two NPC choice paths, quest add/turn-in, mission grant,
-   cutscenes, boss/save inhibit gate, portal condition and every linked
-   `PushTrigger` across save/load. Compare actual original and native
-   transitions, including what each `newWorld(0)` resolves to. A function
-   difftest or direct level request does not establish a playable route.
+6. Compose the researched NPC choices, journal/turn-in, mission grant,
+   boss/save gate and travel request with real cutscenes, inventory and
+   every physical exit across save/load. Both `newWorld(0)` string-offset
+   destinations are now established. Full original/native loading and
+   carried-state arrival remain unproved; pending-name parity alone does
+   not establish a playable route.
 
 ## Verification
+
+The following are retained **2026-10-23 historical results and limits**.
+The 2026-10-27 link/VM/dialog/travel results and remaining limits supersede
+their unknowns as described in [mission2-route.md](mission2-route.md).
 
 Run with `PYTHONDONTWRITEBYTECODE=1`, serially under machine load:
 
