@@ -135,6 +135,8 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m tools.difftest_exit_travel --seed 20973
 PYTHONDONTWRITEBYTECODE=1 python3 -m tools.difftest_exit_travel --seed 7
 ```
 
-Each seed passes with zero failures. Entry calls are the probed functions
-only; nested original callees are not added to that count. Counts and the
-retained logs are in `work/cursor-report.md`.
+Each seed passes with zero failures: **54 entry calls / 234 assertions**,
+10 act cases, 4 qualified-name cases, 15 directory cases and 15 loader cases.
+Entry calls are the probed functions only; nested original callees are not
+added to that count. Retained logs are
+`local/exit-travel-r4/travel-20973.log` and `travel-7.log`.
