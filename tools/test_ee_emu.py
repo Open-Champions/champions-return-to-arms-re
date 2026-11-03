@@ -658,6 +658,31 @@ class ControlTests(unittest.TestCase):
         emu.call(BASE)
         self.assertEqual(seen, [60])
 
+    def test_deci2_kputs_is_opt_in_and_rejects_other_numbers(self):
+        kputs = [addiu(V1, ZERO, 124), addiu(A0, ZERO, 0x10), R(0x0C), addiu(V0, V0, 5)]
+        with self.assertRaises(CpuTrap) as unhandled:
+            machine(kputs)
+        self.assertEqual(str(unhandled.exception),
+                         'SYSCALL at 0x%08x (v1 = 124); no kernel is modelled' % (BASE + 8))
+        emu = machine(kputs, run=False)
+        emu.install_deci2_kputs()
+        self.assertEqual(emu.call(BASE), 5)
+        self.assertEqual(emu.r[V0], 5)
+        with self.assertRaises(EmuError):
+            emu.install_deci2_kputs()
+        other = machine([addiu(V1, ZERO, 124), addiu(A0, ZERO, 1), R(0x0C)], run=False)
+        other.install_deci2_kputs()
+        with self.assertRaises(CpuTrap) as rejected:
+            other.call(BASE)
+        self.assertIn('v1 = 124, a0 = 1', str(rejected.exception))
+        self.assertIn('outside the observed kputs contract', str(rejected.exception))
+        plain = machine([addiu(V1, ZERO, 60), R(0x0C)], run=False)
+        plain.install_deci2_kputs()
+        with self.assertRaises(CpuTrap) as other_syscall:
+            plain.call(BASE)
+        self.assertEqual(str(other_syscall.exception),
+                         'SYSCALL at 0x%08x (v1 = 60); no kernel is modelled' % (BASE + 4))
+
     def callee_program(self):
         """v0 = callee(a0 + 1) + 1000, where callee(x) = x * 2 and stores x at DATA."""
         return [R(0x25, S0, RA, ZERO),          # 0: s0 = ra
