@@ -6,6 +6,9 @@ bits, the gold split and the script-facing experience wrapper stay in
 tools/ref_natives.py. This module is the rest of one campaign step: the
 mission menu, which act a level name belongs to, the hub name, the experience
 body, clearing a quest list, and which flag-39 items an act change keeps.
+The later helpers at the bottom model the equipped-pointer fixups inside a
+removal, the bag-2 quest-item copy, and an arena wipe. They do not replace
+the menu or the act helpers above.
 
 docs/quests.md is the write-up. tools/difftest_quests.py runs the original
 functions. tools/test_ref_quests.py checks this file without an executable.
@@ -385,3 +388,152 @@ def flag39_remaining(items):
             continue
         kept.append((name, int(flags)))
     return kept
+
+
+def _s8(value):
+    value &= 0xFF
+    return value - 256 if value >= 128 else value
+
+
+def _flag39(flags):
+    return ((int(flags) >> QUEST_ITEM_BIT) & 1) == 1
+
+
+class BagItem(object):
+    """One bag cell the removal and share helpers can point at.
+
+    `equip` is the signed definition byte at +0x1c. `stamp` is the halfword
+    at +0x22. Identity is the object, which is how an equipment pointer names
+    a cell before a slide moves it.
+    """
+
+    def __init__(self, name, flags, stack=1, equip=0, stamp=0):
+        self.name = name
+        self.flags = int(flags)
+        self.stack = int(stack) & 0xFFFF
+        self.equip = _s8(equip)
+        self.stamp = int(stamp) & 0xFFFF
+
+
+class ItemRecord(object):
+    """The bag and equipment words one removal rewrites. Other record fields
+    are not stored here."""
+
+    def __init__(self):
+        self.bags = [[], [], []]
+        self.equip = [None] * 17
+        self.weapons = [None, None]
+        self.second = None
+        self.active = 0
+        self.weapon_class = 0
+
+
+def _clear_named_slot(record, item, slot):
+    if record.equip[slot] is item:
+        record.equip[slot] = None
+        return True
+    return False
+
+
+def remove_bag_item(record, bag, index):
+    """inventory_removeItem for a menu that is closed.
+
+    Clears the equipment slot the definition byte names, sets weapon class 5
+    when the active weapon word names the cell, then slides the tail down and
+    decrements those stamps. The grid refresh and player_recalcStats are not
+    part of this helper: the differential test stubs both.
+    """
+    items = record.bags[bag]
+    item = items[index]
+    es = item.equip
+    if (es - 5) & 0xFFFFFFFF < 2:
+        if not _clear_named_slot(record, item, 5):
+            _clear_named_slot(record, item, 6)
+    elif (es - 14) & 0xFFFFFFFF < 2:
+        if not _clear_named_slot(record, item, 14):
+            _clear_named_slot(record, item, 15)
+    else:
+        if 0 <= es < 17:
+            _clear_named_slot(record, item, es)
+    active = _s8(record.active)
+    if 0 <= active < 2 and record.weapons[active] is item:
+        record.weapon_class = 5
+    if record.weapons[0] is item:
+        record.weapons[0] = None
+    elif record.weapons[1] is item:
+        record.weapons[1] = None
+    tail = items[index + 1:]
+    del items[index]
+    for kept in tail:
+        kept.stamp = (kept.stamp - 1) & 0xFFFF
+    return record
+
+
+def drop_unkept_flag39(record):
+    """player_removeFlag39Items for one record, with the removal fixups.
+
+    Walks bag 0, then 1, then 2. An item with bit 39 set is removed unless
+    quest_item_kept says the name stays. Removing does not advance the index,
+    because the tail slides down.
+    """
+    for bag in range(3):
+        index = 0
+        while index < len(record.bags[bag]):
+            item = record.bags[bag][index]
+            if _flag39(item.flags) and not quest_item_kept(item.name):
+                remove_bag_item(record, bag, index)
+            else:
+                index += 1
+    return record
+
+
+def share_bag2_quest_items(records, source_slot, num_players):
+    """inventory_shareQuestItems.
+
+    Captures the source slot's bag-2 items that have bit 39 set. Every other
+    slot below num_players loses its own bag-2 items with that bit, then
+    receives copies of the captured list. Bags 0 and 1 are not walked. The
+    source record is not modified. A copy is a new cell, so it is not equipped.
+    """
+    source = records[source_slot]
+    captured = []
+    for item in source.bags[2]:
+        if _flag39(item.flags):
+            captured.append(BagItem(item.name, item.flags, item.stack, item.equip, 0))
+    for slot in range(int(num_players)):
+        if slot == source_slot:
+            continue
+        record = records[slot]
+        index = 0
+        while index < len(record.bags[2]):
+            if _flag39(record.bags[2][index].flags):
+                remove_bag_item(record, 2, index)
+            else:
+                index += 1
+        for item in captured:
+            clone = BagItem(item.name, item.flags, item.stack, item.equip, len(record.bags[2]))
+            record.bags[2].append(clone)
+    return records
+
+
+def remove_all_bag_items(record):
+    """player_removeAllItems. One pass: the first cell of each non-empty bag.
+
+    A second cell in that bag stays. The call site at 0x304e9c repeats the
+    call once per player slot; it does not repeat it until a bag is empty.
+    """
+    for bag in range(3):
+        if record.bags[bag]:
+            remove_bag_item(record, bag, 0)
+    return record
+
+
+def cleanup_runs(changed, frontend, latch, death_task):
+    """The act-change clear inside mainloop_loadRequestedWorld.
+
+    changed is save_actChanged's result. A frontend entry does not ask.
+    A nonzero latch or a running death task skips the clear after the ask.
+    """
+    if frontend:
+        return False
+    return bool(changed) and not latch and not death_task
