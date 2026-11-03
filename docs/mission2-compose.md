@@ -27,14 +27,17 @@ Evidence: [reset controls](../tools/difftest_mission2_compose.py#L63-L93),
 ## Arrival insertion keeps that hub
 
 **Observed / Executed:** `jumpgate_addCurrentLevel` `0x27db60` reads the
-qualified current level through `0x1ec0f0`. A name that is already listed is
-left as it is, and `0x1ec300` is not called, even when that name is the other
-hub. A new name that is not `hub` or `hub2`, added while the list also has
-neither, is appended and `0x1ec300` is not called. If the new name or an
-existing entry is one of those two hub names, `0x1ec300` runs first: every
-hub entry other than its result is removed, the other hub name is not
-inserted, and a new ordinary name is then appended.
-Evidence: [insertion samples](../tools/difftest_mission2_compose.py#L94-L130).
+qualified current level through `0x1ec0f0`. A name that is already listed
+returns unchanged, and `0x1ec300` is not called, even when that name is the
+other hub. A name that is not already listed is appended. The later walk
+calls `0x1ec300` for an entry that is `hub` or `hub2`. The first such entry
+that is not the resolver result is removed, and the function returns. A
+second copy of that other hub name stays. An ordinary new name remains the
+appended entry when that one removal does not delete it. The 14 committed
+samples contain at most one non-matching hub name, so their final lists are
+the same under this order.
+Evidence: [insertion samples](../tools/difftest_mission2_compose.py#L94-L130),
+[model](../tools/ref_mission2_compose.py#L24-L42).
 
 **Observed / Executed:** with the latch clear, reset while the current level
 is the resolver hub, followed by insertion at `innovat1`, `inmine1`,

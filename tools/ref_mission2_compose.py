@@ -24,20 +24,20 @@ def reset_destinations(latch, previous, hub):
 def add_current(entries, current, hub):
     """jumpgate_addCurrentLevel 0x27db60.
 
-    A current name that is already present is left untouched, and the resolver
-    is not consulted. A new name is appended. When the new name or an existing
-    entry is hub or hub2, the original reads the resolver first: every hub
-    entry other than that result is removed, and the other hub name is not
-    inserted. `hub` is that result.
+    A current name that is already present returns immediately, and the
+    resolver is not consulted. Otherwise the name is appended, then the walk
+    removes the first hub or hub2 entry that is not the resolver result and
+    returns. A second copy of that other hub name stays. `hub` is the
+    resolver result.
     """
     entries = list(entries)
     if current in entries:
         return entries
-    entries = [name for name in entries if name not in HUBS or name == hub]
-    if current in HUBS and current != hub:
-        return entries
-    if current not in entries:
-        entries.append(current)
+    entries.append(current)
+    for index, name in enumerate(entries):
+        if name in HUBS and name != hub:
+            del entries[index]
+            break
     return entries
 
 
