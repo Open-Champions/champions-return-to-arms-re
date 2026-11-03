@@ -683,6 +683,40 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(str(other_syscall.exception),
                          'SYSCALL at 0x%08x (v1 = 60); no kernel is modelled' % (BASE + 4))
 
+    def test_terminate_thread_is_opt_in_and_rejects_a_caller_that_reads_v0(self):
+        terminate = [addiu(V1, ZERO, 37), R(0x0C), addiu(V0, V0, 5)]
+        with self.assertRaises(CpuTrap) as unhandled:
+            machine(terminate)
+        self.assertEqual(str(unhandled.exception),
+                         'SYSCALL at 0x%08x (v1 = 37); no kernel is modelled' % (BASE + 4))
+        emu = machine(terminate, run=False)
+        emu.install_terminate_thread()
+        with self.assertRaises(EmuError):
+            emu.install_terminate_thread()
+        emu.hook(BASE + 4, lambda e: e.set_reg('ra', 0x17e480))
+        emu.hook(BASE + 8, lambda e: e.set_reg('ra', EE.RETURN_ADDR))
+        self.assertEqual(emu.call(BASE), 5)
+        self.assertEqual(emu.writes, [])
+        signed = machine(terminate, run=False)
+        signed.install_terminate_thread()
+        signed.hook(BASE + 4, lambda e: e.set_reg('ra', 0x35f3bc))
+        with self.assertRaises(CpuTrap) as observed:
+            signed.call(BASE)
+        self.assertIn('v1 = 37, ra = 0x0035f3bc', str(observed.exception))
+        self.assertIn('outside the observed TerminateThread contract', str(observed.exception))
+        both = machine([addiu(V1, ZERO, 124), addiu(A0, ZERO, 0x10), R(0x0C),
+                        addiu(V0, V0, 1)], run=False)
+        both.install_terminate_thread()
+        both.install_deci2_kputs()
+        self.assertEqual(both.call(BASE), 1)
+        other = machine([addiu(V1, ZERO, 60), R(0x0C)], run=False)
+        other.install_terminate_thread()
+        other.install_deci2_kputs()
+        with self.assertRaises(CpuTrap) as still:
+            other.call(BASE)
+        self.assertEqual(str(still.exception),
+                         'SYSCALL at 0x%08x (v1 = 60); no kernel is modelled' % (BASE + 4))
+
     def callee_program(self):
         """v0 = callee(a0 + 1) + 1000, where callee(x) = x * 2 and stores x at DATA."""
         return [R(0x25, S0, RA, ZERO),          # 0: s0 = ra

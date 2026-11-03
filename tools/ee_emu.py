@@ -44,7 +44,9 @@ that touches memory nobody mapped (MemoryFault), an unaligned access, an integer
 trap, BREAK, SYSCALL and an integer division by zero (which does not trap on this CPU but
 has no defined result).  SYSCALL still stops unless the caller installed
 syscall_handler.  install_deci2_kputs models only syscall 124 function 0x10,
-the level-teardown diagnostic.  Every other number still raises CpuTrap.
+the level-teardown diagnostic.  install_terminate_thread models only syscall 37
+at the callers that do not read v0.  Every other number still raises CpuTrap.
+The two opt-ins compose; neither is installed by default.
 
 Floating point (where this is an approximation)
   The R5900 FPU is not IEEE 754.  There are no NaNs, infinities or denormals: an exponent
@@ -592,6 +594,8 @@ class EE:
         self.trace = None               # set to [] to record every executed pc
         self.notes = []                 # things worth telling the reader (e.g. divide by 0)
         self.syscall_handler = None
+        self._deci2_kputs = False
+        self._terminate_thread = False
         self.div_zero = 'stop'          # or 'r5900': continue with the reported HI/LO values
         self.patches = {}               # address -> original word
         self.stack_lo, self.stack_hi = self.STACK_LO, self.STACK_HI
@@ -667,14 +671,64 @@ class EE:
         v0 with 1, so this path does not observe the kernel result.  The retail
         result and the bytes of the string are therefore not part of the contract.
         This handler writes v0 = 0 and does not read guest memory.  Any other
-        syscall number raises the same CpuTrap as an unhandled syscall.  Any other
-        Deci2 function number, including 1, 3 and 4 at 0x35e218, 0x35e288 and
-        0x35e2b8, raises CpuTrap and names a0.  Assigning the bound method
-        would pass the emulator twice; this stores the unbound function.
+        syscall number raises the same CpuTrap as an unhandled syscall, unless
+        install_terminate_thread was also opted in, which adds only syscall 37
+        at a caller that does not read v0.  Any other Deci2 function number,
+        including 1, 3 and 4 at 0x35e218, 0x35e288 and 0x35e2b8, raises CpuTrap
+        and names a0.  Assigning the bound method would pass the emulator twice;
+        this stores the unbound dispatcher.
         """
-        if self.syscall_handler is not None:
+        if self._deci2_kputs:
             raise EmuError('a syscall handler is already installed')
-        self.syscall_handler = EE.deci2_kputs
+        self._deci2_kputs = True
+        self.syscall_handler = EE._dispatch_opt_in_syscall
+
+    def install_terminate_thread(self):
+        """Opt in to TerminateThread where the caller does not read v0.
+
+        Observed: wrapper 0x352830 loads v1 = 0x25 (37), executes SYSCALL at
+        0x352834 and returns through jr ra.  Nine jal sites pass a thread id in
+        a0.  Eight do not read v0.  Their return addresses are 0x17de0c and
+        0x17e480 (the id word at 0x7cfd04, then 0x353b20 with that id), 0x17fe68
+        (same id, then return), 0x31ef38 (the id word at 0x8eafe4, then
+        0x361250), 0x36782c (then a tail call to DeleteThread), and 0x368e2c,
+        0x3a02cc and 0x3a1270 (then DeleteThread of the same id).  The ninth
+        return, 0x35f3bc, compares v0 with -1 and is rejected: the retail value
+        is unknown.  This handler writes v0 = 0 and does not read or write
+        guest memory.  That 0 is not a recovered kernel result, and the id word
+        is left unchanged, so this does not claim the thread was stopped.  Any
+        other syscall number, and syscall 37 with any other return address,
+        still raises CpuTrap.  Composes with install_deci2_kputs.
+        """
+        if self._terminate_thread:
+            raise EmuError('TerminateThread handler is already installed')
+        self._terminate_thread = True
+        self.syscall_handler = EE._dispatch_opt_in_syscall
+
+    # Return addresses of jal TerminateThread whose following instructions do not read v0.
+    _TERMINATE_IGNORED_RA = frozenset((
+        0x17de0c, 0x17e480, 0x17fe68, 0x31ef38,
+        0x36782c, 0x368e2c, 0x3a02cc, 0x3a1270,
+    ))
+
+    def _dispatch_opt_in_syscall(self):
+        number = s64(self.r[3])
+        if number == 124 and self._deci2_kputs:
+            self.deci2_kputs()
+            return
+        if number == 37 and self._terminate_thread:
+            self.terminate_thread()
+            return
+        raise CpuTrap('SYSCALL at 0x%08x (v1 = %d); no kernel is modelled'
+                      % (self.cur, number))
+
+    def terminate_thread(self):
+        ra = self.r[31] & M32
+        if ra not in self._TERMINATE_IGNORED_RA:
+            raise CpuTrap('SYSCALL at 0x%08x (v1 = 37, ra = 0x%08x); '
+                          'caller reads v0 or is outside the observed TerminateThread contract'
+                          % (self.cur, ra))
+        self.r[2] = 0
 
     def deci2_kputs(self):
         number = s64(self.r[3])
