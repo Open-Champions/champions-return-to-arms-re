@@ -17,6 +17,10 @@ class RouteList(unittest.TestCase):
         self.assertEqual(C.reset_destinations(1, previous, 'hub2'), previous)
         self.assertEqual(C.reset_destinations(0, previous, 'hub'), ['hub'])
 
+    def test_a_registered_task_blocks_script_entry_at_counter_zero(self):
+        self.assertFalse(C.scripts_admitted(True))
+        self.assertTrue(C.scripts_admitted(False))
+
     def test_route_keeps_the_resolver_hub_ahead_of_the_four_levels(self):
         for hub in C.HUBS:
             self.assertEqual(C.route_list(hub, M.LEVELS), [hub, *M.LEVELS])

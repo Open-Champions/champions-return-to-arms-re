@@ -17,8 +17,10 @@ the new tests, controls and precise boundaries. The
 hub second-offer binding, trigger action/menu request, and controlled hub-return
 requests. The [2026-11-03 route-list continuation](mission2-compose.md) builds
 the return list with the original reset and current-level insertion, then
-stops that hub request at the same pre-load boundary. Full loading, physical
-use, and a same-session offer remain Unknown.
+stops that hub request at the same pre-load boundary. The same note runs the
+second offer, the mission menu, and that stop in one emulator, and applies
+the audited counter-0 menu lifetime without re-deriving it. Full loading,
+physical use, and the hub2 dialog choices remain Unknown.
 
 The four archives and their object/script records were **Observed** in the
 owner's read-only disc. `tools/difftest_mission2.py` asserts the counts,

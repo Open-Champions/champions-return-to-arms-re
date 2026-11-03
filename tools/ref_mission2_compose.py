@@ -41,6 +41,15 @@ def add_current(entries, current, hub):
     return entries
 
 
+def scripts_admitted(task_registered):
+    """Dialog script entry follows task_isRunning, including a zero counter.
+
+    The zero-counter registration is the audited mission-unlocks result at
+    e5c6176. This does not re-derive the cancellation countdown.
+    """
+    return not task_registered
+
+
 def route_list(hub, levels):
     """Reset, then insertion at each named arrival. `levels` are ordinary route names."""
     entries = reset_destinations(0, [], hub)

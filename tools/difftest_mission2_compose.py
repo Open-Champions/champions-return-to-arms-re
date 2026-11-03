@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
-"""Original hub-list, final-portal request and pre-load boundary for mission 2.
+"""Original hub list, same-session offer, and hub-return stop for mission 2.
 
-The destination list is produced by jumpgate_resetDestinations and
-jumpgate_addCurrentLevel. The harness does not plant the hub name.
-Dialog admission and a same-session offer are separate from this list proof.
-Run with unittest preloaded. Private inputs stay under local/.
+The destination list comes from jumpgate_resetDestinations and
+jumpgate_addCurrentLevel. The offer dialog, trigger, and mission menu share
+one emulator. Run with unittest preloaded. Private inputs stay under local/.
 """
 import argparse
 import hashlib
 import itertools
+import mmap
+import os
 from pathlib import Path
 
 import ref_mission2 as M
 import ref_mission2_compose as C
 import ref_mission2_travel as R
+import difftest_mission2_offer as O
 import difftest_mission2_travel as T
 from difftest_mission2 import SHA256, ScriptCheck, props_for, put
+from dump_tables import objects_from_file
+from find_hosts import iso_files
+from gob import gob_entries, lmp_entries
+import scr
 
 LATCH = 0x4F8F28
 RESET, ADD, RESOLVE = 0x27DB00, 0x27DB60, 0x1EC300
@@ -242,24 +248,216 @@ def boundary(rig, pending, current):
     rig.e.unhook(0x1E55C0)
 
 
-def run(executable, source, seed):
+MENU_REAL = {
+    0x14DCC8, 0x231520, 0x2316FC, 0x19E4A0, 0x19E5E8, 0x19E664, 0x19E760,
+    0x19E798, 0x1EC5D0, 0x320EDC, 0x1E55C0, 0x22FBC0,
+}
+QUESTS = 0x86DA80
+RUN_NAME, DIALOG_NAME = 0x5410E8, 0x540C70
+
+
+def prepare_menu(probe):
+    probe.rig.emu.follow.addresses |= set(O.S.MENU_FOLLOW) | MENU_REAL
+    for address in (0x17365C, 0x214230, 0x1EB000, 0x13E150, 0x18CBFC, 0x18EBB8):
+        probe.rig.emu.stub(address, ret=0, name='explicit menu host')
+    probe.rig.emu.stub(0x13DD40, ret=1, name='active slot')
+    probe.rig.emu.stub(0x1DF5EC, ret=0, name='fade')
+    for address in MENU_REAL:
+        probe.rig.emu.unhook(address)
+
+
+def close_dialog(probe):
+    assert probe.mem.u8(O.H.D.A['anm_ready']) == 1
+    probe.model.on_end(probe.model_host)
+    probe.dialog.message([O.H.R.MSG_END])
+    probe.compare()
+    probe.rig.emu.unhook(0x22FBC0)
+    assert probe.rig.call(0x22FBC0) == 0
+    assert probe.mem.u32(T.TASK_COUNT) == 0
+
+
+def changed_prefix(before, after):
+    assert len(before) == len(after)
+    diffs = [i for i in range(len(before)) if before[i] != after[i]]
+    assert diffs == list(range(15))
+
+
+def reopen(probe, hub, actor, controls, admitted):
+    probe.entered, probe.writes = [], []
+    probe.dialog.host.mission_menu = probe.model_host.mission_menu = int(not admitted)
+    probe.mem.write(0x41B721, hub.encode('latin1') + b'\0')
+    msg = O.H.R.start_message(actor, 0, *controls, (0, 0, 0), 0, 0)
+    probe.model.on_open(probe.model_host, msg, probe.nodes, level=hub)
+    probe.dialog.message(msg)
+    probe.compare()
+    queries = [c for c in probe.rig.emu.calls if c.target == 0x19E5E8 and not c.stubbed]
+    assert queries and queries[0].args[0] == DIALOG_NAME
+    assert probe.mem.cstr(DIALOG_NAME) == probe.mem.cstr(RUN_NAME)
+    return probe.mem.s32(O.H.D.A['node_index'])
+
+
+def offer_session(executable, iso, seed):
+    image, dialog, hub, actor, controls, row, key = O.inputs(executable, iso)
+    probe = O.H.Probe(executable, image, dialog, seed, 3, 0, 0)
+    before = probe.mem.read(O.H.PLAYER, O.H.STRIDE * 4)
+    assert O.open_bound(probe, hub, actor, controls) == O.R.node(3, 0)
+    assert not probe.writes
+    probe.confirm(0)
+    assert probe.writes == [(0, 2, 1)]
+    close_dialog(probe)
+    granted = bytearray(before)
+    granted[O.H.MISSION + 2] |= 1
+    assert probe.mem.read(O.H.PLAYER, len(granted)) == bytes(granted)
+    prepare_menu(probe)
+    assert probe.run_entry(key) == 1
+    quests = probe.mem.read(QUESTS, 0x2000)
+    obj = probe.rig.emu.alloc(0x80)
+    probe.mem.w32(obj + 0x2C, props_for(probe.rig.emu, row))
+    probe.rig.call(0x14DCC8, obj, 1)
+    changed_prefix(quests, probe.mem.read(QUESTS, 0x2000))
+    probe.game.mem.write(QUESTS, probe.mem.read(QUESTS, 0x2000))
+    assert probe.mem.u32(T.TASK_COUNT) == 2
+    assert probe.mem.u32(T.TASKS) == 0x2316FC and probe.mem.u32(T.TASKS + 8) == RUN_NAME
+    check = ScriptCheck(image)
+    entrance = check.call_values(0x4A44, 'setEntrance', 1, (0,))[0]
+    assert probe.mem.cstr(0x4F8468) == entrance
+    model = O.SREF.new_menu()
+    model['orient'] = probe.mem.u8(O.S.ORIENT)
+    carried = probe.mem.read(O.H.PLAYER, O.H.STRIDE * 4)
+    carried_quests = probe.mem.read(QUESTS, 0x2000)
+    destination = probe.mem.cstr(probe.mem.u32(0x4FE540 + 0x34 + 8))
+    assert destination == 'innovat1'
+    for tick in range(26):
+        button = 0x40 if tick == 17 else 0
+        fade = 128 if tick >= 22 else 0
+        probe.mem.w32(0x41BFE4, button)
+        probe.rig.emu.stub(0x1DF5EC, ret=fade, name='fade')
+        probe.rig.call(0x2316FC)
+        O.R.menu_tick(model, button, True, destination, fade)
+        assert O.S.snap(probe.mem) == O.S.model_snap(model)
+        assert probe.mem.read(O.H.PLAYER, len(carried)) == carried
+    assert probe.mem.cstr(O.S.PENDING) == destination and probe.mem.u8(O.S.ORIENT) == 255
+    assert probe.mem.read(QUESTS, 0x2000) == carried_quests
+    for address in (0x19D9F8, 0x21777C, 0x217F70, 0x2247EC, 0x216588):
+        probe.rig.emu.stub(address, ret=0, name='boundary host')
+
+    def stop(emu):
+        assert emu.mem.cstr(emu.r[4] & 0xFFFFFFFF) == destination
+        raise T.Boundary()
+
+    probe.rig.emu.hook(0x1E55C0, stop)
+    try:
+        probe.rig.call(0x320EDC)
+        raise AssertionError('offer load boundary was not reached')
+    except T.Boundary:
+        pass
+    assert (probe.mem.cstr(T.PENDING), probe.mem.cstr(T.CURRENT), probe.mem.cstr(T.SUB),
+            probe.mem.cstr(T.PREVIOUS), probe.mem.u8(T.ORIENT), probe.mem.u8(0x41B7C1)) == R.request_names(
+                destination, hub, '', 255)
+    assert probe.mem.read(O.H.PLAYER, len(carried)) == carried
+    assert probe.mem.read(QUESTS, 0x2000) == carried_quests
+    assert probe.rig.emu.pc == 0x1E55C0
+    return carried_quests
+
+
+def admit_session(executable, iso, seed):
+    """Counter 16 is the audited last positive value, constructed here."""
+    image, dialog, hub, actor, controls, row, key = O.inputs(executable, iso)
+    probe = O.H.Probe(executable, image, dialog, seed, 3, 0, 0)
+    assert O.open_bound(probe, hub, actor, controls) == 7
+    probe.confirm(0)
+    close_dialog(probe)
+    prepare_menu(probe)
+    assert probe.run_entry(key) == 1
+    obj = probe.rig.emu.alloc(0x80)
+    probe.mem.w32(obj + 0x2C, props_for(probe.rig.emu, row))
+    probe.rig.call(0x14DCC8, obj, 1)
+    probe.game.mem.write(QUESTS, probe.mem.read(QUESTS, 0x2000))
+    name = probe.mem.u32(T.TASKS + 8)
+    probe.mem.w8(0x8E2EFC, 4)
+    probe.mem.w32(0x8E2F04, 16)
+    probe.mem.w32(0x8E2F00, 0)
+    probe.mem.w32(0x41BFE4, 0)
+    probe.rig.call(0x2316FC)
+    assert probe.mem.s32(0x8E2F04) == 0 and probe.mem.u32(T.TASK_COUNT) == 2
+    assert probe.rig.call(0x19E5E8, name) == 1
+    assert not C.scripts_admitted(True)
+    node = reopen(probe, hub, actor, controls, admitted=False)
+    assert node == 7 and not probe.entered and not probe.writes
+    probe.rig.call(0x2316FC)
+    assert probe.mem.s32(0x8E2F04) == 0 and probe.mem.u8(0x8E2EFC) == 4
+    assert probe.mem.u32(T.TASK_COUNT) == 0
+    assert probe.rig.call(0x19E5E8, name) == 0
+    assert C.scripts_admitted(False)
+    assert reopen(probe, hub, actor, controls, admitted=True) == O.R.node(3, 1)
+    probe.confirm(1)
+    assert not probe.writes
+
+
+def lump_files(blob, level):
+    for name, off, size in gob_entries(blob):
+        if name.lower() == level + '.lmp':
+            lump = blob[off:off + size]
+            return {entry: lump[at:at + n] for entry, at, n in lmp_entries(lump)}
+    raise AssertionError('level lump missing')
+
+
+def archive(iso, level):
+    with open(iso, 'rb') as stream, mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as disc:
+        matches = [item for item in iso_files(disc)
+                   if os.path.basename(item[0]).lower() == level + '.gob']
+        assert len(matches) == 1
+        _path, lba, size = matches[0]
+        return disc[lba * 2048:lba * 2048 + size]
+
+
+def hub2_boundary(iso):
+    hub_image = next(value for name, value in lump_files(archive(iso, 'hub'), 'hub').items()
+                     if name.lower().endswith('.scr'))
+    blob = archive(iso, 'hub2')
+    files = lump_files(blob, 'hub2')
+    image = next(value for name, value in files.items() if name.lower().endswith('.scr'))
+    check = ScriptCheck(image)
+    rows = objects_from_file('hub2.gob', blob)
+    assert image != hub_image
+    assert 0x7B0 not in set(check.entries.values())
+    assert 0x734 not in set(check.entries.values())
+    npc = [row for row in rows if row['class'] == 'NPC']
+    trigger = [row for row in rows if row['class'] == 'PushTrigger']
+    assert len(npc) == len(trigger) == 1
+    assert any(item.startswith('dialogscript=') for item in npc[0]['properties'].split(';'))
+    entries = {name: off for off, name in scr.parse(image)['internals']}
+    props = trigger[0]['properties'].split(';')
+    action = entries[next(item[7:] for item in props if item.startswith('action='))]
+    key = entries[next(item[4:] for item in props if item.startswith('key='))]
+    assert (action, key) == (0x54, 0x98)
+    return len(rows)
+
+
+def run(executable, source, iso, seed):
     assert hashlib.sha256(Path(executable).read_bytes()).hexdigest() == SHA256
     fixtures = T.inputs(Path(source))
     listed_cases = check_reset_and_insert(executable, seed)
     portal_cases, snapshots = portal_return(executable, fixtures[3], seed)
+    offer_session(executable, iso, seed)
+    admit_session(executable, iso, seed)
+    hub_records = hub2_boundary(iso) if seed == 20973 else 0
     print('PASS seed=%d route-list cases=%d portal returns=%d counter comparisons=%d' % (
         seed, listed_cases, portal_cases, snapshots))
-    print('LIMIT same-session offer, menu-task admission, physical use, '
-          'full loader and arrival remain open in this file')
+    print('PASS seed=%d same-session offer, menu request, load stop, and counter-0 admission' % seed)
+    if hub_records:
+        print('PASS hub2 records=%d; ordinary-hub offer entries are absent' % hub_records)
+    print('LIMIT physical use, helper 0x18ebb8, hub2 dialog choices, loader body, and arrival remain open')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('elf')
     parser.add_argument('source')
+    parser.add_argument('iso')
     parser.add_argument('--seed', type=int, default=20973)
     args = parser.parse_args()
-    run(args.elf, args.source, args.seed)
+    run(args.elf, args.source, args.iso, args.seed)
 
 
 if __name__ == '__main__':
