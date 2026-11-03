@@ -124,6 +124,158 @@ nonzero variable selects the node-0 active branch ahead of node 7. In particular
 setting V(1) nonzero on raw mission byte 1 changes the selected node from 3 to 0;
 it does not authorize a new mission. Zero and signed nonzero controls are distinct.
 
+## Mission-menu cancellation and task lifetime (2026-11-02)
+
+**Observed / Executed, bounded:** `tools/difftest_mission_lifecycle.py` adds
+an independent lifetime extension in `tools/ref_mission_lifecycle.py` without
+changing any existing reference API or test vector. It runs the original
+`missionMenu_open` `0x231520`, `missionMenu_run` `0x2316fc`, `task_add`
+`0x19e4a0`, `task_remove` `0x19e664`, `task_isRunning` `0x19e5e8`, and
+run-phase scheduler `tasks_call(1,-1)` `0x19e798` in `tools/ee_emu.py`.
+The executable digest is pinned; implicit fallback calls and stubbed original
+entrypoints are rejected. This follow-up supersedes the cancellation-countdown
+Unknown in `docs/quests.md:193,357-358`; it does not replace the wider campaign
+Unknowns above or below. The earlier probe's save/load exclusion still applies
+to that probe, not to the bounded save-body experiments described here.
+
+### Cancellation and the observable end
+
+**Observed / Executed:** state 4 subtracts 16 at `0x232068`, stores that
+result at `0x232074`, and continues closing if the result is **nonnegative**
+(`0x232070`). It does not end merely because the counter equals zero.
+With normal entry counter 127, the eight subsequent scheduled calls leave
+111, 95, 79, 63, 47, 31, 15, then 0. The eighth call first writes -1, then
+clamps to zero at `0x2320a4`. The cancel-input call only enters state 4;
+it is not one of these eight decrements. Circle, select and inactive-slot
+closure were executed offline and with the network-mode byte set, using
+explicit host slot-status responses (no network session).
+
+**Observed / Executed:** on that negative-result call, if the word at
+`0x8e2f00` is zero, the original requests `net_lockLocalInput(chooser,5)`
+(call `0x2320e0`), removes the run task (call `0x2320ec`) and removes the
+draw task (call `0x2320f8`). It clears pause `0x41b4f4` at `0x2320a8`.
+The state byte remains 4, the counter remains 0, the word at `0x8e2f00`
+remains 0, and pending destination `0x41b6d0` and orientation `0x41b720`
+retain their previous values. The menu-open flag is cleared on the first
+closing tick (`0x232064`), well before task termination; it is not a lifetime
+indicator. These statements describe the executed bodies and requested input
+lock, not execution of the input-lock service or menu drawing.
+
+**Observed / Executed controls:** starting state 4 with counters
+0, 1, 15, 16, 17, 32, 127 or 128 confirms the strict-negative test. A
+constructed start at 16 produces a still-running menu at counter 0; its next
+call terminates. With `0x8e2f00` set to 1 or 9, crossing below zero instead
+calls the stubbed `pauseMenu_close` service (`0x2320c4`), enters state 5
+(`0x2320d4`) and retains both tasks. **Unknown:** natural reachability of
+this nonzero-word closing branch; the tests deliberately construct it.
+
+**Observed / Executed:** task removal changes the count at `0x44fdb8` and
+compacts the 16-byte records at `0x840100`; the active scheduler cursor at
+`0x44fdbc` is adjusted by `0x19e664`. Both menu registrations are absent
+when the closing call returns. Subsequent original scheduler calls do not
+invoke the menu and leave its residual state unchanged. Original
+`task_isRunning` compares registered names (`0x19e624`) and returns zero
+for the removed run task. The dialog asks this exact function at `0x22ee98`
+using the run-task name at `0x540c70`; it does not inspect the state byte,
+counter, pause flag or destination string.
+
+**Inferred client contract:** represent task lifetime explicitly and use it
+for the already-running-menu suppressor. `(state==4 && counter<=0)` is
+insufficient, as the exact-zero and nonzero-word controls demonstrate. State
+fields alone also miss explicit removal: original `missionMenu_removeTasks`
+`0x2316b8` removes both registrations when `0x8e2f00==0`, retaining even a
+state-2 menu's fields; with a nonzero word it leaves the registrations intact.
+These removal-guard cases were **Observed / Executed** independently.
+
+### Launch and reopening
+
+**Observed / Executed:** acceptance enters state 5 and sets `0x8e2f00=1`.
+State 5 advances to 6; state 6 advances to 7 only when the controlled fade
+service returns **exactly 128** (`0x232120`); returns 0, 127, 129 and 255
+stay in state 6 and increment that word. This refines the older quest table's
+“128 or more” wording without changing its reference API. The next call
+enters state 8 but still has both tasks. The following call executes state
+8's body: clears `0x8e2f00` (`0x232198`), removes run/draw registrations
+(`0x23219c`, `0x2321a8`), then copies the destination (`0x232254`,
+`0x232294` or `0x2322c4` for the tested story/medal/bonus columns), and
+sets orientation to `0xff` (`0x2322d4`). State remains 8 and the normal
+counter remains 127; offline pause remains 1 at this boundary. **Unknown:**
+actual loading, pause release by later services, fade timing and pixels.
+
+**Observed / Executed:** opening, including reopening after cancellation or
+launch, stores the new chooser at `0x4fe7ec` (`0x2315b8`) and resets:
+
+| Field | Address | Value on return from open | Writer |
+|---|---|---|---|
+| State | `0x8e2efc` | 0 | `0x231628` |
+| Transition word | `0x8e2f00` | 0 | `0x23162c` |
+| Countdown | `0x8e2f04` | 0 | `0x23164c` |
+| Selection animation counter | `0x8e2f08` | 0 | `0x231654` |
+
+**Observed / Executed:** open re-registers run/draw tasks at priority 20;
+`task_add` de-duplicates existing function registrations. Open itself retains
+row/column, pause, pending destination and orientation. Its first scheduled
+state-0 call initializes row/column (`0x231940`, `0x231974`) and sets pause
+to 1 only offline (`0x23197c..0x231988`). Reopen controls use all four chooser
+slots, retained synthetic pending text, nonzero counters and old orientation;
+launch/reopen also retains the destination read from the private mission table.
+A nonempty pending string therefore coexists with a newly registered running
+menu and cannot establish inactivity.
+
+**Observed / Executed composition:** ten new controls connect the real task
+registry to the existing shipped dialog/VM probe, with no task-status stub.
+Closing at 127, last-positive 15, constructed zero-but-running, arrival in
+state 8, reopened-with-pending, and restored-active menus block predicate
+execution and grants. Cancelled, launched, explicitly removed-state-2 and
+restored-terminated menus admit node 7 on the controlled offer inputs; a
+confirm executes exactly the mission-2 availability writer. This proves the
+bounded admission boundary, not natural actor reachability or playable travel.
+
+### Save/restore: snapshot versus live task registry
+
+**Observed / Executed, partial:** original `save_build(0,0)` `0x221914` and
+`save_load` `0x221d60` run on five phases: intro, active, closing, cancelled
+and launched. Each build executes a one-player header/record-copy path.
+Camera and jump-gate serializers return their documented sizes `0xc4` and
+`0x1e4`; player snapshot/fixup, quest-variable enumeration/restoration,
+act services and world serialization use explicit bounded host stubs. The
+current level is authored test text with an empty subname. This is not a
+memory-card, full checkpoint, object-serialization or world-reload proof.
+
+**Observed / Executed in that bounded configuration:** all five builds produce
+identical buffers and leave menu fields and registrations unchanged. A read
+trace of the executed build body contains no reads of the tested menu fields,
+pending request or task registry. Its header copies the current level from
+`0x41b721` (`0x2219e4`), not the pending request. This supports absence of a
+menu snapshot in this executed serialization path, not in unexecuted callees.
+
+**Observed / Executed in that bounded configuration:** after changing the live
+counter and animation counter, `save_load` retains their changed values and
+current registration state. It neither rewinds an in-progress menu nor
+resurrects a terminated one. Copying each buffer into an independently
+initialized empty registry likewise creates no menu tasks. Load **does**
+replace pending with the saved level (`0x222114`, empty-subname branch), and
+sets orientation to `0xfd` (`0x22212c`). Reopening afterward resets the four
+fields above while retaining this newly published request. The original
+scheduler can still run an active menu after the direct load body returns.
+
+**Inferred client boundary:** serializing a campaign record does not justify
+serializing/restoring menu lifetime or treating the restored destination as
+proof of inactivity. The task registry at the point of the dialog query is
+the observed admission authority. **Unknown:** the ordering and effects of
+all real save/load callers, omitted serializers and subsequent level teardown;
+whether ordinary input can save in each constructed menu phase; full subname,
+multiplayer, card and world-reconstruction behavior. Settling those requires
+composing those original callers/services through the transition, not assuming
+that the direct `save_load` experiment proves the completed reload lifecycle.
+
+Reproduce the additive probe (both register seeds 20973 and 7, plus ten
+composed dialog controls; private input is read only):
+
+```
+PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_mission_lifecycle.py --elf local/SLUS_209.73 --iso local/game.iso
+```
+
 ## Remaining research / client boundary
 
 **Unknown:** complete campaign prerequisite graph, a complete first-act chain,
