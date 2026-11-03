@@ -28,6 +28,23 @@ WEAPONS = (0x3f7f50, 0x3f7f50, 0x3f7650, 0x3f7650,
            0x3f8910, 0x3f8910, 0x3f9250, 0x3f9250,
            0x3f7a10, 0x3f7a10, 0x3f7f50, 0x3f87d0)
 CACHES = {4: 0x8659e8, 10: 0x865b48, 12: 0x865f68}
+# Group counts for identifier addresses: single-player primary, alternative, secondary.
+HEADER_GROUP_COUNTS = {0x535c08: 243, 0x535bf8: 245, 0x535c28: 155}
+# metadata - header_base for slots 4, 10, 12 in the single-player primary header.
+ARMOR_HEADER_DELTAS = (
+    (0x4878, 0x4a08, 0x4ff8),
+    (0x28d8, 0x2a68, 0x3058),
+    (0x177f8, 0x17938, 0x17e38),
+    (0x159e8, 0x15b28, 0x16028),
+    (0xff68, 0x100a8, 0x105a8),
+    (0xe168, 0xe2a8, 0xe7a8),
+    (0xb448, 0xb588, 0xba88),
+    (0x9648, 0x9788, 0x9c88),
+    (0x86a8, 0x87f8, 0x8d28),
+    (0x6808, 0x6958, 0x6e88),
+    (0x13be8, 0x13d28, 0x14228),
+    (0x11de8, 0x11f28, 0x12428),
+)
 
 
 def require_local(path):
@@ -167,10 +184,14 @@ def load_headers(e, media, players=1, override=0):
     assert len(media.reads) == 2
     assert media.reads[0][0] == (0x535c08 if players < 2 and not override else 0x535bf8)
     assert media.reads[1][0] == 0x535c28
+    observed = {}
     for (role, base, data), pointer, count_address in zip(media.reads, (0x8659e0, 0x8659e4), (0x4ef36c, 0x4ef370)):
         count = struct.unpack_from('<I', data)[0]
         assert e.mem.u32(pointer) == base + 4
         assert e.mem.u32(count_address) == count
+        if count != HEADER_GROUP_COUNTS[role]:
+            print('header_group role=0x%x groups=%d' % (role, count))
+        assert count == HEADER_GROUP_COUNTS[role], 'header group count mismatch'
         expected = bytearray(data)
         for index in range(count):
             for offset in (4 + index * 12, 8 + index * 12):
@@ -178,6 +199,8 @@ def load_headers(e, media, players=1, override=0):
                 assert value < len(data)
                 struct.pack_into('<I', expected, offset, base + value)
         assert e.mem.read(base, len(data)) == expected, 'header relocation mismatch'
+        observed[role] = count
+    return observed
 
 
 def metadata_model(e, name, second):
@@ -216,9 +239,24 @@ def selection(path, tables):
 
 
 def header_selection(path, folder):
-    for players, override in ((1, 0), (1, 1), (2, 0), (2, 1)):
-        e = EE(path)
-        load_headers(e, Media(folder), players, override)
+    def collect(seed):
+        observed = {}
+        for players, override in ((1, 0), (1, 1), (2, 0), (2, 1)):
+            e = EE(path)
+            if seed is not None:
+                e.mem.w32(0x404464, seed)
+            for role, count in load_headers(e, Media(folder), players, override).items():
+                assert observed.setdefault(role, count) == count
+        return observed
+
+    # The original four combinations keep the executable's initial seed word.
+    # Seeds 7 and 20973 repeat those combinations and must select the same counts.
+    baseline = collect(None)
+    for seed in (7, 20973):
+        assert collect(seed) == baseline
+    assert baseline == HEADER_GROUP_COUNTS
+    print('PASS header groups 0x535c08=%d 0x535bf8=%d 0x535c28=%d' % (
+        baseline[0x535c08], baseline[0x535bf8], baseline[0x535c28]))
     return 4
 
 
@@ -326,11 +364,34 @@ def generic_weapon(e, media, tables, equipped):
 
 
 def resource_mapping(path, folder, tables):
+    def primary_armor_deltas(e, media, body, equipped, seed):
+        """Original metadata address minus the single-player primary header base."""
+        header_base = e.mem.u32(0x8659e0) - 4
+        assert media.reads[0][0] == 0x535c08 and media.reads[0][1] == header_base
+        deltas = []
+        for slot in (4, 10, 12):
+            name = formatter(e, body, slot, equipped[slot])
+            actual = e.call(0x1a24e8, name, 0)
+            assert actual == metadata_model(e, name, 0) and actual
+            delta = actual - header_base
+            assert 0 < delta < len(media.reads[0][2])
+            deltas.append(delta)
+        print('header_deltas seed=%d body=%d %s' % (
+            seed, body, ' '.join('0x%x' % delta for delta in deltas)))
+        assert tuple(deltas) == ARMOR_HEADER_DELTAS[body], 'armor header delta mismatch'
+        return tuple(deltas)
+
+    for body in range(12):
+        e, equipped, _ = initialized(path, tables, body, 7)
+        media = Media(folder)
+        load_headers(e, media)
+        primary_armor_deltas(e, media, body, equipped, 7)
     cases = lookups = byte_count = pending = ready = missing = 0
     for body in range(12):
         e, equipped, _ = initialized(path, tables, body, 20973)
         media = Media(folder)
         load_headers(e, media)
+        primary_armor_deltas(e, media, body, equipped, 20973)
         for slot, item in equipped.items():
             name = formatter(e, body, slot, item)
             for second in (0, 1):
