@@ -33,7 +33,9 @@ session in this research. The synthetic EE harness supplies selected external
 services. It does not prove that the native client can fight. No arrival
 coordinate, live actor count, gear or combat outcome is claimed. The full
 NPC-to-menu route and default-marker selection remain inferred from checked
-archive links and separate function-level runs.
+archive links and separate function-level runs. Section 6 continues from the
+`blood1` request: which menu row the mission bytes select, which level confirm
+writes, and which act that level is in. It does not remove the limits above.
 
 ## 1. Hub setup and the opening NPC
 
@@ -201,3 +203,151 @@ dispatch difftest also passed at both seeds (268 trigger, 64 gate prompt,
 48 PushTrigger prompt and 20 gate-arrival comparisons per seed). All were
 function-level or synthetic-fixture checks; that generic test did not run
 the hub object 11 use interaction.
+
+## 6. Ordered beats after the first request
+
+2026-11-03. `tools/difftest_story_beats.py` runs original `missionMenu_open`
+`0x231520`, `missionMenu_run` `0x2316fc`, `mission_setAvailable` `0x1bf6d0`,
+`mission_setComplete` `0x1bf770`, `game_setEvil` `0x1bf8f8`,
+`game_setMadeDecision` `0x1bf980`, `game_getHubName` `0x1ec300`,
+`save_findAct` `0x217d30` and `save_actChanged` `0x217f70` in `tools/ee_emu.py`,
+on seeds 20973 and 7. The model added in `tools/ref_story_route.py` does not
+change `menu_tick`. This is constructed state, not a played campaign.
+
+The hub dialog that sets the next available bit, and the rule that a
+registered menu task blocks that dialog, stay
+`t3/research-mission-unlocks` `e5c6176`
+(`docs/spec/mission-unlocks.md` lines 46–113 and 127–232). The mission 2
+level list, the same-session offer, the pre-load stop, and the unstubbed
+helper fault stay `t3/research-mission2-route` `b8e2d11`
+(`docs/mission2-compose.md` lines 42–46, 76–96 and 133–139). They are not
+re-run here. `0x18ebb8` stays stubbed on the compared menu path.
+
+### What confirm writes
+
+**Observed / Executed:** state 0 selects the highest available mission in
+1..12, as a row, or row 0 when none of those is available. Mission 0 is not
+a row. Completing the current mission does not move that row. Calling
+`0x1bf6d0` for the next mission does not move it either, until down or until
+`missionMenu_open` runs again and its state-0 tick does. Down will not step
+onto an unavailable mission and will not skip one. Up will sit on a locked
+row. Evidence: `opening_row` and `campaign_tick` in
+`tools/ref_story_route.py` lines 87–91 and 139–176, compared on both seeds.
+
+**Observed / Executed:** column 0 of state 8 copies `g_missionTable`
+`0x4fe540` row `+0x08`, or `+0x0c` when `game_getEvil` is set and that
+pointer is set. Only three rows have an evil pointer. The pending name and
+the act from `save_findAct` with current act −1 are:
+
+| Mission | Row | Story level | Evil level | Act |
+|---|---:|---|---|---:|
+| 1 | 0 | `blood1` | none | 0 |
+| 2 | 1 | `innovat1` | none | 1 |
+| 3 | 2 | `islc1` | none | 2 |
+| 4 | 3 | `wat1` | none | 3 |
+| 5 | 4 | `tormenta` | none | 4 |
+| 6 | 5 | `swamp1` | `swamp2` | 5 |
+| 7 | 6 | `valor` | none | 6 |
+| 8 | 7 | `fire1` | none | 7 |
+| 9 | 8 | `storm1` | none | 8 |
+| 10 | 9 | `fay2` | `fay1` | 9 |
+| 11 | 10 | `nit1` | none | 10 |
+| 12 | 11 | `bossgood` | `bossevil` | 11 |
+
+Orientation becomes `0xff`. Mission bytes and the seed are unchanged across
+those ticks. Difficulty 1 reads that difficulty's bytes, not difficulty 0's,
+and its evil bit is bit 1 of the evil byte: bit 0 still selects the story
+level of the first row that has an evil pointer. `0x231078(0)` returns 1 on
+a cleared mission row, and a confirm then writes `blood1` while mission 1's
+byte stays 0. Later rows return 1 only when that mission is available.
+Evidence: `story_column_open` lines 100–105 and the seed log of
+`difftest_story_beats.py`.
+
+Medal and bonus columns are not re-run. The fade values passed here are 0
+and 128; the exact-128 test stays `e5c6176` and is not remeasured.
+
+### Between two story levels
+
+**Observed / Executed:** `save_findAct` / `save_actChanged` from current act
+−1 and from act 0. `hub`, `hub2`, `blood1`, `strife`, `drundar`, `drunarm`
+and `drunare` are act 0, including `hub2` from inside act 0, because `hub`
+is a prefix of `hub2`. `innovat1`, `inmine1`, `inmine2` and `innovat2` are
+act 1, so the mission 2 menu request is an act change from act 0, and the
+three later mission 2 names are not a further change from `innovat1`.
+Missions 3..12 in the table above are each a further act. The quest-list
+clear that runs when `save_actChanged` is nonzero was not executed in this
+file. Evidence: `find_act` / `act_changed` lines 117–136.
+
+**Observed / Executed, narrow:** `hub2` is `game_getHubName` only after
+`game_setEvil(1)`, `game_setMadeDecision(1)` and mission 1's completion bit
+on difficulty 0. Mission 2's completion bit does not replace that. The wider
+difficulty matrix stays `e5c6176` / `b8e2d11` and is not repeated.
+Evidence: `hub_name` lines 108–114 and `check_hub`.
+
+**Observed / Executed:** a state-2 tick reads the pad when the word at
+`0x8e2f10` is `0x3f800000` (float 1). A direction tick leaves it unequal to
+that value, and the next cross is not read. Writing 1 back, in the test
+rather than by an original task, lets the next cross through. `missionMenu`
+draw `0x232300`, entered with its callees live after that direction tick,
+faults on an 8-byte write at `0x00000010` (pc `0x0017b968`). Who sets the
+word back to 1 during play is **Unknown**.
+
+**Observed / Executed:** reopening the menu stores state 0, clears
+`0x8e2f00`, the countdown and the mark, and keeps the row, a nonempty
+pending string, orientation and pause until the state-0 tick. That tick then
+selects the new highest row and still leaves the old pending string. The
+cancellation countdown and the "counter 0 is still registered" rule are
+`e5c6176`; they are not remeasured. Evidence: the reopen check in
+`difftest_story_beats.py` lines 430–446.
+
+### What is still not a route
+
+**Inferred from cited research, not re-executed:** after this file's `blood1`
+request, the keyed exits request `strife` or `drundar`, and the ordinary
+scripts continue toward `drunarm` or `drunare`. The explicit `grantMission(1)`
+found there is the demo branch (`t3/research-strife-drundar`
+`docs/strife-drundar.md` lines 249–255). After the menu writes `innovat1`,
+the executed mission 2 chain is `innovat1` → `inmine1` → `inmine2` →
+`innovat2` → hub, stopping at loader `0x1e55c0` (`b8e2d11`, lines cited
+above).
+
+**Unknown:** physical approach and use; the loader body and arrival; who
+completes mission 1 on the ordinary path; every in-level exit and completion
+writer for missions 3–12; hub2's dialog choices; the body that restores
+`0x8e2f10`; `0x18ebb8` beyond the cited fault. A file that contains
+`grantMission` is not, by that fact, the next beat. No continuous
+hub → `blood1` → later mission session was run.
+
+### What the client can implement from this
+
+1. Open the mission menu on the highest available mission in 1..12. Mission
+   0 does not get a row. Keep the fresh `blood1` path in sections 1–4.
+2. Story confirm requests that row's story level, or the evil level for
+   missions 6, 10 and 12 when `game_getEvil` is set. Row 0 still requests
+   `blood1` when mission 1's available bit is clear; do not treat that as
+   the hub having offered the mission. The offer itself is the cited dialog.
+3. Do not advance the open cursor when a mission is completed. Advance on
+   down, or on the state-0 tick after reopen, once `0x1bf6d0` has set the
+   next bit. Do not skip a locked row.
+4. Treat `0x8e2f10 == 1.0` as required before a state-2 tick will read the
+   pad. Do not call draw `0x232300` to restore it until that fault is
+   explained.
+5. Keep mission bytes across the menu write. On the load, an act change is
+   `save_actChanged`: the mission 1 names and both hubs stay in act 0;
+   `innovat1` leaves act 0. Apply the existing quest clear only when that
+   predicate is nonzero.
+6. After `blood1`, follow the cited strife/drundar note, and do not mark
+   mission 1 complete on entry. After `innovat1`, follow the cited mission 2
+   chain through `innovat2` and stop where that note stops. Missions 3–12
+   can request the table level and then refuse: their in-level beats are
+   not established here.
+7. Keep dialog admission on the live run task (`e5c6176`). A nonempty
+   pending string does not mean the menu is idle, as the reopen check shows.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; sys.path.insert(0,"tools"); sys.argv=["difftest_story_beats.py","--elf","local/SLUS_209.73"]; runpy.run_path("tools/difftest_story_beats.py", run_name="__main__")'
+```
+
+Both seeds: 147 checks, 0 failed. The section 5 story-route command still
+passes, 26 menu snapshots per seed. Preload stdlib `dis`, then
+`python3 -m unittest discover -s tools -p 'test_*.py'` is 661 tests.
