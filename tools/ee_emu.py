@@ -668,8 +668,8 @@ class EE:
         result and the bytes of the string are therefore not part of the contract.
         This handler writes v0 = 0 and does not read guest memory.  Any other
         syscall number raises the same CpuTrap as an unhandled syscall.  Any other
-        Deci2 function number, including the open/send/poll wrappers at
-        0x35e218–0x35e420, raises CpuTrap and names a0.  Assigning the bound method
+        Deci2 function number, including 1, 3 and 4 at 0x35e218, 0x35e288 and
+        0x35e2b8, raises CpuTrap and names a0.  Assigning the bound method
         would pass the emulator twice; this stores the unbound function.
         """
         if self.syscall_handler is not None:
@@ -684,7 +684,7 @@ class EE:
         function = s32(self.r[4])
         if function != 0x10:
             raise CpuTrap('SYSCALL at 0x%08x (v1 = 124, a0 = %d); '
-                          'Deci2 function is outside the observed kputs contract'
+                          'Deci2 function is outside the observed function-0x10 contract'
                           % (self.cur, function))
         self.r[2] = 0
 

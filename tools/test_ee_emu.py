@@ -675,7 +675,7 @@ class ControlTests(unittest.TestCase):
         with self.assertRaises(CpuTrap) as rejected:
             other.call(BASE)
         self.assertIn('v1 = 124, a0 = 1', str(rejected.exception))
-        self.assertIn('outside the observed kputs contract', str(rejected.exception))
+        self.assertIn('outside the observed function-0x10 contract', str(rejected.exception))
         plain = machine([addiu(V1, ZERO, 60), R(0x0C)], run=False)
         plain.install_deci2_kputs()
         with self.assertRaises(CpuTrap) as other_syscall:
