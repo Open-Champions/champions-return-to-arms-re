@@ -30,6 +30,25 @@ class RouteList(unittest.TestCase):
                          ['hub2', 'innovat1'])
         self.assertEqual(C.add_current(['hub2'], 'hub2', 'hub'), ['hub2'])
 
+    def test_hub2_cold_dialog_follows_mission_2(self):
+        self.assertEqual(C.hub2_cold_dialog(0), (1, 1))
+        self.assertEqual(C.hub2_cold_dialog(2), (1, 1))
+        self.assertEqual(C.hub2_cold_dialog(1), (4, 2))
+        self.assertEqual(C.hub2_cold_dialog(3), (5, 2))
+
+    def test_hub2_key_is_an_open_mission_or_mission_12(self):
+        row = [3] + [0] * 12
+        self.assertEqual(C.hub2_trigger_key(row), 0)
+        row[2] = 1
+        self.assertEqual(C.hub2_trigger_key(row), 1)
+        row[2] = 3
+        self.assertEqual(C.hub2_trigger_key(row), 0)
+        row[2] = 2
+        self.assertEqual(C.hub2_trigger_key(row), 0)
+        row[12] = 3
+        self.assertEqual(C.hub2_trigger_key(row), 1)
+        self.assertEqual(C.hub2_trigger_key([3] * 13), 1)
+
     def test_new_arrival_drops_the_other_hub_and_appends(self):
         cases = (
             ('hub', [], 'hub2', []),

@@ -56,3 +56,32 @@ def route_list(hub, levels):
     for level in levels:
         entries = add_current(entries, level, hub)
     return entries
+
+
+def hub2_cold_dialog(mission2):
+    """Cold hub2 selector. Mission-2 byte is 0..3; quest variables are absent.
+
+    Mission 1's byte does not change the node in that cold state. The pair is
+    (node, visible choices).
+    """
+    if mission2 in (0, 2):
+        return 1, 1
+    if mission2 == 1:
+        return 4, 2
+    if mission2 == 3:
+        return 5, 2
+    raise ValueError(mission2)
+
+
+def hub2_trigger_key(mission_bytes):
+    """PushTrigger key 0x98. `mission_bytes` has 13 difficulty-row bytes.
+
+    Missions 1..11 open the key when available and not complete. Mission 12
+    opens it when available, complete or not. demoRunning is not an input:
+    this executable returns 0 for it.
+    """
+    for index in range(1, 12):
+        byte = mission_bytes[index]
+        if byte & 1 and not byte & 2:
+            return 1
+    return 1 if mission_bytes[12] & 1 else 0

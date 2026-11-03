@@ -121,30 +121,100 @@ opened" until some other flag clears will refuse the offer after this
 cancellation. This does not execute the eight-step countdown, draw the menu,
 or follow a real cancel button into state 4.
 
-## hub2 is not the ordinary-hub offer script
+## hub2 dialog choices
 
-**Observed:** `hub2` has one NPC and one PushTrigger. The trigger's key and
-action entries are at the same public offsets `0x98` and `0x54` as the
-ordinary hub. Its script image is not the ordinary hub script, and it has no
-entry at `0x734` or `0x7b0`. The NPC has a dialog property. That dialog was
-not opened, so its choices are **Unknown**.
-Evidence: [hub2 boundary](../tools/difftest_mission2_compose.py#L419-L440).
+**Observed:** `hub2` still has one NPC and one PushTrigger, with the trigger
+key and action at `0x98` and `0x54`, and no ordinary-hub offer entries at
+`0x734` or `0x7b0`. The NPC dialog entry is `0x0`. That entry calls
+`startDialog` at cell `0x3c` with controls `(1, 0)` and a 7-character resource
+name. The resource has 26 nodes.
+Evidence: [hub2 boundary](../tools/difftest_mission2_compose.py#L419-L440),
+[dialog binding](../tools/difftest_mission2_compose.py#L598-L621).
 
-## The menu helper faults when the call is entered
+**Observed / Executed:** with mission 0's byte left at 3 and quest variables
+absent, the original selector follows mission 2's byte and not mission 1's.
+Byte 0 or 2 selects node 1 with one visible choice. Byte 1 selects node 4
+with two. Byte 3 selects node 5 with two. Mission 1's byte was 0 and 3.
+Evidence: [cold opens](../tools/difftest_mission2_compose.py#L647-L681),
+[model](../tools/ref_mission2_compose.py#L61-L73).
 
-**Observed:** state 0 of `missionMenu_run` `0x2316fc` calls helper `0x18ebb8`
-at `0x2319a4`. With that helper unstubbed, the call faults on a 4-byte write
-at unmapped address `0x00000004` (pc `0x0018ec10`). The compared menu path
-still stubs the call. The helper's other effects are **Unknown**.
+**Observed / Executed:** the one visible choice on node 1 runs script
+`0x29bc` and does not call `mission_setAvailable`. When mission 1 is not
+complete it lands on node 2. When mission 1 is complete (byte 3) it lands on
+node 3. Node 4's first choice enters `0x41b4` (`changeSwoop`, then
+`activateStore` 0) and stays on node 4; its second choice adds no further
+script entry. Neither changes mission bytes. Node 5's choices enter `0x2dd8`
+and `0x42c8`. Both call `mission_setAvailable` for mission 3, so byte 3
+becomes 1. Mission 2's byte stays 3.
+Evidence: [cold choices](../tools/difftest_mission2_compose.py#L656-L681).
+
+**Observed / Executed:** opening again after that mission-1-complete choice,
+without clearing the variable it stored, selects node 3 with two visible
+choices. Both call `mission_setAvailable` for mission 2 (`0x2b6c`, then
+`0x4224`) and byte 2 becomes 1. The first choice alone does not grant.
+Evidence: [continuation](../tools/difftest_mission2_compose.py#L708-L727).
+
+## hub2 trigger key and action
+
+**Observed / Executed:** key `0x98` returns 1 when any mission 1..11 is
+available and not complete, or when mission 12 is available whether or not
+it is complete. Otherwise it returns 0, including mission 2 byte 0, 2, or 3
+with the other missions clear. `demoRunning` is called and is not what opens
+the key. Action `0x54` returns 0. It calls `setEntrance` with the identifier
+`evilstart` and then `activateMissionMenu`. The menu task count at `0x44fdb8`
+stays 0 after that entry, so this script call is not the ordinary hub's
+dispatcher registration.
+Evidence: [key and action](../tools/difftest_mission2_compose.py#L682-L707),
+[model](../tools/ref_mission2_compose.py#L76-L87).
+
+## The menu helper
+
+**Observed:** state 0 of `missionMenu_run` `0x2316fc` calls `particle_resetAll`
+`0x18ebb8` at `0x2319a4`. On the menu image, whose slot words are still 0,
+the call faults on a 4-byte write at unmapped address `0x00000004`
+(pc `0x0018ec10`). The compared menu path still stubs the call.
 Evidence: [helper fault](../tools/difftest_mission2_compose.py#L446-L474).
+
+**Observed / Executed:** after `particle_staticInit` `0x195d30` and
+`particle_init` `0x18e648`, the same helper returns 1. Slot 0 stays occupied.
+Slots 1..31 are free (`-1`). A planted group handle and trail handle become
+0, and the generation words `0x44fc9c` and `0x44fca4` become 1. The call then
+enters `trail_resetAll` `0x1929c8` and `particleGroup_resetAll` `0x18e840`.
+When `g_trailsFrozen` `0x44fc98` is nonzero, it first calls the empty
+function `0x18ebb0`. `particleDef_setDefaults` `0x18f360` stores the
+definition's own address at its `+0x28`. Claiming that definition takes slot
+1 and copies the address to `0x82c4e8`. The reset then writes `-1` at
+definition `+4`, 0 at `+8`, and `-1` into the slot word.
+Evidence: [helper effects](../tools/difftest_mission2_compose.py#L498-L535).
+
+## Loader body through the archive lookup
+
+**Observed / Executed:** `game_loadLevel` `0x1e55c0` for `innovat1` sets the
+loading flag `0x4f7198` to 1. Real string compares walk the level table at
+`0x1e57ec`. The front-end call at `0x1e5738` is not taken. Disc, audio, and
+graphics calls stay stubbed, so the archive lookup returns 0 and the loader
+faults on a 4-byte read at `0x00000004` (pc `0x001e59ac`), before the
+cosmetic-seed copy. The shared seed is unchanged and the cosmetic seed stays
+0. The body after a successful archive open is **Unknown**.
+Evidence: [loader prefix](../tools/difftest_mission2_compose.py#L543-L564).
+
+## Physical use
+
+**Observed / Executed:** `Player_interact` `0x1b2640` returns the player-record
+address `0x4d8af0` and makes no calls when the object pointer at
+`g_players + 0x43d8` is 0. The box query is not reached. `pool_init`
+`0x14fcd8` then `pool_new` still leaves `GameObject_ctor` `0x14cb10` faulting
+on a write at pc `0x001a1780`. In-range NPC, trigger, and portal use remain
+**Unknown**.
+Evidence: [no linked player](../tools/difftest_mission2_compose.py#L567-L589).
 
 ## Still unknown
 
-Physical NPC, trigger, and portal use. The helper's other effects. Real
-cancel-button reachability of the constructed counter 16, hub2 dialog
-choices, the loader body, arrival, and save/load of the destination list.
-Mission 1's own completion writer is not run here; the session starts from
-the completed byte.
+In-range NPC, trigger, and portal use. The loader body after a successful
+archive open, arrival, and save/load of the destination list. Real
+cancel-button reachability of the constructed counter 16. Mission 1's own
+completion writer is not run here; the session starts from the completed
+byte. Hub2's action entry does not by itself register the mission menu.
 
 ## Reproduction
 
@@ -159,7 +229,8 @@ python3 -m unittest tools.test_mission2_compose
 ```
 
 Both seeds pass the route list, the portal return, the same-session offer,
-and the counter-0 admission. Each seed also records the helper fault in
+the counter-0 admission, the hub2 dialog and trigger key, the particle reset,
+and the loader prefix. Each seed also records the menu-image helper fault in
 `local/mission2-compose-helper-<seed>.log`. The pure model test passes
 without the executable. Existing offer, travel, and quest vectors are not
 edited.

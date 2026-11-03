@@ -465,13 +465,266 @@ def observe_helper_fault(executable, iso, seed):
         assert len(entered) == 1 and entered[0].site == HELPER_CALL, (fault, entered)
         assert (fault.pc, fault.addr, fault.size, fault.kind) == (
             0x18EC10, 0x4, 4, 'write'), fault
-        line = ('Observed: helper 0x18ebb8 from 0x2319a4 faults on a %s of %d byte(s) '
-                'at 0x%08x (pc 0x%08x); other effects Unknown'
+        line = ('Observed: helper 0x18ebb8 from 0x2319a4 on the menu image faults on a %s '
+                'of %d byte(s) at 0x%08x (pc 0x%08x)'
                 % (fault.kind, fault.size, fault.addr, fault.pc))
         print(line)
         Path('local/mission2-compose-helper-%d.log' % seed).write_text(line + '\n')
         return fault
     raise AssertionError('unstubbed helper 0x18ebb8 returned')
+
+
+QUEST_VARS = 0x86DA80
+POOL_INIT, POOL_NEW, OBJECT_CTOR = 0x14FCD8, 0x14FDB8, 0x14CB10
+PLAYER_OBJECT = 0x4D8AF0 + 0x43D8
+STATIC_INIT, PARTICLE_INIT, SET_DEFAULTS, CLAIM = 0x195D30, 0x18E648, 0x18F360, 0x195BB0
+SLOT_USED, TYPE_PTR = 0x82C408, 0x82C4E8
+GROUP_HANDLE, TRAIL_HANDLE = 0x7E1D50 + 0x130, 0x82CD00 + 0x400
+GROUP_GEN, TRAIL_GEN, TRAIL_GATE = 0x44FC9C, 0x44FCA4, 0x44FC98
+EMPTY_FN, TRAIL_RESET, GROUP_RESET = 0x18EBB0, 0x1929C8, 0x18E840
+
+
+def boot_particles(executable):
+    from ee_emu import EE
+    emu = EE(executable)
+    emu.record_writes = False
+    emu.stub(0x19E4A0, ret=0, name='task')
+    emu.stub(0x173768, ret=0, name='resource')
+    emu.call(STATIC_INIT, 1, 0xFFFF)
+    emu.call(PARTICLE_INIT)
+    return emu
+
+
+def helper_effects(executable):
+    """particle_resetAll after the original pool init. The menu image is separate."""
+    from ee_emu import EE
+    for gate in (0, 1):
+        emu = boot_particles(executable)
+        mem = emu.mem
+        mem.w32(TRAIL_GATE, gate)
+        mem.w32(GROUP_HANDLE, 9)
+        mem.w32(TRAIL_HANDLE, 6)
+        mem.w32(GROUP_GEN, 4)
+        mem.w32(TRAIL_GEN, 4)
+        emu.reset_log()
+        assert emu.call(HELPER) & 0xFFFFFFFF == 1
+        slots = [mem.s32(SLOT_USED + 4 * i) for i in range(32)]
+        assert slots[0] == 1 and slots[1:] == [-1] * 31
+        assert mem.u32(GROUP_HANDLE) == 0 and mem.u32(TRAIL_HANDLE) == 0
+        assert mem.u32(GROUP_GEN) == 1 and mem.u32(TRAIL_GEN) == 1
+        targets = [call.target for call in emu.calls]
+        assert targets == ([EMPTY_FN] if gate else []) + [TRAIL_RESET, GROUP_RESET]
+    emu = EE(executable)
+    emu.record_writes = False
+    defn = emu.alloc(0x80)
+    emu.call(SET_DEFAULTS, defn)
+    assert emu.mem.u32(defn + 0x28) == defn
+    boot = boot_particles(executable)
+    # setDefaults result is an address in another image. Repeat it there.
+    held = boot.alloc(0x80)
+    boot.call(SET_DEFAULTS, held)
+    assert boot.mem.u32(held + 0x28) == held
+    assert boot.call(CLAIM, held) & 0xFFFFFFFF == 1
+    slot = boot.mem.s32(held + 4)
+    assert slot == 1
+    assert boot.mem.u32(TYPE_PTR) == held
+    boot.reset_log()
+    assert boot.call(HELPER) & 0xFFFFFFFF == 1
+    assert boot.mem.s32(held + 4) == -1 and boot.mem.s32(held + 8) == 0
+    assert boot.mem.s32(SLOT_USED + 4) == -1
+    assert [call.target for call in boot.calls] == [TRAIL_RESET, GROUP_RESET]
+
+
+class LoaderFollow:
+    def __contains__(self, address):
+        return address == 0x1E55C0 or 0x3B0000 <= address < 0x3C0000
+
+
+def loader_prefix(executable, seed):
+    """Enter game_loadLevel. Disc, audio and graphics stay stubbed."""
+    from ee_emu import EE, MemoryFault
+    emu = EE(executable)
+    emu.record_writes = False
+    emu.follow = LoaderFollow()
+    emu.stub(0x19D9F8, ret=0, name='stack')
+    emu.mem.w32(0x404464, seed)
+    name = emu.alloc(16)
+    emu.mem.write(name, b'innovat1\0')
+    try:
+        emu.call(0x1E55C0, name, max_steps=400000)
+        raise AssertionError('loader returned without the archive fault')
+    except MemoryFault as fault:
+        assert (fault.pc, fault.addr, fault.size, fault.kind) == (
+            0x1E59AC, 0x4, 4, 'read'), fault
+    sites = [call.site for call in emu.calls]
+    assert 0x1E5738 not in sites
+    assert any(call.site == 0x1E57EC and not call.stubbed for call in emu.calls)
+    assert emu.mem.u32(0x4F7198) == 1
+    assert emu.mem.u32(0x404460) == 0 and emu.mem.u32(0x404464) == seed
+    return len(sites)
+
+
+def interact_without_player(executable):
+    """Player_interact returns before the box query when no player object is linked."""
+    from ee_emu import EE
+    emu = EE(executable)
+    emu.record_writes = False
+    pad = emu.alloc(32)
+    player = emu.alloc(0x40)
+    assert emu.mem.u32(PLAYER_OBJECT) == 0
+    ret = emu.call(0x1B2640, player, pad, 0, max_steps=100000)
+    assert ret & 0xFFFFFFFF == 0x4D8AF0
+    assert emu.calls == []
+    # The object-pool constructor still faults without a link node. In-range use
+    # is not established by this call.
+    emu.call(POOL_INIT)
+    block = emu.call(POOL_NEW, 0x80) & 0xFFFFFFFF
+    assert block
+    from ee_emu import MemoryFault
+    try:
+        emu.call(OBJECT_CTOR, block, emu.alloc(16), 0, 0)
+    except MemoryFault as fault:
+        assert fault.pc == 0x1A1780 and fault.kind == 'write'
+        return
+    raise AssertionError('object ctor returned without the link fault')
+
+
+def zero_quests(probe):
+    blank = bytes(0x2000)
+    probe.mem.write(QUEST_VARS, blank)
+    probe.game.mem.write(QUEST_VARS, blank)
+
+
+def hub2_inputs(iso):
+    blob = archive(iso, 'hub2')
+    files = lump_files(blob, 'hub2')
+    image = next(value for name, value in files.items() if name.lower().endswith('.scr'))
+    check = ScriptCheck(image)
+    parsed = scr.parse(image)
+    native = check.natives.index('startDialog')
+    code_lo, code_hi = parsed['code']
+    actor = controls = None
+    for off in range(0, code_hi - code_lo, 4):
+        if check.word(off) == 0x7B and check.word(off + 4) == native:
+            vals = check.call_values(off, 'startDialog', 3, (0,))
+            if vals[0] + '.dbin' in files:
+                actor, controls = vals[0], (vals[1], vals[2])
+    assert actor and controls == (1, 0)
+    assert len(actor) == 7
+    rows = objects_from_file('hub2.gob', blob)
+    npc = next(row for row in rows if row['class'] == 'NPC')
+    entries = {name: off for off, name in parsed['internals']}
+    dialog_name = next(item[13:] for item in npc['properties'].split(';')
+                       if item.startswith('dialogscript='))
+    assert entries[dialog_name] == 0
+    return image, files[actor + '.dbin'], actor, controls, check
+
+
+def bind_hub2(probe, actor):
+    obj = probe.dialog.host.objects.pop('actor')
+    probe.dialog.host.objects[actor] = obj
+
+
+def plant_row(probe, row):
+    raw = bytes(row)
+    assert len(raw) == 13
+    for mem in (probe.mem, probe.game.mem):
+        mem.write(O.H.PLAYER + O.H.MISSION, raw)
+
+
+def open_hub2(probe, actor, controls, row):
+    zero_quests(probe)
+    plant_row(probe, row)
+    probe.entered, probe.writes, probe.native_calls = [], [], []
+    probe.mem.write(0x41B721, b'hub2\0')
+    msg = O.H.R.start_message(actor, 0, *controls, (0, 0, 0), 0, 0)
+    probe.model.on_open(probe.model_host, msg, probe.nodes, level='hub2')
+    probe.dialog.message(msg)
+    probe.compare()
+    return probe.mem.s32(O.H.D.A['node_index']), len(probe.model.visible)
+
+
+def hub2_play(executable, iso, seed):
+    image, dialog, actor, controls, check = hub2_inputs(iso)
+    probe = O.H.Probe(executable, image, dialog, seed, 0, 0, 0)
+    bind_hub2(probe, actor)
+    # choice 0, and choice 1 when the cold node shows two. Last entered offset,
+    # landing node, mission-byte indexes that change, availability writes.
+    expected = {
+        (0, 0, 0): (0x29BC, 2, (), ()),
+        (0, 2, 0): (0x29BC, 2, (), ()),
+        (3, 0, 0): (0x29BC, 3, (), ()),
+        (3, 2, 0): (0x29BC, 3, (), ()),
+        (0, 1, 0): (0x41B4, 4, (), ()),
+        (3, 1, 0): (0x41B4, 4, (), ()),
+        (0, 1, 1): (0x2C54, 4, (), ()),
+        (3, 1, 1): (0x2C54, 4, (), ()),
+        (0, 3, 0): (0x2DD8, 5, (3,), ((0, 3, 1),)),
+        (3, 3, 0): (0x2DD8, 5, (3,), ((0, 3, 1),)),
+        (0, 3, 1): (0x42C8, 5, (3,), ((0, 3, 1),)),
+        (3, 3, 1): (0x42C8, 5, (3,), ((0, 3, 1),)),
+    }
+    for first in (0, 3):
+        for second in (0, 1, 2, 3):
+            row = [3, first, second] + [0] * 10
+            node, visible = open_hub2(probe, actor, controls, row)
+            assert (node, visible) == C.hub2_cold_dialog(second), (first, second, node, visible)
+            for choice in range(visible):
+                open_hub2(probe, actor, controls, row)
+                before = probe.mem.read(O.H.PLAYER + O.H.MISSION, 13)
+                probe.confirm(choice)
+                after = probe.mem.read(O.H.PLAYER + O.H.MISSION, 13)
+                changed = tuple(i for i, (a, b) in enumerate(zip(before, after)) if a != b)
+                entered = [x for x in probe.entered if isinstance(x, int)]
+                got = (entered[-1], probe.mem.s32(O.H.D.A['node_index']),
+                       changed, tuple(probe.writes))
+                assert got == expected[(first, second, choice)], (first, second, choice, got)
+    # Trigger key and action on a probe that has not opened the dialog.
+    bare = O.H.Probe(executable, image, dialog, seed, 0, 0, 0)
+    cases = 0
+    samples = []
+    base = [3] + [0] * 12
+    samples.append(base)
+    for index, value in ((1, 1), (1, 3), (2, 1), (2, 2), (2, 3), (11, 1), (11, 3),
+                         (12, 1), (12, 2), (12, 3)):
+        row = base[:]
+        row[index] = value
+        samples.append(row)
+    samples.append([3] * 13)
+    for row in samples:
+        plant_row(bare, row)
+        bare.entered, bare.native_calls = [], []
+        got = bare.run_entry(0x98) & 0xFFFFFFFF
+        assert got == C.hub2_trigger_key(row), (row, got)
+        cases += 1
+    action = O.H.Probe(executable, image, dialog, seed, 0, 0, 0)
+    plant_row(action, [3, 0, 1] + [0] * 10)
+    action.native_calls = []
+    assert action.run_entry(0x54) & 0xFFFFFFFF == 0
+    assert 'setEntrance' in action.native_calls and 'activateMissionMenu' in action.native_calls
+    assert action.mem.u32(0x44FDB8) == 0
+    entrance = action.mem.cstr(0x4F8468)
+    assert entrance == 'evilstart', entrance
+    # After the mission-1-complete choice, the stored variable selects node 3.
+    for choice, entry in ((0, 0x2B6C), (1, 0x4224)):
+        follow = O.H.Probe(executable, image, dialog, seed, 0, 0, 0)
+        bind_hub2(follow, actor)
+        row = [3, 3, 0] + [0] * 10
+        open_hub2(follow, actor, controls, row)
+        follow.confirm(0)
+        follow.entered, follow.writes = [], []
+        msg = O.H.R.start_message(actor, 0, *controls, (0, 0, 0), 0, 0)
+        follow.model.on_open(follow.model_host, msg, follow.nodes, level='hub2')
+        follow.dialog.message(msg)
+        follow.compare()
+        assert follow.mem.s32(O.H.D.A['node_index']) == 3
+        assert len(follow.model.visible) == 2
+        follow.confirm(choice)
+        entered = [x for x in follow.entered if isinstance(x, int)]
+        assert follow.writes == [(0, 2, 1)], follow.writes
+        assert follow.mem.u8(O.H.PLAYER + O.H.MISSION + 2) == 1
+        assert entered[-1] == entry, (choice, [hex(x) for x in entered])
+    return cases, entrance
 
 
 def run(executable, source, iso, seed):
@@ -482,14 +735,20 @@ def run(executable, source, iso, seed):
     offer_session(executable, iso, seed)
     admit_session(executable, iso, seed)
     observe_helper_fault(executable, iso, seed)
+    helper_effects(executable)
+    sites = loader_prefix(executable, seed)
+    interact_without_player(executable)
+    key_cases, entrance = hub2_play(executable, iso, seed)
     hub_records = hub2_boundary(iso) if seed == 20973 else 0
     print('PASS seed=%d route-list cases=%d portal returns=%d counter comparisons=%d' % (
         seed, listed_cases, portal_cases, snapshots))
     print('PASS seed=%d same-session offer, menu request, load stop, and counter-0 admission' % seed)
+    print('PASS seed=%d helper reset, loader sites=%d, hub2 key cases=%d' % (
+        seed, sites, key_cases))
     if hub_records:
         print('PASS hub2 records=%d; ordinary-hub offer entries are absent' % hub_records)
-    print('LIMIT physical use, helper 0x18ebb8 effects beyond the observed fault, '
-          'hub2 dialog choices, loader body, and arrival remain open')
+    print('LIMIT in-range physical use, the loader body after the stubbed archive lookup, '
+          'arrival, and destination-list save/load remain open')
 
 
 def main():
