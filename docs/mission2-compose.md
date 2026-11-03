@@ -112,7 +112,7 @@ the same task. No offer script is entered and the availability writer does
 not run. The next `missionMenu_run` removes both tasks, leaves counter 0 and
 state 4, and `task_isRunning` returns 0. The following open selects node 8.
 Choice 1 there does not call the availability writer.
-Evidence: [admission](../tools/difftest_mission2_compose.py#L363-L394),
+Evidence: [admission](../tools/difftest_mission2_compose.py#L364-L399),
 [model](../tools/ref_mission2_compose.py#L44-L50).
 
 **Inferred, bounded:** dialog admission for this offer is the live run-task
@@ -128,16 +128,23 @@ action entries are at the same public offsets `0x98` and `0x54` as the
 ordinary hub. Its script image is not the ordinary hub script, and it has no
 entry at `0x734` or `0x7b0`. The NPC has a dialog property. That dialog was
 not opened, so its choices are **Unknown**.
-Evidence: [hub2 boundary](../tools/difftest_mission2_compose.py#L414-L434).
+Evidence: [hub2 boundary](../tools/difftest_mission2_compose.py#L419-L440).
+
+## The menu helper faults when the call is entered
+
+**Observed:** state 0 of `missionMenu_run` `0x2316fc` calls helper `0x18ebb8`
+at `0x2319a4`. With that helper unstubbed, the call faults on a 4-byte write
+at unmapped address `0x00000004` (pc `0x0018ec10`). The compared menu path
+still stubs the call. The helper's other effects are **Unknown**.
+Evidence: [helper fault](../tools/difftest_mission2_compose.py#L446-L474).
 
 ## Still unknown
 
-Physical NPC, trigger, and portal use. The body of helper `0x18ebb8`: the
-menu's first tick calls it at `0x2319a4`, and following it writes through an
-unmapped address, so the compared menu path stubs it and makes no claim about
-it. Real cancel-button reachability of counter 16, hub2 dialog choices, the
-loader body, arrival, and save/load of the destination list. Mission 1's own
-completion writer is not run here; the session starts from the completed byte.
+Physical NPC, trigger, and portal use. The helper's other effects. Real
+cancel-button reachability of the constructed counter 16, hub2 dialog
+choices, the loader body, arrival, and save/load of the destination list.
+Mission 1's own completion writer is not run here; the session starts from
+the completed byte.
 
 ## Reproduction
 
@@ -152,5 +159,7 @@ python3 -m unittest tools.test_mission2_compose
 ```
 
 Both seeds pass the route list, the portal return, the same-session offer,
-and the counter-0 admission. The pure model test passes without the
-executable. Existing offer, travel, and quest vectors are not edited.
+and the counter-0 admission. Each seed also records the helper fault in
+`local/mission2-compose-helper-<seed>.log`. The pure model test passes
+without the executable. Existing offer, travel, and quest vectors are not
+edited.

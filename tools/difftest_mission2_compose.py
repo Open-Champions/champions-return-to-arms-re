@@ -19,6 +19,7 @@ import difftest_mission2_offer as O
 import difftest_mission2_travel as T
 from difftest_mission2 import SHA256, ScriptCheck, props_for, put
 from dump_tables import objects_from_file
+from ee_emu import MemoryFault
 from find_hosts import iso_files
 from gob import gob_entries, lmp_entries
 import scr
@@ -439,6 +440,40 @@ def hub2_boundary(iso):
     return len(rows)
 
 
+HELPER, HELPER_CALL = 0x18EBB8, 0x2319A4
+
+
+def observe_helper_fault(executable, iso, seed):
+    """Enter the menu helper from its jal once. Other effects stay unknown."""
+    image, dialog, hub, actor, controls, row, key = O.inputs(executable, iso)
+    probe = O.H.Probe(executable, image, dialog, seed, 3, 0, 0)
+    assert O.open_bound(probe, hub, actor, controls) == O.R.node(3, 0)
+    probe.confirm(0)
+    close_dialog(probe)
+    prepare_menu(probe)
+    assert probe.run_entry(key) == 1
+    obj = probe.rig.emu.alloc(0x80)
+    probe.mem.w32(obj + 0x2C, props_for(probe.rig.emu, row))
+    probe.rig.call(0x14DCC8, obj, 1)
+    emu = probe.rig.emu
+    emu.unhook(HELPER)
+    emu.follow.addresses.add(HELPER)
+    try:
+        probe.rig.call(0x2316FC)
+    except MemoryFault as fault:
+        entered = [call for call in emu.calls if call.target == HELPER and not call.stubbed]
+        assert len(entered) == 1 and entered[0].site == HELPER_CALL, (fault, entered)
+        assert (fault.pc, fault.addr, fault.size, fault.kind) == (
+            0x18EC10, 0x4, 4, 'write'), fault
+        line = ('Observed: helper 0x18ebb8 from 0x2319a4 faults on a %s of %d byte(s) '
+                'at 0x%08x (pc 0x%08x); other effects Unknown'
+                % (fault.kind, fault.size, fault.addr, fault.pc))
+        print(line)
+        Path('local/mission2-compose-helper-%d.log' % seed).write_text(line + '\n')
+        return fault
+    raise AssertionError('unstubbed helper 0x18ebb8 returned')
+
+
 def run(executable, source, iso, seed):
     assert hashlib.sha256(Path(executable).read_bytes()).hexdigest() == SHA256
     fixtures = T.inputs(Path(source))
@@ -446,13 +481,15 @@ def run(executable, source, iso, seed):
     portal_cases, snapshots = portal_return(executable, fixtures[3], seed)
     offer_session(executable, iso, seed)
     admit_session(executable, iso, seed)
+    observe_helper_fault(executable, iso, seed)
     hub_records = hub2_boundary(iso) if seed == 20973 else 0
     print('PASS seed=%d route-list cases=%d portal returns=%d counter comparisons=%d' % (
         seed, listed_cases, portal_cases, snapshots))
     print('PASS seed=%d same-session offer, menu request, load stop, and counter-0 admission' % seed)
     if hub_records:
         print('PASS hub2 records=%d; ordinary-hub offer entries are absent' % hub_records)
-    print('LIMIT physical use, helper 0x18ebb8, hub2 dialog choices, loader body, and arrival remain open')
+    print('LIMIT physical use, helper 0x18ebb8 effects beyond the observed fault, '
+          'hub2 dialog choices, loader body, and arrival remain open')
 
 
 def main():
