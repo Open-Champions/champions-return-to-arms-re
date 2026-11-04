@@ -4,7 +4,8 @@
 Run with unittest preloaded and PYTHONDONTWRITEBYTECODE=1; see the companion
 document. Private input is read-only. Only counts are emitted. The world, pool,
 relationships, damage result, presentation and movement are scripted, not gameplay.
-Existing models and vectors are imported without changes.
+The healing run re-reads the living-player count. No other reference API or
+existing vector is changed.
 """
 import argparse
 from collections import Counter
@@ -32,17 +33,6 @@ class ProbeFailure(Exception):
     pass
 
 
-def exact_count_discrepancy(model_calls, original_calls, model_bytes,
-                            original_bytes, extra_bytes, first_calls):
-    """Permit just the second recipient's callback and prescribed writes."""
-    return (model_calls[:2] == first_calls
-            and original_calls == model_calls[:1] + model_calls[2:]
-            and set(model_bytes) - set(original_bytes) == set(extra_bytes)
-            and not set(original_bytes) - set(model_bytes)
-            and all(model_bytes[a] == value for a, value in original_bytes.items())
-            and all(model_bytes.get(a) == value for a, value in extra_bytes.items()))
-
-
 class Probe:
     def __init__(self, elf):
         B.OPTIONS.update(seed=4955, fpu='ps2', trace_first=False)
@@ -53,7 +43,6 @@ class Probe:
         self.functions = Counter()
         self.group = 'setup'
         self.failure = None
-        self.discrepancies = Counter()
         w = self.world
         w.on_world_collectObjectsInArc = lambda a, v, r: B.Res(outs=[self.arc])
         w.on_world_collectInSphere = lambda a, v, r: B.Res(outs=[self.sphere])
@@ -452,10 +441,11 @@ class Probe:
                        'heal_before_expiry')
 
     def mutable_count_55(self):
-        """Adversarial callback exposes a model difference, not a gameplay claim.
+        """A slot-22 callback clears the living-player count after the first slot.
 
-        Original 0x2e9180 rereads the count; the existing reference snapshots it.
-        Keep this expected discrepancy separate from the matching comparisons.
+        Both sides re-read 0x4f8420, so this call matches. The second record is
+        filled with a nonzero sentinel first: agreement at that value is a store
+        that did not happen, not untouched zero memory.
         """
         self.group = '55_mutable_count'
         self.reset()
@@ -464,73 +454,31 @@ class Probe:
         self.alive([0, 1])
         m.w32(SB.G_PVP_MODE_A, 1)
         previous = w.on_Creature_v22
-        views = {}
-        owner, other = w.players[:2]
-        recipient = RC.G_PLAYERS + RC.REC_SIZE
+        sentinel = 0x3F800000
+        first, second = RC.G_PLAYERS, RC.G_PLAYERS + RC.REC_SIZE
+        m.w32(first + 0xAC, sentinel)
+        m.w32(second + 0xAC, sentinel)
         percent = self.stat(55, 2, 1)
-        share = C.mul(C.mul(m.u32(recipient + 0xB0), SB.Model.F_HEAL_RATE),
+        share = C.mul(C.mul(m.u32(second + 0xB0), SB.Model.F_HEAL_RATE),
                       C.mul(C.from_int(percent), SB.F_0_01))
-        extra = {}
-        for addr, size, value in [(recipient + 0xAC, 4, C.add(m.u32(recipient + 0xAC), share))] + [
-                (other + off, 2, value) for off, value in SB.Model.HEAL_TINT]:
-            extra.update({addr + i: (value >> (8 * i)) & 255 for i in range(size)})
-        before_extra = {addr: m.load(addr, 1) for addr in extra}
-        first_health = C.add(m.u32(RC.G_PLAYERS + 0xAC), m.u32(obj + 0x1C))
+        first_health = C.add(sentinel, m.u32(obj + 0x1C))
 
         def shrink(args, view, rng):
-            if isinstance(view, B.ModelView):
-                views['model'] = view
             view.poke(SB.G_ALIVE_COUNT, 4, 0)
             return B.Res(1)
 
         w.on_Creature_v22 = shrink
         try:
-            out = self.rig.compare(B.FUNCTION_AT[0x2E90B8], 'healing_run',
-                                   (obj, w.scratch, 0))
+            out = self.run(55, obj)
         finally:
             w.on_Creature_v22 = previous
-        self.counts['adversarial_comparisons'] += 1
-        for key in ('fault', 'seed', 'result', 'both_fault'):
-            self.check(out[key] is None, 'unexpected_' + key)
-        for key in ('calls', 'writes'):
-            self.check(out[key] is not None, 'expected_' + key)
-            self.discrepancies[key] += 1
-        self.check(not self.rig.unknown, 'unknown_targets')
-        self.check(len(self.calls(out, 'Creature.v22')) == 1, 'original_stops_after_first')
-        self.check(sum(name == 'Creature.v22' for name, _ in out['model_calls']) == 2,
-                   'model_uses_initial_count')
-        self.check(m.u32(RC.G_PLAYERS + 0xAC) != 0 and
-                   m.u32(RC.G_PLAYERS + RC.REC_SIZE + 0xAC) == 0, 'original_recipient_set')
-        self.check(m.u32(RC.G_PLAYERS + 0xAC) == first_health, 'exact_first_health')
-        self.check(all(m.load(a, 1) == value for a, value in before_extra.items()),
-                   'second_recipient_unchanged')
-        view = views['model']
-        keep = lambda addr: not B.is_stack(addr) and not B.is_model_stack(addr)
-        model_bytes = {a: view.load(a, 1) for a in view.bytes if keep(a)}
-        original_bytes = {a: m.load(a, 1) for a in
-                          self.rig.stored_bytes() | self.rig.eview.touched if keep(a)}
-        first_calls = [('Creature.v22', (owner, owner)), ('Creature.v22', (owner, other))]
-        args = (out['model_calls'], out['emu_calls'], model_bytes,
-                original_bytes, extra, first_calls)
-        self.check(exact_count_discrepancy(*args), 'only_diagnosed_difference')
-        # Negative controls must reject extra faults without changing original code.
-        bad_health = dict(original_bytes)
-        bad_health[RC.G_PLAYERS + 0xAC] ^= 1
-        bad_calls = list(out['emu_calls'])
-        name, call_args = bad_calls[-1]
-        bad_calls[-1] = (name, (call_args[0] ^ 1,) + call_args[1:])
-        bad_store = dict(original_bytes)
-        bad_store[obj + 0x1C] = m.load(obj + 0x1C, 1)
-        bad_extra = dict(model_bytes)
-        bad_extra[recipient + 0xAC] ^= 1
-        for altered in (
-                (args[0], args[1], model_bytes, bad_health, extra, first_calls),
-                (args[0], bad_calls, model_bytes, original_bytes, extra, first_calls),
-                (args[0], args[1], model_bytes, bad_store, extra, first_calls),
-                (args[0], args[1], bad_extra, original_bytes, extra, first_calls)):
-            self.check(not exact_count_discrepancy(*altered), 'reject_extra_discrepancy')
-            self.counts['discrepancy_mutations_rejected'] += 1
-        self.counts['documented_model_discrepancies'] += 1
+        self.check(len(self.calls(out, 'Creature.v22')) == 1, 'one_slot_22_call')
+        self.check(sum(name == 'Creature.v22' for name, _ in out['model_calls']) == 1,
+                   'model_reloads_count')
+        self.check(m.u32(first + 0xAC) == first_health, 'exact_first_health')
+        self.check(m.u32(second + 0xAC) == sentinel, 'second_sentinel_kept')
+        self.check(share != sentinel and m.u32(second + 0xAC) != C.add(sentinel, share),
+                   'second_share_not_applied')
 
     def execute(self):
         for operation in (self.costs_and_gates, self.targeting_49, self.effects_49,
@@ -539,12 +487,9 @@ class Probe:
             operation()
 
     def report(self):
-        status = 'FAIL' if self.failure else ('PASS_WITH_MODEL_DISCREPANCY'
-                  if self.discrepancies else 'PASS')
-        return {'status': status, 'ids': [49, 55],
+        return {'status': 'FAIL' if self.failure else 'PASS', 'ids': [49, 55],
                 'fpu': 'ps2', 'counts': dict(sorted(self.counts.items())),
                 'function_comparisons': dict(sorted(self.functions.items())),
-                'documented_discrepancy_properties': dict(self.discrepancies),
                 'unexpected_failure_count': self.counts['failures'],
                 'unknown_target_count': len(self.rig.unknown),
                 'failure_case': self.failure, 'real_gameplay_established': False}

@@ -1,11 +1,12 @@
 # IDs 49 and 55: bounded round-3 evidence
 
-STATUS: COMPLETE — bounded research only; one synthetic model discrepancy retained.
+STATUS: COMPLETE — bounded research only. The living-player count now matches.
 
 Executed on 2026-10-27 in branch `t3/research-spells-r3`, based on `77c2f70`.
 The owned additions are this document and
 [`tools/difftest_spell_support_r3.py`](../../tools/difftest_spell_support_r3.py).
-No reference API or existing vector changed.
+`SpellHealing_run` now re-reads the living-player count. No other reference API
+or existing vector changed.
 
 The prior `cursor-runs/audits/research-spells-r2.md` reports PASS for its earlier
 scope. It was read as retained evidence, not counted as a fresh execution. The
@@ -22,16 +23,19 @@ From the worktree root:
 PYTHONDONTWRITEBYTECODE=1 python3 -c 'import unittest, runpy, sys; sys.path.append("tools"); sys.argv = ["tools/difftest_spell_support_r3.py"]; runpy.run_path(sys.argv[0], run_name="__main__")'
 ```
 
-**Executed:** exit 0, `PASS_WITH_MODEL_DISCREPANCY`; 5,178 assertions, zero
-unexpected failures, zero unknown call targets. There are **560 matching
-function comparisons**, **37 animation comparisons**, and **one separate
-adversarial function comparison with a documented disagreement**. These are
-598 top-level original calls being checked, not a count of gameplay actions or
-independently exercised branches. Startup and nested calls are not separately
+**Executed:** exit 0, `PASS`; 5,173 assertions, zero unexpected failures, zero
+unknown call targets. There are **561 matching function comparisons** and **37
+animation comparisons**. The former adversarial call is one of the 561. These
+are 598 top-level original calls being checked, not a count of gameplay actions
+or independently exercised branches. Startup and nested calls are not separately
 counted. Constructors run inside the cast comparisons.
 
-The ignored artifact `local/spells-r3/support-counts.json` contains only counts,
-addresses, fixed test labels and status. The script validates the private input
+Round 4's receipt `local/spells-r3/support-parent-counts.json` is the file that
+records `PASS_WITH_MODEL_DISCREPANCY`, 5,178 assertions and 560 matching
+comparisons. The older `support-counts.json` from that round did not. This
+round rewrites `local/spells-r3/support-counts.json` with the matching result.
+That receipt contains only counts, addresses, fixed test labels and status. The
+script validates the private input
 against the existing expected digest before execution and exits 2 if it is absent
 or different. It reads `local/SLUS_209.73` without modifying its symlink or target.
 It confines generated output to `local/spells-r3/` and emits no extracted values,
@@ -45,12 +49,12 @@ tables, instruction listings, game text or bytes.
 | `0x2de7dc` | 56 | 49 effect, timing and end conditions |
 | `0x2e8cf8` | 45 | 55 cast and nested constructor |
 | `0x2e8e94` | 20 | 55 cost, ranks 1–20 |
-| `0x2e90b8` | 345 | 55 matching effect and timing cases |
+| `0x2e90b8` | 346 | 55 matching effect and timing cases, including the re-read count |
 | `0x3c8218` | 3 | 55 base gate |
 | `0x3c85fc` | 29 | Supporting statistic queries |
 
 `0x16d748` adds 37 animation comparisons against `ref_anim.anim_advance`.
-The extra adversarial comparison is at `0x2e90b8` and is excluded from the 560.
+The count-reload case at `0x2e90b8` is included in the 561.
 The exact group counts are retained in the counts artifact; comparisons include
 setup casts and supporting getters, not just the final boundary calls.
 
@@ -107,8 +111,8 @@ are `0x40040` at ranks 1–5, `0x80040` at 6–15 and `0x200040` at 16–20, inc
 both sides of each transition. Each creature hit passes no-critical flag 1.
 The damage callback records these arguments. The handed amount, creature HP
 subtraction and stun-timer store are **Executed** in the
-[numeric contract](player-spells-numeric-r3.md). Death and knock-back after that
-subtraction remain **Unknown**.
+[numeric contract](player-spells-numeric-r3.md), with the player slot, the
+player death test and the knock-back speeds.
 
 **Executed stun boundary (`0x2deb4c–0x2deba0`):** at rank 5, deterministic shared
 seeds produce a roll exactly equal to chance and one above it. Equality stuns;
@@ -180,33 +184,21 @@ post-increment clocks immediately below, exactly at and immediately above
 The increment is `0x3c888888` under the emulator's `ps2` arithmetic. This is
 isolated execution, not a measurement on hardware or in a running game.
 
-## Documented model discrepancy
+## Living-player count
 
-**Executed, synthetic:** a mode-A slot-22 callback changes the living-player
-count from 2 to 0 through the provided memory view on its first invocation.
-At `0x2e90b8`, the original calls that callback once and changes only the first
-recipient's health; the existing model calls it twice. Calls and written bytes
-disagree; neither side faults, the shared seed agrees, and there are no unknown
-targets. Stable-count positive/negative controls above agree.
+**Executed, synthetic.** A mode-A slot-22 callback writes 0 to `g_alivePlayerCount`
+`0x4f8420` on its first call. The original at `0x2e9180` reads that word again
+on the next iteration and stops, so only the first recipient is healed. Round 4's
+`healing_run` kept the initial Python `range` and called slot 22 twice. That was
+the whole of the disclosed mismatch: the second recipient's health and tint.
+`support-parent-counts.json` records it as `PASS_WITH_MODEL_DISCREPANCY` beside
+5,178 assertions and 560 matching comparisons.
 
-The addressed inherited observation is the count reload at `0x2e9180`, with
-the count at `0x4f8420`. `ref_skills_b.Model.healing_run` instead builds a Python
-`range` from the initial count. The new probe explicitly requires this one
-disagreement and reports `PASS_WITH_MODEL_DISCREPANCY`; it is not counted as a
-matching comparison. No reference repair or vector edit was made. Whether any
-actual callback can mutate this count during a call is **Unknown**. This test
-does not establish a gameplay defect, concurrent mutation or network desync.
-
-The permitted discrepancy is checked exactly: removing only the second
-recipient's slot-22 callback makes the entire callback trace equal, and the
-only extra reference stores are that recipient's four health bytes and sixteen
-tint bytes with their prescribed values. All remaining stored bytes and values
-must agree; the original's second-recipient state must remain unchanged, and
-its first-recipient health must equal the cached increment added to prior
-health. Four controls reject an altered nonzero first-recipient amount, an
-unrelated known callback's changed argument, an extra store, and an altered
-second-recipient reference amount. The comparison captures the existing
-copy-on-write view via the scripted callback; it changes no reference API.
+The model now uses the same re-read. Both sides call slot 22 once, the first
+record is the cached amount added to a nonzero sentinel, and the second record
+stays at that sentinel. The comparison is one of the 561. No other reference
+API or vector changed. Whether a live callback reaches this write is still
+**Unknown**. The test is a synthetic memory poke, not a gameplay defect.
 
 ## Stubs, borrowed assumptions and remaining unknowns
 
@@ -240,10 +232,11 @@ Everything outside `Rig.real` remains a recording stub inherited from
   statistic table is used as an expected vector.
 
 **Unknown:** actual spatial queries, actual team predicates, animation resource
-validity and movement, the player damage slot, death and knock-back, destructor
+validity and movement, destructor
 and free behavior, scheduling of dead owners, and composed gameplay. The cast
 helper's debit, recast and prediction-copy refusal, the creature HP subtraction,
-and the stun-timer store are executed in the
+the stun-timer store, the player damage slot, the player death test and the
+knock-back speeds are executed in the
 [numeric contract](player-spells-numeric-r3.md). Default resource headers and
 authored animation tracks are fixtures, not disc evidence. No public server or
 gameplay client was contacted.

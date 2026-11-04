@@ -2175,9 +2175,10 @@ class Model(RC.Model):
         points +0x228 raised - the owner by +0x1c, others by their share - with no upper
         limit, and is tinted during the first 0.13 s.
         Player owner: the slots of g_alivePlayers (the per-machine list, FINDINGS G19), in
-        list order, whose object is within the reach in 3-D (in PvP mode A only those the
-        owner's slot 22 accepts): hit points rise in the RECORD, only while hit points + 1
-        <= maximum; tint as above.
+        list order. The count at 0x4f8420 is read again on every iteration, so a slot-22
+        callback that clears it ends the walk before the next slot. Each kept object is
+        within the reach in 3-D (in PvP mode A only those the owner's slot 22 accepts):
+        hit points rise in the RECORD, only while hit points + 1 <= maximum; tint as above.
         Then, reach >= 1: level - (first level of statistic 1) + 5 ring particles, each
         with ONE OWN DRAW for its angle, placed round the "object or prediction copy" of
         the owner and kept only where the terrain is within 72 of that object's height.
@@ -2213,10 +2214,12 @@ class Model(RC.Model):
                         tint(other)
         else:
             chosen = []
-            for i in range(max(self.s32(G_ALIVE_COUNT), 0)):
+            i = 0
+            while i < max(self.s32(G_ALIVE_COUNT), 0):
                 slot = self.s32(G_ALIVE_LIST + 4 * i)
                 obj = u32((G_PLAYERS + slot * REC_SIZE + REC_OBJ) & M32)
                 if u32(G_PVP_MODE_A) and not self.vcall(u32(spell + 0xC), 22, obj):
+                    i += 1
                     continue
                 owner = u32(spell + 0xC)
                 obj = u32((G_PLAYERS + self.s32(G_ALIVE_LIST + 4 * i) * REC_SIZE + REC_OBJ) & M32)
@@ -2225,6 +2228,7 @@ class Model(RC.Model):
                 dz = C.sub(u32(owner + 0x18), u32(obj + 0x18))
                 if C.le(C.add(C.add(C.mul(dx, dx), C.mul(dy, dy)), C.mul(dz, dz)), reach2):
                     chosen.append(self.s32(G_ALIVE_LIST + 4 * i))
+                i += 1
             for slot in chosen:
                 rec = (G_PLAYERS + slot * REC_SIZE) & M32
                 if C.le(C.add(u32(rec + 0xAC), ONE), u32(rec + 0xB0)):
