@@ -9,6 +9,7 @@ claim without guessing the PS2 FPU's behaviour for arbitrary world positions.
 No game data or instruction bytes are emitted or stored.
 """
 import argparse
+import dis  # stdlib; tools/dis.py would shadow it once that directory is on the path
 import os
 import random
 import struct
@@ -98,6 +99,38 @@ def reveal_cases(emu, rng):
         if draws(emu):
             raise AssertionError('draw-time reveal drew a random seed')
     return 120
+
+
+def fractional_cases(emu, rng):
+    """0x16a4b0 for positions that are not integer cell centres."""
+    position = emu.alloc(16)
+    width = height = 24
+    for case in range(48):
+        if case == 0:
+            world = (0, 0)
+            origin = (float(7), float(9))
+        else:
+            world = (rng.uniform(-400, 400), rng.uniform(-400, 400))
+            origin = (rng.uniform(-20, 20), rng.uniform(-20, 20))
+        old = [rng.randrange(0x10000) for _ in range(N)]
+        emu.mem.write(GRID, grid_bytes(old))
+        emu.mem.w32(WIDTH, width)
+        emu.mem.w32(HEIGHT, height)
+        origin_bits = (fbits(origin[0]), fbits(origin[1]))
+        world_bits = (fbits(world[0]), fbits(world[1]), 0)
+        emu.mem.w32(ORIGIN_X, origin_bits[0])
+        emu.mem.w32(ORIGIN_Y, origin_bits[1])
+        for index, value in enumerate(world_bits):
+            emu.mem.w32(position + 4 * index, value)
+        emu.writes = []
+        emu.call(0x16A4B0, position)
+        want = grid_bytes(H.reveal_world(old, width, height, origin_bits[0], origin_bits[1],
+                                         world_bits[0], world_bits[1]))
+        if emu.mem.read(GRID, 2 * N) != want:
+            raise AssertionError('fractional reveal case %d' % case)
+        if draws(emu):
+            raise AssertionError('fractional reveal drew a random seed')
+    return 48
 
 
 def feed_cases(elf, rng):
@@ -287,11 +320,13 @@ def main():
     print('PASS automap_loadGrid %d cases; seed draws 0' % a)
     b = reveal_cases(emu, random.Random('%d/reveal' % args.seed))
     print('PASS draw-time reveal %d cases; seed draws 0' % b)
+    frac = fractional_cases(emu, random.Random('%d/fraction' % args.seed))
+    print('PASS fractional reveal %d cases; seed draws 0' % frac)
     c = feed_cases(args.elf, random.Random('%d/feed' % args.seed))
     print('PASS minimap_draw feed %d cases; seed draws 0' % c)
     d = gold_touch_cases(args.elf, random.Random('%d/gold-touch' % args.seed))
     print('PASS Gold_onTouch %d cases; seed draws 0' % d)
-    print('PASS 4 properties, %d cases, seed %d' % (a + b + c + d, args.seed))
+    print('PASS 5 properties, %d cases, seed %d' % (a + b + frac + c + d, args.seed))
     return 0
 
 
