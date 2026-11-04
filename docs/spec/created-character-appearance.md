@@ -289,9 +289,11 @@ mirror on these slots. Both resource handles are present, so the part's
 hide qword is cleared from object `+0x220`. Evidence:
 [starting rows, lines 519–551](../../tools/difftest_char_attachment.py#L519).
 A separate off-hand iteration (pointer index 1) still forces override 1.
-On model 2 that calls `0x179860` before the draw and `0x179978` after it.
-The reset stores `0x41c150` at `0x41c160` and clears the shell count. A
-shield in that same off-hand iteration still applies the body-model bit.
+The override compare at `0x1a3dd0` calls `0x179978` whenever that override
+is not −1, for every model. Model 2 additionally calls `0x179860` before
+the draw. The reset stores `0x41c150` at `0x41c160` and clears the shell
+count. A shield in that same off-hand iteration still applies the
+body-model bit.
 Evidence:
 [composed rows, lines 554–598](../../tools/difftest_char_attachment.py#L554).
 
@@ -318,8 +320,101 @@ The other caller, `0x1c0c6c`, loads the constant 1.5 at `0x1c0c64`. Evidence:
 and [the clamp, lines 269–289](../../tools/ref_char_attachment.py#L269).
 
 Part flag `0x20` together with a positive count at `0x41c164` is what sends
-`0x178c28` into `0x174e78`. These cases leave flag `0x20` clear, so that
-primitive is not executed. Its packet contents remain **Unknown**.
+`0x178c28` into `0x174e78`. The cases above leave flag `0x20` clear. The
+primitive itself is executed in the next section.
+
+## Pose, the body-mask frame, and the shell primitive
+
+Three different clips are installed, and the body draw reads the show mask
+that the previous equipment pass stored.
+
+**Observed; Executed** creation restart `0x2254bc–0x2255b4`. The preview
+object is `*(scratch + 0x1558 + 4*row)` with the scratch pointer loaded
+from `0x4fdb7c`. A start happens only when the halfword at object `+0x11a`
+has bit `0x80` and the count byte at object `+0x118` is less than 2.
+Bit `0x08` of that halfword selects the format at `0x53ff58`; otherwise
+the format is `0x53ff68`. Both are a leading `%s` plus a fixed suffix.
+The `%s` is the descriptor name at `0x4fbbf8 + row*0x26c`, unless that
+name is the literal at `0x53fd38`. That literal instead copies one of the
+thirteen short names selected by the signed byte at `0x8e2c91` (the byte
+plus one, and only results 0..12). `anim_start` is called with flags 3.
+The new cell's time and weight are 0. On an empty state the 0.2 blend
+loaded at `0x225584` is forced to 0, so the rate is 1. When the count is
+already 1 the new cell keeps that blend and the rate is `0x3daaaaab`.
+Evidence:
+[creation rows](../../tools/difftest_char_picture.py#L139).
+`playerSel_task` and the helpers through `0x22e700` do not call
+`anim_advance`. The installed frame is therefore time 0 and weight 0.
+Which other task steps that preview object before a draw is **Unknown**.
+
+**Observed; Executed** three transition setups, same empty-state cell
+(time 0, weight 0, rate 1):
+
+| Slice | Format | Flags |
+|---|---:|---:|
+| `0x226dec–0x226e44` | `0x5400c8` | 6 |
+| `0x228508–0x22855c` | `0x5400c8` | `0x16` |
+| `0x228a88–0x228ad8` | `0x540330` | `0xe` |
+
+**Observed; Executed** `inventory_selectIdleAnim` `0x1c3f08`. The lump name
+is chosen by the model index through `0x5385b0`, and the clip name is
+chosen by weapon class `+0x4a86`: classes 1, 2, 3, 4, 5 and 7 each have
+their own address, and every other class shares `0x538598`. Flags are
+`0x43` (loop, purge-below, fixed step). If that clip is already the
+current track, the time word is not written. A fresh empty state stores
+time 0, weight 0 and rate 1; the 0.1 blend at `0x1c4078` is forced off
+for cell 0. The inventory draw then calls `anim_advance` at speed 1 from
+`0x1c0a10`, before `model_draw`. One such step from that fresh cell stores
+time `0x3f7fffff` and weight 1. That is the first frame the inventory
+stand draws. Evidence:
+[inventory and play rows](../../tools/difftest_char_picture.py#L206).
+
+**Observed; Executed** `player_resetIdleAnim` `0x1b2470`. No player at
+`+0x43d8`, or hit points `+0xac` not greater than 0, leaves a prefilled
+clip word unchanged. Otherwise cells 0..3 receive the definition clips at
+`class*0x68 + {0x44, 0x4c, 0x54, 0x5c}`, the count becomes 4, cell 0's
+weight and life become 1, and the flags are `0x1205`. Object byte `+0x462`
+nonzero replaces only cell 0, with the idled name for classes 1, 2, 3, 4
+and 7, and `0x537628` for every other class. The time word and the rate
+word are not written: a nonzero sentinel in either one survives. The frame
+shown in play is therefore whatever later steps have done to that time.
+At rest, `Player_move` already steps cell 0 at rate 1
+(`docs/spec/player-animation-selection.md` on `t3/research-player-anim`);
+this round did not re-execute that function. Cache release `0x171118` is
+stubbed here, as in that earlier selector test.
+
+**Observed** `Player_draw` reaches the body in this order. One path calls
+`model_draw` at `0x1a4bfc` with show-mask argument −1, calls `0x179978`,
+and skips the body. The other path calls `Creature_draw` at `0x1a4c28`
+and only afterwards `Player_drawEquipped` at `0x1a4d08`. Inventory does
+the same kind of split: `model_draw` at `0x1c0c58`, then
+`Player_drawEquipped` at `0x1c0c6c`.
+
+**Observed; Executed** the load that feeds that body draw. `Creature_draw`
+at `0x10ba84` reads object `+0x220` and passes that 64-bit word as `r10`
+of `model_draw`. Inventory reads the same word at `0x1c0a28` and passes it
+from `0x1c0c20` with layer 6, mesh object `+0x544` and texture object
+`+0x550`. The walk `0x177df4–0x177eb0` then emits the same mesh runs as
+`mesh_runs` for masks 0, 1, `0b010`, `0b101` and all-ones, including one
+empty mesh. The body picture therefore uses the mask stored by the
+previous `Player_drawEquipped`, not the update that follows the body draw
+in the same call. Evidence:
+[mask rows](../../tools/difftest_char_picture.py#L317).
+
+**Observed; Executed** `model_emitShellPasses` `0x174e78`. Flag `0x20`
+clear leaves a prefilled packet unchanged. Flag set walks table 0: the
+boundary list is read at model `+0x28`. A positive count at `0x41c164`
+and that flag are both required at the `model_draw` gate `0x177da4` and
+the `model_drawPart` gate `0x178c88`; either one missing skips the call.
+The call is `(cursor, model, 1, pointer at 0x41c160, count)`. Each 8-byte
+record is four colour bytes and one float. The pass stores that float,
+those bytes, and `0x1400002a`, then one DMA reference per nonempty run of
+table 0 (the low mesh-count bits are set). A zero third argument selects
+the `0x44` setup word; the callers pass 1, which selects `0x48`. The
+trailer stores `0x6001c000`, `0x1400002a` and a zero word, then the qword
+at model `+0x18` and test word `0x507f5`. The byte image is
+[shell_packet](../../tools/ref_char_attachment.py#L398). Joint matrices
+and the GS rasterizer remain **Unknown**.
 
 ## Remaining boundaries and client handoff
 
@@ -330,18 +425,23 @@ primitive is not executed. Its packet contents remain **Unknown**.
   selection are documented within the synthetic boundaries above. The shield
   variant bit for each body model, the draw arguments of the published
   starting pointer slots, and the flag-33 shell block are documented in the
-  equipment section.
+  equipment section. The creation, inventory and in-play clip installs,
+  the show-mask argument of the body `model_draw`, and the shell packet are
+  in the pose section.
 - **Partial:** the test joins bounded slices and full helper functions with
   constructed entry state. Resource lookup proves archive membership and
   returned-handle propagation, not actual loading/relocation or GPU use.
   Starting item identity and metadata offsets are reused from round 4; this
   note does not re-execute that loader. The draw argument's projection inputs
-  are not named.
+  are not named. The creation preview is installed at time 0 and weight 0;
+  the task that would step it was not found in the selection functions.
+  In-play time is not rewritten by the idle reset, and `Player_move` was
+  not re-executed. `anim_releaseCaches` stays stubbed.
 - **Unknown:** input reachability of every option combination, the full menu
-  confirmation/cancellation lifecycle, live preview/camera parity, the frame
-  on which the body draw consumes `+0x220`, animated joint matrices, shell
-  primitive `0x174e78`, and a continuous created-character-to-rendered-player
-  run. No native refusal was removed and no client files were changed.
+  confirmation/cancellation lifecycle, live preview/camera parity, which
+  task advances the creation preview, animated joint matrices, and a
+  continuous created-character-to-rendered-player run. No native refusal
+  was removed and no client files were changed.
 
 The client can implement these pieces without inventing values:
 
@@ -357,12 +457,25 @@ The client can implement these pieces without inventing values:
    that path on the class word. A worn shield (definition slot 3) instead
    uses the body-model bit table in this section.
 4. Shell parameters: flag bit 33 clear means count 0; set means count 2 and
-   the four block fields above. Do not draw the `0x174e78` primitive from
-   this note.
+   the four block fields above. Draw `0x174e78` only when the part flag
+   `0x20` is set and that count is positive. Each record is one pass over
+   every nonempty table-0 mesh, then the restore pass. The byte image is
+   `shell_packet`.
+5. Creation pose: the restart rules and the three transition formats above.
+   Install time 0 and weight 0. Do not invent a step the selection task
+   does not perform.
+6. Inventory pose: the model lump and the class idle filename, flags `0x43`.
+   The first drawn frame is one fixed step later: time `0x3f7fffff`, weight
+   1. A repeated draw keeps stepping; do not restart a clip that is already
+   playing.
+7. In-play pose: the four definition clips, or the idled name when object
+   `+0x462` is set. Leave the current time in place across a reset.
+8. Body meshes: pass object `+0x220` as the show mask of `model_draw`.
+   Use the mask from the previous equipment pass. The runs are `mesh_runs`.
 
 Preserve explicit unknown appearance for records lacking the four choice
-bytes. Leave body-mask consumption timing, animated joints, and the shell
-primitive refused until they have their own executed evidence.
+bytes. Leave animated joint matrices and the creation-preview step refused
+until they have their own executed evidence.
 
 ## Reproduction
 
@@ -395,5 +508,13 @@ The attachment probe passes the previous 12,069 cases per seed (42 variant
 masks, 14 initializations, 4,627 direct part draws, 1,818 cover gates, 4,608
 appearance cases and 960 linked equipment/appearance cases) and adds 60 shield
 rows, 48 starting-slot rows, 3 composed off-hand rows, 20 shell-block calls
-and 11 draw-argument rows. The repository analysis suite is unchanged by
-these additions. These results are executed evidence, not screenshots.
+and 11 draw-argument rows.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_char_picture.py \
+  local/SLUS_209.73 --seeds 20973 7
+```
+
+The picture probe passes 7 creation rows, 211 pose rows and 16 draw rows on
+each seed. The repository analysis suite stays 652 tests. These results are
+executed evidence, not screenshots.
