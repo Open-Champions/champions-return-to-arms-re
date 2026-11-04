@@ -8,6 +8,9 @@ function-level comparison of the inventory quest page against the original
 executable with `tools/ee_emu.py`, seeds 20973 and 7. The ELF is pinned by
 SHA-256 in that test. It also asserts addressed mission-flow cells in the
 three shipped `hub`, `strife` and `drundar` scripts directly from the disc.
+`tools/difftest_quest_log_state.py` (2026-11-03) runs the original list
+mutations, the page's text calls with a controlled wrap return, and the
+player save/restore path on the same two seeds.
 Disc files are read only; no game text or texture is stored here.
 
 **Evidence boundary.** Addresses, records, script call sites and the texture
@@ -69,9 +72,9 @@ the quest list/count in this draw branch.
 | Item | Executed call/record | Limit of this probe |
 |---|---|---|
 | Background | `res_find` 0x17365c at 0x1d263c asks for `inventry.lmp/parchment.tex`; `0x17fb68` at 0x1d2668 submits `(x=0, y=−4, size/index=104, layer=5, tint=0x80808080)` | Read-only disc header is **Observed** as 320×350. The third sprite argument's role and displayed crop are not established here. |
-| Populated list | Each of count 1, 2 and 8 issues `text_begin` 0x1800b8 with `(font=0, second argument=6, colour=0x80323c3c, fourth=−1)` and `text_setClip` 0x1803e0 with `(0,119,320,440)`; `text_lookup` 0x173c84 sees each title then body key in stored order | The four `text_begin` arguments are asserted on constructed state; font resource 0 is not a loaded-font capture. The second argument is not named in `symbols/engine.tsv`. `text_setClip` clamps its rectangle to 640×447, so the requested bottom 440 is within bounds. |
-| Text placement | `0x181280` at 0x1d272c and 0x1d2784 each receive `(24, 114+22i, 0, 288, 82, 418, 21)` for row `i` when font calls return the test's stub value | Both calls share the same controlled y because font measurement and localization are stubbed. Actual body position, wrapping and glyph dimensions need a real font/layout capture. |
-| Empty list | No entry text calls; lookup at 0x1d27dc requests the short key `NoQuests` | The localized words and their draw result are not captured. |
+| Populated list | One batch per entry, then `text_end` 0x180500 at 0x1d278c. `text_begin` 0x1800b8 at 0x1d26ac loads its font argument from the word at `0x4f7104` (`lw` at 0x1d268c) and passes `(that word, 6, 0x80323c3c, −1)`. `text_setClip` 0x1803e0 at 0x1d26d0 is `(0,119,320,440)`. `0x1802e0` is called at 0x1d26e8 with `(0x80323c3c, −1)` and at 0x1d2744 with `(0x802d2d2d, −1)`; only those two registers are set. Lookups stay title then body, in storage order | A fresh ELF has 0 at `0x4f7104`, so the first probe's font argument was 0. The state probe stores `0x11111111` and the call receives it. `t3/research-ui` `3e39392` `docs/formats/ui-fonts.md` lines 74–76 names that word as the gamefontsmall pointer. What `0x1802e0` stores is **Unknown**: calling it with a null batch pointer faults at 0x180310. `text_setClip` still clamps to 640×447. |
+| Text placement | `text_drawWrapped` 0x181280 at 0x1d272c and 0x1d2784. The third argument is the pointer returned by the preceding `text_lookup`. The older fixed tuple stored 0 there because that lookup was stubbed with return 0. The other immediates are `24`, then `288, 82, 418, 21` | Y starts at 114. Each wrap return is added to y before the next draw, and 22 is added after the body (`tools/ref_quest_log.py` lines 121–132, checked at `tools/difftest_quest_log_state.py` lines 209–225). A stub return of 0 is why title and body shared a row in the first probe. The integer a loaded font's wrap returns is still **Unknown**. |
+| Empty list | `text_begin` at 0x1d27d0 with the same four arguments, lookup of `NoQuests` at 0x1d27dc, then `text_drawWideCentered` 0x181ca0 at 0x1d2800 with `(160, 224, lookup pointer, 1000000)`, then `text_end` at 0x1d2808 | No clip and no wrap on this branch. The localized words are not captured. |
 | Completion | `removeQuest` changes the list; the page reads only its current count and title/body records | There is no completed style in this tested branch. Mission completion remains in the mission bit and its menu art. |
 
 The title/body fields are localization identifiers. The test uses synthetic
@@ -156,9 +159,9 @@ still open.
    on constructed state through their shipped entries; the addressed static
    checks alone do not establish either state change or live dialog reachability.
 3. Load `inventry.lmp/parchment.tex` from the owned disc, validate its 320×350
-   header and the page-4 routing. Draw current entries and `NoQuests` through
-   the same font/localization path. Compare text layout with real glyph
-   metrics and a rendered original frame before claiming visual parity.
+   header and the page-4 routing. Submit the section 6 text calls, including
+   the empty-state arguments and the y recurrence. The parchment crop and a
+   loaded font's wrap return are still open, so do not claim pixel parity.
 4. Port `setInfo`, `addHelpMessage/F` and `showCompass` as explicit script
    effects, with their menu, local-slot, timer and modal gates. Test the HUD
    draw and dismiss paths separately from the quest page.
@@ -166,13 +169,14 @@ still open.
    then its lockstep input and pending-level write. Keep the map separate
    from the quest list and verify mission 1's return plus the subsequent
    mission 2 hub action in an integrated session.
-6. Preserve mission/quest state through same-act level changes and saves;
-   apply act-change clearing only under the original guards. Verify a real
-   campaign transition, including player input, dialog, game code, art and
-   saved state. Function-level probes alone do not close that gate.
+6. Keep the journal span in `savePlayer`/`restorePlayer` and in the player
+   block of `save_build`/`save_load`, as section 6 measured. Apply act-change
+   clearing only under the original guards. A device save, the stubbed act
+   lookup, and a played campaign transition are still open.
 
 Verification commands for this worktree (all with
-`PYTHONDONTWRITEBYTECODE=1`) are the new `tools/difftest_quest_log.py` with
+`PYTHONDONTWRITEBYTECODE=1`) are `tools/difftest_quest_log_state.py` and
+`tools/difftest_quest_log.py` with
 `--elf` and `--iso` (including the three disc-script assertions); the prior
 `difftest_quests.py`,
 `difftest_script_effects.py`, `difftest_story_route.py` and
@@ -197,3 +201,95 @@ hub-only `difftest_natives.py --scripts local/story-route/scripts_raw
 shipped scripts because its default `scripts_raw/` was absent. The full
 Python unit suite passed 652/652. These are function-level or static
 fixture results, not an integrated quest playthrough.
+
+## 6. List order, writers, text calls, and save
+
+**Observed, Executed** on seeds 20973 and 7 by
+`tools/difftest_quest_log_state.py` lines 110–161 and the model at
+`tools/ref_quest_log.py` lines 73–118. Synthetic keys only.
+
+| Transition | Original call | Result |
+|---|---|---|
+| Add | `quest_add` 0x1d386c `(title, text)` | Appends on each player in order. The call returns at the first player whose count is already 8 or whose stored title matches. A later separate call still runs. Bytes after the new terminator stay. |
+| Remove one | `quest_remove` 0x1d3968 | The matching entry is covered with the nine-byte `NoQuests` placeholder and the entries after it slide up by one `strcpy`. Count drops by one. |
+| Remove duplicates | same | Every match is covered. Only the entries after the last match slide. Count still drops by one, so an earlier placeholder stays inside the visible count. Planted `A, B, A` becomes visible `NoQuests, B`. |
+| Complete | `mission_setComplete` 0x1bf770 `(difficulty, mission, value)` | Does not read or write the quest span. Value −1 sets bit 1 on all four records; value 0 clears it. Mission 13 writes nothing. The probe calls this function directly. `grantMission` 0x1420a4 remains the script wrapper already recorded in `docs/spec/script-builtins.md`. |
+| Clear | `quest_clearAll` 0x1d3adc | Covers each used entry of the first `g_numPlayers` records and stores count 0. A later record stays, including its count. |
+
+The page then reads that stored order. It does not sort, and it does not
+keep a completed row. `tools/difftest_quest_log_state.py` lines 196–197
+check that the draw leaves the span unchanged.
+
+**Script events that write a journal entry.** The only script commands that
+do are `addQuest` 0x1433c8 and `removeQuest` 0x143448. A disc walk in the
+same file, lines 335–400, counts 43 `addQuest` calls in 20 files and 30
+`removeQuest` calls in 19. Title keys are not stored. `strife` and `drundar`
+`exitzone` contain `grantMission` and neither journal command. Hub actions
+`setMissic270` and `setMissid125` call `setMissionAvailable` and neither
+journal command. The hub entries that cover script offsets 0x1e68 and
+0x1ee8 do contain `addQuest`. That static check does not re-run the dialog.
+
+These audited runs already executed particular writers. They are not
+repeated here:
+
+- `t3/research-story-route` `76d4447` `docs/story-route.md` line 46: both
+  hub actions at 0x1e68 and 0x1ee8 call `addQuest` and leave count 1.
+- `t3/research-loading-readiness` `366b65a` `docs/loading-arrival-r4.md`
+  lines 171–174: route ordinal 2 calls `0x1433c8` / `0x1d386c` when the
+  completion bit is clear, including one add onto an empty list, and a full
+  list stays at eight. The completion-set control omits that call.
+- `t3/research-mission2-route` `b8e2d11` `docs/mission2.md` lines 57–60:
+  the innovat1 turn-in removes the journal title. A later deferred task
+  grants mission 2. This file only checks that `innovat1` contains both
+  journal commands.
+- `t3/research-mission-unlocks` `e5c6176` `docs/spec/mission-unlocks.md`
+  lines 245–264: a direct `save_build` / `save_load` does not snapshot the
+  mission-menu task registry. That run stubbed the player snapshot, so it
+  does not say whether the journal span is in the image.
+
+**Text call contract. Observed, Executed**, same probe, lines 164–240.
+Resource, font, lookup, wrap, clip and GPU calls are stubbed. The page
+passes the word at `0x4f7104` as the font (`docs/formats/ui-fonts.md` lines
+74–76 on `t3/research-ui` `3e39392` names it gamefontsmall). One case stores
+`0x11111111` and both the populated and empty `text_begin` receive it. The
+page does not write that word back.
+
+Populated entry, in order: `text_begin(font, 6, 0x80323c3c, −1)`,
+`text_setClip(0, 119, 320, 440)`, `0x1802e0(0x80323c3c, −1)`, lookup of the
+title, `text_drawWrapped(24, y, pointer, 288, 82, 418, 21)`,
+`0x1802e0(0x802d2d2d, −1)`, lookup of the body, the same wrap at the updated
+y, `text_end`. Y follows section 2. Empty count: `text_begin` at 0x1d27d0,
+lookup of `NoQuests`, `text_drawWideCentered(160, 224, pointer, 1000000)`,
+`text_end`. No clip and no wrap.
+
+**Save and restore. Observed, Executed.**
+
+- `savePlayer` `game_savePlayerRecord` 0x1ec720 copies the medal player's
+  whole record, including the quest span, to `save_playerCopy`. `restorePlayer`
+  `game_restorePlayerRecord` 0x1eb6f8 copies that span back. The live medal
+  byte is kept. Another player's span is left alone. Lines 243–266.
+- `save_build` 0x221914 and `save_load` 0x221d60, lines 269–296. Camera,
+  jump gates, `save_findAct`, `save_setAct`, the level store, deferred-script
+  clear and `vars_clearAll` are stubbed (lines 60–64). Snapshot and fixup
+  are not. The image's first player block holds the quest span and the
+  planted mission byte. After the live span is overwritten, load writes the
+  saved span back and clears the object pointer at +0x43d8. This is not a
+  memory-card device transfer, and the stubbed act lookup is not an act change.
+
+**Still unknown.** The wrap return of a loaded font, so a multi-line body
+position is not a measured pixel. The stores inside `0x1802e0`. The
+parchment sprite's displayed crop. Which of the 43 `addQuest` sites a
+played session reaches, beyond the three cited runs. Quest-variable
+round-trip, because `vars_clearAll` was stubbed. Physical dialog, item
+turn-in and arrival remain the limits named by those runs.
+
+**A client can implement now:** append and remove with the duplicate
+placeholder left visible; mission completion as bit 1 on every record
+without deleting the line; act-change clear of the first `g_numPlayers`
+lists; the page's call arguments, font word, empty-state position and y
+recurrence; and the quest span across `savePlayer`/`restorePlayer` and the
+player block of this bounded `save_build`/`save_load`. It still has to
+refuse pixel parity, the parchment crop, and any claim that `grantMission`
+or the mission-menu registry is the journal.
+
+**Results, 2026-11-03:** `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_quest_log_state.py --elf local/SLUS_209.73 --iso local/disc.iso` on the Mac mini passed 18 original cases across seeds 20973 and 7, and 73 journal script calls. `python3 -c` with stdlib `dis` preloaded, then `unittest` of `tools/test_ref_quest_log.py`, passed 4 tests. The 2026-10-23 page probe was not re-run; its assertions are unchanged.
