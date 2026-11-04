@@ -72,10 +72,10 @@ the quest list/count in this draw branch.
 | Item | Executed call/record | Limit of this probe |
 |---|---|---|
 | Background | `res_find` 0x17365c at 0x1d263c asks for `inventry.lmp/parchment.tex`; `0x17fb68` at 0x1d2668 submits `(x=0, y=−4, size/index=104, layer=5, tint=0x80808080)` | Read-only disc header is **Observed** as 320×350. The third sprite argument's role and displayed crop are not established here. |
-| Populated list | One batch per entry, then `text_end` 0x180500 at 0x1d278c. `text_begin` 0x1800b8 at 0x1d26ac loads its font argument from the word at `0x4f7104` (`lw` at 0x1d268c) and passes `(that word, 6, 0x80323c3c, −1)`. `text_setClip` 0x1803e0 at 0x1d26d0 is `(0,119,320,440)`. `0x1802e0` is called at 0x1d26e8 with `(0x80323c3c, −1)` and at 0x1d2744 with `(0x802d2d2d, −1)`; only those two registers are set. Lookups stay title then body, in storage order | A fresh ELF has 0 at `0x4f7104`, so the first probe's font argument was 0. The state probe stores `0x11111111` and the call receives it. `t3/research-ui` `3e39392` `docs/formats/ui-fonts.md` lines 74–76 names that word as the gamefontsmall pointer. What `0x1802e0` stores is **Unknown**: calling it with a null batch pointer faults at 0x180310. `text_setClip` still clamps to 640×447. |
-| Text placement | `text_drawWrapped` 0x181280 at 0x1d272c and 0x1d2784. The third argument is the pointer returned by the preceding `text_lookup`. The older fixed tuple stored 0 there because that lookup was stubbed with return 0. The other immediates are `24`, then `288, 82, 418, 21` | Y starts at 114. Each wrap return is added to y before the next draw, and 22 is added after the body (`tools/ref_quest_log.py` lines 121–132, checked at `tools/difftest_quest_log_state.py` lines 209–225). A stub return of 0 is why title and body shared a row in the first probe. The integer a loaded font's wrap returns is still **Unknown**. |
+| Populated list | One batch per entry, then `text_end` 0x180500 at 0x1d278c. `text_begin` 0x1800b8 at 0x1d26ac passes `(the word at 0x4f7104, 6, 0x80323c3c, −1)`. `text_setClip` 0x1803e0 at 0x1d26d0 is `(0,119,320,440)`. `0x1802e0` is called at 0x1d26e8 with `(0x80323c3c, −1)` and at 0x1d2744 with `(0x802d2d2d, −1)`. Lookups stay title then body, in storage order | A fresh ELF has 0 at `0x4f7104`, so the first probe's font argument was 0. The state probe stores `0x11111111` and the call receives it. `t3/research-ui` `3e39392` `docs/formats/ui-fonts.md` lines 74–76 names that word as the gamefontsmall pointer. What `0x1802e0` stores is **Unknown**: the state probe stubs that callee. `text_setClip` still clamps to 640×447. |
+| Text placement | `text_drawWrapped` 0x181280 at 0x1d272c and 0x1d2784. The third argument is the pointer returned by the preceding `text_lookup`. The older fixed tuple stored 0 there because that lookup was stubbed with return 0. The other immediates are `24`, then `288, 82, 418, 21` | Y starts at 114. Each wrap return is added to y before the next draw, and 22 is added after the body (`tools/ref_quest_log.py` lines 121–132, checked at `tools/difftest_quest_log_state.py` lines 291–320). A stub return of 0 is why title and body shared a row in the first probe. The integer a loaded font's wrap returns is still **Unknown**. |
 | Empty list | `text_begin` at 0x1d27d0 with the same four arguments, lookup of `NoQuests` at 0x1d27dc, then `text_drawWideCentered` 0x181ca0 at 0x1d2800 with `(160, 224, lookup pointer, 1000000)`, then `text_end` at 0x1d2808 | No clip and no wrap on this branch. The localized words are not captured. |
-| Completion | `removeQuest` changes the list; the page reads only its current count and title/body records | There is no completed style in this tested branch. Mission completion remains in the mission bit and its menu art. |
+| Completion | `removeQuest` changes the list; the page reads only its current count and title/body records | There is no completed style in this tested branch. The state probe draws stored titles `Q1` then `Q0`, and those same two rows when mission bit 1 is set. Mission completion remains in the mission bit and its menu art. |
 
 The title/body fields are localization identifiers. The test uses synthetic
 `Q0/B0` etc. and does not store or assert dialogue or translated quest prose.
@@ -205,24 +205,26 @@ fixture results, not an integrated quest playthrough.
 ## 6. List order, writers, text calls, and save
 
 **Observed, Executed** on seeds 20973 and 7 by
-`tools/difftest_quest_log_state.py` lines 110–161 and the model at
+`tools/difftest_quest_log_state.py` lines 138–232 and the model at
 `tools/ref_quest_log.py` lines 73–118. Synthetic keys only.
 
 | Transition | Original call | Result |
 |---|---|---|
-| Add | `quest_add` 0x1d386c `(title, text)` | Appends on each player in order. The call returns at the first player whose count is already 8 or whose stored title matches. A later separate call still runs. Bytes after the new terminator stay. |
+| Add | `quest_add` 0x1d386c `(title, text)` | Appends on each player in order. The call returns at the first player whose count is already 8 or whose stored title matches. A later separate call still runs. Each free title and body starts as `0x5a`; after a successful add, the bytes past the new terminator are still `0x5a` (lines 144–165). |
 | Remove one | `quest_remove` 0x1d3968 | The matching entry is covered with the nine-byte `NoQuests` placeholder and the entries after it slide up by one `strcpy`. Count drops by one. |
 | Remove duplicates | same | Every match is covered. Only the entries after the last match slide. Count still drops by one, so an earlier placeholder stays inside the visible count. Planted `A, B, A` becomes visible `NoQuests, B`. |
-| Complete | `mission_setComplete` 0x1bf770 `(difficulty, mission, value)` | Does not read or write the quest span. Value −1 sets bit 1 on all four records; value 0 clears it. Mission 13 writes nothing. The probe calls this function directly. `grantMission` 0x1420a4 remains the script wrapper already recorded in `docs/spec/script-builtins.md`. |
+| Complete | `mission_setComplete` 0x1bf770 `(difficulty, mission, value)` | Does not read or write the quest span: all four spans are snapshotted, slot 3 starts as `0x3c`, and no recorded read or write falls in the span. Every mission byte starts at `0xf5`. Value −1 sets bit 1 and leaves the other bits (`0xf7`) on all four records; value 0 clears bit 1 and leaves the other bits. Mission 13, against that seeded table, writes nothing. The probe calls this function directly (lines 186–225). `grantMission` 0x1420a4 remains the script wrapper already recorded in `docs/spec/script-builtins.md`. |
 | Clear | `quest_clearAll` 0x1d3adc | Covers each used entry of the first `g_numPlayers` records and stores count 0. A later record stays, including its count. |
 
-The page then reads that stored order. It does not sort, and it does not
-keep a completed row. `tools/difftest_quest_log_state.py` lines 196–197
-check that the draw leaves the span unchanged.
+The page then reads that stored order. Titles planted as `Q1`, `Q0` are
+looked up in that order, not sorted. The same list with bit 1 set at
+difficulty 1, mission 1 (byte `0xf7` on all four records) draws those two
+rows and no extra row (lines 241–244, 255–257, and 320). The span compare at lines
+278–279 is only the check that the draw does not write the list.
 
 **Script events that write a journal entry.** The only script commands that
 do are `addQuest` 0x1433c8 and `removeQuest` 0x143448. A disc walk in the
-same file, lines 335–400, counts 43 `addQuest` calls in 20 files and 30
+same file, lines 434–499, counts 43 `addQuest` calls in 20 files and 30
 `removeQuest` calls in 19. Title keys are not stored. `strife` and `drundar`
 `exitzone` contain `grantMission` and neither journal command. Hub actions
 `setMissic270` and `setMissid125` call `setMissionAvailable` and neither
@@ -247,7 +249,7 @@ repeated here:
   mission-menu task registry. That run stubbed the player snapshot, so it
   does not say whether the journal span is in the image.
 
-**Text call contract. Observed, Executed**, same probe, lines 164–240.
+**Text call contract. Observed, Executed**, same probe, lines 235–322.
 Resource, font, lookup, wrap, clip and GPU calls are stubbed. The page
 passes the word at `0x4f7104` as the font (`docs/formats/ui-fonts.md` lines
 74–76 on `t3/research-ui` `3e39392` names it gamefontsmall). One case stores
@@ -265,20 +267,27 @@ lookup of `NoQuests`, `text_drawWideCentered(160, 224, pointer, 1000000)`,
 **Save and restore. Observed, Executed.**
 
 - `savePlayer` `game_savePlayerRecord` 0x1ec720 copies the medal player's
-  whole record, including the quest span, to `save_playerCopy`. `restorePlayer`
-  `game_restorePlayerRecord` 0x1eb6f8 copies that span back. The live medal
-  byte is kept. Another player's span is left alone. Lines 243–266.
-- `save_build` 0x221914 and `save_load` 0x221d60, lines 269–296. Camera,
-  jump gates, `save_findAct`, `save_setAct`, the level store, deferred-script
-  clear and `vars_clearAll` are stubbed (lines 60–64). Snapshot and fixup
-  are not. The image's first player block holds the quest span and the
-  planted mission byte. After the live span is overwritten, load writes the
-  saved span back and clears the object pointer at +0x43d8. This is not a
-  memory-card device transfer, and the stubbed act lookup is not an act change.
+  quest span to `save_playerCopy` for medal slots 0 and 1. The copy span is
+  filled with `0xa5` before the call and matches the live span afterward,
+  including the bytes past each terminator. `restorePlayer`
+  `game_restorePlayerRecord` 0x1eb6f8 writes that span back over a live span
+  filled with `0x5a`, so the title, the body, and those tail bytes all
+  return. The live medal byte stays 4 after it was changed from 9. The other
+  player's span is left alone. This compares the quest span, not the rest of
+  the record. Lines 325–361.
+- `save_build` 0x221914 and `save_load` 0x221d60, lines 364–396. Camera,
+  jump gates, `save_findAct`, `save_getAct` 0x217edc, `save_setAct`, the
+  level store, deferred-script clear and `vars_clearAll` are stubbed (lines
+  60–64). Snapshot and fixup are not. The image's first player block holds
+  the quest span and the planted mission byte. After `save_build`, the object
+  pointer at +0x43d8 is still the pointer stored beforehand. It is seeded
+  again, the live span is filled with `0x5a`, and `save_load` writes the
+  saved span back and stores 0 at +0x43d8. This is not a memory-card device
+  transfer, and the stubbed act lookup is not an act change.
 
 **Still unknown.** The wrap return of a loaded font, so a multi-line body
-position is not a measured pixel. The stores inside `0x1802e0`. The
-parchment sprite's displayed crop. Which of the 43 `addQuest` sites a
+position is not a measured pixel. The stores inside `0x1802e0`, which this
+probe stubs. The parchment sprite's displayed crop. Which of the 43 `addQuest` sites a
 played session reaches, beyond the three cited runs. Quest-variable
 round-trip, because `vars_clearAll` was stubbed. Physical dialog, item
 turn-in and arrival remain the limits named by those runs.
@@ -292,4 +301,4 @@ player block of this bounded `save_build`/`save_load`. It still has to
 refuse pixel parity, the parchment crop, and any claim that `grantMission`
 or the mission-menu registry is the journal.
 
-**Results, 2026-11-03:** `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_quest_log_state.py --elf local/SLUS_209.73 --iso local/disc.iso` on the Mac mini passed 18 original cases across seeds 20973 and 7, and 73 journal script calls. `python3 -c` with stdlib `dis` preloaded, then `unittest` of `tools/test_ref_quest_log.py`, passed 4 tests. The 2026-10-23 page probe was not re-run; its assertions are unchanged.
+**Results, 2026-11-03 audit fix:** `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_quest_log_state.py --elf local/SLUS_209.73 --iso local/disc.iso` on the Mac mini passed 24 original cases across seeds 20973 and 7, and 73 journal script calls, in 0.25s. The 2026-10-23 page probe was rerun with stdlib `dis` preloaded and passed 14 probes, 3 disc scripts, parchment `(320, 350)`, in 0.10s; its assertions were not edited. `python3 -c` with stdlib `dis` preloaded, then `unittest` discover of `tools/test_*.py`, passed 657 tests in 4.728s. Logs: `local/quest-log-r2-fix-state.log`, `local/quest-log-r2-fix-page.log`, `local/quest-log-r2-fix-unittest.log`.

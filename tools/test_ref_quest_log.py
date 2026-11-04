@@ -23,6 +23,17 @@ class QuestListTest(unittest.TestCase):
         R.quest_add(records, 2, "Late", "no")
         self.assertEqual(records[1]["count"], 1)
 
+    def test_add_keeps_bytes_after_the_terminator(self):
+        records = [R.blank_record(), R.blank_record()]
+        for rec in records:
+            rec["titles"][0] = b"\x5a" * R.FIELD
+            rec["bodies"][0] = b"\x5a" * R.FIELD
+        R.quest_add(records, 2, "A", "a")
+        self.assertEqual(records[0]["titles"][0], b"A\0" + b"\x5a" * 30)
+        self.assertEqual(records[0]["bodies"][0], b"a\0" + b"\x5a" * 30)
+        self.assertEqual(records[1]["titles"][0], b"A\0" + b"\x5a" * 30)
+        self.assertEqual(records[1]["bodies"][0], b"a\0" + b"\x5a" * 30)
+
     def test_remove_slides_once_from_the_last_match(self):
         rec = R.blank_record()
         rec["count"] = 3
