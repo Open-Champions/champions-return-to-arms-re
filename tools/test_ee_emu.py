@@ -717,6 +717,37 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(str(still.exception),
                          'SYSCALL at 0x%08x (v1 = 60); no kernel is modelled' % (BASE + 4))
 
+    def test_modelled_boot_is_opt_in_and_labels_its_ids(self):
+        create = [addiu(V1, ZERO, 32), R(0x0C)]
+        with self.assertRaises(CpuTrap) as unhandled:
+            machine(create, {A0: DATA})
+        self.assertIn('no kernel is modelled', str(unhandled.exception))
+        param = struct.pack('<6I', 0, 0x17ca58, 0x7cbd00, 0x4000, 0, 6)
+        emu = machine(create, {A0: DATA}, data=param, run=False)
+        emu.install_modelled_boot()
+        with self.assertRaises(EmuError):
+            emu.install_modelled_boot()
+        self.assertEqual(emu.call(BASE), 2)
+        self.assertEqual(emu.call(BASE), 3)
+        current = machine([addiu(V1, ZERO, 47), R(0x0C)], run=False)
+        current.install_modelled_boot()
+        self.assertEqual(current.call(BASE), 1)
+        empty = struct.pack('<6I', 0, 4, 0, 0, 0, 0)
+        waiting = machine([addiu(V1, ZERO, 64), R(0x0C),
+                           addiu(V1, ZERO, 68), addiu(A0, ZERO, 1), R(0x0C)],
+                          {A0: DATA}, data=empty, run=False)
+        waiting.install_modelled_boot()
+        with self.assertRaises(CpuTrap) as blocked:
+            waiting.call(BASE)
+        self.assertIn('modelled WaitSema count is 0', str(blocked.exception))
+        other = machine([addiu(V1, ZERO, 99), R(0x0C)], run=False)
+        other.install_modelled_boot()
+        other.install_deci2_kputs()
+        with self.assertRaises(CpuTrap) as plain:
+            other.call(BASE)
+        self.assertEqual(str(plain.exception),
+                         'SYSCALL at 0x%08x (v1 = 99); no kernel is modelled' % (BASE + 4))
+
     def callee_program(self):
         """v0 = callee(a0 + 1) + 1000, where callee(x) = x * 2 and stores x at DATA."""
         return [R(0x25, S0, RA, ZERO),          # 0: s0 = ra

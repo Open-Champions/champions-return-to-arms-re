@@ -19,8 +19,8 @@ from difftest_death_reload import SHA, fixture, put, get
 from ee_emu import CpuTrap
 
 
-def prepare(elf, rng, found=True, qualified=False):
-    e = fixture(elf)
+def prepare(elf, rng, found=True, qualified=False, ee=None):
+    e = fixture(elf) if ee is None else ee
     e.record_calls = True
     m = e.mem
     m.w32(0x44fdb8, 0)

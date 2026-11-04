@@ -45,8 +45,10 @@ trap, BREAK, SYSCALL and an integer division by zero (which does not trap on thi
 has no defined result).  SYSCALL still stops unless the caller installed
 syscall_handler.  install_deci2_kputs models only syscall 124 function 0x10,
 the level-teardown diagnostic.  install_terminate_thread models only syscall 37
-at the callers that do not read v0.  Every other number still raises CpuTrap.
-The two opt-ins compose; neither is installed by default.
+at the callers that do not read v0.  install_modelled_boot models the thread,
+semaphore and boot callers listed on that method.  Every value it writes in v0
+is modelled, not a recovered kernel result.  Every other number still raises
+CpuTrap.  The opt-ins compose; none is installed by default.
 
 Floating point (where this is an approximation)
   The R5900 FPU is not IEEE 754.  There are no NaNs, infinities or denormals: an exponent
@@ -596,6 +598,14 @@ class EE:
         self.syscall_handler = None
         self._deci2_kputs = False
         self._terminate_thread = False
+        self._modelled_boot = False
+        self._threads = {}
+        self._semas = {}
+        self._installed_syscalls = {}
+        self._current_tid = 1
+        self._next_tid = 2
+        self._next_sid = 1
+        self._next_handler = 1
         self.div_zero = 'stop'          # or 'r5900': continue with the reported HI/LO values
         self.patches = {}               # address -> original word
         self.stack_lo, self.stack_hi = self.STACK_LO, self.STACK_HI
@@ -705,6 +715,40 @@ class EE:
         self._terminate_thread = True
         self.syscall_handler = EE._dispatch_opt_in_syscall
 
+    def install_modelled_boot(self):
+        """Opt in to the boot thread and semaphore calls whose callers were read.
+
+        Every v0 written here is modelled.  It is not a recovered kernel result.
+        The current thread is id 1.  CreateThread ids start at 2.  Semaphore ids
+        start at 1.  ReferThreadStatus word 0 is 0x10 because the callers at
+        0x353b80 and 0x322504 compare with 16; that does not establish what the
+        kernel calls that state.  A new semaphore's count is the word at param
+        +8 and its max is the word at param +4: the fills at 0x16c67c, 0x19d2ac
+        and 0x31ee9c put the large word at +4 and 0 or 1 at +8.  WaitSema with
+        a zero count raises CpuTrap instead of succeeding.  StartThread does
+        not enter the thread.  SetupThread is accepted only at 0x14fc48, where
+        v0 is moved to sp.  SetupHeap is accepted only at 0x14fc64, where v0
+        is not read.  SetGsCrt is accepted only for return address 0x19d36c,
+        and GsPutIMR only for 0x34f79c; neither caller reads v0.  EnableIntc is
+        accepted only for return address 0x353560, which saves v0; the modelled
+        previous state is 1.  SetSyscall is accepted only for return addresses
+        0x35c1d0 and 0x35c1dc.  A later syscall whose number was registered
+        there, and whose next instructions are jr ra and nop, transfers to the
+        registered address with ra unchanged.  Composes with the other opt-ins.
+        """
+        if self._modelled_boot:
+            raise EmuError('modelled boot handler is already installed')
+        self._modelled_boot = True
+        self._threads = {1: {'priority': 0, 'status': 0x10, 'entry': 0,
+                             'stack': 0, 'size': 0, 'gp': 0, 'started': False}}
+        self._semas = {}
+        self._installed_syscalls = {}
+        self._current_tid = 1
+        self._next_tid = 2
+        self._next_sid = 1
+        self._next_handler = 1
+        self.syscall_handler = EE._dispatch_opt_in_syscall
+
     # Return addresses of jal TerminateThread whose following instructions do not read v0.
     _TERMINATE_IGNORED_RA = frozenset((
         0x17de0c, 0x17e480, 0x17fe68, 0x31ef38,
@@ -719,8 +763,145 @@ class EE:
         if number == 37 and self._terminate_thread:
             self.terminate_thread()
             return
+        if self._modelled_boot and self._modelled_boot_syscall(number):
+            return
         raise CpuTrap('SYSCALL at 0x%08x (v1 = %d); no kernel is modelled'
                       % (self.cur, number))
+
+    def _set_v0(self, value):
+        value &= M32
+        self.r[2] = value | HIGH32 if value & SIGN32 else value
+
+    def _modelled_boot_syscall(self, number):
+        """Handle one opted-in boot syscall.  Return False if this number is not in the model."""
+        ra = self.r[31] & M32
+        a0 = self.r[4] & M32
+        a1 = self.r[5] & M32
+        a2 = self.r[6] & M32
+        if number == 60:
+            if self.cur != 0x14fc48:
+                return False
+            self._set_v0((a1 + a2 - 0x10) & M32)
+            return True
+        if number == 61:
+            if self.cur != 0x14fc64:
+                return False
+            self._set_v0(0)
+            return True
+        if number == 2:
+            if ra != 0x19d36c:
+                return False
+            self._set_v0(0)
+            return True
+        if number == 113:
+            if ra != 0x34f79c:
+                return False
+            self._set_v0(0)
+            return True
+        if number == 20:
+            if ra != 0x353560:
+                return False
+            self._set_v0(1)
+            return True
+        if number == 16:
+            handler_id = self._next_handler
+            self._next_handler = handler_id + 1
+            self._set_v0(handler_id)
+            return True
+        if number == 116:
+            if ra not in (0x35c1d0, 0x35c1dc):
+                return False
+            self._installed_syscalls[a0] = a1
+            self._set_v0(0)
+            return True
+        if number == 32:
+            entry = self.mem.u32(a0 + 4)
+            stack = self.mem.u32(a0 + 8)
+            size = self.mem.u32(a0 + 12)
+            gp = self.mem.u32(a0 + 16)
+            priority = self.mem.u32(a0 + 20)
+            tid = self._next_tid
+            self._next_tid = tid + 1
+            self._threads[tid] = {'priority': priority, 'status': 0x10, 'entry': entry,
+                                  'stack': stack, 'size': size, 'gp': gp, 'started': False}
+            self._set_v0(tid)
+            return True
+        if number == 47:
+            self._set_v0(self._current_tid)
+            return True
+        if number == 41:
+            tid = a0 or self._current_tid
+            thread = self._threads.get(tid)
+            if thread is None:
+                raise CpuTrap('SYSCALL at 0x%08x (v1 = 41, a0 = %d); '
+                              'modelled thread was not created' % (self.cur, tid))
+            self._set_v0(thread['priority'])
+            thread['priority'] = a1
+            return True
+        if number == 48:
+            tid = a0 or self._current_tid
+            thread = self._threads.get(tid)
+            if thread is None:
+                self._set_v0(0xffffffff)
+                return True
+            if a1:
+                self.mem.w32(a1, thread['status'])
+                self.mem.w32(a1 + 4, thread['entry'])
+                self.mem.w32(a1 + 8, thread['stack'])
+                self.mem.w32(a1 + 12, thread['size'])
+                self.mem.w32(a1 + 16, thread['gp'])
+                self.mem.w32(a1 + 20, thread['priority'])
+                self.mem.w32(a1 + 24, thread['priority'])
+            self._set_v0(thread['status'])
+            return True
+        if number == 34:
+            thread = self._threads.get(a0)
+            if thread is None:
+                raise CpuTrap('SYSCALL at 0x%08x (v1 = 34, a0 = %d); '
+                              'modelled thread was not created' % (self.cur, a0))
+            thread['started'] = True
+            self._set_v0(a0)
+            return True
+        if number == 64:
+            sid = self._next_sid
+            self._next_sid = sid + 1
+            self._semas[sid] = {'count': self.mem.u32(a0 + 8), 'max': self.mem.u32(a0 + 4)}
+            self._set_v0(sid)
+            return True
+        if number in (65, 66, 68, 69):
+            sema = self._semas.get(a0)
+            if sema is None:
+                raise CpuTrap('SYSCALL at 0x%08x (v1 = %d, a0 = %d); '
+                              'modelled semaphore was not created' % (self.cur, number, a0))
+            if number == 65:
+                del self._semas[a0]
+                self._set_v0(a0)
+                return True
+            if number == 66:
+                sema['count'] = (sema['count'] + 1) & M32
+                self._set_v0(a0)
+                return True
+            if sema['count'] == 0:
+                if number == 69:
+                    self._set_v0(0xffffffff)
+                    return True
+                raise CpuTrap('SYSCALL at 0x%08x (v1 = 68, a0 = %d); '
+                              'modelled WaitSema count is 0' % (self.cur, a0))
+            sema['count'] -= 1
+            self._set_v0(a0)
+            return True
+        installed = self._installed_syscalls.get(number if number >= 0 else number & M32)
+        if installed is None and number < 0:
+            installed = self._installed_syscalls.get(number & M32)
+        if installed:
+            nxt = self.mem.u32(self.pc)
+            delay = self.mem.u32((self.pc + 4) & M32)
+            if nxt != 0x03e00008 or delay != 0:
+                raise CpuTrap('SYSCALL at 0x%08x (v1 = %d); installed handler 0x%08x '
+                              'but the wrapper is not jr ra / nop' % (self.cur, number, installed))
+            self.jump(installed)
+            return True
+        return False
 
     def terminate_thread(self):
         ra = self.r[31] & M32

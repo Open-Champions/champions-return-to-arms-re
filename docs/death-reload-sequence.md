@@ -153,8 +153,9 @@ are not called. `g_taskCount` stays 1.
 
 **Observed:** `particle_init` `0x18e648` is the function that stores `-1` across
 `0x82c408`–`0x82c484` at `0x18e6e4`, then calls the same reset at `0x18e7d0`.
-The reset's first load is `0x82c40c`, not `0x82c408`. `0x195c1c`, called from
-init at `0x18e708`, stores 1 at `0x82c408` after that fill.
+The reset's first load is `0x82c40c`, not `0x82c408`. `0x18e708` calls
+`0x195bb0`, and that function's store at `0x195c1c` writes 1 at `0x82c408`
+when the filled slot is `-1`.
 
 **Executed, original `particle_init` before the loader:** the call returns 3.
 What 3 represents is **Unknown**. Afterwards `0x82c40c`–`0x82c484` are `-1`,
@@ -299,3 +300,80 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_death_reload_thread.py local/SL
 Each seed: four continued loaders, two exact particle-reset faults and two
 exact `texcache_reset` faults, plus one separate `CreateThread` stop. No
 stubs. Success output reports counts only.
+
+## Round 5: boot before reload, 2026-11-03
+
+The round-2, round-3 and round-4 traps remain the default.
+`EE.install_modelled_boot` is opt-in and composes with the two earlier
+handlers. Every v0 it writes is modelled. It is not a recovered kernel result.
+`tools/difftest_death_reload_boot.py` is the only caller.
+
+**Observed:** startup `0x14fa88` writes gp at `0x14fc40`. The value is
+`0x56c170`. Syscall 60 at `0x14fc48` is followed by a move of v0 into sp at
+`0x14fc4c`. The arguments are gp in a0, `0x1fc0000` in a1 and `0x40000` in a2.
+The modelled sp is a1 + a2 - `0x10`, which is `0x1fffff0`. Syscall 61 at
+`0x14fc64` is followed by a call whose delay slot is a nop. That caller does
+not read v0. The modelled result is 0.
+
+**Observed / Executed:** the next function calls CreateSema twice, at
+`0x35c084` and `0x35c094`. Both callers store v0. The modelled ids are 1 and
+2, and those stores are at `0x5075d0` and `0x5075d4`. It then calls SetSyscall
+with return addresses `0x35c1d0` and `0x35c1dc`. Neither reads v0. The first
+passes number `0x83` and address `0x35c108`. The second passes number `0x5a`
+and address `0x35c0d0`. The modelled result is 0. The following syscall is
+number 131. Its wrapper returns with `jr ra` and a nop, so the model
+transfers to `0x35c108` and leaves ra unchanged.
+
+**Executed:** `0x35c108` reads `0x80000000` and stops. That address is not in
+the loaded image. The call at `0x14fcb8` does not run. The ring word
+`0x7cfd40` and the particle word `0x82c408` stay 0. **Unknown:** the bytes
+from `0x80000000` through `0x8007ffff`. The scan compares the cursor with a1,
+and this caller passes a1 = `0x80080000`.
+
+**Executed, separate:** `engine_init` `0x19d19c` is called with gp set to
+`0x56c170`, because startup does not reach it. The test maps `0x12000000` for
+`0x2000` bytes so the 8-byte store of zero at `0x19d1dc` has a destination.
+That map is not a GS model. With the diagnostic opt-in and the modelled boot
+handler, execution reaches WaitSema. GetThreadId's modelled result is 1.
+ChangeThreadPriority of that id to 10 does not read the old priority.
+GsPutIMR, return address `0x34f79c`, and SetGsCrt, return address `0x19d36c`,
+do not read v0; both modelled results are 0. AddIntcHandler for cause 2 and
+address `0x19b6e4` returns modelled id 1, stored at `0x44fd4c`. EnableIntc,
+return address `0x353560`, saves v0; the modelled previous state is 1.
+`engine_init` does not read that outer result.
+
+**Executed:** WaitSema at `0x352a24` has a0 = 2 and return address `0x19d05c`.
+The semaphore's count is 0, so the handler raises. The waiter `0x19d028`
+samples the word at `0x44fd98` and repeats while that word is unchanged.
+**Observed:** `0x19b6e4` increments that word and signals the semaphore.
+**Observed:** `engine_init` calls the waiter at `0x19d394`, `0x19d3a4`,
+`0x19d3f0`, `0x19d3fc` and `0x19d408`. This run stops on the first call. The
+handler is not delivered. CreateThread `0x3527e0`, `texcache_init` and
+`particle_init` do not run.
+
+**Executed, same session:** the death sequence then uses that machine. It
+still supplies its own player, checkpoint and task list. The particle word
+and the ring stay 0. The loader stops on the 4-byte write to address 4 at pc
+`0x18ec10`, return address `0x1e502c`. World reconstruction `0x14e808` and
+`Player_ctor` `0x1a1d28` are not called.
+
+**Unknown:** the retail ids, the retail WaitSema wake, the kernel window
+above, file loading, world reconstruction, player construction and playable
+arrival. These host calls are not game-main. Keep the native
+`blocked_death_reload` boundary.
+
+A native client can use distinct modelled ids where a caller stores
+CreateThread, GetThreadId or CreateSema, and it can ignore v0 for the unread
+calls named above. That does not leave the GS wait, fill the texture-cache
+ring, or construct a player. The original teardown still stops before both,
+so the client refusal stays.
+
+## Reproduce, round 5
+
+```
+PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_death_reload_boot.py local/SLUS_209.73 --seed 20973
+PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_death_reload_boot.py local/SLUS_209.73 --seed 7
+```
+
+Each seed: one entry stop, two engine_init WaitSema stops and two
+particle-reset faults. No stubs. Success output reports counts only.
