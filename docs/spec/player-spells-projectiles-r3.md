@@ -120,7 +120,8 @@ excluded-target rejection, already-hit rejection, scripted friendliness,
 flag filtering and the absent-owner path. Final HP, resistance, status,
 knockback and death results remain **Unknown** in this file because `damage_apply`
 is a stub. The [numeric contract](player-spells-numeric-r3.md) replays these hit
-arguments through original `damage_apply` and creature `takeDamage`.
+arguments through original `damage_apply` and creature `takeDamage`, and records
+the player slot, the player death test, and the knock-back speeds.
 
 ### Timing, contact and child release
 

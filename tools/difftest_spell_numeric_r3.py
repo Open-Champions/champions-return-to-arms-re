@@ -34,6 +34,31 @@ SET_STATE = 0x3C2688
 ATAN2 = 0x166798
 CAST_HELPER = 0x1A42B8
 HEAL_RATE = 0x3C71AA2E
+PLAYER_TAKE = 0x1B5330
+PLAYER_PROCESS = 0x1B2CC0
+CREATURE_PROCESS = 0x110D30
+APPLY_KNOCK = 0x115EB8
+REBUILD_ALIVE = 0x1E72F8
+STRCMP = 0x3B8534
+IS_LOCAL = 0x13E150
+MOVE_BY = 0x113C48
+GATE = 0x27DD68
+G_PLAYERS = 0x4D8AF0
+G_NUM_PLAYERS = 0x4D8AE0
+G_NET = 0x402791
+G_LOCK = 0x41B4FC
+G_RECALL = 0x41B51D
+G_EXIT = 0x4F694A
+G_PVP_B = 0x4F7120
+G_FRAME = 0x44FDCC
+SENTINEL = 0x3F800000
+THIRTY = 0x41F00000
+TWENTY_EIGHT = 0x41E00000
+KNOCK_BITS = (0x40000, 0x80000, 0x100000, 0x200000)
+PLAYER_SPEED = (0x42C80000, 0x43160000, 0x43480000, 0x437A0000)
+CREATURE_HIT_SPEED = (0x42C80000, 0x43160000, 0x43610000, 0x43BB8000)
+CREATURE_IDLE_SPEED = (0x42480000, 0x42960000, 0x42C80000, 0x431C4000)
+CREATURE_DEAD_SPEED = (0x42C80000, 0x43160000, 0x43480000, 0x439C4000)
 PLAIN = 0x42200000          # 40, an authored equal bound for the floor cases
 HALF_PLAIN = 0x41A00000     # 20
 COLD = 0x41F00000           # 30
@@ -408,6 +433,199 @@ class Probe:
             attacker_kind='player')
         self.check('lethal_hits_zero', lethal == PLAIN and self.last_hp == R.ZERO)
 
+    def _guest(self, seed):
+        emu = ee_emu.EE(self.elf, fpu_model='ps2')
+        emu.mem.w32(DC.G_SEED, seed & R.M32)
+        emu.mem.w32(G_NUM_PLAYERS, 1)
+        emu.mem.w32(G_FRAME, 1000)
+        return emu
+
+    def _actor(self, emu, flags):
+        obj = emu.alloc(0x600)
+        block = emu.alloc(0x400)
+        emu.mem.w32(obj + 0x0C, flags)
+        emu.mem.w32(obj + 0x3C8, 0)
+        emu.mem.w32(obj + 0x24, block)
+        emu.mem.w32(obj + 0x48, block)
+        emu.mem.w32(obj + 0x58C, 2)
+        emu.mem.w32(obj + 0xC8, SENTINEL)
+        emu.mem.w32(obj + 0x2DC, 0x11)
+        emu.mem.w32(obj + 0x2E8, SENTINEL)
+        emu.mem.w32(obj + 0x228, HP_START)
+        emu.mem.w32(G_PLAYERS + 0xAC, HP_START)
+        emu.mem.w32(G_PLAYERS + 0xB0, HP_START)
+        emu.mem.w32(G_PLAYERS + 0x43D8, obj)
+        return obj
+
+    def _stored(self, emu, addr, value):
+        return any(wrote == addr and pattern == value
+                   for _pc, wrote, _size, pattern in emu.writes)
+
+    def player_queue(self, seed):
+        """Original Player_takeDamage. Callees other than strcmp and the local-slot
+        test are stubbed, so the holy-shield search returns 0."""
+        self.counts['player_take_calls'] += 1
+        emu = self._guest(seed)
+        obj = self._actor(emu, 0x60)
+        emu.follow = {STRCMP, IS_LOCAL}
+        emu.reset_log()
+        emu.call(PLAYER_TAKE, obj, 0, 0x80000, fargs=(40.0,))
+        added = R.fadd(SENTINEL, PLAIN)
+        self.check('player_queue_add', emu.mem.u32(obj + 0xC8) == added)
+        self.check('player_queue_or', emu.mem.u32(obj + 0x2DC) == (0x11 | 0x80000))
+        self.check('player_queue_writes', self._stored(emu, obj + 0xC8, added)
+                   and self._stored(emu, obj + 0x2DC, 0x11 | 0x80000))
+        self.check('player_queue_untouched', emu.mem.u32(obj + 0x2E8) == SENTINEL
+                   and emu.mem.u32(obj + 0x228) == HP_START
+                   and emu.mem.u32(G_PLAYERS + 0xAC) == HP_START
+                   and emu.mem.u32(obj + 0x58C) == 2
+                   and emu.mem.u32(DC.G_SEED) == seed & R.M32)
+        emu.reset_log()
+        emu.call(PLAYER_TAKE, obj, 0, 0, fargs=(0.0,))
+        self.counts['player_take_calls'] += 1
+        self.check('player_queue_zero_amount', self._stored(emu, obj + 0xC8, added)
+                   and emu.mem.u32(obj + 0xC8) == added)
+        for label, setup in (
+                ('recall', lambda e: e.mem.w8(G_RECALL, 1)),
+                ('lockout', lambda e: e.mem.w32(G_LOCK, 60)),
+                ('exit', lambda e: e.mem.w16(G_EXIT, 1)),
+                ('gate', lambda e: e.stub(GATE, ret=1, name='gate'))):
+            guest = self._guest(seed)
+            body = self._actor(guest, 0x60)
+            guest.follow = {STRCMP, IS_LOCAL}
+            setup(guest)
+            guest.reset_log()
+            guest.call(PLAYER_TAKE, body, 0, 0x80000, fargs=(40.0,))
+            self.counts['player_take_calls'] += 1
+            self.check('player_drop_' + label, not guest.writes
+                       and guest.mem.u32(body + 0xC8) == SENTINEL
+                       and guest.mem.u32(body + 0x2DC) == 0x11)
+
+    def _resolve(self, seed, fn, flags, pending, hp, record, bits):
+        emu = self._guest(seed)
+        obj = self._actor(emu, flags)
+        emu.mem.w32(obj + 0xC8, pending)
+        emu.mem.w32(obj + 0x2DC, bits)
+        emu.mem.w32(obj + 0x228, hp)
+        emu.mem.w32(G_PLAYERS + 0xAC, record)
+        before = emu.mem.u32(DC.G_SEED)
+        emu.follow = set()
+        emu.reset_log()
+        if fn == CREATURE_PROCESS:
+            emu.call(fn, obj, 0)
+        else:
+            emu.call(fn, obj)
+        return emu, obj, before
+
+    def player_resolve(self, seed):
+        self.counts['player_process_calls'] += 1
+        emu, obj, before = self._resolve(seed, PLAYER_PROCESS, 0x60, PLAIN, HP_START, HP_START, 0x11)
+        remain = R.fsub(HP_START, PLAIN)
+        step = R.Seed(before)
+        step.draw()
+        targets = [call.target for call in emu.calls]
+        self.check('player_survive_hp', emu.mem.u32(G_PLAYERS + 0xAC) == remain
+                   and emu.mem.u32(obj + 0x228) == HP_START)
+        self.check('player_survive_clear', self._stored(emu, obj + 0xC8, 0)
+                   and self._stored(emu, obj + 0x2DC, 0)
+                   and emu.mem.u32(obj + 0x58C) == 2
+                   and emu.mem.u32(obj + 0x0C) == 0x160
+                   and emu.mem.u32(obj + 0x2E8) == SENTINEL
+                   and not self._stored(emu, obj + 0x2E8, SENTINEL))
+        self.check('player_survive_draw', emu.mem.u32(DC.G_SEED) == step.state
+                   and REBUILD_ALIVE not in targets)
+        below = HP_START - 1
+        emu, obj, _before = self._resolve(seed, PLAYER_PROCESS, 0x60, below, HP_START, HP_START, 0x11)
+        self.counts['player_process_calls'] += 1
+        left = R.fsub(HP_START, below)
+        self.check('player_just_under', emu.mem.u32(G_PLAYERS + 0xAC) == left
+                   and left != 0 and emu.mem.u32(obj + 0x58C) == 2)
+        emu, obj, before = self._resolve(seed, PLAYER_PROCESS, 0x60, HP_START, HP_START, HP_START, 0x11)
+        self.counts['player_process_calls'] += 1
+        targets = [call.target for call in emu.calls]
+        self.check('player_death', emu.mem.u32(G_PLAYERS + 0xAC) == 0
+                   and self._stored(emu, G_PLAYERS + 0xAC, 0)
+                   and emu.mem.u32(obj + 0x58C) == 4
+                   and emu.mem.u32(obj + 0x0C) == 0x169
+                   and self._stored(emu, obj + 0xC8, 0)
+                   and self._stored(emu, obj + 0x2DC, 0)
+                   and targets.count(REBUILD_ALIVE) == 1
+                   and emu.mem.u32(DC.G_SEED) == before
+                   and emu.mem.u32(obj + 0x2E8) == SENTINEL)
+        emu, obj, before = self._resolve(seed, PLAYER_PROCESS, 0x60, 0, 0, 0, 0x11)
+        self.counts['player_process_calls'] += 1
+        self.check('player_no_pending', emu.mem.u32(obj + 0x58C) == 2
+                   and emu.mem.u32(G_PLAYERS + 0xAC) == 0
+                   and emu.mem.u32(obj + 0x0C) == 0x60
+                   and self._stored(emu, obj + 0x2DC, 0)
+                   and emu.mem.u32(DC.G_SEED) == before
+                   and REBUILD_ALIVE not in [call.target for call in emu.calls])
+        for bit, speed in zip(KNOCK_BITS, PLAYER_SPEED):
+            for pending, record, state in ((PLAIN, HP_START, 3), (HP_START, HP_START, 4), (0, HP_START, 3)):
+                emu, obj, before = self._resolve(seed, PLAYER_PROCESS, 0x60, pending, HP_START, record, bit)
+                self.counts['player_process_calls'] += 1
+                step = R.Seed(before)
+                step.draw()
+                self.check('player_knock_speed', emu.mem.u32(obj + 0x2E8) == speed
+                           and self._stored(emu, obj + 0x2E8, speed)
+                           and emu.mem.u32(obj + 0x58C) == state
+                           and emu.mem.u32(DC.G_SEED) == step.state)
+                if pending == 0:
+                    self.check('player_knock_no_debit', emu.mem.u32(G_PLAYERS + 0xAC) == record)
+                elif pending == PLAIN:
+                    self.check('player_knock_survive_hp',
+                               emu.mem.u32(G_PLAYERS + 0xAC) == R.fsub(record, pending))
+                else:
+                    self.check('player_knock_death', emu.mem.u32(G_PLAYERS + 0xAC) == 0
+                               and emu.mem.u32(obj + 0x0C) == 0x169)
+        emu, obj, _before = self._resolve(seed, PLAYER_PROCESS, 0x60, PLAIN, HP_START, HP_START, 0x40000 | 0x80000)
+        self.counts['player_process_calls'] += 1
+        self.check('player_knock_first_bit', emu.mem.u32(obj + 0x2E8) == PLAYER_SPEED[0])
+
+    def creature_knock(self, seed):
+        for bit, hit, idle, dead in zip(KNOCK_BITS, CREATURE_HIT_SPEED, CREATURE_IDLE_SPEED, CREATURE_DEAD_SPEED):
+            emu, obj, before = self._resolve(seed, CREATURE_PROCESS, 0x20, PLAIN, HP_START, HP_START, bit)
+            self.counts['creature_process_calls'] += 1
+            self.check('creature_hit_speed', emu.mem.u32(obj + 0x2E8) == hit
+                       and self._stored(emu, obj + 0x2E8, hit)
+                       and emu.mem.u32(obj + 0x228) == HP_START
+                       and emu.mem.u32(obj + 0x0C) == 0x120
+                       and self._stored(emu, obj + 0xC8, 0)
+                       and emu.mem.u32(DC.G_SEED) == before)
+            emu, obj, before = self._resolve(seed, CREATURE_PROCESS, 0x20, 0, HP_START, HP_START, bit)
+            self.counts['creature_process_calls'] += 1
+            self.check('creature_idle_speed', emu.mem.u32(obj + 0x2E8) == idle
+                       and self._stored(emu, obj + 0x2E8, idle)
+                       and emu.mem.u32(obj + 0x0C) == 0x20
+                       and self._stored(emu, obj + 0x2DC, 0)
+                       and emu.mem.u32(DC.G_SEED) == before)
+            emu, obj, before = self._resolve(seed, CREATURE_PROCESS, 0x20, PLAIN, 0, HP_START, bit)
+            self.counts['creature_process_calls'] += 1
+            self.check('creature_dead_speed', emu.mem.u32(obj + 0x2E8) == dead
+                       and self._stored(emu, obj + 0x2E8, dead)
+                       and emu.mem.u32(obj + 0x0C) == 0x2129
+                       and emu.mem.u32(obj + 0x228) == 0
+                       and emu.mem.u32(DC.G_SEED) == before)
+
+    def apply_knock(self, seed):
+        cases = ((1, 0x60, 0, False, 0), (0, 0x60, 0, True, TWENTY_EIGHT),
+                 (0, 0x60, 1, False, 0), (1, 0x20, 0, True, TWENTY_EIGHT))
+        for network, flags, pvp_b, moves, speed in cases:
+            emu = self._guest(seed)
+            emu.mem.w8(G_NET, network)
+            emu.mem.w32(G_PVP_B, pvp_b)
+            obj = self._actor(emu, flags)
+            emu.mem.w32(obj + 0x10, HP_START)
+            emu.mem.w32(obj + 0x2E8, THIRTY)
+            emu.follow = {0x166630, 0x1666E0}
+            emu.stub(MOVE_BY, ret=3, name='moveBy')
+            emu.reset_log()
+            emu.call(APPLY_KNOCK, obj, fargs=(1.0,))
+            self.counts['knockback_calls'] += 1
+            moved = any(call.target == MOVE_BY for call in emu.calls)
+            self.check('apply_knock', moved is moves and emu.mem.u32(obj + 0x2E8) == speed
+                       and self._stored(emu, obj + 0x2E8, speed))
+
     def run_seed(self, seed, plain_amount):
         payloads = {
             '16': self.capture_projectile(seed, 16, 1),
@@ -436,6 +654,10 @@ class Probe:
                      self.support.world.players[0], 49)
         self.payment(seed, self.support.rig, self.support.world,
                      self.support.world.players[0], 55)
+        self.player_queue(seed)
+        self.player_resolve(seed)
+        self.creature_knock(seed)
+        self.apply_knock(seed)
 
     def execute(self):
         plain_amount = [None]

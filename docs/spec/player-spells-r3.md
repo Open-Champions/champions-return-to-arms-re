@@ -25,17 +25,18 @@ These are **Executed** contracts: original instructions ran in `tools/ee_emu.py`
 and were compared with existing independent reference models plus new narrow
 assertions. The documents state the synthetic inputs, stubs and exact compared
 outputs. Numerical rank formulas are bounded to tested ranks; original execution
-does not by itself prove console FPU fidelity. Existing reference APIs and
-historical vectors are unchanged.
+does not by itself prove console FPU fidelity. One reference correction is
+below. No other reference API or historical vector changed.
 
-**Documented discrepancy:** one additional ID-55 adversarial comparison changes
-the living-player count during the scripted team callback. The original reloads
-that count (`0x2e9180`, global `0x4f8420`); the inherited reference keeps the
-initial Python range. Calls and writes disagree. The support probe reports this
-separately as `PASS_WITH_MODEL_DISCREPANCY`, alongside 560 matching function and
-37 matching animation comparisons. It requires the exact diagnosed discrepancy;
-it does not count it as parity. Reachability of count mutation through actual
-callbacks is **Unknown**. The reference and its existing vectors were preserved.
+**Count correction:** the original healing walk reloads `0x4f8420` at `0x2e9180`
+and stops after one slot-22 call when that callback clears the count. Round 4's
+reference kept the initial range and called twice. That mismatch is
+`local/spells-r3/support-parent-counts.json`: `PASS_WITH_MODEL_DISCREPANCY`,
+5,178 assertions, 560 matching comparisons. The model now re-reads the count.
+The same case matches, so the support probe is `PASS`, 5,173 assertions and 561
+function comparisons, in `local/spells-r3/support-counts.json`. No other
+reference API or vector changed. Reachability through a live callback is
+**Unknown**.
 
 ## Prior evidence and the common player boundary
 
@@ -75,11 +76,13 @@ cleanup harness exercises original pool reclamation and derived destruction.
 runs the captured hit arguments through original `damage_apply` `0x1e8230` and, for a
 creature victim, original `Creature_takeDamage` `0x116638`. It also stores the bash
 stun with original `Creature_stun` `0x118a58`, checks the ID 55 heal product, and
-runs `Player_castSkill` `0x1a42b8` with the cast slot returning 0. Seeds 20973 and 7,
-757 assertions, 0 failures.
+runs `Player_castSkill` `0x1a42b8` with the cast slot returning 0. It also runs
+`Player_takeDamage` `0x1b5330`, `Player_processDamage` `0x1b2cc0`,
+`Creature_processDamage` `0x110d30` and `Creature_applyKnockback` `0x115eb8`.
+Seeds 20973 and 7, 869 assertions, 0 failures.
 
-**Unknown:** Real spatial-query outcomes and terrain, the player damage slot, death
-and knock-back after the HP subtraction, native casts composed inside the helper,
+**Unknown:** Real spatial-query outcomes and terrain, the hit direction, the
+stagger threshold, creature kill credit, native casts composed inside the helper,
 destructors other than the ID 4 cleanup, camera/audio/visual fidelity, full
 selection-to-effect composition, campaign availability and a continuous
 original/client session. Frame wrap and unprobed invalid lifetime states remain

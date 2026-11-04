@@ -1,13 +1,16 @@
 # Numeric delivery for IDs 16, 23, 49 and 55
 
 Status: **Executed, partial**. Original functions ran in `tools/ee_emu.py` on seeds
-20973 and 7. `tools/difftest_spell_numeric_r3.py` reports PASS, 757 assertions, 0
-failures: 26 `damage_apply` calls, 22 creature `takeDamage` calls, 8 stun calls,
-4 heal checks and 160 cast-helper payments. No reference API or existing vector
-changed. This is not a playable session.
+20973 and 7. `tools/difftest_spell_numeric_r3.py` reports PASS, 869 assertions, 0
+failures: 26 `damage_apply` calls, 22 creature `takeDamage` calls, 12 player
+`takeDamage` calls, 34 `Player_processDamage` calls, 24 `Creature_processDamage`
+calls, 8 `Creature_applyKnockback` calls, 8 stun calls, 4 heal checks and 160
+cast-helper payments. No reference API or existing vector changed in this probe.
+This is not a playable session.
 
-The family probes still supply the hit arguments. This note only adds what those
-arguments do in the original damage, heal, stun and payment functions.
+The family probes still supply the hit arguments. This note adds what those
+arguments do in the original damage, heal, stun, payment, player-slot, death
+and knock-back functions.
 
 ## What was compared
 
@@ -29,6 +32,10 @@ private executable exits 2.
 | Stun store | `Creature_stun` `0x118a58`, state body `0x3c2688` | Timer, state and flash colours |
 | Heal product | ID 55 constructor store and one `0x2e90b8` add | Grouped float product below |
 | Payment | `Player_castSkill` `0x1a42b8` plus the real cost getters | One subtract of the getter's float, and recast 30 |
+| Player slot | `Player_takeDamage` `0x1b5330` | Add to pending damage and OR the flags, or drop the hit |
+| Player result | `Player_processDamage` `0x1b2cc0` | Record hit points, death, and the player knock-back speed |
+| Creature result | `Creature_processDamage` `0x110d30` | Knock-back speed from the flag bits; hit points already set |
+| Knock-back step | `Creature_applyKnockback` `0x115eb8` | Zero a player in a net game or PvP mode B; otherwise subtract 2 |
 
 `damage_apply` and `takeDamage` use the combat harness: real modelled bodies, and
 recording stubs for sounds, particles, text, the pool and virtual calls. Both-sided
@@ -51,8 +58,8 @@ stored that amount, and `+0x2dc` stored the flag word.
   not change between the two seeds.
 - A victim with both creature and player flags (`0x60`) and armour 3000 floors that
   same range to 20. The armour cut is larger than half of 40, so the handed amount
-  is the half. This is the amount `damage_apply` passes onward. The player damage
-  slot is not called.
+  is the half. This is the amount `damage_apply` passes onward. The player slot
+  is the next section, not this creature subtraction.
 - Descriptor type `0x16` with both cold values 30 and no direct damage hands 30 when
   cold resistance is 0. With hit points 100 the cold timer is `30 * 60 / 100`. With
   hit points 0 the timer is 60. Cold resistance 1 hands 0 and leaves the timer 0.
@@ -60,10 +67,10 @@ stored that amount, and `+0x2dc` stored the flag word.
 - Creature flag `0x800` returns 0 and does not change hit points.
 - Hit points equal to the handed 40 become 0 after `0x116638`.
 
-**Unknown:** the player damage slot, `Creature_processDamage` `0x110d30` (death,
-knock-back and kill credit), and any resistance or armour combination not listed
-here. Attack 100000 with the armour values above did not miss; that is not a claim
-about every armour value.
+**Unknown:** any resistance or armour combination not listed here, and kill
+credit inside `Creature_processDamage`. Attack 100000 with the armour values
+above did not miss; that is not a claim about every armour value. The player
+slot, the player death test and the knock-back speeds are the following sections.
 
 ## Bash stun
 
@@ -111,6 +118,87 @@ than 4. No unknown call was accepted.
 before the helper, and mana regeneration on the following ticks. Those remain the
 player-tick contract, not a new measurement here.
 
+## Player damage slot
+
+**Executed.** `Player_takeDamage` `0x1b5330` is player virtual slot 2
+(`docs/player.md`). `strcmp` `0x3b8534` and `net_isLocalSlot` `0x13e150` run.
+Every other callee is stubbed, so the holy-shield search returns 0 and no mana
+split is claimed. Pending damage `+0xc8` starts at `0x3f800000` and the flag
+word `+0x2dc` starts at `0x11`. Amount 40 (`0x42200000`) with flag `0x80000`
+stores `fadd` of that sentinel and 40, and stores `0x11 | 0x80000`. Amount 0
+stores the same sum again; the word is written, not left over from the previous
+call. Object hit points `+0x228`, record hit points `+0xac`, action state
+`+0x58c` and knock-back speed `+0x2e8` stay at the values this call found. The
+shared seed does not change.
+
+The same sentinels remain, and the write log is empty, when any one of these
+is set: `g_recallCountdown` `0x41b51d` = 1, `g_menuInputLockout` `0x41b4fc` = 60,
+`g_exitCountdown` `0x4f694a` = 1, or `0x27dd68` stubbed to return 1. That return
+is the jump-gate query this caller already tests. It is not a run of the
+jump-gate body.
+
+**Unknown:** the hit direction at `+0x2e0`. Following `atan2` `0x166798`, six
+attacker placements, including the origin, all left `0x4000`.
+
+## Player death
+
+**Executed.** `Player_processDamage` `0x1b2cc0`, every callee stubbed. A
+zero-filled block stands in for `+0x24` and the vtable `+0x48`, so presentation
+calls from a knock-back bit do not fault; those calls are stubbed. The record
+is slot 0 at `0x4d8af0`.
+
+Pending 40 and record hit points 100 store `fsub(100, 40)` in the record.
+Object `+0x228` stays 100. Pending damage and the flag word, both nonzero on
+entry, are stored as 0. Object flags become `0x160` (`0x60 | 0x100`). State
+stays 2. The shared seed advances one `Seed.draw` step.
+`game_rebuildAlivePlayers` `0x1e72f8` is not called.
+
+Pending one pattern below 100 (`0x42c7ffff`) leaves a positive record and state
+2. Pending equal to the record stores 0, state 4 and object flags `0x169`
+(`0x60 | 0x109`), clears pending damage and the flag word, calls `0x1e72f8`
+once, and does not draw the seed. The knock-back sentinel is not written.
+
+Pending 0 while the record is already 0 does not kill. State stays 2, the
+record stays 0, object flags stay `0x60`, the flag word `0x11` is stored as 0,
+and the seed does not change.
+
+## Knock-back
+
+**Executed**, both seeds. The first set bit of `0x40000`, `0x80000`, `0x100000`
+and `0x200000` selects the speed stored at `+0x2e8`. `0x40000 | 0x80000` stores
+the `0x40000` speed. Each destination starts at `0x3f800000`, so a later 0 is a
+store.
+
+`Player_processDamage` uses one table for a survived hit, a killing hit and a
+tick with no pending damage: 100, 150, 200, 250 (`0x42c80000`, `0x43160000`,
+`0x43480000`, `0x437a0000`). A pending hit still debits the record as above.
+No pending damage leaves the record unchanged. State becomes 3, except a
+killing hit ends at 4. The seed advances one step. Without one of those bits
+the sentinel is not written, and on these two seeds a survived hit leaves state
+2. Which draws stagger is **Unknown**.
+
+`Creature_processDamage` `0x110d30` does not subtract hit points. The same four
+bits store:
+
+- pending damage while hit points are still above 0: 100, 150, 225, 375
+  (`0x42c80000`, `0x43160000`, `0x43610000`, `0x43bb8000`); object flags become
+  `0x120`
+- no pending damage: 50, 75, 100, 156.25 (`0x42480000`, `0x42960000`,
+  `0x42c80000`, `0x431c4000`); object flags stay `0x20`; the flag word is stored
+  as 0
+- hit points already 0 and pending damage positive: 100, 150, 200, 312.5
+  (`0x42c80000`, `0x43160000`, `0x43480000`, `0x439c4000`); object flags become
+  `0x2129`
+
+The shared seed does not change. Slot 27 is the zero stand-in, so this run does
+not store the corpse state. Kill credit remains **Unknown**.
+
+`Creature_applyKnockback` `0x115eb8` starts from 30 (`0x41f00000`) at scale 1.
+`math_cos16` `0x166630` and `math_sin16` `0x1666e0` run. `Creature_moveBy`
+`0x113c48` returns 3. A player in a net game, and a player offline in PvP mode
+B, stores 0 and does not call move. A player offline, and a creature in a net
+game, calls move and stores 28 (`0x41e00000`).
+
 ## What a client can implement from this note
 
 - Apply the captured ID 16, 23 and 49 hit arguments through the existing
@@ -125,6 +213,20 @@ player-tick contract, not a new measurement here.
 - After a zero cast return, debit the original slot-5 float and set recast to 30,
   including when mana is below the cost. Do not debit when recast is already
   positive or the caster is the prediction copy.
+- For a player victim, add the handed amount to pending damage and OR in the
+  flags, unless recall, the menu lockout, the exit countdown or a nonzero
+  jump-gate query drops the hit. Do not subtract object hit points in that slot.
+- On `Player_processDamage`, subtract pending damage from the record. Store 0
+  and state 4, set flags `0x109`, and rebuild the alive list when the record
+  result is 0 or below. Leave a zero pending amount, even at 0 hit points,
+  unkilled.
+- Store the player knock-back speed 100 / 150 / 200 / 250 from the first of
+  those four flag bits, including on a killing hit and on a tick with no
+  pending damage. For a creature, use the three tables above and do not subtract
+  hit points again.
+- Step `Creature_applyKnockback` by 2 offline. Store 0 for a player in a net
+  game or in PvP mode B.
 
-Do not treat this as campaign combat. Spatial queries, the player damage slot,
-death, knock-back and the real cast body inside the helper are still open.
+Do not treat this as campaign combat. Spatial queries, the holy-shield split,
+the hit direction, the stagger threshold, creature kill credit and the real
+cast body inside the helper are still open.
