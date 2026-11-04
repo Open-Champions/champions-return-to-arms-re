@@ -397,11 +397,13 @@ Evidence: `tools/difftest_story_mission3.py` lines 244–261.
 
 **Observed / Executed:** the posted `absorb` at `0x478` runs through
 `script_runPostAction` `0x1edac0`. A missing `sawislc` is read as 0 and
-then negated, so this first visit calls `cutScene` at `0x4dc` (`res_find`,
-then `cut_start`) and stores `sawislc` 1 at `0x510`. The cut name is
-`islcave`. Running `absorb` again does not call `cut_start`, and the
-variable stays 1. `res_find` returns 0 here, so this is the request, not a
-played cutscene. Evidence: lines 263–278.
+then negated, so this first visit calls `cutScene` at `0x4dc` and stores
+`sawislc` 1 at `0x510`. The script argument is `islcave`. The recorded
+`cut_start` name is `islcave.cut`, and its resource is 0. `res_find` is
+called with lump `.lmp` and entry `islcave.cut` and returns 0, because
+this prepare leaves the level name empty. Running `absorb` again does not
+call `cut_start`, and the variable stays 1. This is the request, not a
+played cutscene. Evidence: lines 264–288.
 
 ### Dialog, quest, and the exits from islc1
 
@@ -434,29 +436,37 @@ selected. Mission bytes stay `0xA0`.
 | `gnome` `0x920` | `islgnome` |
 | `kerriel` `0x990` | `islc1` |
 
-`g_racer.dbin` node 1 names the first four of those entries as choice
-actions. Which node play selects was not run. Evidence: lines 365–383.
+`islc1` `g_racer.dbin` has two nodes. Node 1's four choices are
+`postActifb1b`, `postActi6592`, `postActi928c` and `postActifd9a`, each
+with target −1. Those entries are at `0x1fc`, `0x240`, `0x284` and
+`0x2c8`. Each one's only call is `postAction` of `solitary`, `lostHope`,
+`regret` and `gnome`, in that order. `kerriel` is not one of the four.
+Which node play selects was not run. Evidence: lines 385–407. The five
+travel runs stay lines 409–427.
 
 ### islgnome entrances and islc2 completion
 
 **Observed / Executed:** `islgnome` `entrance1` `0x1bf8`, `entrance2`
 `0x1d18` and `entrance3` `0x1e38` each write entrance `one`, `two` or
-`three` and pending `islc2`. With `startedQuest` and `finishedQuest`
-absent, with only `startedQuest` 1, and with both 1, `killMonster`
-`0x144a84` is not called. With `startedQuest` 1 and `finishedQuest` 0 it
-is called eight times, which is `failQuest`. The name table is empty, so
-no creature is changed. All four states still request `islc2`. The gnome
-journal and the `islgoth` post are a different script and were not run.
-Evidence: lines 385–412.
+`three` and pending `islc2`. The eight `killMonster` `0x144a84` calls run
+when `startedQuest` is 1 and `finishedQuest` is absent or 0, which is
+`failQuest`. They do not run when `startedQuest` is absent or when
+`finishedQuest` is 1. `getv` of a missing name creates it at 0, so an
+absent `finishedQuest` takes the same eight calls as 0. The name table is
+empty. All four states still request `islc2`. The gnome journal and the
+`islgoth` post are a different script and were not run.
+Evidence: lines 429–456.
 
 **Observed:** `islc2` `mermaid.dbin` node 0 uses condition `iffbe4` and
 action `callScri8a40`. Node 1 uses `if9be1`. Node 2 uses `iffa37`. Both
 later choices close and have no action.
 
-**Observed / Executed:** `iffbe4` returns 1 only when the item-count stub
-returns 1. `if9be1` returns 1 when `wa_gotBlessed` is 1. `iffa37` returns
-1 when that variable is absent or 0. The selector was not run.
-Evidence: lines 309–326.
+**Observed / Executed:** `iffbe4` returns 0 when the one-player
+`inventory_countItemByName` of `shell` returns 0, and 1 when that count
+is nonzero. The stub returns 0, 1 and 2 were run. One player is the
+setup, so the sum is that single return for player 0. `if9be1` returns 1
+when `wa_gotBlessed` is 1. `iffa37` returns 1 when that variable is absent
+or 0. The selector was not run. Evidence: lines 307–338.
 
 **Observed / Executed:** `callScri8a40` at `0x438` calls `endMission` at
 `0x280`. From mission-3 byte `0xA1` on record 0 and `0xA0` on the others,
@@ -498,8 +508,9 @@ Which dialog node reaches them was not run. Evidence: lines 414–431.
    posts `absorb`. Do not grant the mission there, and do not make mission
    4 available there.
 2. That post requests cutscene `islcave` while `sawislc` is 0, then stores
-   1. A later `absorb` does not request it. Do not claim the cut plays:
-   `cut_start` was reached with `res_find` returning 0.
+   1. The recorded `cut_start` name is `islcave.cut`. A later `absorb` does
+   not request it. `res_find` returned 0 and the level name was empty, so
+   the lump argument was `.lmp`. Do not claim the cut plays.
 3. The mermaid action `setvdea6` stores `wa_metKerriel` and adds one quest.
    It does not change mission bytes. The node order plus the two condition
    returns say the unmet dialog reaches that action and the met dialog does
@@ -507,8 +518,8 @@ Which dialog node reaches them was not run. Evidence: lines 414–431.
 4. The five travel entries above may request those levels with entrance
    `boat` and orientation `0xff`. They are not mission completion.
 5. The three `islgnome` entrances request `islc2`. Call the eight
-   `killMonster`s only when `startedQuest` is 1 and `finishedQuest` is 0.
-   An empty name table means this does not establish a kill.
+   `killMonster`s when `startedQuest` is 1 and `finishedQuest` is absent
+   or 0. An empty name table means this does not establish a kill.
 6. `islc2` `callScri8a40` is the completion: set `wa_gotBlessed`, remove
    that quest, request the item removal and the help message, set mission
    3's completion bit on all four records, and request the sound. Leave
@@ -525,7 +536,7 @@ Which dialog node reaches them was not run. Evidence: lines 414–431.
 PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; sys.path.insert(0,"tools"); sys.argv=["difftest_story_mission3.py","--elf","local/SLUS_209.73","--data","/path/to/BG/DATA"]; runpy.run_path("tools/difftest_story_mission3.py", run_name="__main__")'
 ```
 
-Both seeds: 84 checks, 0 failed.
+Both seeds: 90 checks, 0 failed.
 
 **Unknown:** the loader and arrival that follow the pending `islc1` write;
 which object use reaches the mermaid and racer dialogs; who gives the item
@@ -564,31 +575,39 @@ planted, so `onePlayerHasItem` does not reach the finder.
 
 **Observed / Executed:** `wat1` `start` calls `setMissionAvailable(4, 1)` at
 script `0x314`, then stores `startedMission4` and `currentMission`, and
-posts `absorb` at `0x46c` while `sawWat1` is absent. Record 0's mission-4
-byte becomes `0xA1`. Records 1–3 stay `0xA0`. Missions 5 and 6 stay `0xA0`.
-The quest count becomes 1. With the evil byte at record `+0x4c1a` clear, the
-title and body are the script arguments `stopthe5b99` and `plugthe653b`.
-With that byte set, they are `floodth5019` and `penetrataf0d`. The other
-quest is not added. Pending level stays the sentinel. A second `start` with
-`sawWat1` already 1 still sets the available bit and does not post.
-Evidence: `tools/difftest_story_mission45.py` lines 303–349 and 814–832.
+posts `absorb` at `0x46c` while `sawWat1` is absent. The read creates
+`sawWat1` at 0; that value byte is a recorded store. `startedMission4`
+and `currentMission` are planted at `0x5A` and stored as 1 and 4. Record
+0's mission-4 byte becomes `0xA1` from `0xA0`. Records 1–3 stay `0xA0`.
+Missions 5 and 6 stay `0xA0`. The quest count becomes 1. With the evil
+byte at record `+0x4c1a` clear, the title and body are the script
+arguments `stopthe5b99` and `plugthe653b`. With that byte set, they are
+`floodth5019` and `penetrataf0d`. The other quest is not added. Pending
+level stays the sentinel. A second `start` with `sawWat1` already 1 still
+stores `startedMission4` over `0x5A` and does not post.
+Evidence: `tools/difftest_story_mission45.py` lines 358–411 and 928–948.
 
 **Observed / Executed:** the posted `absorb` runs `waterIntro`, which calls
-`cutScene` at `0x4f4` (`res_find`, then `cut_start`) and stores `sawWat1` 1.
-The cut name is `wat1`. Running `absorb` again, after the variable is
-already 1, calls `cut_start` again. The gate is the `start` post, not the
-cut entry. `res_find` returns 0, so this is the request, not a played
-cutscene. Evidence: lines 324–348.
+`cutScene` at `0x4f4` and stores `sawWat1` 1 over the 0 the start read
+created. The script argument is `wat1`. The recorded `cut_start` name is
+`wat1.cut` and its resource is 0. `res_find` is called with lump `.lmp`
+and entry `wat1.cut` and returns 0, because the level name is empty. A
+direct `absorb` does the same when `sawWat1` is absent, when it is planted
+at `0x5A`, and when it is already 1, and each of those stores 1. The gate
+is the `start` post, not the cut entry. This is the request, not a played
+cutscene. Evidence: lines 382–410.
 
 **Observed / Executed:** `water1` `start` repeats the three availability
 stores at `0x78` and the two `setv`s, with no post and no quest.
 `callScri7351` is at script 0 and passes data offset 0 to `callScript`;
 that string is `steppedOnTrigger`. The trigger grants mission 4 from the
-`0xA0` sentinel: all four records become `0xA2`. It calls
-`hud_showHelpMessage`. It does not call the item finder, does not write a
-quest, and does not change missions 5 or 6. A `water1` object property is
-`t=callScri7351`. Which use reaches it was not run. Evidence: lines
-389–412 and 784–785.
+`0xA0` sentinel: all four records become `0xA2`. Missions 5 and 6 stay
+`0xA0`. The quest slot stays `0x5A` and the count stays 0. The stubs are
+`text_lookup` of `youcomp1861`, `text_lookup` of `goodfor8172`, and
+`hud_showHelpMessage`. Each returns 0, so the help callee receives empty
+text ids and nothing is drawn. The item finder is not called. A `water1`
+object property is `t=callScri7351`. Which use reaches it was not run.
+Evidence: lines 458–489 and 892–926.
 
 ### The two water routes
 
@@ -598,11 +617,12 @@ with `newWorldced`, `newWorldf0d` and `newWorldd7df`. Evidence: lines
 778–783.
 
 **Observed / Executed:** `return10c8` returns 1 only when the evil byte is
-set, and `return6198` returns 1 only when it is clear. Neither writes a
-pending level. The six actions then request a level with orientation
-`0xff`, because no object is selected, and they leave the entrance
-sentinel and the mission bytes alone. `net_closeLocalMenus` is stubbed, so
-no menu is closed.
+set, and `return6198` returns 1 only when it is clear. Both leave the
+pending-level sentinel in place. The six actions then request a level and
+store orientation `0xff` over the `0x5A` sentinel, because no object is
+selected. They leave the entrance sentinel and mission bytes 4, 5 and 6
+at `0xA0`. `net_closeLocalMenus` is called with 0 and the stub returns 0,
+so no menu is closed.
 
 | Entry | Pending level | Key that returns 1 |
 |---|---|---|
@@ -614,11 +634,13 @@ no menu is closed.
 | `newWorldd7df` | `watg2b` | `return6198` |
 
 The key-to-action pairing is **Inferred** from those properties and these
-return values. `PushTrigger_interact` was not run. Evidence: lines 352–386.
+return values. `PushTrigger_interact` was not run. Evidence: lines 413–456.
 
 **Observed / Executed:** `newWorlde6b4` on `wate2a`, `wate2b`, `wate2c`,
-`watg2a`, `watg2b` and `watg2c` requests `wat1`, orientation `0xff`, and
-does not change the entrance sentinel. Evidence: lines 352–386.
+`watg2a`, `watg2b` and `watg2c` requests `wat1`, stores orientation
+`0xff` over `0x5A`, and leaves the entrance sentinel and mission bytes
+4, 5 and 6 at `0xA0`. `net_closeLocalMenus` is called with 0 and the stub
+returns 0, so no menu is closed. Evidence: lines 413–456.
 
 ### How mission 4 is marked complete
 
@@ -630,22 +652,32 @@ lines 40, 134–161 and 431–446.
 
 **Observed / Executed:** the first 24 calls, with the item-count stub at
 0, leave mission 4 at `0xA0` (or `0xA1` if that byte was already the
-available value), queue `shardCheck`, and do not call the item counter.
-The 25th call with the stub returning 1 grants. From `0xA0`, all four
-records become `0xA2`. From `0xA1` on record 0, that record becomes
-`0xA3` and the others `0xA2`. `wat_gotShard` becomes 1. Missions 5 and 6
-stay `0xA0`. The 25th call's stubs are `inventory_countItemByName` (the
-count, not a bag), `text_lookup` twice, `hud_showHelpMessage`,
-`res_find`, `sound_playOnObject` and `sound_setPlaysWhileFrozen`. The
-finder is not called. The 25th call does not queue another `shardCheck`.
-The same 25 calls with the count stub at 0 do not grant and do not set
-`wat_gotShard`. After 24 unpaused calls, one call with `g_paused` set to
-1 does not grant; the next unpaused call does. Evidence: lines 415–490.
+available value), leave a planted `wat_gotShard` of `0x5A` in place, queue
+`shardCheck`, and do not call the item counter. The 25th call grants when
+that stub returns 1 and when it returns 2. It does not grant when the
+stub returns 0. The recorded call is `inventory_countItemByName` of
+`shardofwater` for player 0. One player is the setup, so that return is
+the sum `playerHasItem` compares with script local `0xa4`, which this
+prepare leaves 0. From `0xA0`, all four records become `0xA2`. From
+`0xA1` on record 0, that record becomes `0xA3` and the others `0xA2`.
+The granting call stores `wat_gotShard` 1 over the planted `0x5A`.
+Missions 5 and 6 stay `0xA0`. The 25th call's stubs, each returning 0,
+are that count, `text_lookup` twice, `hud_showHelpMessage`, `res_find`
+(`fx.lmp`, `quest_complete.anm`), `sound_playOnObject` with resource 0,
+and `sound_setPlaysWhileFrozen`. No player object is planted, so
+`onePlayerHasItem` does not call the item finder. The 25th call does not
+queue another `shardCheck`. The same 25 calls with the count stub at 0
+do not grant, leave the flood quest in place, and leave `wat_gotShard`
+at `0x5A`. After 24 unpaused calls, one call with `g_paused` set to 1
+does not grant and leaves `wat_gotShard` at `0x5A`; the next unpaused
+call stores 1 and grants. Evidence: lines 501–589.
 
 **Observed / Executed:** on that granting call, `watg2a`, `watg2b` and
-`watg2c` remove a planted `stopthe5b99` quest. The count becomes 0 and
-the slot is `NoQuests`. `wate2a` `shardCheck` does not remove a planted
-`floodth5019` quest. Evidence: lines 470–482.
+`watg2c` remove a planted `stopthe5b99` quest. The slot is that title
+before the 25th call and `NoQuests` after it, and the count becomes 0.
+`wate2a` `shardCheck` leaves a planted `floodth5019` quest in place,
+including on the 25 calls whose count stub returns 0. Evidence: lines
+501–589.
 
 **Observed / Executed, and stopped:** `brokeFinalWall` on the three
 `wate2` levels faults inside `addParticleOnObject` `0x146e20`: a 4-byte
@@ -655,10 +687,11 @@ mission. The seed word is not claimed after that fault. Evidence: lines
 495–505.
 
 **Observed / Executed:** `holeCheck` on the three `watg` levels returns 0
-with no plug object planted. Mission 4 stays `0xA0`, the planted quest
-stays, `wat_complete` is 0, and there is no post and no help call. The
-completion stores later in that entry were not reached. What distance
-would pass is **Unknown**. Evidence: lines 506–515.
+with no plug object planted. Mission bytes 4, 5 and 6 stay `0xA0`. The
+planted `stopthe5b99` quest stays. `getv` creates `wat_complete` at 0,
+and that value byte is a recorded store. There is no post and no help
+call. The completion stores later in that entry were not reached. What
+distance would pass is **Unknown**. Evidence: lines 591–628.
 
 **Observed / Executed:** `wate2a` `iff46` returns 1 when `wat_complete`
 is absent, when only `wat_gotShard` is 1, and when both are 1. It returns
@@ -669,27 +702,32 @@ that names `iff46` was not dispatched. Evidence: lines 516–528.
 
 **Observed / Executed:** `tormenta` `start` calls
 `setMissionAvailable(5, 1)` at `0xd34`, stores `startedMission5` and
-`currentMission`, and posts `absorb` at `0xdc8`. It also reads
-`tor_bri1` and `tor_bri5` as 0. Record 0's mission-5 byte becomes
-`0xA1`. Missions 4 and 6 stay `0xA0`. No quest is added. No stub runs.
-The post stores `tor_beenHere` 1 and does not call `cut_start`. A later
-`start` with that variable already 1 still posts `absorb`. Evidence:
-lines 532–564 and 814–832.
+`currentMission` over a planted `0x5A`, and posts `absorb` at `0xdc8`.
+It also reads `tor_bri1` and `tor_bri5`. Each read stores 0, and that
+value byte is recorded. Record 0's mission-5 byte becomes `0xA1` from
+`0xA0`. Missions 4 and 6 stay `0xA0`. No quest is added. No stub runs.
+The post stores `tor_beenHere` 1 over a planted `0x5A` and does not call
+`cut_start`. A later `start` with that variable already 1 still posts
+`absorb`. Evidence: lines 630–666 and 928–948.
 
 **Observed / Executed:** `preStart` writes entrance `goodstart` when the
 evil byte is clear and `evilstart` when it is set. It creates
-`tor_beenHere` at 0. The only stub is `lump_load`, which returns 0, so
-the named resource is not loaded. Mission bytes and the pending level
-stay the sentinels. Evidence: lines 556–563.
+`tor_beenHere` at 0, and that value byte is a recorded store. The only
+stub is `lump_load` of `bust.lmp`, which returns 0, so that resource is
+not loaded. Mission bytes 4, 5 and 6 stay `0xA0`, and the pending level
+stays the sentinel. Evidence: lines 656–666.
 
 **Observed:** `tormenta` objects carry `t=if87a0`, `t=if3f82`,
 `t=newWorld3aa4` and `dialogscript=startDia7a53`. Which use reaches them
 was not run. Evidence: lines 808–810.
 
 **Observed / Executed:** `if87a0` calls `cut_start` and stores `sawtorb`
-1 the first time, and does not call it when `sawtorb` is already 1.
-`if3f82` does the same for `sawtora`. `res_find` returns 0. Mission bytes
-stay `0xA0`. Evidence: lines 567–584.
+1 the first time. The script argument is `torb`. The recorded `cut_start`
+name is `torb.cut` and its resource is 0. `if3f82` does the same for
+`sawtora`, and the recorded name is `tora.cut`. `res_find` is called with
+lump `.lmp` and that `.cut` entry and returns 0, because the level name
+is empty. Neither calls `cut_start` when its variable is already 1.
+Mission bytes 4, 5 and 6 stay `0xA0`. Evidence: lines 668–690.
 
 **Observed:** `gol.dbin` has nine nodes. Nodes 0 and 1 use `if1b74` and
 `ifb0b8` and target node 2. Node 2's condition name is empty and its
@@ -710,29 +748,34 @@ once the shard variable is 1 and the mission is not finished. Node 2's
 empty condition was not executed as a selector, so that inference stops
 there. `dialog_onMsg` was not run. Evidence: lines 595–639.
 
-**Observed / Executed:** `setv2725` stores `tor_talkedToGol` 1 and adds
-one quest. The title and body are the script arguments at `0x748`,
-`findthe85aa` and `findtheaf23`. Mission bytes stay `0xA0`. Evidence:
-lines 585–593.
+**Observed / Executed:** `setv2725` stores `tor_talkedToGol` 1 over a
+planted `0x5A` and adds one quest. The title and body are the script
+arguments at `0x748`, `findthe85aa` and `findtheaf23`. Mission bytes 4,
+5 and 6 stay `0xA0`. Evidence: lines 691–700.
 
 ### Tormenta completion and the side doors
 
 **Observed / Executed:** `endtor` grants mission 5 when
-`tor_finishedMission` is absent or 0. All four records become `0xA2`.
-Missions 4 and 6 stay `0xA0`. The variable becomes 1. The stubs are
-`res_find`, `sound_playOnObject` and `sound_setPlaysWhileFrozen`.
+`tor_finishedMission` is absent or 0. All four records become `0xA2`
+from `0xA0`. Missions 4 and 6 stay `0xA0`. The variable is stored as 1,
+and that value byte is recorded. With no quest planted, the `0x5A` slot
+stays `0x5A`. The stubs are `res_find` of `fx.lmp` and
+`quest_complete.anm` (it returns 0, so `sound_playOnObject` receives
+resource 0) and `sound_setPlaysWhileFrozen`, which also returns 0.
 `callScri8c36` does the same, and with a quest planted from its
 `removeQuest` argument (17 characters; the text is not copied here) the
-count becomes 0 and the slot is `NoQuests`. Calling `endtor` again when
-the variable is already 1 does not grant, does not remove the planted
-quest, and calls no stub. Node 8's condition is the already-finished
-test, so this file does not show that the dialog's opening node is the
-visit that grants. A choice walk from node 4 to node 8 while the
-variable is still 0 was not run. Evidence: lines 643–671 and 786–795.
+count becomes 0 and that title is replaced by `NoQuests`. Calling
+`endtor` again when the variable is already 1 does not grant, does not
+remove the planted quest, and calls no stub. Node 8's condition is the
+already-finished test, so this file does not show that the dialog's
+opening node is the visit that grants. A choice walk from node 4 to
+node 8 while the variable is still 0 was not run. Evidence: lines
+747–783 and 892–910.
 
-**Observed / Executed:** eight travel entries request the next level,
-orientation `0xff`, and do not change mission bytes. `net_closeLocalMenus`
-is stubbed.
+**Observed / Executed:** eight travel entries request the next level and
+store orientation `0xff` over the `0x5A` sentinel. Mission bytes 4, 5
+and 6 stay `0xA0`. `net_closeLocalMenus` is called with 0 and the stub
+returns 0, so no menu is closed.
 
 | Level | Entry | Pending level | Entrance |
 |---|---|---|---|
@@ -745,7 +788,7 @@ is stubbed.
 | `torment3` | `newWorld6aa` | `torment2` | `rightdoor` |
 | `torment3` | `newWorldbc33` | `torment2` | `leftdoor` |
 
-Evidence: lines 674–696.
+Evidence: lines 785–810.
 
 ### What makes mission 5, then mission 6, available
 
@@ -756,7 +799,7 @@ node 16 names `setMissi95d5` and `setMissi4082`. `hub2` `natasla.dbin`
 node 9 names `setMissif825` and `setMissi9389`, and node 11 names
 `setMissi95d5` and `setMissic3ab`. The bak file's node 9 and node 12 name
 the other pair. Which node play selects was not run. Evidence: lines
-796–807.
+892–926.
 
 **Observed / Executed:** on `hub` and `hub2`, `setMissif825`,
 `setMissibbbb` and `setMissi9389` set mission 5's bit on record 0 only
@@ -770,7 +813,7 @@ no quest. `setMissibbbb`, `setMissi9389` and `setMissi6d46` on `hub`, and
 `hub2`, also call `changeSwoop` and `activateStore`. The stubs are
 `dialog_isOpen` and `shop_openOrStock`, both returning 0, so no shop is
 opened. Granting mission 4 or mission 5 does not set the next available
-bit. Evidence: lines 698–755.
+bit. Evidence: lines 812–869.
 
 ### What the client can implement from this
 
@@ -779,22 +822,26 @@ bit. Evidence: lines 698–755.
    posts `absorb`, and adds one quest: `stopthe5b99` when the evil byte
    is clear, `floodth5019` when it is set. Do not grant the mission
    there, and do not make mission 5 available there.
-2. That post requests cutscene `wat1` and stores `sawWat1`. A later
-   `start` does not post. A direct `absorb` requests the cut again.
-   `cut_start` was reached with `res_find` returning 0.
+2. That post requests cutscene `wat1` and stores `sawWat1` 1. The
+   recorded `cut_start` name is `wat1.cut`. A later `start` does not
+   post. A direct `absorb` requests the cut again, including when
+   `sawWat1` is already 1 or planted at `0x5A`. `res_find` returned 0
+   and the level name was empty, so the lump argument was `.lmp`.
 3. The six `wat1` actions may request the levels in the table above,
    orientation `0xff`, with the entrance left alone. Treat `return10c8`
    as the evil key and `return6198` as the other key. The use dispatch
    was not run.
 4. The six return entries request `wat1` the same way.
 5. Mark mission 4 complete from `shardCheck`'s 25th call while
-   `g_paused` is 0, and only when `playerHasItem` of `shardofwater` is
-   at least 1. A paused call does not count. Set the completion bit on
-   all four records, store `wat_gotShard`, and request the help message
-   and the completion sound. The item count here was a stub return, and
-   the help and sound callees were stubbed. On the `watg` levels, also
-   remove the `stopthe5b99` quest. Do not remove `floodth5019` from
-   `wate2` `shardCheck`.
+   `g_paused` is 0, when `inventory_countItemByName` of `shardofwater`
+   for the one planted player returns at least 1. A return of 0 does not
+   grant. A return of 2 does. A paused call does not count. Set the
+   completion bit on all four records, store `wat_gotShard`, and request
+   the help message and the completion sound. That count is the stub
+   return, not a bag. `text_lookup`, `hud_showHelpMessage`, `res_find`
+   and the sound callees return 0. On the `watg` levels, also remove the
+   `stopthe5b99` quest. Do not remove `floodth5019` from `wate2`
+   `shardCheck`.
 6. Do not treat `brokeFinalWall` or `holeCheck` as completed work. The
    wall entry faults at pc `0x146ecc` before the quest removal. The hole
    entry returns without the completion stores when no plug object is
@@ -805,10 +852,11 @@ bit. Evidence: lines 698–755.
 8. After the section 6 confirm writes `tormenta`, `start` makes mission
    5 available and posts `absorb`. That post stores `tor_beenHere` and
    does not request a cut. `preStart` selects `goodstart` or `evilstart`.
-   `lump_load` was stubbed.
-9. `if87a0` and `if3f82` request cuts `torb` and `tora` once each.
-   `setv2725` stores `tor_talkedToGol` and adds one quest. It does not
-   change mission bytes.
+   `lump_load` of `bust.lmp` returned 0.
+9. `if87a0` and `if3f82` request cuts `torb` and `tora` once each. The
+   recorded `cut_start` names are `torb.cut` and `tora.cut`. `res_find`
+   returned 0 with lump `.lmp`. `setv2725` stores `tor_talkedToGol` over
+   `0x5A` and adds one quest. It does not change mission bytes.
 10. `endtor`, including `callScri8c36`, grants mission 5 the first time,
     requests the completion sound, and removes the quest whose argument
     is the 17-character string at script `0x1e20`. A second call does
@@ -827,7 +875,7 @@ bit. Evidence: lines 698–755.
 PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; sys.path.insert(0,"tools"); sys.argv=["difftest_story_mission45.py","--elf","local/SLUS_209.73","--data","/path/to/BG/DATA"]; runpy.run_path("tools/difftest_story_mission45.py", run_name="__main__")'
 ```
 
-Both seeds: 118 checks, 0 failed.
+Both seeds: 120 checks, 0 failed.
 
 **Unknown:** the loader and arrival after pending `wat1` or `tormenta`;
 which object use reaches the keys, the gol dialog and the water trigger;

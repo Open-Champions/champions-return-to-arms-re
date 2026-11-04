@@ -254,6 +254,7 @@ def run_entry(rig, name):
     rig.emu.mem.write(pointer, name.encode('ascii') + b'\0')
     rig.calls = []
     rig.emu.calls.clear()
+    rig.emu.writes.clear()
     try:
         return N.s32(rig.call(N.A['script_runByName'], pointer, max_steps=4000000)), ''
     except EmuError as exc:
@@ -283,6 +284,60 @@ def require(cond, detail):
         raise AssertionError(detail)
 
 
+def var_addr(mem, name):
+    where = N.N.G_QUEST_VARS
+    want = name.lower()
+    while mem.u8(where) != 0:
+        got = mem.cstr(where, 64)
+        if got == want:
+            return where + len(got) + 1
+        where += len(got) + 2
+    return None
+
+
+def require_stored(rig, mem, name, value):
+    """The value byte was stored by this entry. A zero fill is not that store."""
+    addr = var_addr(mem, name)
+    require(addr is not None, name)
+    require(mem.s8(addr) == value, (name, mem.s8(addr), value))
+    require(any(wrote == addr and size == 1 and got == (value & 0xFF)
+                for _pc, wrote, size, got in rig.emu.writes),
+            (name, value))
+
+
+def missions_held(mem):
+    return all(mission(mem, slot, index) == SENTINEL
+               for slot in range(4) for index in (4, 5, 6))
+
+
+def plant_mission_vars(rig, mem, names):
+    for name, _expected in names:
+        plant_var(rig, name, 0x5A)
+        require(dict(variables(mem))[name.lower()] == 0x5A, name)
+
+
+CUT_EMPTY_LUMP = b'.lmp'
+
+
+def cut_calls(name):
+    entry = name.encode('ascii') + b'.cut'
+    return [
+        ('res_find', (CUT_EMPTY_LUMP, entry)),
+        ('cut_start', (0, entry)),
+    ]
+
+
+SHARD_GRANT_CALLS = [
+    ('inventory_countItemByName', (b'shardofwater', 0)),
+    ('text_lookup', (b'ashard57b1',)),
+    ('text_lookup', (b'youfounf7ae',)),
+    ('hud_showHelpMessage', (0xFFFFFFFF, 0, 0)),
+    ('res_find', (b'fx.lmp', b'quest_complete.anm')),
+    ('sound_playOnObject', (0, 0, 1065353216)),
+    ('sound_setPlaysWhileFrozen', (0,)),
+]
+
+
 def bytes_are(mem, index, values):
     return [mission(mem, slot, index) for slot in range(4)] == list(values)
 
@@ -306,13 +361,15 @@ def check_wat_start(rig, image, seed):
             (0, 'stopthe5b99', 'plugthe653b'),
             (1, 'floodth5019', 'penetrataf0d')):
         mem = prepare(rig, image, seed, evil=evil)
+        plant_mission_vars(rig, mem, (('startedMission4', 1), ('currentMission', 4)))
         require(run_entry(rig, 'start')[0] == 0, 'wat1 start')
         require(bytes_are(mem, 4, (R.available_byte(SENTINEL, 1), SENTINEL, SENTINEL, SENTINEL)),
                 'wat1 available')
         require(others_clear(mem, 4), 'wat1 other missions')
-        got = dict(variables(mem))
-        require(got.get('startedmission4') == 1 and got.get('currentmission') == 4, got)
-        require(got.get('sawwat1') == 0, got)
+        require_stored(rig, mem, 'startedmission4', 1)
+        require_stored(rig, mem, 'currentmission', 4)
+        # getv of a missing sawWat1 appends 0. The value byte is that store.
+        require_stored(rig, mem, 'sawwat1', 0)
         require(mem.u32(PLAYERS + QUEST_COUNT) == 1, 'one quest')
         require(mem.cstr(PLAYERS + QUEST, 32) == title, 'quest title')
         require(mem.cstr(PLAYERS + QUEST + 0x20, 32) == body, 'quest body')
@@ -322,29 +379,33 @@ def check_wat_start(rig, image, seed):
         require(mem.u32(N.N.G_RAND_SEED) == seed, 'seed')
         checks += 1
     mem = prepare(rig, image, seed)
+    require(mem.cstr(N.N.G_LEVEL_NAME, 16) == '', 'level name')
     run_entry(rig, 'start')
     rig.calls = []
     rig.emu.calls.clear()
+    rig.emu.writes.clear()
     require(N.s32(rig.call(N.A['script_runPostAction'], max_steps=4000000)) == 0, 'post')
-    require(stubs(rig) == ['res_find', 'cut_start'], stubs(rig))
-    require(dict(variables(mem))['sawwat1'] == 1, variables(mem))
+    require(rig.calls == cut_calls('wat1'), rig.calls)
+    require_stored(rig, mem, 'sawwat1', 1)
     require(mem.u8(N.N.G_POST_ACTION) == 0, 'post cleared')
     checks += 1
     mem = prepare(rig, image, seed)
+    plant_mission_vars(rig, mem, (('startedMission4', 1), ('currentMission', 4)))
     plant_var(rig, 'sawWat1', 1)
     require(run_entry(rig, 'start')[0] == 0, 'repeat start')
     require(mem.u8(N.N.G_POST_ACTION) == 0, 'repeat posted')
+    require_stored(rig, mem, 'startedmission4', 1)
     require(mission(mem, 0, 4) == R.available_byte(SENTINEL, 1), 'repeat available')
     checks += 1
-    # waterIntro cuts whether or not the variable is already 1. start is what
-    # withholds the post.
-    for planted in (None, 1):
+    # waterIntro cuts whether sawWat1 is absent, 0x5A, or already 1.
+    # start is what withholds the post. res_find returns 0.
+    for planted in (None, 0x5A, 1):
         mem = prepare(rig, image, seed)
         if planted is not None:
             plant_var(rig, 'sawWat1', planted)
         require(run_entry(rig, 'absorb')[0] == 0, 'absorb')
-        require(stubs(rig) == ['res_find', 'cut_start'], stubs(rig))
-        require(dict(variables(mem))['sawwat1'] == 1, variables(mem))
+        require(rig.calls == cut_calls('wat1'), rig.calls)
+        require_stored(rig, mem, 'sawwat1', 1)
         checks += 1
     return checks
 
@@ -355,9 +416,10 @@ def check_keys_and_travel(rig, levels, seed):
     for evil, good_key, evil_key in ((0, 1, 0), (1, 0, 1)):
         mem = prepare(rig, image, seed, evil=evil)
         require(run_entry(rig, 'return6198')[0] == good_key, ('good key', evil))
+        require(mem.cstr(N.N.G_PENDING_LEVEL, 32) == 'PENDING-SENTINEL', 'good key pending')
         mem = prepare(rig, image, seed, evil=evil)
         require(run_entry(rig, 'return10c8')[0] == evil_key, ('evil key', evil))
-        require(mem.cstr(N.N.G_PENDING_LEVEL, 32) == 'PENDING-SENTINEL', 'key pending')
+        require(mem.cstr(N.N.G_PENDING_LEVEL, 32) == 'PENDING-SENTINEL', 'evil key pending')
         checks += 1
     routes = (
         ('newWorld57c0', 'wate2c'),
@@ -369,31 +431,39 @@ def check_keys_and_travel(rig, levels, seed):
     )
     for entry, level in routes:
         mem = prepare(rig, image, seed)
+        require(mem.u8(N.N.G_PENDING_ORIENT) == 0x5A, entry)
+        require(missions_held(mem), entry)
         require(run_entry(rig, entry)[0] == 0, entry)
         require(mem.cstr(N.N.G_PENDING_LEVEL, 32) == level, (entry, mem.cstr(N.N.G_PENDING_LEVEL, 32)))
         require(mem.cstr(N.N.G_ENTRANCE_NAME, 32) == 'ENTRANCE-SENTINEL', entry)
         require(mem.u8(N.N.G_PENDING_ORIENT) == 0xFF, entry)
-        require(bytes_are(mem, 4, (SENTINEL, SENTINEL, SENTINEL, SENTINEL)), entry)
-        require('net_closeLocalMenus' in stubs(rig), stubs(rig))
+        require(missions_held(mem), entry + ' missions')
+        # The stub returns 0, so the call does not close a menu.
+        require(rig.calls == [('net_closeLocalMenus', (0,))], rig.calls)
         checks += 1
     for level in ('wate2a', 'wate2b', 'wate2c', 'watg2a', 'watg2b', 'watg2c'):
         mem = prepare(rig, levels[level]['script.scr'], seed)
+        require(mem.u8(N.N.G_PENDING_ORIENT) == 0x5A, level)
+        require(missions_held(mem), level)
         require(run_entry(rig, 'newWorlde6b4')[0] == 0, level)
         require(mem.cstr(N.N.G_PENDING_LEVEL, 32) == 'wat1', level)
         require(mem.cstr(N.N.G_ENTRANCE_NAME, 32) == 'ENTRANCE-SENTINEL', level)
         require(mem.u8(N.N.G_PENDING_ORIENT) == 0xFF, level)
+        require(missions_held(mem), level + ' missions')
+        require(rig.calls == [('net_closeLocalMenus', (0,))], rig.calls)
         checks += 1
     return checks
 
 
 def check_water1(rig, image, seed):
     mem = prepare(rig, image, seed)
+    plant_mission_vars(rig, mem, (('startedMission4', 1), ('currentMission', 4)))
     require(run_entry(rig, 'start')[0] == 0, 'water1 start')
     require(bytes_are(mem, 4, (R.available_byte(SENTINEL, 1), SENTINEL, SENTINEL, SENTINEL)),
             'water1 available')
     require(others_clear(mem, 4), 'water1 missions')
-    got = dict(variables(mem))
-    require(got.get('startedmission4') == 1 and got.get('currentmission') == 4, got)
+    require_stored(rig, mem, 'startedmission4', 1)
+    require_stored(rig, mem, 'currentmission', 4)
     require(mem.u32(PLAYERS + QUEST_COUNT) == 0, 'water1 quest')
     require(mem.u8(N.N.G_POST_ACTION) == 0, 'water1 post')
     require(mem.cstr(N.N.G_PENDING_LEVEL, 32) == 'PENDING-SENTINEL', 'water1 pending')
@@ -402,11 +472,17 @@ def check_water1(rig, image, seed):
     mem = prepare(rig, image, seed)
     require(run_entry(rig, 'callScri7351')[0] == 0, 'water1 trigger')
     done = R.complete_byte(SENTINEL, -1)
+    require(done == 0xA2, hex(done))
     require(bytes_are(mem, 4, (done, done, done, done)), 'water1 grant')
     require(others_clear(mem, 4), 'water1 did not open mission 5')
     require(mem.u32(PLAYERS + QUEST_COUNT) == 0, 'water1 quest edited')
     require(mem.read(PLAYERS + QUEST, 0x40) == bytes([FILL]) * 0x40, 'water1 quest bytes')
-    require('hud_showHelpMessage' in stubs(rig), stubs(rig))
+    # text_lookup returns 0, so the help callee receives empty text ids.
+    require(rig.calls == [
+        ('text_lookup', (b'youcomp1861',)),
+        ('text_lookup', (b'goodfor8172',)),
+        ('hud_showHelpMessage', (0xFFFFFFFF, 0, 0)),
+    ], rig.calls)
     require('inventory_findItemBySubstring' not in stubs(rig), stubs(rig))
     require(mem.u32(N.N.G_RAND_SEED) == seed, 'seed')
     return 3
@@ -426,6 +502,7 @@ def check_shards(rig, levels, seed):
     checks = 0
     done = R.complete_byte(SENTINEL, -1)
     offered = R.complete_byte(R.available_byte(SENTINEL, 1), -1)
+    require(done == 0xA2 and offered == 0xA3, (hex(done), hex(offered)))
     # wate2 removes nothing in shardCheck. watg removes the plug quest.
     # Script offset of the `A == 25` compare inside shardCheck.
     compares = {
@@ -450,21 +527,26 @@ def check_shards(rig, levels, seed):
             mem.w8(PLAYERS + MISSION + 4, R.available_byte(SENTINEL, 1))
         if title:
             plant_quest(rig, title, 'plant-body')
+            require(mem.cstr(PLAYERS + QUEST, 32) == title, level)
+        plant_var(rig, 'wat_gotShard', 0x5A)
         shard_ticks(rig, mem, SHARD_TICKS - 1, 0)
         require(bytes_are(mem, 4, (R.available_byte(SENTINEL, 1) if offer else SENTINEL,
                                    SENTINEL, SENTINEL, SENTINEL)),
                 (level, 'early grant'))
+        require(dict(variables(mem))['wat_gotshard'] == 0x5A, (level, 'early shard'))
+        if title:
+            require(mem.cstr(PLAYERS + QUEST, 32) == title, (level, 'early remove'))
         require(defer_name(mem) == 'shardCheck', (level, defer_name(mem)))
         require(stubs(rig) == [], stubs(rig))
         shard_ticks(rig, mem, 1, 1)
         want0 = offered if offer else done
         require(bytes_are(mem, 4, (want0, done, done, done)), (level, [hex(mission(mem, s, 4)) for s in range(4)]))
         require(others_clear(mem, 4), level + ' next mission')
-        require(dict(variables(mem)).get('wat_gotshard') == 1, (level, variables(mem)))
-        require(stubs(rig) == [
-            'inventory_countItemByName', 'text_lookup', 'text_lookup',
-            'hud_showHelpMessage', 'res_find', 'sound_playOnObject',
-            'sound_setPlaysWhileFrozen'], stubs(rig))
+        require_stored(rig, mem, 'wat_gotshard', 1)
+        # Count stub of shardofwater for player 0. text_lookup returns 0.
+        # res_find returns 0, so the sound callee receives resource 0.
+        # No player object, so onePlayerHasItem does not call the finder.
+        require(rig.calls == SHARD_GRANT_CALLS, rig.calls)
         require('inventory_findItemBySubstring' not in stubs(rig), stubs(rig))
         require(defer_name(mem) == '', (level, 'queued on the grant'))
         if title:
@@ -475,19 +557,33 @@ def check_shards(rig, levels, seed):
     image = levels['wate2a']['script.scr']
     mem = prepare(rig, image, seed)
     plant_quest(rig, 'floodth5019', 'plant-body')
+    plant_var(rig, 'wat_gotShard', 0x5A)
     shard_ticks(rig, mem, SHARD_TICKS, 0)
     require(bytes_are(mem, 4, (SENTINEL, SENTINEL, SENTINEL, SENTINEL)), 'no item, no grant')
-    require(stubs(rig) == ['inventory_countItemByName'], stubs(rig))
+    require(rig.calls == [('inventory_countItemByName', (b'shardofwater', 0))], rig.calls)
     require(mem.u32(PLAYERS + QUEST_COUNT) == 1, 'wate2 removed the flood quest')
-    require('wat_gotshard' not in dict(variables(mem)), variables(mem))
+    require(mem.cstr(PLAYERS + QUEST, 32) == 'floodth5019', 'flood title')
+    require(dict(variables(mem))['wat_gotshard'] == 0x5A, variables(mem))
     checks += 1
     mem = prepare(rig, image, seed)
+    plant_var(rig, 'wat_gotShard', 0x5A)
     shard_ticks(rig, mem, SHARD_TICKS - 1, 0, paused=0)
     shard_ticks(rig, mem, 1, 1, paused=1)
     require(bytes_are(mem, 4, (SENTINEL, SENTINEL, SENTINEL, SENTINEL)), 'paused tick granted')
+    require(dict(variables(mem))['wat_gotshard'] == 0x5A, 'paused store')
     require(stubs(rig) == [], stubs(rig))
     shard_ticks(rig, mem, 1, 1, paused=0)
     require(bytes_are(mem, 4, (done, done, done, done)), 'tick after the paused one')
+    require_stored(rig, mem, 'wat_gotshard', 1)
+    checks += 1
+    # The same 25th call grants when the stub returns 2. Local 0xa4 stays 0,
+    # and the script grants when that local is below the stub's sum.
+    mem = prepare(rig, image, seed, shells=2)
+    plant_var(rig, 'wat_gotShard', 0x5A)
+    shard_ticks(rig, mem, SHARD_TICKS, 2)
+    require(bytes_are(mem, 4, (done, done, done, done)), 'count 2 grants')
+    require_stored(rig, mem, 'wat_gotshard', 1)
+    require(rig.calls == SHARD_GRANT_CALLS, rig.calls)
     checks += 1
     return checks
 
@@ -508,9 +604,11 @@ def check_wall_and_hole(rig, levels, seed):
         plant_quest(rig, 'stopthe5b99', 'plant-body')
         require(run_entry(rig, 'holeCheck')[0] == 0, level)
         require(bytes_are(mem, 4, (SENTINEL, SENTINEL, SENTINEL, SENTINEL)), level)
+        require(missions_held(mem), level)
         require(mem.u32(PLAYERS + QUEST_COUNT) == 1, level)
+        require(mem.cstr(PLAYERS + QUEST, 32) == 'stopthe5b99', level)
         require(mem.u8(N.N.G_POST_ACTION) == 0, level)
-        require(dict(variables(mem)).get('wat_complete') == 0, (level, variables(mem)))
+        require_stored(rig, mem, 'wat_complete', 0)
         require('hud_showHelpMessage' not in stubs(rig), stubs(rig))
         checks += 1
     image = levels['wate2a']['script.scr']
@@ -531,24 +629,27 @@ def check_wall_and_hole(rig, levels, seed):
 
 def check_tor_start(rig, image, seed):
     mem = prepare(rig, image, seed)
+    plant_mission_vars(rig, mem, (('startedMission5', 1), ('currentMission', 5)))
     require(run_entry(rig, 'start')[0] == 0, 'tormenta start')
     require(bytes_are(mem, 5, (R.available_byte(SENTINEL, 1), SENTINEL, SENTINEL, SENTINEL)),
             'mission 5')
     require(others_clear(mem, 5), 'mission 4 or 6 moved')
-    got = dict(variables(mem))
-    require(got.get('startedmission5') == 1 and got.get('currentmission') == 5, got)
-    require(got.get('tor_bri1') == 0 and got.get('tor_bri5') == 0, got)
+    require_stored(rig, mem, 'startedmission5', 1)
+    require_stored(rig, mem, 'currentmission', 5)
+    require_stored(rig, mem, 'tor_bri1', 0)
+    require_stored(rig, mem, 'tor_bri5', 0)
     require(mem.u32(PLAYERS + QUEST_COUNT) == 0, 'tor quest')
     require(mem.cstr(N.N.G_POST_ACTION, 32) == 'absorb', 'tor post')
     require(mem.cstr(N.N.G_PENDING_LEVEL, 32) == 'PENDING-SENTINEL', 'tor pending')
     require(stubs(rig) == [], stubs(rig))
     require(mem.u32(N.N.G_RAND_SEED) == seed, 'seed')
+    plant_var(rig, 'tor_beenHere', 0x5A)
     rig.calls = []
     rig.emu.calls.clear()
+    rig.emu.writes.clear()
     require(N.s32(rig.call(N.A['script_runPostAction'], max_steps=4000000)) == 0, 'absorb post')
-    require(dict(variables(mem))['tor_beenhere'] == 1, variables(mem))
-    require(stubs(rig) == [], stubs(rig))
-    require('cut_start' not in stubs(rig), stubs(rig))
+    require_stored(rig, mem, 'tor_beenhere', 1)
+    require(rig.calls == [], stubs(rig))
     mem = prepare(rig, image, seed)
     plant_var(rig, 'tor_beenHere', 1)
     require(run_entry(rig, 'start')[0] == 0, 'return start')
@@ -558,9 +659,9 @@ def check_tor_start(rig, image, seed):
         require(run_entry(rig, 'preStart')[0] == 0, 'preStart')
         require(mem.cstr(N.N.G_ENTRANCE_NAME, 32) == door, (evil, mem.cstr(N.N.G_ENTRANCE_NAME, 32)))
         require(mem.cstr(N.N.G_PENDING_LEVEL, 32) == 'PENDING-SENTINEL', 'preStart pending')
-        require(dict(variables(mem)).get('tor_beenhere') == 0, variables(mem))
-        require(stubs(rig) == ['lump_load'], stubs(rig))
-        require(bytes_are(mem, 5, (SENTINEL, SENTINEL, SENTINEL, SENTINEL)), 'preStart mission')
+        require_stored(rig, mem, 'tor_beenhere', 0)
+        require(rig.calls == [('lump_load', (b'bust.lmp',))], rig.calls)
+        require(missions_held(mem), 'preStart mission')
     return 5
 
 
@@ -574,19 +675,22 @@ def check_tor_cuts_and_dialog(rig, image, seed, found):
         mem = prepare(rig, image, seed)
         if planted is not None:
             plant_var(rig, name, planted)
+        require(mem.cstr(N.N.G_LEVEL_NAME, 16) == '', entry)
         require(run_entry(rig, entry)[0] == 0, entry)
-        require(dict(variables(mem))[name] == 1, variables(mem))
         if planted is None:
-            require(stubs(rig) == ['res_find', 'cut_start'], stubs(rig))
+            require(rig.calls == cut_calls('torb' if entry == 'if87a0' else 'tora'), rig.calls)
+            require_stored(rig, mem, name, 1)
         else:
-            require(stubs(rig) == [], stubs(rig))
-        require(bytes_are(mem, 5, (SENTINEL, SENTINEL, SENTINEL, SENTINEL)), entry)
+            require(rig.calls == [], stubs(rig))
+            require(dict(variables(mem))[name] == 1, variables(mem))
+        require(missions_held(mem), entry)
         checks += 1
     title = arg_at(found, 0x748, 0)
     body = arg_at(found, 0x748, 1)
     mem = prepare(rig, image, seed)
+    plant_var(rig, 'tor_talkedToGol', 0x5A)
     require(run_entry(rig, 'setv2725')[0] == 0, 'quest action')
-    require(dict(variables(mem))['tor_talkedtogol'] == 1, variables(mem))
+    require_stored(rig, mem, 'tor_talkedtogol', 1)
     require(mem.u32(PLAYERS + QUEST_COUNT) == 1, 'count')
     require(mem.cstr(PLAYERS + QUEST, 32) == title, 'title')
     require(mem.cstr(PLAYERS + QUEST + 0x20, 32) == body, 'body')
@@ -644,20 +748,32 @@ def check_endtor(rig, image, seed, found):
     title = arg_at(found, 0x1E20, 0)
     require(isinstance(title, str) and len(title) == 17, len(title) if isinstance(title, str) else title)
     done = R.complete_byte(SENTINEL, -1)
+    require(done == 0xA2, hex(done))
     mem = prepare(rig, image, seed)
     require(run_entry(rig, 'endtor')[0] == 0, 'endtor')
     require(bytes_are(mem, 5, (done, done, done, done)), 'grant')
     require(others_clear(mem, 5), 'endtor opened another mission')
-    require(dict(variables(mem))['tor_finishedmission'] == 1, variables(mem))
+    require_stored(rig, mem, 'tor_finishedmission', 1)
     require(mem.u32(PLAYERS + QUEST_COUNT) == 0, 'count')
     require(mem.read(PLAYERS + QUEST, 0x40) == bytes([FILL]) * 0x40, 'empty slot changed')
-    require(stubs(rig) == ['res_find', 'sound_playOnObject', 'sound_setPlaysWhileFrozen'], stubs(rig))
+    require(rig.calls == [
+        ('res_find', (b'fx.lmp', b'quest_complete.anm')),
+        ('sound_playOnObject', (0, 0, 1065353216)),
+        ('sound_setPlaysWhileFrozen', (0,)),
+    ], rig.calls)
     require(mem.u32(N.N.G_RAND_SEED) == seed, 'seed')
     mem = prepare(rig, image, seed)
     plant_quest(rig, title, 'plant-body')
+    require(mem.cstr(PLAYERS + QUEST, 32) == title, 'planted title')
+    require(title != 'NoQuests', title)
     require(run_entry(rig, 'callScri8c36')[0] == 0, 'dialog action')
     require(bytes_are(mem, 5, (done, done, done, done)), 'action grant')
     require(mem.u32(PLAYERS + QUEST_COUNT) == 0, 'quest count')
+    require(rig.calls == [
+        ('res_find', (b'fx.lmp', b'quest_complete.anm')),
+        ('sound_playOnObject', (0, 0, 1065353216)),
+        ('sound_setPlaysWhileFrozen', (0,)),
+    ], rig.calls)
     # Removing the last entry leaves the placeholder the quest log already
     # documents. The 17-character title is not still in the slot.
     require(mem.cstr(PLAYERS + QUEST, 32) == 'NoQuests', 'placeholder')
@@ -685,11 +801,14 @@ def check_tor_travel(rig, levels, seed):
     checks = 0
     for level, entry, dest, door in routes:
         mem = prepare(rig, levels[level]['script.scr'], seed)
+        require(mem.u8(N.N.G_PENDING_ORIENT) == 0x5A, entry)
+        require(missions_held(mem), entry)
         require(run_entry(rig, entry)[0] == 0, entry)
         require(mem.cstr(N.N.G_PENDING_LEVEL, 32) == dest, (entry, mem.cstr(N.N.G_PENDING_LEVEL, 32)))
         require(mem.cstr(N.N.G_ENTRANCE_NAME, 32) == door, (entry, mem.cstr(N.N.G_ENTRANCE_NAME, 32)))
         require(mem.u8(N.N.G_PENDING_ORIENT) == 0xFF, entry)
-        require(bytes_are(mem, 5, (SENTINEL,) * 4), entry)
+        require(missions_held(mem), entry + ' missions')
+        require(rig.calls == [('net_closeLocalMenus', (0,))], rig.calls)
         require(mem.u32(N.N.G_RAND_SEED) == seed, entry)
         checks += 1
     return checks

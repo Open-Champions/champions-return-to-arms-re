@@ -67,6 +67,7 @@ def load_levels(data):
         levels[level] = {
             'script': lump(path, 'script.scr'),
             'mermaid': lump(path, 'mermaid.dbin') if level in ('islc1', 'islc2') else None,
+            'racer': lump(path, 'g_racer.dbin') if level == 'islc1' else None,
         }
     return levels
 
@@ -261,18 +262,27 @@ def check_level_start(rig, image, seed, level, post):
 
 
 def check_absorb(rig, image, seed):
+    _publics, found, _pool = calls_in(image)
+    require(arg_at(found, 0x4DC, 0) == 'islcave', 'script cut argument')
     mem = prepare(rig, image, seed)
+    # No level name is planted, so cutScene's lump argument is ".lmp".
+    require(mem.cstr(N.N.G_LEVEL_NAME, 16) == '', 'level name')
     run_entry(rig, 'start')
     require(mem.cstr(N.N.G_POST_ACTION, 32) == 'absorb', 'post was not queued')
+    rig.calls = []
+    rig.emu.calls.clear()
     rig.call(N.A['script_runPostAction'], max_steps=4000000)
     require(mem.u8(N.N.G_POST_ACTION) == 0, 'post name was kept')
     # getv of a missing sawislc is 0, then the entry negates that, so the
     # first visit requests the cut and stores 1. The next visit skips it.
-    require(stubs(rig).count('cut_start') == 1, stubs(rig))
-    require('res_find' in stubs(rig), stubs(rig))
+    # res_find returns 0, and cut_start records the ".cut" name.
+    require(rig.calls == [
+        ('res_find', (b'.lmp', b'islcave.cut')),
+        ('cut_start', (0, b'islcave.cut')),
+    ], rig.calls)
     require(dict(variables(mem))['sawislc'] == 1, variables(mem))
     run_entry(rig, 'absorb')
-    require('cut_start' not in stubs(rig), stubs(rig))
+    require(rig.calls == [], stubs(rig))
     require(dict(variables(mem))['sawislc'] == 1, variables(mem))
     return 6
 
@@ -307,10 +317,13 @@ def check_predicates(rig, images, seed):
         require(got == expect, (name, value, got))
         checks += 1
     image = images['islc2']['script']
-    for shells, expect in ((0, 0), (1, 1)):
+    # One player, so playerHasItem's sum is this single stub return.
+    # 0 stays 0. 1 and 2 are nonzero and both return 1.
+    for shells, expect in ((0, 0), (1, 1), (2, 1)):
         mem = prepare(rig, image, seed, shells)
         got = run_entry(rig, 'iffbe4')
         require(got == expect, ('shell', shells, got, stubs(rig)))
+        require(rig.calls == [('inventory_countItemByName', (b'shell', 0))], rig.calls)
         checks += 1
     for name, value, expect in (
             ('if9be1', None, 0), ('if9be1', 1, 1),
@@ -360,6 +373,37 @@ def check_cave_grant(rig, image, seed):
     require('hud_showHelpMessage' in stubs(rig), stubs(rig))
     require('inventory_findItemBySubstring' not in stubs(rig), stubs(rig))
     return 8
+
+
+def calls_of_entry(found, publics, name):
+    start = publics[name]
+    later = [off for off in publics.values() if off > start]
+    end = min(later) if later else 1 << 30
+    return [(native, args) for off, native, args in found if start <= off < end]
+
+
+def check_racer(blob, publics, found):
+    """islc1 g_racer.dbin node 1 names wrappers. Each wrapper only posts one travel."""
+    rows = dbin_rows(blob)
+    require(len(rows) == 2, len(rows))
+    actions = [(action, target) for _text, action, target in rows[1][1]]
+    require(actions == [
+        ('postActifb1b', -1),
+        ('postActi6592', -1),
+        ('postActi928c', -1),
+        ('postActifd9a', -1),
+    ], actions)
+    wrappers = (
+        ('postActifb1b', 0x1FC, 'solitary'),
+        ('postActi6592', 0x240, 'lostHope'),
+        ('postActi928c', 0x284, 'regret'),
+        ('postActifd9a', 0x2C8, 'gnome'),
+    )
+    for name, off, posts in wrappers:
+        require(publics[name] == off, (name, hex(publics[name])))
+        require(calls_of_entry(found, publics, name) == [('postAction', (posts,))],
+                (name, calls_of_entry(found, publics, name)))
+    return 5
 
 
 def check_travel(rig, image, seed):
@@ -448,12 +492,13 @@ def check_dialogs(levels):
 def check_seed(rig, levels, seed):
     checks = check_dialogs(levels)
     islc1 = levels['islc1']['script']
-    _publics, found, _pool = calls_in(islc1)
+    publics, found, _pool = calls_in(islc1)
     checks += check_level_start(rig, islc1, seed, 'islc1', True)
     checks += check_absorb(rig, islc1, seed)
     checks += check_quest_action(rig, islc1, seed, found)
     checks += check_predicates(rig, levels, seed)
     checks += check_travel(rig, islc1, seed)
+    checks += check_racer(levels['islc1']['racer'], publics, found)
     islc2 = levels['islc2']['script']
     _publics, found, _pool = calls_in(islc2)
     checks += check_completion(rig, islc2, seed, found)
