@@ -137,8 +137,7 @@ is set: `g_recallCountdown` `0x41b51d` = 1, `g_menuInputLockout` `0x41b4fc` = 60
 is the jump-gate query this caller already tests. It is not a run of the
 jump-gate body.
 
-**Unknown:** the hit direction at `+0x2e0`. Following `atan2` `0x166798`, six
-attacker placements, including the origin, all left `0x4000`.
+**Unknown:** the hit direction at `+0x2e0`.
 
 ## Player death
 
@@ -158,9 +157,10 @@ Pending one pattern below 100 (`0x42c7ffff`) leaves a positive record and state
 (`0x60 | 0x109`), clears pending damage and the flag word, calls `0x1e72f8`
 once, and does not draw the seed. The knock-back sentinel is not written.
 
-Pending 0 while the record is already 0 does not kill. State stays 2, the
-record stays 0, object flags stay `0x60`, the flag word `0x11` is stored as 0,
-and the seed does not change.
+Pending 0 while the record is already 0 does not kill. State stays 2. The
+record address `0x4d8af0+0xac` is absent from the write log and stays 0.
+Object flags stay `0x60`, the flag word `0x11` is stored as 0, and the seed
+does not change.
 
 ## Knock-back
 
@@ -190,8 +190,8 @@ bits store:
   (`0x42c80000`, `0x43160000`, `0x43480000`, `0x439c4000`); object flags become
   `0x2129`
 
-The shared seed does not change. Slot 27 is the zero stand-in, so this run does
-not store the corpse state. Kill credit remains **Unknown**.
+The shared seed does not change. Slot 27 is the zero stand-in. Kill credit
+remains **Unknown**.
 
 `Creature_applyKnockback` `0x115eb8` starts from 30 (`0x41f00000`) at scale 1.
 `math_cos16` `0x166630` and `math_sin16` `0x1666e0` run. `Creature_moveBy`
@@ -217,9 +217,9 @@ game, calls move and stores 28 (`0x41e00000`).
   flags, unless recall, the menu lockout, the exit countdown or a nonzero
   jump-gate query drops the hit. Do not subtract object hit points in that slot.
 - On `Player_processDamage`, subtract pending damage from the record. Store 0
-  and state 4, set flags `0x109`, and rebuild the alive list when the record
-  result is 0 or below. Leave a zero pending amount, even at 0 hit points,
-  unkilled.
+  and state 4, store object flags `0x169`, and rebuild the alive list when the
+  record result is 0 or below. Leave a zero pending amount, even at 0 hit
+  points, unkilled.
 - Store the player knock-back speed 100 / 150 / 200 / 250 from the first of
   those four flag bits, including on a killing hit and on a tick with no
   pending damage. For a creature, use the three tables above and do not subtract

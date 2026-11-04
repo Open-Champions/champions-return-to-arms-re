@@ -461,6 +461,9 @@ class Probe:
         return any(wrote == addr and pattern == value
                    for _pc, wrote, _size, pattern in emu.writes)
 
+    def _wrote(self, emu, addr):
+        return any(wrote == addr for _pc, wrote, _size, _pattern in emu.writes)
+
     def player_queue(self, seed):
         """Original Player_takeDamage. Callees other than strcmp and the local-slot
         test are stubbed, so the holy-shield search returns 0."""
@@ -556,6 +559,7 @@ class Probe:
         self.counts['player_process_calls'] += 1
         self.check('player_no_pending', emu.mem.u32(obj + 0x58C) == 2
                    and emu.mem.u32(G_PLAYERS + 0xAC) == 0
+                   and not self._wrote(emu, G_PLAYERS + 0xAC)
                    and emu.mem.u32(obj + 0x0C) == 0x60
                    and self._stored(emu, obj + 0x2DC, 0)
                    and emu.mem.u32(DC.G_SEED) == before
