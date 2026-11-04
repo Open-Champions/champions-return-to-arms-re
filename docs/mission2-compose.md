@@ -210,7 +210,9 @@ Evidence: [no linked player](../tools/difftest_mission2_compose.py#L567-L589).
 
 ## Still unknown
 
-In-range NPC, trigger, and portal use. The loader body after a successful
+Round 4 continues the archive open and the in-range prompt in
+[mission2-round4.md](mission2-round4.md). This round left the following
+open. In-range NPC, trigger, and portal use. The loader body after a successful
 archive open, arrival, and save/load of the destination list. Real
 cancel-button reachability of the constructed counter 16. Mission 1's own
 completion writer is not run here; the session starts from the completed
