@@ -36,6 +36,22 @@ class RouteList(unittest.TestCase):
         self.assertEqual(C.hub2_cold_dialog(1), (4, 2))
         self.assertEqual(C.hub2_cold_dialog(3), (5, 2))
 
+    def test_hub2_action_gate_is_an_open_incomplete_variable(self):
+        clear = [0] * 12
+        row = [3, 0, 1] + [0] * 10
+        self.assertEqual(C.hub2_action_gate(row, clear), 0)
+        set_second = clear[:]
+        set_second[1] = 1
+        self.assertEqual(C.hub2_action_gate(row, set_second), 1)
+        complete = row[:]
+        complete[2] = 3
+        self.assertEqual(C.hub2_action_gate(complete, set_second), 0)
+        last = [3] + [0] * 12
+        last[12] = 1
+        values = [0] * 12
+        values[11] = 1
+        self.assertEqual(C.hub2_action_gate(last, values), 1)
+
     def test_hub2_key_is_an_open_mission_or_mission_12(self):
         row = [3] + [0] * 12
         self.assertEqual(C.hub2_trigger_key(row), 0)

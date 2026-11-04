@@ -476,7 +476,6 @@ def observe_helper_fault(executable, iso, seed):
 
 QUEST_VARS = 0x86DA80
 POOL_INIT, POOL_NEW, OBJECT_CTOR = 0x14FCD8, 0x14FDB8, 0x14CB10
-PLAYER_OBJECT = 0x4D8AF0 + 0x43D8
 STATIC_INIT, PARTICLE_INIT, SET_DEFAULTS, CLAIM = 0x195D30, 0x18E648, 0x18F360, 0x195BB0
 SLOT_USED, TYPE_PTR = 0x82C408, 0x82C4E8
 GROUP_HANDLE, TRAIL_HANDLE = 0x7E1D50 + 0x130, 0x82CD00 + 0x400
@@ -561,32 +560,61 @@ def loader_prefix(executable, seed):
     assert any(call.site == 0x1E57EC and not call.stubbed for call in emu.calls)
     assert emu.mem.u32(0x4F7198) == 1
     assert emu.mem.u32(0x404460) == 0 and emu.mem.u32(0x404464) == seed
+    lump = [call for call in emu.calls if call.target == 0x173558]
+    found = [call for call in emu.calls if call.target == 0x171FD8]
+    assert lump and all(call.stubbed and call.ret == 0 for call in lump)
+    assert any(call.site == 0x1E5988 for call in lump)
+    assert len(found) == 1 and found[0].stubbed and found[0].ret == 0
+    assert found[0].site == 0x1E599C
+    assert 0x173558 not in LoaderFollow() and 0x171FD8 not in LoaderFollow()
+    assert len(sites) == 163
     return len(sites)
 
 
+RECORD, STRIDE = 0x4D8AF0, 0x4C30
+SLOT_WORD, MARK_WORD = 0x3C8, 0x540
+FREE_HEAD = 0x864EA8
+
+
 def interact_without_player(executable):
-    """Player_interact returns before the box query when no player object is linked."""
+    """A zero hit-point float returns the record address. The box query is not called."""
     from ee_emu import EE
     emu = EE(executable)
     emu.record_writes = False
+    emu.record_calls = True
     pad = emu.alloc(32)
-    player = emu.alloc(0x40)
-    assert emu.mem.u32(PLAYER_OBJECT) == 0
-    ret = emu.call(0x1B2640, player, pad, 0, max_steps=100000)
-    assert ret & 0xFFFFFFFF == 0x4D8AF0
+    player = emu.alloc(0x580)
+    emu.mem.w32(player + MARK_WORD, 0)
+    emu.mem.w32(player + SLOT_WORD, 0)
+    emu.r[2] = 0xA5A5A5A5
+    ret = emu.call(0x1B2640, player, pad, 0, max_steps=100000) & 0xFFFFFFFF
     assert emu.calls == []
-    # The object-pool constructor still faults without a link node. In-range use
-    # is not established by this call.
+    assert ret == RECORD
+    emu.reset_log()
+    emu.mem.w32(player + SLOT_WORD, 1)
+    emu.r[2] = 0xA5A5A5A5
+    ret = emu.call(0x1B2640, player, pad, 0, max_steps=100000) & 0xFFFFFFFF
+    assert emu.calls == []
+    assert ret == RECORD + STRIDE
+
+
+def ctor_null_head(executable):
+    """The constructor store at 0x1a1780 uses a null free-list head."""
+    from ee_emu import EE, MemoryFault
+    emu = EE(executable)
+    emu.record_writes = False
+    assert emu.mem.u32(FREE_HEAD) == 0
     emu.call(POOL_INIT)
+    assert emu.mem.u32(FREE_HEAD) == 0
     block = emu.call(POOL_NEW, 0x80) & 0xFFFFFFFF
     assert block
-    from ee_emu import MemoryFault
     try:
         emu.call(OBJECT_CTOR, block, emu.alloc(16), 0, 0)
     except MemoryFault as fault:
-        assert fault.pc == 0x1A1780 and fault.kind == 'write'
+        assert (fault.pc, fault.addr, fault.size, fault.kind) == (
+            0x1A1780, 0, 4, 'write'), fault
         return
-    raise AssertionError('object ctor returned without the link fault')
+    raise AssertionError('object ctor returned without the null link-head store')
 
 
 def zero_quests(probe):
@@ -697,14 +725,52 @@ def hub2_play(executable, iso, seed):
         got = bare.run_entry(0x98) & 0xFFFFFFFF
         assert got == C.hub2_trigger_key(row), (row, got)
         cases += 1
+    planted = [3, 0, 1] + [0] * 10
+    gate = O.H.Probe(executable, image, dialog, seed, 0, 0, 0, mission_bytes=bytes(planted))
+    assert gate.run_entry(0x1A84) & 0xFFFFFFFF == C.hub2_action_gate(planted, [0] * 12)
     action = O.H.Probe(executable, image, dialog, seed, 0, 0, 0)
-    plant_row(action, [3, 0, 1] + [0] * 10)
+    plant_row(action, planted)
     action.native_calls = []
+    action.entered = []
+    action.rig.emu.reset_log()
     assert action.run_entry(0x54) & 0xFFFFFFFF == 0
     assert 'setEntrance' in action.native_calls and 'activateMissionMenu' in action.native_calls
-    assert action.mem.u32(0x44FDB8) == 0
+    opened_dialog = [call for call in action.rig.emu.calls if call.target == 0x22FBC0]
+    menu = [call for call in action.rig.emu.calls if call.target == 0x231520]
+    assert len(opened_dialog) == 1 and opened_dialog[0].stubbed
+    assert opened_dialog[0].site == 0x143FB0
+    # dialog_isOpen is the seeded responder, not the original function.
+    if opened_dialog[0].ret == 0:
+        assert len(menu) == 1 and menu[0].stubbed and menu[0].ret == 0 and menu[0].site == 0x143FF8
+    else:
+        assert menu == []
+    assert (seed, opened_dialog[0].ret) in ((20973, 0), (7, 1)), (seed, opened_dialog[0].ret)
     entrance = action.mem.cstr(0x4F8468)
     assert entrance == 'evilstart', entrance
+    variable = check.call_values(0x1B9C, 'getv', 1, (0,))[0].encode('latin1')
+    assert len(variable) == 15
+    opened = [0] * 12
+    opened[1] = 1
+    true_row = O.H.Probe(executable, image, dialog, seed, 0, 0, 0,
+                         variables=((variable, 1),), mission_bytes=bytes(planted))
+    assert true_row.run_entry(0x1A84) & 0xFFFFFFFF == C.hub2_action_gate(planted, opened)
+    true_row.native_calls = []
+    true_row.entered = []
+    true_row.rig.emu.reset_log()
+    assert true_row.run_entry(0x54) & 0xFFFFFFFF == 0
+    assert 'setEntrance' not in true_row.native_calls
+    assert 'activateMissionMenu' not in true_row.native_calls
+    assert 0x22D0 in true_row.entered
+    assert 'addHelpMessage' in true_row.native_calls and 'addDeferedCall' in true_row.native_calls
+    complete = planted[:]
+    complete[2] = 3
+    closed = O.H.Probe(executable, image, dialog, seed, 0, 0, 0,
+                       variables=((variable, 1),), mission_bytes=bytes(complete))
+    assert closed.run_entry(0x1A84) & 0xFFFFFFFF == 0
+    closed.native_calls = []
+    closed.rig.emu.reset_log()
+    assert closed.run_entry(0x54) & 0xFFFFFFFF == 0
+    assert 'setEntrance' in closed.native_calls and 'activateMissionMenu' in closed.native_calls
     # After the mission-1-complete choice, the stored variable selects node 3.
     for choice, entry in ((0, 0x2B6C), (1, 0x4224)):
         follow = O.H.Probe(executable, image, dialog, seed, 0, 0, 0)
@@ -738,6 +804,7 @@ def run(executable, source, iso, seed):
     helper_effects(executable)
     sites = loader_prefix(executable, seed)
     interact_without_player(executable)
+    ctor_null_head(executable)
     key_cases, entrance = hub2_play(executable, iso, seed)
     hub_records = hub2_boundary(iso) if seed == 20973 else 0
     print('PASS seed=%d route-list cases=%d portal returns=%d counter comparisons=%d' % (

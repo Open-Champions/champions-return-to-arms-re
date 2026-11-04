@@ -151,7 +151,7 @@ Evidence: [cold choices](../tools/difftest_mission2_compose.py#L656-L681).
 **Observed / Executed:** opening again after that mission-1-complete choice,
 without clearing the variable it stored, selects node 3 with two visible
 choices. Both call `mission_setAvailable` for mission 2 (`0x2b6c`, then
-`0x4224`) and byte 2 becomes 1. The first choice alone does not grant.
+`0x4224`) and byte 2 becomes 1.
 Evidence: [continuation](../tools/difftest_mission2_compose.py#L708-L727).
 
 ## hub2 trigger key and action
@@ -160,12 +160,34 @@ Evidence: [continuation](../tools/difftest_mission2_compose.py#L708-L727).
 available and not complete, or when mission 12 is available whether or not
 it is complete. Otherwise it returns 0, including mission 2 byte 0, 2, or 3
 with the other missions clear. `demoRunning` is called and is not what opens
-the key. Action `0x54` returns 0. It calls `setEntrance` with the identifier
-`evilstart` and then `activateMissionMenu`. The menu task count at `0x44fdb8`
-stays 0 after that entry, so this script call is not the ordinary hub's
-dispatcher registration.
+the key.
 Evidence: [key and action](../tools/difftest_mission2_compose.py#L682-L707),
 [model](../tools/ref_mission2_compose.py#L76-L87).
+
+**Observed:** action `0x54` `callScript`s `0x2210`, and that entry calls
+`0x1a84` first. `0x1a84` tests missions 1..12. A mission opens the gate when
+it is available, not complete, and its own quest variable is nonzero.
+Missions 1..9 use a 15-character variable. Missions 10..12 use a 16-character
+variable. The other branch of `0x2210`, when the gate returns 0, is
+`setEntrance` then `activateMissionMenu`. When the gate returns 1, `0x2210`
+`callScript`s the 7-character entry at `0x22d0` instead.
+
+**Observed / Executed:** the planted row is mission byte 0 at 3, mission 1
+at 0, mission 2 at 1, missions 3..12 at 0, with quest variables clear.
+`0x1a84` returns 0 on that row. The action then calls `setEntrance` with
+`evilstart` and `activateMissionMenu`, and returns 0. `activateMissionMenu`
+calls `dialog_isOpen` at `0x143fb0`. That call is the seeded responder
+stub, not the original function. Seed 20973 returns 0, and `missionMenu_open`
+`0x231520` then runs as the dialog-harness logger and returns 0. Seed 7
+returns 1, and `missionMenu_open` is not called. The registration body
+stays unentered on both seeds. The same row with mission 2's
+variable set to 1 makes `0x1a84` return 1. The action then enters `0x22d0`
+(`addHelpMessage`, then `addDeferedCall`) and does not call `setEntrance` or
+`activateMissionMenu`. Mission 2 byte 3, available and complete, with that
+variable set, still returns 0 from `0x1a84` and still takes the entrance
+calls.
+Evidence: [key and action](../tools/difftest_mission2_compose.py#L682-L707),
+[model](../tools/ref_mission2_compose.py#L76-L100).
 
 ## The menu helper
 
@@ -191,21 +213,33 @@ Evidence: [helper effects](../tools/difftest_mission2_compose.py#L498-L535).
 
 **Observed / Executed:** `game_loadLevel` `0x1e55c0` for `innovat1` sets the
 loading flag `0x4f7198` to 1. Real string compares walk the level table at
-`0x1e57ec`. The front-end call at `0x1e5738` is not taken. Disc, audio, and
-graphics calls stay stubbed, so the archive lookup returns 0 and the loader
-faults on a 4-byte read at `0x00000004` (pc `0x001e59ac`), before the
-cosmetic-seed copy. The shared seed is unchanged and the cosmetic seed stays
-0. The body after a successful archive open is **Unknown**.
+`0x1e57ec`. The front-end call at `0x1e5738` is not taken. The follow set is
+only `0x1e55c0` and `0x3b0000-0x3c0000`, so every other call returns 0. The
+run records 163 call sites. `lump_load` `0x173558` is stubbed, including the
+call at `0x1e5988`. The following call at `0x1e599c`, to `0x171fd8`, is
+stubbed and returns 0. The faulting 4-byte read at `0x00000004` (pc
+`0x001e59ac`) uses that return plus 4. Both addresses are outside the follow
+set. The shared seed is unchanged and the cosmetic seed stays 0. The body
+after a successful archive open is **Unknown**.
 Evidence: [loader prefix](../tools/difftest_mission2_compose.py#L543-L564).
 
 ## Physical use
 
-**Observed / Executed:** `Player_interact` `0x1b2640` returns the player-record
-address `0x4d8af0` and makes no calls when the object pointer at
-`g_players + 0x43d8` is 0. The box query is not reached. `pool_init`
-`0x14fcd8` then `pool_new` still leaves `GameObject_ctor` `0x14cb10` faulting
-on a write at pc `0x001a1780`. In-range NPC, trigger, and portal use remain
-**Unknown**.
+**Observed / Executed:** `Player_interact` `0x1b2640` makes no calls when the
+argument's word at `+0x540` is 0. The slot word at `+0x3c8` selects the
+record (`slot * 0x4c30 + 0x4d8af0`). The float at that record `+0xac` is 0,
+and the compare branches to the epilogue at `0x1b2c90` before the
+object-pointer load at `0x1b26ac`. The box query is not reached. The
+epilogue returns the record address. Slot 0 returns `0x4d8af0`. Slot 1
+returns `0x4d8af0 + 0x4c30`. Both returns replace a sentinel in the return
+register. The argument is `0x580` bytes, so those two words are inside it.
+
+**Observed / Executed:** with the free-list head `0x864ea8` still 0,
+`pool_init` `0x14fcd8` and `pool_new` leave that head 0. `GameObject_ctor`
+`0x14cb10` then faults on a 4-byte write at address 0 (pc `0x001a1780`).
+That is the null link-head store. Round 4 writes `0x847268` there from
+`handle_initPool` and the constructor returns
+([mission2-round4.md](mission2-round4.md)).
 Evidence: [no linked player](../tools/difftest_mission2_compose.py#L567-L589).
 
 ## Still unknown
@@ -216,7 +250,8 @@ open. In-range NPC, trigger, and portal use. The loader body after a successful
 archive open, arrival, and save/load of the destination list. Real
 cancel-button reachability of the constructed counter 16. Mission 1's own
 completion writer is not run here; the session starts from the completed
-byte. Hub2's action entry does not by itself register the mission menu.
+byte. Retail `missionMenu_open` stays unentered: the harness logger runs
+only when the responder's `dialog_isOpen` returns 0.
 
 ## Reproduction
 

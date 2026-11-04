@@ -73,6 +73,19 @@ def hub2_cold_dialog(mission2):
     raise ValueError(mission2)
 
 
+def hub2_action_gate(mission_bytes, variables):
+    """Script 0x1a84. `variables[i]` is mission i+1's quest variable.
+
+    Returns 1 when any mission 1..12 is available, not complete, and its
+    variable is nonzero. The complete bit keeps that mission closed.
+    """
+    for mission in range(1, 13):
+        byte = mission_bytes[mission]
+        if byte & 1 and not byte & 2 and variables[mission - 1]:
+            return 1
+    return 0
+
+
 def hub2_trigger_key(mission_bytes):
     """PushTrigger key 0x98. `mission_bytes` has 13 difficulty-row bytes.
 
