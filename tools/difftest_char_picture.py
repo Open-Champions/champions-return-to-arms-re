@@ -5,13 +5,21 @@ Run from the worktree root with PYTHONDONTWRITEBYTECODE=1. unittest is imported
 before tools/ is on sys.path. The executable is pinned before any code runs.
 
 Executed:
-* creation restart 0x2254bc–0x2255b4, plus the intro4 and intro2 call setups
-* inventory_selectIdleAnim 0x1c3f08 and the inventory draw's unit advance
+* creation restart 0x2254bc–0x2255b4, plus the intro4 and intro2 call setups.
+  Time and weight are planted nonzero and must be stored as 0. Flags 3 are
+  read back. Race bytes -1..11 (slots 0..12) each run the import-literal row.
+* inventory_selectIdleAnim 0x1c3f08 and the inventory draw's unit advance.
+  A fresh cell's time and weight are planted nonzero. The step must store
+  time 0x3f7fffff and weight 1.
 * player_resetIdleAnim 0x1b2470, including the unread time word
 * Creature_draw's load at 0x10ba84 and inventory's load at 0x1c0a28,
   then the show-mask walk 0x177df4–0x177eb0
 * model_emitShellPasses 0x174e78, and the flag/count gates in model_draw
   and model_drawPart
+
+Observed, not a run of playerSel_task: every direct jal/j target and every
+jalr from 0x225478 through 0x22e700, plus every jal, composed address, and
+aligned data word that names anim_advance. Indirect callees are not followed.
 
 Renderer submission stays stubbed. No archive bytes are printed.
 """
@@ -27,6 +35,7 @@ import struct
 
 sys.path.insert(0, _TOOL_DIR)
 from ee_emu import EE
+import ps2elf
 import ref_char_attachment as ref
 
 SHA256 = '292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675'
@@ -45,6 +54,148 @@ RELEASE = 0x171118
 MODEL_DRAW = 0x1779b0
 SHELL = 0x174e78
 DRAW_PART = 0x178c28
+SEL_LO = 0x225478
+SEL_HI = 0x22e700
+FLAGS_AT = 0x225580
+# Direct targets the selection span must not name. The last five are the
+# other entry points that write a track time.
+ADVANCE_DIRECT = (
+    ANIM_ADVANCE, 0x1709d8, 0x1709f8, 0x16d0b8, 0x170bc8, 0x170c80,
+)
+SENTINEL_TIME = 0x55555555
+SENTINEL_WEIGHT = 0x66666666
+_LOAD_OPS = (0x20, 0x21, 0x23, 0x24, 0x25, 0x27, 0x28, 0x29, 0x2B,
+             0x31, 0x39, 0x37, 0x3F, 0x1E, 0x1F)
+
+
+def _text_words(elf):
+    base, offset, size = elf.text
+    count = size // 4
+    return base, struct.unpack_from('<%dI' % count, elf.d, offset)
+
+
+def _function_starts(elf, words, base):
+    starts = set()
+    for index, word in enumerate(words):
+        if word >> 26 != 3:
+            continue
+        pc = base + index * 4
+        target = (pc & 0xF0000000) | ((word & 0x03FFFFFF) << 2)
+        if elf.in_text(target):
+            starts.add(target)
+    for name in ('.data', '.rodata', '.ctors', '.dtors', '.sdata'):
+        section = elf.sections.get(name)
+        if section is None:
+            continue
+        _addr, offset, size = section
+        for pos in range(0, size - 3, 4):
+            value, = struct.unpack_from('<I', elf.d, offset + pos)
+            if elf.in_text(value) and value % 4 == 0:
+                starts.add(value)
+    for index in range(len(words) - 2):
+        if words[index] != 0x03E00008:
+            continue
+        cursor = index + 2
+        while cursor < len(words) and words[cursor] == 0:
+            cursor += 1
+        if cursor < len(words) and (words[cursor] & 0xFFFF8000) == 0x27BD8000:
+            starts.add(base + cursor * 4)
+    return starts
+
+
+def _composed_sites(words, base, starts, target):
+    """lui/addiu/ori/load sites, with the same register reset Elf.analyze uses."""
+    sites = []
+    hi = {}
+    for index, word in enumerate(words):
+        pc = base + index * 4
+        if pc in starts:
+            hi = {}
+        op = word >> 26
+        rs, rt, imm = (word >> 21) & 31, (word >> 16) & 31, word & 0xFFFF
+        simm = imm - 0x10000 if imm & 0x8000 else imm
+        if op == 0x0F:
+            hi[rt] = imm << 16
+        elif op in (0x09, 0x19) and rs in hi:
+            value = (hi[rs] + simm) & 0xFFFFFFFF
+            if value == target:
+                sites.append(pc)
+            if rt == rs:
+                hi.pop(rs, None)
+                hi['v%d' % rt] = value
+        elif op == 0x0D and rs in hi and (hi[rs] | imm) == target:
+            sites.append(pc)
+        elif op in _LOAD_OPS and rs in hi and ((hi[rs] + simm) & 0xFFFFFFFF) == target:
+            sites.append(pc)
+    return sites
+
+
+def _direct_in_span(words, base):
+    jals, jumps, links, jalrs = [], [], [], []
+    for index, word in enumerate(words):
+        pc = base + index * 4
+        if pc < SEL_LO or pc > SEL_HI:
+            continue
+        op = word >> 26
+        if op in (2, 3):
+            target = (pc & 0xF0000000) | ((word & 0x03FFFFFF) << 2)
+            (jals if op == 3 else jumps).append((pc, target))
+        elif op == 1 and ((word >> 16) & 31) in (16, 17):
+            imm = word & 0xFFFF
+            simm = imm - 0x10000 if imm & 0x8000 else imm
+            links.append((pc, (pc + 4 + (simm << 2)) & 0xFFFFFFFF))
+        elif op == 0 and (word & 0x3F) == 9:
+            jalrs.append(pc)
+    return jals, jumps, links, jalrs
+
+
+def selection_census(path):
+    """Direct-call census of playerSel_task through 0x22e700. Not a task run."""
+    elf = ps2elf.Elf(path)
+    base, words = _text_words(elf)
+    jals, jumps, links, jalrs = _direct_in_span(words, base)
+    family = set(ADVANCE_DIRECT)
+    named = [target for _pc, target in jals + jumps + links if target in family]
+    check(not named and not jalrs, 'selection span names an advance entry or uses jalr')
+    unique = sorted({target for _pc, target in jals})
+    check(unique, 'selection span has no direct calls')
+    advance_jals, advance_jumps, advance_links = [], [], []
+    for index, word in enumerate(words):
+        pc = base + index * 4
+        op = word >> 26
+        if op in (2, 3):
+            target = (pc & 0xF0000000) | ((word & 0x03FFFFFF) << 2)
+        elif op == 1 and ((word >> 16) & 31) in (16, 17):
+            imm = word & 0xFFFF
+            simm = imm - 0x10000 if imm & 0x8000 else imm
+            target = (pc + 4 + (simm << 2)) & 0xFFFFFFFF
+        else:
+            continue
+        if target != ANIM_ADVANCE:
+            continue
+        if op == 3:
+            advance_jals.append(pc)
+        elif op == 2:
+            advance_jumps.append(pc)
+        else:
+            advance_links.append(pc)
+    starts = _function_starts(elf, words, base)
+    advance_refs = _composed_sites(words, base, starts, ANIM_ADVANCE)
+    advance_ptrs = elf.ptrs_to(ANIM_ADVANCE)
+    inside = [site for site in advance_jals + advance_jumps + advance_links
+              + advance_refs + advance_ptrs if SEL_LO <= site <= SEL_HI]
+    check(not inside, 'anim_advance is named inside the selection span')
+    print('CENSUS range=0x%x-0x%x inclusive jal=%d j=%d bal=%d jalr=%d unique=%d advance_direct='
+          % (SEL_LO, SEL_HI, len(jals), len(jumps), len(links), len(jalrs), len(unique)),
+          flush=True)
+    print('CENSUS targets %s' % ' '.join('%x' % target for target in unique), flush=True)
+    print('CENSUS anim_advance jal=%s j=%s bal=%s refs=%s ptrs=%s in_range=0' % (
+        ' '.join('%x' % site for site in advance_jals) or '-',
+        ' '.join('%x' % site for site in advance_jumps) or '-',
+        ' '.join('%x' % site for site in advance_links) or '-',
+        ' '.join('%x' % site for site in advance_refs) or '-',
+        ' '.join('%x' % site for site in advance_ptrs) or '-'), flush=True)
+    return unique
 
 
 class Bounded(EE):
@@ -83,6 +234,7 @@ class Picture:
         self.names = []
         self.clips = []
         self.clip_of = {}
+        self.slice_targets = set()
         e.stub(RES_FIND, function=self._found, name='res_find')
         e.stub(0x3b7ef0, function=self._format, name='sprintf')
         e.stub(RELEASE, ret=0, name='anim_releaseCaches')
@@ -136,38 +288,76 @@ def expected_name(e, row, marked):
     return ref.creation_clip_name(token.encode('latin1'), form.encode('latin1')).decode('latin1')
 
 
+def plant_track(e, track):
+    """Nonzero time and weight. A later 0 is a store, not a leftover fill."""
+    e.mem.w32(track + 0x18, SENTINEL_TIME)
+    e.mem.w32(track + 8, SENTINEL_WEIGHT)
+
+
+def literal_rows(e):
+    """Rows whose descriptor pointer is 0x53fd38, and rows that only copy its text."""
+    literal = e.mem.cstr(ref.IMPORT_LITERAL)
+    pointers, copies = [], []
+    for row in range(13):
+        source = e.mem.u32(DESCRIPTOR + row * STRIDE)
+        if source == ref.IMPORT_LITERAL:
+            pointers.append(row)
+        elif literal is not None and e.mem.cstr(source) == literal:
+            copies.append(row)
+    return pointers, copies
+
+
+def restart(pic, marked, flags, track_count, expect, race_byte):
+    e = pic.e
+    for obj in pic.objects:
+        e.mem.write(obj + 0x114, bytes(0x80))
+        e.mem.w8(obj + 0x119, 8)
+    e.mem.w8(RACE_INDEX, race_byte)
+    for index in range(13):
+        obj = pic.prime(index, flags, track_count)
+        if expect:
+            plant_track(e, obj + 0x11c + 0x20 * track_count)
+    pic.names.clear()
+    pic.clips.clear()
+    pic.sp()
+    e.reset_log()
+    check(e.run(0x2254bc, until=(0x2255b4,), max_steps=200000) == 'stop', 'restart slice')
+    pic.slice_targets.update(call.target for call in e.calls)
+    if not expect:
+        check(not any(call.target == ANIM_START for call in e.calls), 'restart guard')
+        return
+    check(sum(call.target == 0x22d2b4 for call in e.calls) == 13, 'race selector')
+    check(len(pic.names) == 13, 'one creation name per carousel row')
+    for row, obj in enumerate(pic.objects):
+        base = obj + 0x11c + 0x20 * track_count
+        check(pic.names[row][1] == expected_name(e, row, marked), 'creation clip name')
+        check(e.mem.u32(base) == pic.clips[row], 'creation clip pointer')
+        check(e.mem.u32(base + 0x18) == 0, 'creation time store')
+        check(e.mem.u32(base + 8) == 0, 'creation weight store')
+        rate = ref.BLEND_FORCED if track_count == 0 else 0x3daaaaab
+        check(e.mem.u32(base + 0xc) == rate, 'creation blend')
+        check(e.mem.u32(base + 0x10) == ref.BLEND_FORCED, 'creation life')
+        check(e.mem.u8(obj + 0x118) == track_count + 1, 'creation count')
+        check(e.mem.u16(base + 0x1c) == 3, 'creation flags')
+
+
 def creation(pic):
     e = pic.e
+    word = e.mem.u32(FLAGS_AT)
+    check((word >> 26) == 0x09 and (word & 0xFFFF) == 3, 'flags immediate')
+    pointers, copies = literal_rows(e)
+    check(pointers == [0] and not copies, 'import literal row')
     count = 0
     for marked, flags, track_count, expect in (
             (False, 0x80, 0, True), (True, 0x88, 1, True),
             (False, 0, 0, False), (False, 0x80, 2, False)):
-        for obj in pic.objects:
-            e.mem.write(obj + 0x114, bytes(0x80))
-            e.mem.w8(obj + 0x119, 8)
-        e.mem.w8(RACE_INDEX, 3)
-        for index in range(13):
-            pic.prime(index, flags, track_count)
-        pic.names.clear()
-        pic.clips.clear()
-        pic.sp()
-        e.reset_log()
-        check(e.run(0x2254bc, until=(0x2255b4,), max_steps=200000) == 'stop', 'restart slice')
-        if not expect:
-            check(not any(c.target == ANIM_START for c in e.calls), 'restart guard')
-            count += 1
-            continue
-        check(len(pic.names) == 13, 'one creation name per carousel row')
-        for row, obj in enumerate(pic.objects):
-            base = obj + 0x11c + 0x20 * track_count
-            check(pic.names[row][1] == expected_name(e, row, marked), 'creation clip name')
-            check(e.mem.u32(base) == pic.clips[row], 'creation clip pointer')
-            check(e.mem.u32(base + 0x18) == 0 and e.mem.u32(base + 8) == 0, 'creation time 0')
-            rate = ref.BLEND_FORCED if track_count == 0 else 0x3daaaaab
-            check(e.mem.u32(base + 0xc) == rate, 'creation blend')
-            check(e.mem.u32(base + 0x10) == ref.BLEND_FORCED, 'creation life')
-            check(e.mem.u8(obj + 0x118) == track_count + 1, 'creation count')
+        restart(pic, marked, flags, track_count, expect, 3)
         count += 1
+    # Slots 0..12. Byte 3 is slot 4 and is also the gate row above.
+    race = 0
+    for race_byte in range(-1, 12):
+        restart(pic, False, 0x80, 0, True, race_byte)
+        race += 1
     # intro4 twice, intro2 once: the caller's flags and format, same time-zero cell.
     cases = (
         (0x226dec, 0x226e44, 6, ref.INTRO_ONCE, 'intro4'),
@@ -180,6 +370,7 @@ def creation(pic):
         obj = pic.objects[0]
         e.mem.write(obj + 0x114, bytes(0x80))
         e.mem.w8(obj + 0x119, 8)
+        plant_track(e, obj + 0x11c)
         pic.names.clear()
         pic.clips.clear()
         pic.sp()
@@ -192,15 +383,20 @@ def creation(pic):
         e.mem.write(e.r[29] + 0x290, bytes(32))
         e.reset_log()
         check(e.run(start, until=(stop,), max_steps=50000) == 'stop', 'transition slice')
+        pic.slice_targets.update(call.target for call in e.calls)
         suffix = e.mem.cstr(form)
         want = ref.creation_clip_name(b'bm', suffix.encode('latin1')).decode('latin1')
-        got_names = [name for _archive, name in pic.names]
+        got_names = [got for _archive, got in pic.names]
         check(got_names == [want], 'transition name')
         got = pic.cell(obj)
-        check(got['flags'] == flags and got['time'] == 0 and got['weight'] == 0, 'transition cell')
+        check(got['flags'] == flags, 'transition flags')
+        check(got['time'] == 0, 'transition time store')
+        check(got['weight'] == 0, 'transition weight store')
         check(got['rate'] == ref.BLEND_FORCED, 'transition blend forced on an empty state')
         count += 1
-    return count
+    advance = set(ADVANCE_DIRECT)
+    check(not pic.slice_targets & advance, 'executed creation slice calls an advance entry')
+    return count, race
 
 
 def inventory_and_play(pic):
@@ -213,6 +409,7 @@ def inventory_and_play(pic):
             for fast in (0, 1):
                 e.mem.write(state, bytes(0x120))
                 e.mem.w8(state + 5, 8)
+                plant_track(e, state + 8)
                 e.mem.w32(record + 0x43d8, pic.objects[0])
                 e.mem.w32(record + 0x54, model)
                 e.mem.w8(record + 0x4a86, weapon)
@@ -227,8 +424,8 @@ def inventory_and_play(pic):
                 check(len(find) == 2, 'lookup then start')
                 check(e.mem.cstr(find[0].args[0]) == lump, 'inventory lump')
                 check(e.mem.u32(state + 8) == pic.clips[-1], 'inventory clip')
-                check(e.mem.u32(state + 0x20) == 0, 'inventory time 0')
-                check(e.mem.u32(state + 0x10) == 0, 'inventory weight 0')
+                check(e.mem.u32(state + 0x20) == 0, 'inventory time store')
+                check(e.mem.u32(state + 0x10) == 0, 'inventory weight store')
                 check(e.mem.u16(state + 0x24) == 0x43, 'inventory flags')
                 # An empty state forces the blend to zero, so 0.1 and 0 store the same rate.
                 check(e.mem.u32(state + 0x14) == ref.BLEND_FORCED, 'inventory blend forced')
@@ -257,10 +454,14 @@ def inventory_and_play(pic):
         e.mem.w32(clip + 0x14 + slot * 8, 0x447a0000)
     e.mem.write(state, bytes(0x120))
     e.mem.w8(state + 5, 8)
+    plant_track(e, state + 8)
     e.call(ANIM_START, state, clip, 0x43, fargs=(0.0,), max_steps=5000)
     before = (e.mem.u32(state + 0x20), e.mem.u32(state + 0x10))
+    check(before == (0, 0), 'fresh inventory cell before the step')
     e.call(0x1709d8, state, 0, 0, 0, max_steps=20000)
     after_time, after_weight = e.mem.u32(state + 0x20), e.mem.u32(state + 0x10)
+    check(after_time == ref.K_STEP and after_weight == ref.BLEND_FORCED,
+          'inventory step stores time 0x3f7fffff and weight 1')
     want_time, want_weight = ref.unit_advance(0x43, before[0], before[1], ref.BLEND_FORCED,
                                                ref.BLEND_FORCED, 30)
     check((after_time, after_weight) == (want_time, want_weight), 'first inventory frame')
@@ -474,12 +675,16 @@ def main():
     args = parser.parse_args()
     with open(args.elf, 'rb') as source:
         check(hashlib.sha256(source.read()).hexdigest() == SHA256, 'wrong executable revision')
+    selection_census(args.elf)
     for seed in args.seeds:
         pic = Picture(args.elf, seed)
-        created = creation(pic)
+        created, race = creation(pic)
         posed = inventory_and_play(pic)
         drawn = mask_and_shell(pic)
-        print('PASS seed=%d creation=%d pose=%d draw=%d' % (seed, created, posed, drawn), flush=True)
+        print('SLICE creation targets %s' % ' '.join(
+            '%x' % target for target in sorted(pic.slice_targets)), flush=True)
+        print('PASS seed=%d creation=%d pose=%d draw=%d race=%d literal_rows=0' % (
+            seed, created, posed, drawn, race), flush=True)
 
 
 if __name__ == '__main__':
