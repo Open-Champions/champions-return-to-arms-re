@@ -10,7 +10,7 @@ does not draw the seed.
 Preload the stdlib dis module first. tools/dis.py shadows it, and this
 interpreter imports dis while building argparse:
 
-  PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; sys.argv=["difftest_mission1_complete.py","--elf","local/SLUS_209.73","--disc","<BG/DATA>"]; runpy.run_path("tools/difftest_mission1_complete.py", run_name="__main__")'
+  PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; sys.argv=["difftest_mission1_complete.py","--elf","local/SLUS_209.73","--disc","local/disc"]; runpy.run_path("tools/difftest_mission1_complete.py", run_name="__main__")'
 """
 import argparse
 import hashlib
@@ -76,6 +76,24 @@ STUB_NAMES = {
     "setInfo",
 }
 LEVELS = ("drunare", "drunarm", "strife", "drundar", "hub")
+SCAN_LEVELS = LEVELS + ("blood1",)
+MARK_GOLD = 0x01020304
+MARK_EXP = 0x05060708
+MARK_EVIL = 0x2A
+MARK_DECISION = 0x3C
+MARK_MEDAL = 0x21
+MARK_ROW = 0x50
+MARK_MISSION2 = 0x40
+MARK_GLOBAL = 0x5A
+COMPLETION = (
+    ("drunare", "levelChange"),
+    ("drunarm", "shardCheckLoop"),
+    ("strife", "exitzone"),
+    ("drundar", "exitzone"),
+)
+ABSENT_FROM_COMPLETION = (
+    "grantBronze", "grantSilver", "grantGold", "givePlayerExp", "setMissionAvailable",
+)
 
 
 def mission_addr(slot, difficulty, mission):
@@ -301,14 +319,22 @@ class Host:
             at += 1
         return out
 
-    def queued_names(self):
+    def _defer_names(self, count_addr, half):
         mem = self.ee.mem
-        count = mem.u32(DEFER_QUEUED)
-        half = (mem.u32(DEFER_FLIP) & 1) ^ 1
         names = []
-        for index in range(count):
+        for index in range(mem.u32(count_addr)):
             names.append(mem.cstr(DEFER_NAMES + (half * 64 + index) * 0x50))
         return names
+
+    def queued_names(self):
+        """Back half. `addDeferedCall` writes here; `script_runDeferred` has not promoted it."""
+        half = (self.ee.mem.u32(DEFER_FLIP) & 1) ^ 1
+        return self._defer_names(DEFER_QUEUED, half)
+
+    def front_names(self):
+        """Front half. After `script_runDeferred` these are the next frame's entries."""
+        half = self.ee.mem.u32(DEFER_FLIP) & 1
+        return self._defer_names(DEFER_COUNT, half)
 
     def seed_now(self):
         return self.ee.mem.u32(SEED)
@@ -320,6 +346,127 @@ class Host:
         mem.write(PLAYERS + QUESTS + 0x40, b"Keep\0")
         mem.write(PLAYERS + QUESTS + 0x60, b"body\0")
         mem.w32(PLAYERS + QUEST_COUNT, 2)
+
+    def data_base(self):
+        dat = self.ee.mem.s32(self.base + 0x70)
+        if not 0 < dat < 0x200000:
+            raise AssertionError("script dat %s" % dat)
+        return self.base + 0x60 + dat
+
+    def global_cell(self, cell):
+        return self.ee.mem.s32(self.data_base() + cell)
+
+    def set_global(self, cell, value):
+        self.ee.mem.w32(self.data_base() + cell, value & 0xFFFFFFFF)
+
+    def plant_untouched(self):
+        """Nonzero sentinels in fields a completion entry is claimed to leave alone.
+
+        Difficulty 0's mission-1 bytes stay the reset pattern: slot 0 is 1 and
+        slots 1-3 are 0. Those four are the bytes the grant is expected to change.
+        """
+        mem = self.ee.mem
+        for slot in range(4):
+            rec = PLAYERS + slot * REC
+            mem.w32(rec + GOLD, MARK_GOLD)
+            mem.w32(rec + EXP, MARK_EXP)
+            mem.w8(rec + EVIL, MARK_EVIL)
+            mem.w8(rec + DECISION, MARK_DECISION)
+            for mission in range(13):
+                mem.w8(rec + MEDAL + mission, MARK_MEDAL + mission)
+                for difficulty in range(5):
+                    if difficulty == 0 and mission == 1:
+                        continue
+                    value = MARK_MISSION2 if mission == 2 else MARK_ROW
+                    mem.w8(mission_addr(slot, difficulty, mission), value)
+
+    def untouched_mismatches(self, skip=()):
+        mem = self.ee.mem
+        bad = []
+        for slot in range(4):
+            rec = PLAYERS + slot * REC
+            for label, got, expect in (
+                    ("gold", mem.u32(rec + GOLD), MARK_GOLD),
+                    ("exp", mem.u32(rec + EXP), MARK_EXP),
+                    ("evil", mem.u8(rec + EVIL), MARK_EVIL),
+                    ("decision", mem.u8(rec + DECISION), MARK_DECISION)):
+                if got != expect:
+                    bad.append((slot, label, got, expect))
+            for mission in range(13):
+                medal = mem.u8(rec + MEDAL + mission)
+                if medal != MARK_MEDAL + mission:
+                    bad.append((slot, "medal", mission, medal, MARK_MEDAL + mission))
+                for difficulty in range(5):
+                    if (difficulty, mission) in skip or (difficulty == 0 and mission == 1):
+                        continue
+                    expect = MARK_MISSION2 if mission == 2 else MARK_ROW
+                    got = self.mission(slot, mission, difficulty)
+                    if got != expect:
+                        bad.append((slot, "mission", difficulty, mission, got, expect))
+        return bad
+
+    def assert_untouched(self, skip=()):
+        bad = self.untouched_mismatches(skip)
+        if bad:
+            raise AssertionError(bad[:12])
+
+
+def walk_sysreqs(image):
+    parsed = scr.parse(image)
+    cs, ce = parsed["code"]
+    externals = [name for _, name in parsed["externals"]]
+    words = struct.unpack_from("<%dI" % ((ce - cs) // 4), image, cs)
+    i = 0
+    while i < len(words):
+        off, op = i * 4, words[i]
+        if op == 0x7D:
+            i += 3
+            continue
+        if op == 0x7B:
+            idx = words[i + 1]
+            yield off, externals[idx] if idx < len(externals) else "?"
+            i += 2
+            continue
+        if op in scr.OPS:
+            i += 1 + scr.OPS[op][1]
+        elif op in scr.NO_OPERAND:
+            i += 1
+        else:
+            i += 2
+
+
+def public_rows(image):
+    return sorted(scr.parse(image)["internals"])
+
+
+def public_at(image, off):
+    name = None
+    for val, pub in public_rows(image):
+        if val <= off:
+            name = pub
+        else:
+            break
+    return name
+
+
+def grant_sites(image):
+    found = []
+    for off, native in walk_sysreqs(image):
+        if native != "grantMission":
+            continue
+        native, arg = push_arg(image, off, 0)
+        found.append((off, public_at(image, off), arg))
+    return found
+
+
+def entry_natives(image, entry):
+    rows = public_rows(image)
+    for index, (val, name) in enumerate(rows):
+        if name != entry:
+            continue
+        end = rows[index + 1][0] if index + 1 < len(rows) else 1 << 30
+        return [native for off, native in walk_sysreqs(image) if val <= off < end]
+    raise AssertionError(entry)
 
 
 def s32(value):
@@ -348,6 +495,47 @@ def check_static(images, objects):
     native, arg = push_arg(images["drunarm"], 0x89C, 0)
     assert native == "playerHasItem" and arg == "shardofwar"
     checks += 5
+    expected_grants = {
+        "drunare": [(0xAC4, "levelChange", 1)],
+        "drunarm": [(0x97C, "shardCheckLoop", 1)],
+        "strife": [(0x1ABC, "exitzone", 1)],
+        "drundar": [(0x19EC, "exitzone", 1)],
+        "blood1": [],
+        "hub": [(0x28C4, "start", 0)],
+    }
+    for level, rows in expected_grants.items():
+        assert grant_sites(images[level]) == rows, (level, grant_sites(images[level]))
+        checks += 1
+    for level, entry in COMPLETION:
+        natives = entry_natives(images[level], entry)
+        for banned in ABSENT_FROM_COMPLETION:
+            assert banned not in natives, (level, entry, banned)
+        checks += 1
+    for entry in ("endDelay", "playRallosRuns", "removeRallos"):
+        assert "grantMission" not in entry_natives(images["drunarm"], entry), entry
+        checks += 1
+    assert entry_natives(images["drunarm"], "endDelay") == [
+        "gamePaused", "getScaledTime", "callScript", "addDeferedCall"]
+    native, arg = push_arg(images["drunarm"], 0x58C, 0)
+    assert native == "callScript" and arg == "playRallosRuns"
+    native, arg = push_arg(images["drunarm"], 0x5C0, 0)
+    assert native == "addDeferedCall" and arg == "endDelay"
+    native, arg = push_arg(images["drunarm"], 0x6BC, 0)
+    assert native == "postAction" and arg == "removeRallos"
+    checks += 4
+    assert entry_natives(images["hub"], "setMissic270") == ["setMissionAvailable"]
+    assert entry_natives(images["hub"], "setMissid125") == [
+        "setMissionAvailable", "changeSwoop", "activateStore"]
+    assert entry_natives(images["hub"], "setMissi3c49") == [
+        "setMissionAvailable", "changeSwoop", "activateStore"]
+    checks += 3
+    hub_publics = dict(public_rows(images["hub"]))
+    assert hub_publics[0x11C] == "if99a5"
+    assert hub_publics[0x198] == "if441a"
+    assert hub_publics[0x7B0] == "setMissic270"
+    assert hub_publics[0x7FC] == "setMissid125"
+    assert hub_publics[0x2064] == "setMissi3c49"
+    checks += 5
     links = death_links(objects["drunare"])
     by_class = {}
     for cls, kept in links:
@@ -366,28 +554,36 @@ def check_static(images, objects):
 def run_evil(host, image):
     host.reset_campaign()
     host.place(image)
+    host.plant_untouched()
+    host.set_global(0, MARK_GLOBAL)
     _native, title = push_arg(image, 0xA4C, 0)
     host.plant_quest(title)
     assert host.run("callScria381") == 0
+    assert host.global_cell(0) == 0
     assert host.queued_names() == ["bossDefeatedDelay"]
     assert host.mission(0, 1) == 1
+    assert not host.untouched_mismatches()
     host.ee.mem.w32(host.names, 0)
     paused = host.ee.call(host.handlers["gamePaused"], host.base, host.names, max_steps=100000) & 0xFFFFFFFF
     expected = M.evil_end_frame(lambda n: s32(host.scaled(n)))
     noticed = None
     ended = None
+    assert expected["notice_frame"] == 252 and expected["frame"] == 877, expected
     for frame in range(expected["frame"] + 8):
         host.deferred()
+        if frame == 0:
+            assert host.global_cell(0) == 0, host.global_cell(0)
+        if frame == 1:
+            assert host.global_cell(0) == 1, host.global_cell(0)
         variables = host.vars()
         if noticed is None and variables.get("endsound") == 1:
             noticed = frame
         if ended is None and host.post_name() == "levelChange":
             ended = frame
             break
-    if noticed != expected["notice_frame"] or ended != expected["frame"]:
-        raise AssertionError("pause %s notice %s/%s end %s/%s vars %s" % (
-            paused, noticed, expected["notice_frame"], ended, expected["frame"],
-            sorted(host.vars())))
+    if noticed != 252 or ended != 877:
+        raise AssertionError("pause %s notice %s/252 end %s/877 vars %s" % (
+            paused, noticed, ended, sorted(host.vars())))
     assert host.post_name() == "levelChange"
     assert host.vars().get("killedav") == 1
     assert host.vars().get("endsound") == 1
@@ -397,18 +593,13 @@ def run_evil(host, image):
     assert "cutScene" in host.stubs and "reapEnemies" in host.stubs
     assert host.pending() == ""
     assert [host.mission(slot, 1) for slot in range(4)] == [1, 0, 0, 0]
+    host.assert_untouched()
     host.post()
     assert [host.mission(slot, 1) for slot in range(4)] == [3, 2, 2, 2]
     assert host.pending() == "hub2"
     assert host.ee.mem.u8(ORIENT) == 0xFF
     assert host.post_name() == ""
-    assert host.mission(0, 2) == 0
-    assert host.ee.mem.u8(PLAYERS + EVIL) == 0
-    assert host.ee.mem.u8(PLAYERS + MEDAL) == 0
-    assert host.ee.mem.u32(PLAYERS + GOLD) == 0
-    assert host.ee.mem.u32(PLAYERS + EXP) == 0
-    for difficulty in range(1, 5):
-        assert host.mission(0, 1, difficulty) == 0
+    host.assert_untouched()
     return expected["frame"], expected["notice_frame"]
 
 
@@ -431,28 +622,53 @@ def run_evil_gates(host, image):
     host.run("endmission")
     assert host.post_name() == ""
     assert host.mission(0, 1) == 1
+    host.plant_untouched()
+    for slot in range(4):
+        host.set_mission(slot, 1, 1, 0)
     host.ee.mem.w32(DIFFICULTY, 1)
     host.run("levelChange")
     assert host.mission(0, 1, 0) == 1
-    assert host.mission(0, 1, 1) == 2
+    assert [host.mission(slot, 1, 1) for slot in range(4)] == [2, 2, 2, 2]
     assert host.pending() == "hub2"
+    host.assert_untouched(skip=((1, 1),))
 
 
 def run_good(host, image):
     host.reset_campaign()
     host.place(image)
+    host.plant_untouched()
+    host.set_global(0xC, MARK_GLOBAL)
+    host.set_global(8, MARK_GLOBAL + 1)
+    host.set_global(0, MARK_GLOBAL + 2)
     host.counts[0] = 0
     assert host.run("start") == 0
+    assert host.global_cell(0xC) == 0
+    assert host.global_cell(8) == MARK_GLOBAL + 1
+    assert host.global_cell(0) == MARK_GLOBAL + 2
     assert host.queued_names() == ["shardCheckLoop"]
     assert host.mission(0, 1) == 1
+    # The file's counter cell is 0. Restore that after proving start left the sentinel,
+    # so the 25-call schedule is the one already compared with getScaledTime.
+    host.set_global(8, 0)
     host.counts[0] = 1
     grant = M.shard_grant_frame(lambda _frame: 1)
     assert grant == M.shard_check_frame(1) == 25
     for frame in range(grant):
         host.deferred()
         assert host.mission(0, 1) == 1
+    assert host.global_cell(8) == 24, host.global_cell(8)
+    assert host.global_cell(0xC) == 0
+    assert host.global_cell(0) == MARK_GLOBAL + 2
+    assert host.queued_names() == [], host.queued_names()
+    assert host.front_names() == ["shardCheckLoop"], host.front_names()
     host.deferred()
     assert [host.mission(slot, 1) for slot in range(4)] == [3, 2, 2, 2]
+    assert host.global_cell(8) == 0
+    assert host.global_cell(0xC) == 0
+    assert host.global_cell(0) == MARK_GLOBAL + 2
+    assert host.queued_names() == [], host.queued_names()
+    assert host.front_names() == [], host.front_names()
+    host.assert_untouched()
     raised = [name for name, value in host.vars().items() if value == 1]
     assert "firstmissionever" in raised, sorted((len(name), value) for name, value in host.vars().items())
     others = [name for name in raised if name != "firstmissionever"]
@@ -461,7 +677,6 @@ def run_good(host, image):
     assert host.post_name() == "endmission"
     assert host.pending() == ""
     assert host.removes == []
-    assert host.mission(0, 2) == 0
     host.post()
     assert host.mission(0, 1) == 3
     assert host.pending() == ""
@@ -471,12 +686,20 @@ def run_good(host, image):
 
     host.reset_campaign()
     host.place(image)
+    host.plant_untouched()
+    host.set_global(0xC, MARK_GLOBAL)
     host.counts[0] = 1
     host.run("start")
+    assert host.global_cell(0xC) == 1
+    assert host.queued_names() == ["shardCheckLoop"]
     first = M.shard_check_frame(1)
     for _frame in range(first + 1):
         host.deferred()
     assert host.mission(0, 1) == 1
+    assert host.global_cell(8) == 0
+    assert host.global_cell(0xC) == 1
+    assert host.queued_names() == [], host.queued_names()
+    assert host.front_names() == ["shardCheckLoop"], host.front_names()
     host.counts[0] = 2
     second = M.shard_grant_frame(lambda frame, mark=first: 2 if frame > mark else 1, snapshot=1)
     assert second == M.shard_check_frame(2)
@@ -485,16 +708,27 @@ def run_good(host, image):
         assert host.mission(0, 1) == 1
     host.deferred()
     assert host.mission(0, 1) == 3
+    assert host.global_cell(0xC) == 1
+    assert host.global_cell(8) == 0
+    assert host.queued_names() == [], host.queued_names()
+    assert host.front_names() == [], host.front_names()
     assert host.removes == [(0, 0, 0)]
+    host.assert_untouched()
 
     host.reset_campaign()
     host.place(image)
     host.ee.mem.w32(PAUSED, 1)
+    host.set_global(8, MARK_GLOBAL + 1)
+    host.set_global(0xC, MARK_GLOBAL)
     host.counts[0] = 1
     host.run("start")
+    assert host.global_cell(0xC) == 1
+    assert host.global_cell(8) == MARK_GLOBAL + 1
     for _ in range(25):
         host.deferred()
     assert host.mission(0, 1) == 1
+    assert host.global_cell(8) == MARK_GLOBAL + 1
+    assert host.global_cell(0xC) == 1
 
 
 def hp_boundary(host, image):
@@ -512,6 +746,60 @@ def hp_boundary(host, image):
     return max(end), min(watch)
 
 
+def run_rallos(host, image):
+    """Follow the queued name into the later entries and record what they change."""
+    native, title = push_arg(image, 0x6E8, 0)
+    assert native == "removeQuest" and isinstance(title, str) and title
+    host.reset_campaign()
+    host.place(image)
+    host.plant_untouched()
+    host.set_global(0x10, MARK_GLOBAL)
+    host.hp = 1
+    host.run("rallosHPcheck")
+    assert host.queued_names() == ["rallosHPcheck"]
+    assert host.global_cell(0x10) == MARK_GLOBAL
+    host.reset_campaign()
+    host.place(image)
+    host.plant_untouched()
+    host.plant_quest(title)
+    host.set_global(0x10, MARK_GLOBAL)
+    host.hp = 0
+    assert host.run("rallosHPcheck") == 0
+    assert host.queued_names() == ["endDelay"]
+    assert host.global_cell(0x10) == 0
+    assert host.mission(0, 1) == 1
+    fired = None
+    last = None
+    for frame in range(2000):
+        host.deferred()
+        last = (frame, host.post_name(), host.queued_names(), host.global_cell(0x10),
+                host.ee.mem.u32(PLAYERS + QUEST_COUNT))
+        if host.post_name() == "removeRallos":
+            fired = frame
+            break
+    if fired is None:
+        raise AssertionError("rallos chain did not post: %s stubs %s" % (last, host.stubs))
+    assert fired == 277, last
+    assert host.front_names() == [], (host.front_names(), host.queued_names())
+    assert host.queued_names() == []
+    assert host.ee.mem.u32(PLAYERS + QUEST_COUNT) == 1
+    assert host.cstr(PLAYERS + QUESTS) == "Keep"
+    assert host.mission(0, 1) == 1
+    assert host.pending() == ""
+    assert "showMonster" in host.stubs and "cutScene" in host.stubs and "setSaveInhibit" in host.stubs
+    assert "grantBronze" not in host.stubs
+    host.assert_untouched()
+    before = list(host.stubs)
+    host.post()
+    added = [name for name in host.stubs[len(before):]]
+    assert set(added) == {"killMonster", "hideMonster", "deleteMonster"}, added
+    assert host.post_name() == ""
+    assert host.mission(0, 1) == 1
+    assert host.ee.mem.u32(PLAYERS + QUEST_COUNT) == 1
+    host.assert_untouched()
+    return fired
+
+
 def run_exits(host, images):
     for level, onward in (("strife", "drunarm"), ("drundar", "drunare")):
         host.reset_campaign()
@@ -524,14 +812,18 @@ def run_exits(host, images):
         assert host.mission(0, 1) == 1
         assert host.post_name() == ""
         assert host.queued_names() == []
+        assert host.front_names() == []
 
 
 def run_hub_view(host, images):
     host.reset_campaign()
     host.place(images["drunare"])
+    host.plant_untouched()
     host.ee.mem.w32(DIFFICULTY, 0)
     host.run("levelChange")
     assert host.mission(0, 1) == 3
+    host.assert_untouched()
+    # The hub-name reads below are this probe's stores, after the grant.
     host.ee.mem.w8(PLAYERS + EVIL, 0)
     host.ee.mem.w8(PLAYERS + DECISION, 0)
     plain = host.ee.call(GET_HUB, max_steps=100000) & 0xFFFFFFFF
@@ -541,6 +833,8 @@ def run_hub_view(host, images):
     evil = host.ee.call(GET_HUB, max_steps=100000) & 0xFFFFFFFF
     assert host.cstr(evil) == "hub2"
     host.place(images["hub"])
+    for slot in range(4):
+        host.set_mission(slot, 2, 0, 0)
     assert host.run("if441a") == 0
     assert host.run("if7b2c") == 1
     before = host.ee.call(ROW_AVAILABLE, 0, max_steps=1000000) & 0xFFFFFFFF
@@ -555,7 +849,14 @@ def run_hub_view(host, images):
     host.stubs.clear()
     assert host.run("setMissid125") == 0
     assert host.mission(0, 2) == 1
-    assert "activateStore" in host.stubs
+    assert host.mission(0, 1) == 3
+    assert "activateStore" in host.stubs and "changeSwoop" in host.stubs
+    host.set_mission(0, 2, 0, 0)
+    host.stubs.clear()
+    assert host.run("setMissi3c49") == 0
+    assert host.mission(0, 2) == 1
+    assert host.mission(0, 1) == 3
+    assert "activateStore" in host.stubs and "changeSwoop" in host.stubs
 
     host.reset_campaign()
     host.place(images["hub"])
@@ -577,7 +878,7 @@ def main():
     digest = hashlib.sha256(open(args.elf, "rb").read()).hexdigest()
     assert digest == ELF_SHA256, digest
     images, objects = {}, {}
-    for level in LEVELS:
+    for level in SCAN_LEVELS:
         images[level], objects[level] = load_level(args.disc, level)
     checks = check_static(images, objects)
     host = Host(args.elf, args.seed)
@@ -585,12 +886,14 @@ def main():
     run_evil_gates(host, images["drunare"])
     run_good(host, images["drunarm"])
     low, high = hp_boundary(host, images["drunarm"])
+    rallos_call = run_rallos(host, images["drunarm"])
     run_exits(host, images)
     run_hub_view(host, images)
     assert host.seed_now() == args.seed
+    assert notice_call == 252 and end_call == 877
     checks += end_call + notice_call + low + high
-    print("PASS seed %d checks %d notice-call %d end-call %d hp %d/%d" % (
-        args.seed, checks, notice_call, end_call, low, high))
+    print("PASS seed %d checks %d notice-call %d end-call %d hp %d/%d rallos-call %d" % (
+        args.seed, checks, notice_call, end_call, low, high, rallos_call))
 
 
 if __name__ == "__main__":

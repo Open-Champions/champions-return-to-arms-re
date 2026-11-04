@@ -291,37 +291,44 @@ stubbed. `inventory_countItemByName` `0x1c5880` returns the test's counts;
 `0x1c1cb0` record one removal and do not walk a bag. The register seed is
 unchanged. This is not a played fight, a cutscene, or a level load.
 
-**Observed:** the only `grantMission(1)` sites in the mission-1 levels are
+**Observed:** a full `grantMission` scan of `drunare`, `drunarm`, `strife`,
+`drundar`, `blood1`, and `hub` finds five sites. The mission-1 sites are
 `drunare` `levelChange` at `0xac4`, `drunarm` `shardCheckLoop` at `0x97c`,
 and the `exitzone` sites already named in `docs/quests.md` (`strife` `0x1abc`,
-`drundar` `0x19ec`). `blood1` has none. `hub` `start` grants mission 0, not
-mission 1. None of those mission-1 sites calls `setMissionAvailable` for
-mission 2, `grantBronze`, `grantSilver`, `grantGold`, or `givePlayerExp`.
+`drundar` `0x19ec`). Each argument is 1. `blood1` has none. `hub` `start`
+calls `grantMission(0)` at `0x28c4`. The four completion entries do not call
+`setMissionAvailable`, `grantBronze`, `grantSilver`, `grantGold`, or
+`givePlayerExp`.
 
 ### Exits do not complete it
 
 **Executed:** real `demoRunning` returns 0. `strife` `exitzone` then requests
-`drunarm`. `drundar` `exitzone` requests `drunare`. Mission 1's byte stays
-available-only, the post-action name stays empty, and the deferred queue stays
-empty. The demo/counter `grantMission(1)` / `newWorld('hub')` branch is the
-one already mapped at `t3/research-strife-drundar` `docs/strife-drundar.md`
-lines 198–201 and 249–255; this run does not take it.
+`drunarm`. `drundar` `exitzone` requests `drunare`. Mission 1's planted
+available-only byte (`1`) stays, the post-action name stays empty, and both
+deferred halves stay empty. The demo/counter `grantMission(1)` /
+`newWorld('hub')` branch is the one already mapped at
+`t3/research-strife-drundar` `docs/strife-drundar.md` lines 198–201 and
+249–255; this run does not take it. `addHelpMessage` in that demo branch is
+stubbed and is not entered.
 
 ### Evil arena
 
 **Observed:** `CazicAvatar` `deathscript` is `callScria381`, which only calls
-`bossDefeatedPause`. That entry zeros script global 0 and queues
-`bossDefeatedDelay`. The four `knight` death scripts set `knight1`..`knight4`
+`bossDefeatedPause`. The four `knight` death scripts set `knight1`..`knight4`
 and are not read by the completion entries.
 
-**Executed:** with pause clear, deferred call 0 only promotes that queued
-name. Call 252 sets quest variables `endsound` and `firstmissionever` to 1
-and does not set the post action or the complete bit. Call 877 runs
-`endmission` because `killedAv` was clear: post action `levelChange`, the
-stubbed cutscene and `reapEnemies`, `removeQuest` of that entry's title, and
-`killedAv` stored lowercased as `killedav` (`vars_set` already lowercases). The mission byte is still only available. Eight paused calls
-never reach that post action. A second `endmission` after `killedAv` is set
-does not replace a cleared post action and does not grant.
+**Executed:** `bossDefeatedPause` stores 0 into script global 0. A planted
+`0x5a` is 0 after `callScria381`, and the queued name is `bossDefeatedDelay`.
+With pause clear, deferred call 0 only promotes that name and leaves the cell
+at 0. Call 1 stores 1. Call 252 sets quest variables `endsound` and
+`firstmissionever` to 1 and does not set the post action or the complete bit.
+Call 877 runs `endmission` because `killedAv` was clear: post action
+`levelChange`, `removeQuest` of that entry's title, and `killedAv` stored
+lowercased as `killedav` (`vars_set` already lowercases). `cutScene` and
+`reapEnemies` are stubs. The mission byte is still the planted available-only
+`1`. Eight paused calls never reach that post action. A second `endmission`
+after `killedAv` is set does not replace a cleared post action and does not
+grant.
 `tools/ref_mission1_complete.py` `evil_end_frame` is this queue, using the
 original `getScaledTime` as the oracle. The same threshold wording is the
 unread script note in `docs/spec/arena-monsters.md` lines 959–967; the frame
@@ -329,90 +336,134 @@ indexes here are the executed ones.
 
 **Executed:** `script_runPostAction` then runs `levelChange`. `grantMission(1)`
 sets bit 1 on all four records at the current difficulty. Slot 0 goes from
-available (`1`) to available and complete (`3`); the other three slots, which
-were 0, become complete-only (`2`). The other four difficulty rows stay 0.
-Direct `levelChange` at difficulty 1 writes that row instead and leaves
-difficulty 0 available-only. `newWorld('hub2')` stores `hub2` at `0x41b6d0`
-and orientation `0xff` at `0x41b720` with the evil and decision bytes still
-clear, so this request is not `game_getHubName`. Gold, experience, the medal
-byte, and mission 2's byte stay 0. The quest list loses the matching title
-and keeps the other test entry. Same-act loads do not do that removal; both
-arena names and both hubs are act 0 (`t3/research-story-route-r3` `019a155`,
-`docs/story-route.md` lines 271–276) and a same-act change does not clear
-bags or quest variables (`t3/research-inventory-reset` `6f8beb9`,
-`docs/inventory-reset.md` lines 127–129).
+the planted available value `1` to available and complete (`3`); the other
+three slots, which were planted `0`, become complete-only (`2`). Direct
+`levelChange` at difficulty 1 writes that same `2` into all four slots of
+difficulty 1 and leaves difficulty 0's planted slot-0 value `1`. Before the
+grant the probe plants gold `0x01020304`, experience `0x05060708`, thirteen
+medal bytes `0x21`+mission, evil `0x2a`, decision `0x3c`, mission 2 `0x40`
+on every slot and difficulty, and `0x50` in every other mission byte of the
+rows this grant does not write. Those words stay, on all four player records,
+so this `newWorld('hub2')` is not `game_getHubName`. It stores `hub2` at
+`0x41b6d0` and orientation `0xff` at `0x41b720`. The quest list loses the
+matching title and keeps the other test entry. Same-act loads do not do that
+removal; both arena names and both hubs are act 0
+(`t3/research-story-route-r3` `019a155`, `docs/story-route.md` lines
+271–276). A same-act change keeps bags and quest-variable values
+(`t3/research-inventory-reset` `6f8beb9`, `docs/inventory-reset.md` lines
+48–51). Lines 127–129 of that pin are the summary that separates those
+same-act bags from an act change, which takes the quest list and zeroes
+quest-variable values.
 
 ### Good arena
 
-**Executed:** `start` snapshots `playerHasItem('shardofwar')` into script
-global `0xc` and queues `shardCheckLoop`. The same promotion rule applies.
-Each later unpaused call increments global `0x8`. When that global reaches
-25 it is cleared and the live count is compared with the snapshot. A live
-count that is not greater requeues. A greater count plays the stubbed item
-sound, the stubbed help message, sets a 14-character quest variable and
-`firstmissionever` to 1, calls `grantMission(1)`, posts `endmission`, and
-does not requeue. With the snapshot at 0 and the live count at 1, that is
-deferred call 25. With the snapshot at 1, call 25 does not grant; raising
-the live count to 2 grants on call 50. Twenty-five paused calls do not
-grant. The bytes written are the same four-record pattern as `levelChange`.
-`endmission` here is only the stubbed help message and sound: it does not
-grant again and it does not request a level. Pending level stays empty.
+**Executed:** `start` stores original `playerHasItem('shardofwar')` into
+script global `0xc`. The count itself is stubbed `inventory_countItemByName`.
+A planted `0x5a` becomes 0 when that count is 0 and 1 when it is 1. `start`
+leaves planted global `0x8` (`0x5b`) and global `0` (`0x5c`) unchanged and
+queues `shardCheckLoop` on the back half. The probe then stores 0 into global
+`0x8` so the schedule below starts from 0. Call 0 promotes the name. Each later unpaused call increments global
+`0x8`. The copy that reaches 25 clears it and compares the live count with
+the snapshot. Just before deferred call 25 the cell is 24 and the front half
+is still `shardCheckLoop`. `script_runDeferred` leaves the back half empty
+because it promotes that half into the front count. A live count that is not
+greater leaves `shardCheckLoop` on the front half. A greater count plays the
+stubbed item sound and the stubbed help message, sets a 14-character quest
+variable and `firstmissionever` to 1, calls `grantMission(1)`, posts
+`endmission`, and leaves both halves empty. With the snapshot at 0 and the
+live count at 1, that is deferred call 25, and global `0xc` is still 0.
+With the snapshot at 1, call 25 clears global `0x8`, leaves `0xc` at 1, does
+not grant, and leaves the front name queued; raising the live count to 2
+grants on call 50 and leaves the front half empty. Twenty-five paused calls
+leave the planted global `0x8` and do not grant. The mission bytes written
+are the same four-record pattern as `levelChange`. Gold, experience, the
+medal bytes, evil, decision, mission 2, global 0, and the other difficulty
+rows stay at the sentinels planted above. `endmission` here is the stubbed
+help message and `soundSequence`: it does not grant again and it does not
+request a level. Pending level stays empty.
 
 **Executed:** one `removePlayerItem` runs only when `onePlayerHasItem`
 returns a count above 1. A rise from 0 to 1 grants and removes nothing. A
-rise from 1 to 2 grants and removes one cell from slot 0 (the stub records
-the slot, index and bag). The real bag walk and equipped-pointer fixups stay
-`inventory_removeItem` as already bounded in `6f8beb9`.
+rise from 1 to 2 grants and removes one cell from slot 0. `inventory_findItemBySubstring`
+and `inventory_removeItem` are stubs: the removal record is slot 0, index 0,
+bag 0, and the bag is not walked. The real walk and equipped-pointer fixups
+stay `inventory_removeItem` as already bounded in `6f8beb9`.
 
-**Executed, separate from the grant:** `rallosHPcheck` queues `endDelay`
-when the stubbed `getHitPoints('rallos')` cell is 0 or below, and requeues
-itself when that cell is 1 or above. `endDelay` leads to `playRallosRuns`,
-which removes a quest and posts `removeRallos`. That chain has no
-`grantMission`. Who reaches the trigger, and the real hit-point float before
-`getHitPoints` converts it, stay **Unknown**.
+**Executed, separate from the grant:** `getHitPoints` is a stub.
+`rallosHPcheck` queues `endDelay` when that cell is 0 or below and stores 0
+into global `0x10` (a planted `0x5a`). It queues itself and leaves the
+sentinel when the cell is 1 or above. The split is `(0, 1)`. `endDelay`'s
+body is `gamePaused`, `getScaledTime`, `callScript('playRallosRuns')`, and
+`addDeferedCall('endDelay')`, and it has no `grantMission`. Deferred call 277
+is the copy that calls `playRallosRuns`. That entry's original `postAction`
+is `removeRallos` and its original `removeQuest` drops the matching title;
+the planted `Keep` remains and the quest count goes from 2 to 1. The mission
+byte stays the planted `1`. `showMonster`, `cutScene`, and `setSaveInhibit`
+are stubs. The following `script_runPostAction` runs `removeRallos`, whose
+natives are all stubbed (`killMonster`, `hideMonster`, `deleteMonster`); the
+mission byte and the quest count stay. Both deferred halves are empty after
+call 277. `playRallosRuns` and `removeRallos` contain no `grantMission`.
+Who reaches the trigger, and the real hit-point float before `getHitPoints`
+converts it, stay **Unknown**.
 
 ### What the hub and the menu then read
 
-**Executed** on the bytes `levelChange` just wrote, evil and decision still
-clear: `game_getHubName` `0x1ec300` returns `hub`. With both of those bits
-set on difficulty 0 it returns `hub2`. That agrees with the matrix already
-executed in `docs/quests.md` lines 279–283; the arena request above does not
-consult it.
+**Executed** on the bytes `levelChange` just wrote. The grant left the planted
+evil `0x2a` and decision `0x3c`. The probe then stores 0 into both, and
+`game_getHubName` `0x1ec300` returns `hub`. With both of those probe stores
+set to 1 it returns `hub2`. That agrees with the matrix already executed in
+`docs/quests.md` lines 279–283. The arena request above does not consult it.
 
-**Executed** with the hub script loaded on those same mission bytes:
-`if441a` (`0x198`) returns 0, so the mission-1 offer condition
-(available, not complete, and `startedMission1` clear) is false. The same
-entry returns 1 when the byte is available-only and `startedMission1` is
-clear, and 0 when that variable is 1 or the byte is 0. `if7b2c` (`0x734`)
-returns 1 while mission 2 is unavailable and 0 after `setMissic270`
-(`0x7b0`) has called `setMissionAvailable(2,1)`. `setMissid125` (`0x7fc`)
-also sets that bit and then calls the stubbed store open. Row helper
-`0x231078` returns 1 for row 0 and 0 for row 1 until that bit is set, then
-1 for row 1. Mission 1's byte stays complete. Which dialog choice reaches
-`setMissic270` or `setMissid125` stays the executed node-7 result in this
-file (`e5c6176`, lines 99–113), not a new dialog trace.
+**Executed** with the hub script loaded on those same mission-1 bytes. The
+probe sets mission 2 back to 0 before these reads; the grant had left the
+planted `0x40`. `if441a` (`0x198`) is the node-3 pending predicate:
+available, not complete, and `startedMission1` clear. On the completed byte
+it returns 0. It returns 1 when the byte is available-only and
+`startedMission1` is clear, and 0 when that variable is 1 or the byte is 0.
+The unavailable offer stays nodes 1 and 2 at `0x11c` (`if99a5`). `if7b2c`
+(`0x734`) returns 1 while mission 2 is unavailable and 0 after
+`setMissic270` (`0x7b0`) has called `setMissionAvailable(2,1)`. That public's
+body is only that native. Node 7 choice 0 in this file (`e5c6176`, lines
+107–109) is `setMissic270` at `0x7b0`. Choice 1 is `setMissi3c49` at
+`0x2064`. This probe runs `setMissi3c49` directly: mission 2 becomes 1,
+mission 1 stays 3, and the stubbed `changeSwoop` and `activateStore` run.
+`setMissid125` (`0x7fc`) is a third entry with that same native list, also
+run directly here. Which dialog node reaches `0x7fc` stays **Unknown** until
+that node is executed. Row helper `0x231078` returns 1 for row 0 and 0 for
+row 1 until that bit is set, then 1 for row 1. Mission 1's byte stays
+complete.
 
 ### What the client can implement from this
 
 1. Do not mark mission 1 complete on the `blood1` exits or on the ordinary
    `strife` / `drundar` exits. Those exits request `drunarm` or `drunare`.
 2. On the evil arena, run the avatar death entry, then the deferred delay.
-   Set `endsound` and `firstmissionever` when scaled time passes 250. On the
-   call that passes 1500, if `killedAv` is clear, remove that quest, remember
-   `levelChange`, and only then let the post-action grant mission 1 and
-   request `hub2`. Do not grant on the death tick itself.
-3. On the good arena, remember the `shardofwar` count at `start`. Every 25
-   unpaused deferred calls, if the live count is greater, grant mission 1,
-   set `firstmissionever`, and post the help/sound entry. Remove one
-   `shardofwar` only from a slot whose count is above 1. Do not request the
-   hub from this grant, and do not grant from the Rallos hit-point chain.
-4. Leave mission 2 unavailable until a hub action runs `setMissionAvailable(2,1)`.
-   The menu row for mission 2 stays locked until that write. `game_getHubName`
-   still needs the evil bit, the decision bit, and the complete bit; the evil
-   arena's own request is `hub2` even when those bits were clear at the grant.
-5. Keep medals, gold, experience, and the other difficulty rows unchanged
-   across both grants. Apply `removeQuest` only for the evil `endmission`
-   title. Do not run the act-change bag clear: these names stay in act 0.
+   The death entry stores 0 into global 0. Set `endsound` and
+   `firstmissionever` when scaled time passes 250. On the call that passes
+   1500, if `killedAv` is clear, remove that quest, remember `levelChange`,
+   and only then let the post-action grant mission 1 and request `hub2`.
+   Do not grant on the death tick itself. Leave the planted evil and decision
+   bytes as they were.
+3. On the good arena, remember the `shardofwar` count at `start` in global
+   `0xc`. The counter is global `0x8`, not global 0. Every 25 unpaused
+   deferred calls, if the live count is greater, grant mission 1, set
+   `firstmissionever`, post the help/sound entry, and do not queue another
+   check. A count that is not greater queues `shardCheckLoop` again. Remove
+   one `shardofwar` only from a slot whose count is above 1. Do not request
+   the hub from this grant. The Rallos chain posts `removeRallos` and removes
+   its own quest; it does not grant.
+4. Leave mission 2 at its previous byte until a hub action runs
+   `setMissionAvailable(2,1)`. Node 7 choice 0 is `setMissic270` (`0x7b0`).
+   Choice 1 is `setMissi3c49` (`0x2064`), which also opens the stubbed store.
+   `setMissid125` (`0x7fc`) is another writer; its dialog node is not
+   executed here. The menu row for mission 2 stays locked until that write.
+   `game_getHubName` still needs the evil bit, the decision bit, and the
+   complete bit. The evil arena's own request is `hub2` while the planted
+   evil and decision bytes stay.
+5. Keep medals, gold, experience, mission 2, evil, decision, and the other
+   difficulty rows at the values they had before the grant. Apply `removeQuest`
+   for the evil `endmission` title and for the Rallos outro title. Do not run
+   the act-change bag clear: these names stay in act 0.
 
 **Unknown:** the fight that reaches the avatar death script; the trigger that
 reaches `rallosHPcheck`; cutscene playback; the real bag cell `removePlayerItem`
@@ -421,8 +472,11 @@ path's later return to a hub; `blomedal`'s medal grants, which these entries
 do not call.
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; sys.argv=["difftest_mission1_complete.py","--elf","local/SLUS_209.73","--disc","<BG/DATA>","--seed","20973"]; runpy.run_path("tools/difftest_mission1_complete.py", run_name="__main__")'
+PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; sys.argv=["difftest_mission1_complete.py","--elf","local/SLUS_209.73","--disc","local/disc","--seed","20973"]; runpy.run_path("tools/difftest_mission1_complete.py", run_name="__main__")'
 ```
+
+Seed 7 is the same command with `--seed 7`. `local/disc` is the private level
+directory, ignored, and is not named in tracked files beyond this relative path.
 
 ## Remaining research / client boundary
 
