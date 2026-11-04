@@ -10,10 +10,13 @@ words are the executed result of 0x1068d8 and the magnitude clamp at
 0x1a4cac–0x1a4d08. Starting slot numbers are the published round-4 map;
 this module does not re-select item definitions or header metadata.
 
-Unknown: native-frame body-mask consumption, animated matrix evaluation,
-the shell primitive at 0x174e78, renderer output, and live visual parity.
-Invalid indices are outside the authored 16-record attachment-table
-boundary, not clamped.
+The body show mask is the argument saved from r10 at 0x1779e4 and walked
+at 0x177e34. Creature_draw loads it from object +0x220 at 0x10ba84;
+inventory_drawPlayerModel loads it at 0x1c0a28. Both loads happen before
+the same caller's Player_drawEquipped. Shell packets are 0x174e78.
+Animated joint matrices, renderer output, and live visual parity remain
+unknown. Invalid indices are outside the authored 16-record
+attachment-table boundary, not clamped.
 """
 
 U64 = (1 << 64) - 1
@@ -310,3 +313,211 @@ def shell_fields(flag33, argument_bits):
         12: _f_mul(argument_bits & 0xffffffff, 0x42c80000),
     }
     return SHELL_BLOCK, 2, fields
+
+
+# Creation-screen formats. The bytes are read from the executable at runtime;
+# these are only the addresses. Standing restart is 0x2254bc–0x2255b4.
+INTRO_STANDING = 0x53ff68
+INTRO_STANDING_MARKED = 0x53ff58
+INTRO_ONCE = 0x5400c8
+INTRO_OTHER = 0x540330
+IMPORT_LITERAL = 0x53fd38
+# Jump index is the signed byte at 0x8e2c91 plus one, and only 0..12 are copied.
+RACE_LITERALS = (
+    0x53fdc0, 0x53fdc0, 0x53fdc8, 0x53fde0, 0x53fe10, 0x53fe18, 0x53fe40,
+    0x53fe48, 0x53fe78, 0x53fe80, 0x53fea0, 0x53fd98, 0x53fd70,
+)
+# Model index -> inventory lump name. Class -> idle filename, with the
+# leftover classes sharing the last address. Display-only play uses idled.
+INVENTORY_LUMP = (
+    0x538488, 0x538478, 0x538508, 0x5384d8, 0x5384f8, 0x5384c8,
+    0x5384a8, 0x5384e8, 0x538498, 0x5384b8, 0x538518, 0x538528,
+)
+INVENTORY_IDLE = {1: 0x538538, 2: 0x538548, 3: 0x538558, 4: 0x538568,
+                  5: 0x538578, 7: 0x538588}
+INVENTORY_IDLE_DEFAULT = 0x538598
+DISPLAY_IDLE = {1: 0x5375d8, 2: 0x5375e8, 3: 0x5375f8, 4: 0x537608, 7: 0x537618}
+DISPLAY_IDLE_DEFAULT = 0x537628
+K_STEP = 0x3f7fffff
+BLEND_FORCED = 0x3f800000
+
+
+def race_literal(index_byte):
+    """Address copied when the descriptor name matches 0x53fd38. None keeps the input."""
+    slot = index_byte + 1
+    if not 0 <= slot < len(RACE_LITERALS):
+        return None
+    return RACE_LITERALS[slot]
+
+
+def creation_clip_name(race, format_bytes):
+    """The four creation formats are a leading %s plus a fixed suffix."""
+    if not format_bytes.startswith(b'%s'):
+        raise ValueError('creation format is not a single leading substitution')
+    return race + format_bytes[2:]
+
+
+def inventory_idle_address(weapon_class):
+    return INVENTORY_IDLE.get(weapon_class, INVENTORY_IDLE_DEFAULT)
+
+
+def display_idle_address(weapon_class):
+    return DISPLAY_IDLE.get(weapon_class, DISPLAY_IDLE_DEFAULT)
+
+
+def play_idle_offsets(weapon_class):
+    """Clip pointers filled into cells 0..3 by 0x1b2470. Row stride is 0x68."""
+    base = weapon_class * 0x68
+    return tuple(base + off for off in (0x44, 0x4c, 0x54, 0x5c))
+
+
+def unit_advance(flags, time_bits, weight_bits, rate_bits, speed_bits, length):
+    """One anim_advance step for a non-root track that does not end.
+
+    Time adds the fixed step when flag 0x40 is set, otherwise speed times that
+    step. Weight adds the rate; flag 0x40 does not scale that add by speed.
+    The caller guarantees the result stays below the clip length.
+    """
+    step = K_STEP if flags & 0x40 else _f_mul(speed_bits, K_STEP)
+    scale = BLEND_FORCED if flags & 0x40 else speed_bits
+    return _f_add(time_bits, step), _f_add(weight_bits, _f_mul(rate_bits, scale))
+
+
+def _sra(value, shift):
+    value &= 0xffffffff
+    if value & 0x80000000:
+        value -= 0x100000000
+    return value >> shift
+
+
+def shell_directory(model):
+    """First boundary word read by 0x174e78. The walked table index is 0."""
+    return model + 0x28
+
+
+def shell_packet(start, model, mode, records, boundaries, alpha_bits, fill=0xa5):
+    """Bytes 0x174e78 writes for a model whose flag 0x20 is already known set.
+
+    `records` is a sequence of (rgba word, float bits). `boundaries` is the
+    table-0 fence, one past the mesh count. `alpha_bits` is the qword at
+    model+0x18, copied into the trailer. The image is prefilled so unwritten
+    bytes stay distinguishable. Returns (final cursor, image).
+    """
+    count = len(boundaries) - 1
+    if not 1 <= count <= 63:
+        raise ValueError('shell mesh count is outside the walked range')
+    image = bytearray([fill]) * 0x2000
+    base = start
+
+    def sb(addr, value):
+        image[addr - base] = value & 0xff
+
+    def sw(addr, value):
+        for i in range(4):
+            sb(addr + i, (value >> (8 * i)) & 0xff)
+
+    def sd(addr, value):
+        for i in range(8):
+            sb(addr + i, (value >> (8 * i)) & 0xff)
+
+    def ld(addr):
+        return sum(image[addr - base + i] << (8 * i) for i in range(8))
+
+    def lw(addr):
+        return sum(image[addr - base + i] << (8 * i) for i in range(4))
+
+    cursor = [start]
+    saved = [0, 0, 0]
+
+    def set_cursor(value):
+        cursor[0] = value
+
+    p = start
+    saved[0] = p
+    p += 8
+    while p & 0xf != 0xc:
+        sb(p, 0)
+        p += 1
+    block = p
+    sd(block + 4, 0x1000000000008000)
+    sd(block + 12, 0xe)
+    sw(block, 0x50000000)
+    sd(block + 0x14, 0)
+    sd(block + 0x1c, 0x1a)
+    saved[1] = block + 4
+    sd(block + 0x2c, 0x1b)
+    saved[2] = block
+    sd(block + 0x24, 0x48)
+    if (mode << 24) >> 24:
+        sd(block + 0x34, 0x48)
+    else:
+        sd(block + 0x34, 0x44)
+    sd(block + 0x3c, 0x42)
+    p = block + 0x44
+    end = p + 0x10
+    sd(p + 8, 0x47)
+    sd(p, 0x71001)
+    first = _sra(_sra(end - saved[1], 3) - 2, 1) & 0xffffffff
+    second = _sra((end - saved[2]) - 4, 4) & 0xffffffff
+    third = _sra(_sra(end - saved[0], 3) - 2, 1) & 0xffffffff
+    sd(saved[1], ld(saved[1]) | first)
+    sw(saved[2], lw(saved[2]) | second)
+    sd(saved[0], third | 0x10000000)
+    set_cursor(end)
+    if len(records) <= 0:
+        packet = end
+    else:
+        packet = end
+        for rgba, float_bits in records:
+            sw(packet + 0x14, float_bits)
+            sw(packet + 8, 0x13000000)
+            sw(packet + 0xc, 0x6002c000)
+            sw(packet + 0x10, 1)
+            sw(packet + 0x18, 0x6e01c002)
+            for i in range(4):
+                sb(packet + 0x1c + i, (rgba >> (8 * i)) & 0xff)
+            sw(packet + 0x20, 0x1400002a)
+            cursor_slot = packet
+            aligned = packet + 0x24
+            set_cursor(aligned)
+            while aligned & 0xf:
+                sb(aligned, 0)
+                aligned += 1
+            set_cursor(aligned)
+            patched = _sra(_sra(aligned - cursor_slot, 3) - 2, 1) & 0xffffffff
+            sd(cursor_slot, patched | 0x10000000)
+            mask = (~(1 << count)) & U64
+            for origin, size in mesh_runs(tuple(boundaries), mask):
+                word = (origin << 32) | ((size >> 4) & 0xffff) | 0x30000000
+                sd(aligned, word)
+                sd(aligned + 8, 0)
+                aligned += 0x10
+            packet = aligned
+            set_cursor(packet)
+    trailer = packet
+    sw(trailer + 8, 0x13000000)
+    sw(trailer + 0xc, 0x6001c000)
+    sw(trailer + 0x14, 0x1400002a)
+    sw(trailer + 0x10, 0)
+    aligned = trailer + 0x18
+    if aligned & 0xf != 0xc:
+        while aligned & 0xf != 0xc:
+            sb(aligned, 0)
+            aligned += 1
+    restore = aligned
+    sd(restore + 4, 0x1000000000008000)
+    sd(restore + 12, 0xe)
+    sd(restore + 0x14, 1)
+    sd(restore + 0x1c, 0x1a)
+    sd(restore + 0x2c, 0x42)
+    sd(restore + 0x24, alpha_bits & U64)
+    sd(restore + 0x3c, 0x47)
+    sd(restore + 0x34, 0x507f5)
+    final = restore + 0x44
+    span = _sra(_sra(final - (restore + 4), 3) - 2, 1) & 0xffffffff
+    head = _sra((final - restore) - 4, 4) & 0xffffffff
+    sd(restore + 4, ld(restore + 4) | span)
+    sw(restore, head | 0x50000000)
+    # 0x175314 stores a fresh qword: the qword count of the trailer, with 0x10000000.
+    sd(trailer, (_sra(_sra(final - trailer, 3) - 2, 1) & 0xffffffff) | 0x10000000)
+    return final, bytes(image[:final - start])
