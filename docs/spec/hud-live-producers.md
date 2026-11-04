@@ -22,10 +22,12 @@ PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; sys.argv=["tools/dif
 PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; sys.argv=["tools/difftest_hud_inputs.py","local/SLUS_209.73","--seed","20973"]; runpy.run_path(sys.argv[0], run_name="__main__")'
 ```
 
-Repeat each with `--seed 7`. Both seeds: live probe 163 cases and 0 seed
-draws (regen 70, bars 24, experience 20, messages 49); automap probe 608
-cases and 0 seed draws, including 48 fractional reveals. The analysis suite
-was 735 tests, 0 failures.
+Repeat each with `--seed 7`. Both seeds: live probe 166 cases and 0 seed
+draws (regen 70, bars 25, experience 22, messages 49); automap probe 608
+cases and 0 seed draws, including 48 fractional reveals. The stdout is
+`local/hud-live-20973.log`, `local/hud-live-7.log`,
+`local/hud-inputs-20973.log` and `local/hud-inputs-7.log`. The analysis
+suite was 736 tests, 0 failures, in 4.871s (`local/unittest-discover.log`).
 
 ## 1. Health and mana bars
 
@@ -47,8 +49,10 @@ right = trunc(float(S) + (current / maximum) * 99)
 ```
 
 Divide, multiply, add, convert. There is no clamp: current above the maximum
-passes `S+99`, and a zero maximum saturates the way the R5900 divide does
-(E, `status bars`). Health is drawn for every slot that passes the gates.
+passes `S+99` (E, case `n=2`). A zero maximum saturates the way the R5900
+divide does. Health current 40 over maximum 0 has right edge `0x7fffffff`,
+and mana current -5 over maximum 0 has right edge `0x80000000` (E, case
+`n=8`). Health is drawn for every slot that passes the gates.
 Mana and experience are drawn only for a local slot. Acknowledged level 0
 skips experience and still draws mana (E). The frame is `(g_simFrame >> 2)
 % 11`. Y is 46, 56 and 63 for health, experience and mana.
@@ -79,14 +83,16 @@ the 17-slot modifier walk and both caps are the original instructions.
 
 ## 2. Experience
 
-`player_giveExp(slot, amount)` `0x1d3150` is the simulation writer (E, 20
+`player_giveExp(slot, amount)` `0x1d3150` is the simulation writer (E, 22
 cases). It adds `amount` to signed `record+0x5c` with 32-bit wrap, then
-clamps to the word at `0x41b698` minus 1. That word is experience-table entry
-80. The three words read for the bounds are entry 0 = 0, entry 1 = 1100 and
-entry 80 = 9999999 (O). While experience is not below `T[level]`, with
-`level` the signed byte at `+0x59`:
+stores the word at `0x41b698` minus 1 when that cap is below the wrapped sum.
+That word is experience-table entry 80. The three words read for the bounds
+are entry 0 = 0, entry 1 = 1100 and entry 80 = 9999999, so the stored cap is
+9999998 (O for the word, E for the store). One call plants `0x00a5a5a5` in
+`+0x5c` and adds 1; the word becomes 9999998. While experience is not below
+`T[level]`, with `level` the signed byte at `+0x59`:
 
-| Level being left | Stat points at `+0xe8` | Skill byte `+0xec` |
+| Level being left | Skill word at `+0xe8` | Stat byte `+0xec` |
 |---|---|---|
 | below 6 | +1 | +3 |
 | below 16 | +2 | +3 |
@@ -94,7 +100,11 @@ entry 80 = 9999999 (O). While experience is not below `T[level]`, with
 | below 36 | +4 | +3 |
 | 36 and above | +5 | +3 |
 
-The level byte then increments. Bands 1, 6, 16, 26 and 36 were executed.
+The level byte then increments. Bands 1, 5, 6, 16, 26, 36 and 79 were
+executed. The stat byte 254 becomes 1 (E). The skill word is planted at a
+nonzero sentinel in those two cases, so the band add is a change from that
+sentinel.
+
 `player_recalcStats` `0x1b6458` is called after the increment; this probe
 stubs it and only checks the stores that follow. If health is `> 0`, health
 and mana become the maxima that recalc left. Health `<= 0` leaves both
@@ -204,12 +214,15 @@ branch condition.
 ## What the client can implement
 
 1. Health and mana bars from the record floats, origin plus 15, the unclamped
-   99-wide fill, and the per-tick regen and pending rules above. Offline slot
-   0 is the ordinary play case. Do not invent a second health pool on the object.
+   99-wide fill, and the per-tick regen and pending rules above. Current above
+   the maximum passes `S+99`. A zero maximum saturates. Offline slot 0 is the
+   ordinary play case. Do not invent a second health pool on the object.
 2. The experience bar from acknowledged level and `T[ack-1]` / `T[ack]`, with
-   the same fill. Drive experience, the level byte, the point awards and the
-   optional refill from `player_giveExp`. Leave acknowledged level unchanged
-   until its writer is executed.
+   the same fill. Drive experience from `player_giveExp`, including the store
+   of entry 80 minus 1 when the wrapped sum is above it. The skill word at
+   `+0xe8` gains 1, 2, 3, 4, or 5 from the level being left. The stat byte at
+   `+0xec` gains 3, and 254 becomes 1. Refill health and mana only when health
+   is above 0. Leave acknowledged level unchanged until its writer is executed.
 3. The level-up line, and any other line whose caller is later executed, through
    `hud_showMessage`, the per-tick timer and the alpha clamp. A zero force does
    not replace a message while the local menu is open.

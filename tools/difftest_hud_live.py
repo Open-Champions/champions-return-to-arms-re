@@ -304,6 +304,12 @@ def bar_cases(elf, rng):
             spec['xp'], table[spec['ack'] - 1] if spec['ack'] else 0,
             table[spec['ack']] if spec['ack'] else 0, spec['ack'], is_local)
         expect = {kind: (used + 15, right) for kind, right in want.items()}
+        if spec.get('zero_max'):
+            start = used + 15
+            saturated = {'health': (start, 0x7FFFFFFF), 'mana': (start, -0x80000000)}
+            if got != saturated or expect != saturated:
+                raise AssertionError('zero maximum edges case %d: original %r model %r' %
+                                     (spec['n'], got, expect))
         if got != expect:
             raise AssertionError('status bar case %d: %r != %r' % (spec['n'], got, expect))
         checked += 1
@@ -336,6 +342,9 @@ def bar_cases(elf, rng):
     emu.mem.w32(XP_TABLE + 8, saved[0])
     emu.mem.w32(XP_TABLE + 12, saved[1])
     table[2], table[3] = L.s32(saved[0]), L.s32(saved[1])
+    # Positive health and negative mana, both over a zero maximum.
+    run(dict(hp=F.from_int(40), max_hp=0, mana=F.from_int(-5), max_mana=0,
+             xp=0, ack=0, n=8, zero_max=True))
     for n in range(16):
         ack = rng.choice((0, 1, 2, 5, 10))
         run(dict(hp=rng.getrandbits(32) or F.from_int(1),
@@ -366,14 +375,14 @@ def experience_cases(elf, rng):
     table = [L.s32(emu.mem.u32(XP_TABLE + 4 * i)) for i in range(81)]
     checked = 0
 
-    def run(level, xp, amount, health, mana, local, menu, n):
+    def run(level, xp, amount, health, mana, local, menu, n, skill=0, stat=0):
         nonlocal checked
         box['local'] = int(local)
         emu.mem.w32(record + 0x5C, xp & 0xFFFFFFFF)
         emu.mem.w8(record + 0x59, level & 0xFF)
         emu.mem.w8(record + 0x58, 4)
-        emu.mem.w32(record + 0xE8, 0)
-        emu.mem.w8(record + 0xEC, 0)
+        emu.mem.w32(record + 0xE8, skill & 0xFFFFFFFF)
+        emu.mem.w8(record + 0xEC, stat & 0xFF)
         plant_floats(emu.mem, record, ((0xAC, health), (0xC0, mana), (0xB0, 0), (0xC4, 0)))
         emu.mem.w16(TIMER, 99)
         emu.mem.w8(FORCE, 7)
@@ -383,7 +392,7 @@ def experience_cases(elf, rng):
         emu.calls = []
         emu.writes = []
         emu.call(0x1D3150, 1, amount & 0xFFFFFFFF)
-        want = L.gain_experience(xp, amount, level, 0, 0, health, mana,
+        want = L.gain_experience(xp, amount, level, skill, stat, health, mana,
                                  box['max_hp'], box['max_mana'], table, local, menu)
         got = (emu.mem.u32(record + 0x5C), emu.mem.u8(record + 0x59),
                emu.mem.u32(record + 0xE8), emu.mem.u8(record + 0xEC),
@@ -391,7 +400,7 @@ def experience_cases(elf, rng):
                emu.mem.u8(record + 0x58))
         recalc = sum(1 for call in emu.calls if call.target == 0x1B6458)
         shown = sum(1 for call in emu.calls if call.target == 0x1D92A0)
-        if got != (want['experience'], want['level'], want['stat_points'], want['skill_points'],
+        if got != (want['experience'], want['level'], want['skill_points'], want['stat_points'],
                    want['health'] & 0xFFFFFFFF, want['mana'] & 0xFFFFFFFF, 4):
             raise AssertionError('experience record case %d' % n)
         if recalc != want['steps'] or shown != want['steps'] or len(sounds) != want['sounds']:
@@ -405,6 +414,7 @@ def experience_cases(elf, rng):
         if draws(emu):
             raise AssertionError('experience case %d drew a seed' % n)
         checked += 1
+        return got
 
     run(1, 0, 10, F.from_int(8), F.from_int(4), True, False, 0)
     run(1, table[1] - 1, 1, F.from_int(8), F.from_int(4), True, False, 1)
@@ -419,6 +429,20 @@ def experience_cases(elf, rng):
     run(2, 100, -40, F.from_int(8), F.from_int(4), True, False, 9)
     span = table[3] - (table[1] - 5)
     run(1, table[1] - 5, span, F.from_int(8), F.from_int(4), True, False, 10)
+    # Level being left is 5: the skill word gains 1 and the stat byte wraps.
+    wrapped = run(5, table[5] - 1, 1, F.from_int(8), F.from_int(4), True, False, 12,
+                  0x11111111, 254)
+    if wrapped[1] != 6 or wrapped[2] != 0x11111112 or wrapped[3] != 1:
+        raise AssertionError('skill word or stat byte case')
+    # Destination starts as a sentinel above entry 80 minus 1.
+    planted = 0x00A5A5A5
+    capped = run(79, planted, 1, F.from_int(8), F.from_int(4), True, False, 13,
+                 0x22222222, 254)
+    cap = (table[80] - 1) & 0xFFFFFFFF
+    if planted == cap or capped[0] != cap or capped[1] != 80:
+        raise AssertionError('experience cap store')
+    if capped[2] != (0x22222222 + 5) & 0xFFFFFFFF or capped[3] != 1:
+        raise AssertionError('skill word or stat byte beside the cap store')
     for n in range(8):
         level = rng.choice((1, 2, 4, 8))
         run(level, rng.randrange(0, table[level]), rng.randrange(0, 4000),

@@ -4,8 +4,8 @@
   PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_hud_inputs.py SLUS_209.73 --seed 20973
 
 Runs automap_loadGrid 0x168894 and the draw-time player reveal 0x16a4b0 via
-ee_emu. The reveal property uses exact integer cell centres; this bounds its
-claim without guessing the PS2 FPU's behaviour for arbitrary world positions.
+ee_emu. `reveal_world` is the fractional claim, 48 positions per seed.
+`reveal_integer_cell` remains the exact cell-centre path.
 No game data or instruction bytes are emitted or stored.
 """
 import argparse

@@ -58,6 +58,24 @@ class LiveHudTest(unittest.TestCase):
         self.assertEqual(centre & 0x0FFF, 0x00AB)
         self.assertEqual(centre >> 12, 15)
 
+    def test_skill_word_and_stat_byte_including_the_cap_store(self):
+        table = [0] * 81
+        table[5], table[6], table[79], table[80] = 100, 200, 1000, 50000
+        granted = L.gain_experience(
+            99, 1, 5, 0x11111111, 254, F.from_int(8), F.from_int(4),
+            F.from_int(33), F.from_int(16), table, True, False)
+        self.assertEqual(granted['level'], 6)
+        self.assertEqual(granted['skill_points'], 0x11111112)
+        self.assertEqual(granted['stat_points'], 1)
+        capped = L.gain_experience(
+            0x00A5A5A5, 1, 79, 0x22222222, 254, F.from_int(8), F.from_int(4),
+            F.from_int(33), F.from_int(16), table, True, False)
+        self.assertEqual(capped['experience'], 49999)
+        self.assertNotEqual(0x00A5A5A5, capped['experience'])
+        self.assertEqual(capped['level'], 80)
+        self.assertEqual(capped['skill_points'], 0x22222227)
+        self.assertEqual(capped['stat_points'], 1)
+
 
 if __name__ == '__main__':
     unittest.main()

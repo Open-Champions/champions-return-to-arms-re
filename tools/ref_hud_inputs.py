@@ -1,9 +1,9 @@
 """Bounded upstream automap inputs for the original HUD (SLUS-20973 v2.00).
 
-The projector is modelled separately by ref_hud_minimap. These two producers
+The projector is modelled separately by ref_hud_minimap. These producers
 prepare its grid. Values here are authored descriptions of addressed behaviour,
-not copied game data. The reveal model intentionally covers integer cell centres;
-arbitrary floating-point positions remain outside this model's claim.
+not copied game data. `reveal_world` is the fractional-position claim.
+`reveal_integer_cell` remains the exact cell-centre path.
 """
 import math
 

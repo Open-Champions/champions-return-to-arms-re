@@ -178,14 +178,16 @@ def regen_mana(health, mana, max_mana, pending, rate, copy, class_id, passive, b
     return _deliver(mana, max_mana, pending, rate)
 
 
-def gain_experience(experience, amount, level, stat_points, skill_points, health, mana,
+def gain_experience(experience, amount, level, skill_points, stat_points, health, mana,
                     max_health, max_mana, table, local, menu_open):
     """player_giveExp 0x1d3150 plus the message store it asks hud_showMessage for.
 
-    table is the 81 signed words at 0x41b558. The cap is table[80] - 1. Each
-    crossed threshold adds stat points from the level being left, adds 3 skill
-    points, increments the level byte, and refills health and mana only when
-    health is above 0.     Acknowledged level is not written. Every machine calls hud_showMessage
+    table is the 81 signed words at 0x41b558. The cap is table[80] - 1, and it
+    is stored when that cap is below the wrapped sum. Each crossed threshold
+    adds 1, 2, 3, 4, or 5 to the skill word at +0xe8 from the level being
+    left, adds 3 to the stat byte at +0xec (254 becomes 1), increments the
+    level byte, and refills health and mana only when health is above 0.
+    Acknowledged level is not written. Every machine calls hud_showMessage
     with 0x168 frames and force 0; only the owning machine stores it, and an
     open menu keeps the previous message. The level-up sound is local only.
     """
@@ -203,16 +205,16 @@ def gain_experience(experience, amount, level, stat_points, skill_points, health
             break
         band = s8(level)
         if band < 6:
-            stat_points = _u32(stat_points + 1)
+            skill_points = _u32(skill_points + 1)
         elif band < 0x10:
-            stat_points = _u32(stat_points + 2)
+            skill_points = _u32(skill_points + 2)
         elif band < 0x1A:
-            stat_points = _u32(stat_points + 3)
+            skill_points = _u32(skill_points + 3)
         elif band < 0x24:
-            stat_points = _u32(stat_points + 4)
+            skill_points = _u32(skill_points + 4)
         else:
-            stat_points = _u32(stat_points + 5)
-        skill_points = (skill_points + 3) & 0xFF
+            skill_points = _u32(skill_points + 5)
+        stat_points = (stat_points + 3) & 0xFF
         level = (level + 1) & 0xFF
         steps += 1
         if F.lt(ZERO, health):
@@ -221,8 +223,8 @@ def gain_experience(experience, amount, level, stat_points, skill_points, health
     # machine; hud_showMessage then keeps it on the owning machine.
     message = show_message(local, menu_open, 0, 0x168, 0) if steps else None
     return {
-        'experience': experience, 'level': level, 'stat_points': stat_points,
-        'skill_points': skill_points, 'health': health, 'mana': mana,
+        'experience': experience, 'level': level, 'skill_points': skill_points,
+        'stat_points': stat_points, 'health': health, 'mana': mana,
         'steps': steps, 'sounds': steps if local else 0, 'message': message,
     }
 
