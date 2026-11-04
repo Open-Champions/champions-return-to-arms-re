@@ -104,11 +104,12 @@ on a call that renders no map. `drawWorld` task 30 calls `minimap_draw`
 at 0x1ebc60 (O); the source object's movement is not a map-specific tick.
 
 **Unknown:** VU1 tile arithmetic at 0x403e20 is read but unexecuted; the
-world +0x6c tile atlas layout remains undecoded. Arbitrary fractional
-world-position reveal values are outside `ref_hud_inputs.py`'s integer-centre
-model. Script gates on icons can have effects during draw; their safety in a
-native online port is unestablished. These stay refused despite the EE
-projector packet difftest.
+world +0x6c tile atlas layout remains undecoded. Script gates on icons can
+have effects during draw; their safety in a native online port is
+unestablished. Those two stay refused. Fractional world positions are no
+longer outside the reveal model: `reveal_world` in `ref_hud_inputs.py` matches
+`0x16a4b0` for them (`difftest_hud_inputs.py`, 48 cases per seed; see
+[hud-live-producers.md](hud-live-producers.md)).
 
 ## Ordered native port list
 
@@ -132,11 +133,24 @@ projector packet difftest.
    quest-variable/script gates. Keep VU tile rendering and atlas identity
    refused until their separate evidence is established.
 
+## 5. Bars, experience and the one-line message
+
+The four sections above stop at the event that changes a record. The values
+the bars, the experience line and the one-line message actually display are
+in [hud-live-producers.md](hud-live-producers.md). That note executes
+`Player_regenHealth` / `Player_regenMana`, the three bar clips inside
+`hud_drawPlayerStatus`, `player_giveExp`, and `hud_showMessage` /
+`hud_tickMessage` / the message alpha store, on seeds 20973 and 7. Quick-slot
+spells and potion items stay the contracts in sections 1 and 2 and in
+[hud-quickslots.md](hud-quickslots.md). The 17 equipment pointers that scale
+regeneration are executed with the regen bodies; the ammunition and thrown
+notice starters are still the unexecuted lines in hud-quickslots.md.
+
 ## Validation boundary
 
 `difftest_hud_inputs.py` compares original instruction effects for 160 grid
-loads, 120 exact integer-centre reveals, 100 draw-feed calls and 180 gold
-touches per seed. `difftest_hud_quickslots.py`, `difftest_hud_gold.py` and
+loads, 120 exact integer-centre reveals, 48 fractional reveals, 100
+draw-feed calls and 180 gold touches per seed. `difftest_hud_quickslots.py`, `difftest_hud_gold.py` and
 `difftest_hud_minimap.py` compare the previously pinned downstream reference
 models. These are function-level executions with stubbed external services,
 not an in-game playthrough or proof of a native producer. All tracked files
