@@ -16,8 +16,8 @@ import unittest
 from difftest_amx import differences
 from difftest_arrival_stage_r5 import (
     CAMERA, CD_FIND, HIDE_MASK, LEVEL, LUMPS, ROUTE0, ROUTE0_ORDER, ROUTE1_ORDER,
-    ROUTE2_ORDER, amx_string, capture, cut_matches, drive, fresh, hook_natives,
-    model_for, plant_lump, plant_prop, queues, regions_match,
+    ROUTE2_ORDER, SENTINEL64, amx_string, capture, cut_matches, drive, fresh,
+    hook_natives, model_for, plant_lump, plant_prop, queues, regions_match, seal_camera,
 )
 from difftest_arrival_state_r4 import PERMITTED
 from difftest_loading import SHA256
@@ -158,9 +158,15 @@ def route0(path, image, body, seed):
     Services.call = answer
     o = fresh(path, image, body, seed)
     before = bag_counts(o.emu.mem)
+    bag0 = 3 if body in (2, 3) else 2 if body == 10 else 1
+    assert before == (bag0, 3, 3)
+    bag_addrs = tuple(RECORD + BAGS + bag * BAG_SIZE + BAG_COUNT for bag in range(3))
     preset_flags(o.emu.mem)
     permit = set(ROUTE0) | {0x14598C, SET_FLAG, ITEM_TEST}
     model, game, expected = model_for(image, o, permit)
+    o.emu.record_writes = True
+    o.emu.writes.clear()
+    mark = 0
     trace, phases = drive(o, model, game, permit, set(), expected)
     got = tuple(addr for addr, _ in trace)
     if got != ROUTE0_FULL:
@@ -172,6 +178,7 @@ def route0(path, image, body, seed):
     assert phases[-1][1] == 'absent'
     assert queues(o.emu) == (0, 2, 0)
     assert bag_counts(o.emu.mem) == before
+    assert not any(addr in bag_addrs for _pc, addr, _size, _value in o.emu.writes[mark:])
     assert calls(o.emu, FIND) == 17 and calls(o.emu, REMOVE) == 0
     flags_clear(o.emu.mem)
     assert not differences(o, model, len(model.image))
@@ -197,16 +204,19 @@ def route0(path, image, body, seed):
     assert not differences(o, model, len(model.image))
     regions_match(o, game.mem)
     seen = []
-    hook_natives(o, permit, set(), seen)
-    mark = len(expected)
+    item_results = []
+    hook_natives(o, permit, set(), seen, item_results)
+    marked = len(expected)
     o.call(DEFERRED, max_steps=8000000)
     game.run_deferred()
-    assert seen == expected[mark:]
+    assert seen == expected[marked:]
     assert [addr for addr, _ in seen] == [ITEM_TEST] * 48
+    assert item_results == [0] * 48
     assert queues(e) == (0, 0, 2)
     assert not differences(o, model, len(model.image))
     regions_match(o, game.mem)
-    print('PASS route0 body=%d seed=%d removes=17 flags=4 loader=promoted second=48' % (body, seed))
+    print('PASS route0 body=%d seed=%d removes=17 flags=4 loader=promoted item_v0=%s' % (
+        body, seed, ','.join(str(value) for value in item_results)))
 
 
 def calls(e, target):
@@ -218,6 +228,7 @@ def route0_prop(path, image, off, body, seed):
     found = capture(cap, off, 0x142320, 0x53F020)
     o = fresh(path, image, body, seed)
     obj = plant_prop(o, found['text'], 100)
+    o.emu.mem.w64(obj + 0xC8, SENTINEL64)
     permit = set(ROUTE0)
     trace = []
     hook_natives(o, permit, set(), trace)
@@ -227,15 +238,19 @@ def route0_prop(path, image, off, body, seed):
         raise AssertionError('null model returned')
     except MemoryFault as error:
         assert error.pc == HIDE_MASK and error.addr == 0x10
-    assert o.emu.mem.u32(obj + 0x90) == 0 and o.emu.mem.u64(obj + 0xC8) == 0
+    assert o.emu.mem.u32(obj + 0x90) == 0 and o.emu.mem.u64(obj + 0xC8) == SENTINEL64
     assert queues(o.emu) == (0, 0, 0)
     o = fresh(path, image, body, seed)
     obj = plant_prop(o, found['text'], 100)
     block = o.emu.alloc(32)
     o.emu.mem.w64(block + 8, 0x5)
     o.emu.mem.w32(obj + 0x90, block)
+    o.emu.mem.w64(obj + 0xC8, SENTINEL64)
+    o.emu.record_writes = True
+    o.emu.writes.clear()
     trace = []
     hook_natives(o, permit, set(), trace)
+    marked = 0
     try:
         o.call(0x1ED694, 0x53F000, max_steps=2000000)
         o.call(0x1ED694, 0x53F020, max_steps=4000000)
@@ -243,8 +258,14 @@ def route0_prop(path, image, off, body, seed):
     except Exception as error:
         from difftest_arrival_stage_r5 import Boundary
         assert isinstance(error, Boundary) and error.address == 0x14598C
+    mask = show_mask(0x5, 0, 0, ())
     assert tuple(addr for addr, _ in trace) == ROUTE0_ORDER
-    assert o.emu.mem.u64(obj + 0xC8) == show_mask(0x5, 0, 0, ())
+    assert o.emu.mem.u64(obj + 0xC8) == mask
+    assert any(addr == obj + 0xC8 and size == 8 and value == mask
+               for _pc, addr, size, value in o.emu.writes[marked:])
+    assert o.emu.mem.u32(obj + 0x128) == 0
+    assert not any(addr <= obj + 0x128 < addr + size
+                   for _pc, addr, size, _value in o.emu.writes[marked:])
     assert calls(o.emu, ANIM_PUSH) == 0 and calls(o.emu, SLOT19) == 1
     assert queues(o.emu) == (0, 2, 0)
     print('PASS route0_prop body=%d seed=%d null=0x10 mask=0xfffffffffffffffa' % (body, seed))
@@ -287,6 +308,15 @@ def route1(path, image, off, body, seed):
             continue
         seen.add(name)
         objs.append(plant_actor(o, name, True))
+    for index, obj in enumerate(objs):
+        flags = o.emu.mem.u32(obj + 0x0C)
+        hidden = o.emu.mem.u8(obj + 0x231)
+        if index == 0:
+            o.emu.mem.w32(obj + 0x0C, flags | 0x8000)
+            o.emu.mem.w8(obj + 0x231, hidden | 8)
+        else:
+            o.emu.mem.w32(obj + 0x0C, flags & ~0x8000)
+            o.emu.mem.w8(obj + 0x231, hidden & ~8)
     trace = []
     hook_natives(o, permit, set(), trace)
     o.call(0x1ED694, 0x53F000, max_steps=4000000)
@@ -307,7 +337,11 @@ def arm_cut(o, image, off, text):
     label = e.alloc(len(text) + 5)
     e.mem.write(label, text + b'.cut\0')
     e.mem.w32(e.mem.u32(LUMPS + 0x10) + 4, label)
-    e.mem.w32(CAMERA, e.alloc(0x100))
+    camera = e.alloc(0x100)
+    e.mem.w32(CAMERA, camera)
+    seal_camera(e, camera)
+    e.record_writes = True
+    e.writes.clear()
 
 
 def cut_name(path, image, off, body, seed):
@@ -354,8 +388,11 @@ def route2(path, image, off, body, seed, text):
     init_world(o)
     obj = plant_actor(o, amx_string(o.emu.mem, o.base, off, seen[0][1][0]), True)
     before = o.emu.mem.u32(0x5F86F8)
+    o.emu.record_writes = True
+    o.emu.writes.clear()
     trace = []
     hook_natives(o, permit, set(), trace)
+    marked = 0
     o.call(0x1ED694, 0x53F000, max_steps=4000000)
     o.call(0x1ED694, 0x53F020, max_steps=4000000)
     o.call(0x1EDAC0, max_steps=4000000)
@@ -365,7 +402,9 @@ def route2(path, image, off, body, seed, text):
     assert calls(o.emu, HANDLE_CLEAR) == 3
     assert calls(o.emu, POOL_FREE) == 0
     assert o.emu.mem.u32(0x5F86F8) == before
-    assert o.emu.mem.u32(obj + 0x48) == 0x5122A8
+    assert not any(addr == 0x5F86F8 for _pc, addr, _size, _value in o.emu.writes[marked:])
+    assert any(addr == obj + 0x48 and size == 4 and value == 0x5122A8
+               for _pc, addr, size, value in o.emu.writes[marked:])
     # First cutscene frame. Each argument starts from a fresh cut_start.
     from difftest_arrival_stage_r5 import Boundary
     for argument in (1, 0):
@@ -380,13 +419,22 @@ def route2(path, image, off, body, seed, text):
         e.record_calls = True
         e.calls.clear()
         e.mem.w32(0x4039AC, 0x11111111)
+        setup = e.mem.u8(0x44FCD2)
+        e.record_writes = True
+        e.writes.clear()
+        marked = 0
         e.hook(CUT_HELPER, stop_at(CUT_HELPER))
         try:
             o.call(CUT_RUN, argument, max_steps=2000000)
             raise AssertionError('frame returned')
         except Boundary as hit:
             assert hit.address == CUT_HELPER
-        assert e.mem.u32(0x4039AC) == 0 and e.mem.u8(0x44FCD2) == 0
+        assert e.mem.u32(0x4039AC) == 0
+        assert any(addr == 0x4039AC and size == 4 and value == 0
+                   for _pc, addr, size, value in e.writes[marked:])
+        assert e.mem.u8(0x44FCD2) == setup == 0
+        assert not any(addr <= 0x44FCD2 < addr + size
+                       for _pc, addr, size, _value in e.writes[marked:])
         assert [record.target for record in e.calls if record.target in {LIGHT, CUT_SETUP, CUT_HELPER}] == [
             LIGHT, CUT_SETUP, CUT_HELPER]
     print('PASS route2 body=%d seed=%d delete=dtor frame=0x14f498' % (body, seed))
