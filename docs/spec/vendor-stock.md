@@ -55,9 +55,12 @@ stay unknown.
 0x1440c4, 0x18dbb4, 0x22f850, 0x22f86c, 0x3230c4, 0x3230f0; a tail jump
 occurs at 0x1eccf0. Only the two session sites supply nonzero modes in these
 paths. The command at 0x144010 selects/defer-opens a store, not new stock.
-The separate daemon 0x1d1490 calls 0x1c8a00 after signed frame elapsed >=121
-(seven executed boundary cases), but its normal construction/reachability is
-**Unknown**; it is not established as the ordinary refresh schedule.
+The separate daemon run 0x1d1490 calls 0x1c8a00 after signed frame elapsed
+>=121 (seven executed boundary cases). **Observed** (`restock_cases`):
+`ShopDaemon_ctor` 0x1d13c8 has no `j`, no `jal`, no address reference, and
+no data pointer. `ShopDaemon_run` is the vtable word at 0x50d78c and is not
+itself called. Nothing constructs the daemon, so the 121-tick path is not a
+live route and is not the ordinary refresh schedule.
 
 ## Budgets and descriptor selection
 
@@ -252,10 +255,14 @@ credit (0x1c5f18). Type 2 does nothing. Type 0 reaches `shop_buy`.
 
 ## Gold restock is not the session refresh
 
-**Observed**: the only `jal` sites of `shop_restockByGold` 0x1c8a00 are
-0x1d1474 (daemon constructor) and 0x1d14b4 (daemon run). The constructor
-still has no caller. The 121-tick run remains the dormant path already
-executed in `difftest_vendor_refresh.py:dormant_daemon_boundary`.
+**Observed** (`restock_cases`): `shop_restockByGold` 0x1c8a00 has `jal`
+sites only at 0x1d1474 and 0x1d14b4, and no `j`, address reference, or data
+pointer. `ShopDaemon_ctor` 0x1d13c8 has empty `j`, `jal`, address-reference,
+and data-pointer sets. `ShopDaemon_run` 0x1d1490 has those same empty call
+and address-reference sets, and one data pointer, the vtable word at
+0x50d78c. Nothing constructs the daemon. The 121-tick run remains the
+dormant path already executed when that function is called directly
+(`difftest_vendor_refresh.py:dormant_daemon_boundary`).
 
 **Observed / Executed** (`restock_cases`, both seeds, gold 0, 1, 2, 100,
 1600, −1, −3, 0x7fffffff and −2147483648): the function reads player 0 gold
@@ -282,12 +289,16 @@ therefore the parser's own bytes, not an unknown stack image.
 category-2 duplicate scan at 0x86b698 is 0x10 bytes into name slot 13 of
 half 0 (stride 0x50). **Executed** (`name_cases`): 53,903 four-byte windows
 of level-script strings and entry names were compared with every loaded
-definition address; none matched. Queueing a name into that slot with
-`script_queueDeferred` 0x1ed52c (flip 1, queued 13) likewise fails
-`same_raw` against a real definition. While that buffer contains only
-deferred names, the category-2 scan does not reject a candidate. The
-armour scan of the previous third list is a different region and still
-can reject; do not clear it before the armour loop.
+definition address; none of the nonzero words matched, and the window count
+is asserted. Queueing a name into that slot with `script_queueDeferred`
+0x1ed52c (flip 1, queued 13), after the 0x50 bytes at 0x86b688 were filled
+with a nonzero sentinel, stores the name at the start of the slot. The
+stored record and the scan record at 0x86b698 are both nonzero, and
+`same_raw` fails against every loaded definition address. A zeroed slot is
+not that negative result. While that buffer contains only deferred names,
+the category-2 scan does not reject a candidate. The armour scan of the
+previous third list is a different region and still can reject; do not
+clear it before the armour loop.
 
 ## Progression input `storeLevel`
 

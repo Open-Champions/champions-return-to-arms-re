@@ -64,15 +64,81 @@ def form_sites(elf, hi, simm):
     return tuple(found)
 
 
-def jal_sites(elf, target):
+def control_sites(elf, targets):
+    """`j` (opcode 2) and `jal` (opcode 3) sites for each target, one text scan."""
     base, _, size = elf.text
-    sites = []
+    want = set(targets)
+    jumps = {target: [] for target in want}
+    calls = {target: [] for target in want}
     for pc in range(base, base + size, 4):
         word = elf.u32(pc)
+        opcode = word >> 26
+        if opcode not in (2, 3):
+            continue
         dest = ((pc + 4) & 0xF0000000) | ((word & 0x03FFFFFF) << 2)
-        if dest == target and word >> 26 == 3:
-            sites.append(pc)
-    return tuple(sites)
+        if dest not in want:
+            continue
+        (calls if opcode == 3 else jumps)[dest].append(pc)
+    return {target: (tuple(jumps[target]), tuple(calls[target])) for target in want}
+
+
+def formed_refs(elf, targets):
+    """Address refs using the same lui pairing as ps2elf.Elf.analyze.
+
+    Function starts reset the high half. The xref pickle is not written.
+    """
+    text, off, size = elf.text
+    words = struct.unpack_from('<%dI' % (size // 4), elf.d, off)
+    funcs = set()
+    for index, word in enumerate(words):
+        if word >> 26 != 3:
+            continue
+        dest = ((text + index * 4) & 0xF0000000) | ((word & 0x03FFFFFF) << 2)
+        if elf.in_text(dest):
+            funcs.add(dest)
+    for name in ('.data', '.rodata', '.ctors', '.dtors', '.sdata'):
+        _addr, sec_off, sec_size = elf.sections[name]
+        for index in range(0, sec_size - 3, 4):
+            value, = struct.unpack_from('<I', elf.d, sec_off + index)
+            if elf.in_text(value) and value % 4 == 0:
+                funcs.add(value)
+    for index in range(len(words) - 2):
+        if words[index] != 0x03E00008:
+            continue
+        follow = index + 2
+        while follow < len(words) and words[follow] == 0:
+            follow += 1
+        if follow < len(words) and (words[follow] & 0xFFFF8000) == 0x27BD8000:
+            funcs.add(text + follow * 4)
+    want = set(targets)
+    found = {target: [] for target in want}
+    high = {}
+    for index, word in enumerate(words):
+        pc = text + index * 4
+        if pc in funcs:
+            high = {}
+        opcode = word >> 26
+        rs, rt, imm = (word >> 21) & 31, (word >> 16) & 31, word & 0xFFFF
+        simm = imm - 0x10000 if imm & 0x8000 else imm
+        if opcode == 0x0F:
+            high[rt] = imm << 16
+        elif opcode in (0x09, 0x19) and rs in high:
+            value = (high[rs] + simm) & 0xFFFFFFFF
+            if value in found:
+                found[value].append(pc)
+            if rt == rs:
+                high.pop(rs, None)
+                high['v%d' % rt] = value
+        elif opcode == 0x0D and rs in high:
+            value = high[rs] | imm
+            if value in found:
+                found[value].append(pc)
+        elif opcode in (0x20, 0x21, 0x23, 0x24, 0x25, 0x27, 0x28, 0x29, 0x2B,
+                        0x31, 0x39, 0x37, 0x3F, 0x1E, 0x1F) and rs in high:
+            value = (high[rs] + simm) & 0xFFFFFFFF
+            if value in found:
+                found[value].append(pc)
+    return {target: tuple(found[target]) for target in want}
 
 
 def price_cases(path):
@@ -187,8 +253,21 @@ def price_cases(path):
 
 def restock_cases(path):
     cases = 0
-    sites = jal_sites(Elf(path), S.RESTOCK)
-    assert sites == (0x1D1474, 0x1D14B4), 'restock callers'
+    elf = Elf(path)
+    ctor, run = 0x1D13C8, 0x1D1490
+    sites = control_sites(elf, (S.RESTOCK, ctor, run))
+    refs = formed_refs(elf, (S.RESTOCK, ctor, run))
+    restock_j, restock_jal = sites[S.RESTOCK]
+    ctor_j, ctor_jal = sites[ctor]
+    run_j, run_jal = sites[run]
+    assert restock_jal == (0x1D1474, 0x1D14B4), 'restock jal'
+    assert restock_j == () and refs[S.RESTOCK] == () and elf.ptrs_to(S.RESTOCK) == []
+    assert ctor_j == () and ctor_jal == () and refs[ctor] == () and elf.ptrs_to(ctor) == []
+    assert run_j == () and run_jal == () and refs[run] == ()
+    assert elf.ptrs_to(run) == [0x50D78C]
+    print('PASS restock census restock_j=0 restock_jal=0x1d1474,0x1d14b4 '
+          'restock_refs=0 restock_ptrs=0 ctor_j=0 ctor_jal=0 ctor_refs=0 ctor_ptrs=0 '
+          'run_j=0 run_jal=0 run_refs=0 run_ptrs=0x50d78c', flush=True)
     cases += 1
     for seed in SEEDS:
         for gold in (0, 1, 2, 100, 1600, -1, -3, 0x7FFFFFFF, -2147483648):
@@ -334,18 +413,32 @@ def name_cases(path, disc):
     assert other == 0, 'storeLevel outside level scripts'
     assert literals == [0, 8, 7, 6, 5, 7, 6, 7, 0, 8, 7, 6, 5, 7, 6, 3]
     assert dynamic == 2 and gets == 0 and adds == 0
-    # A queued name of every length that occurs still does not land on a definition.
+    # Slot 13 of half 0. A zeroed slot would fail same_raw on the null pointer
+    # alone, so the slot is filled with a nonzero sentinel before the call.
     o = Original(path, fast=True)
     e, m = o.emu, o.mem
     m.w32(FLIP, 1)
     m.w32(QUEUED, 13)
+    slot = S.NAME_BUFFER + 13 * S.NAME_STRIDE
+    assert slot == 0x86B688 and S.SCAN_BASE == slot + 0x10
+    queued = b'entry-point-name-long'
+    assert len(queued) > 0x14
+    m.write(slot, b'\xa5' * (0x10 + S.ITEM_SIZE))
     sample = o.emu.alloc(0x50)
-    m.write(sample, b'entry-point-name-long')
+    m.write(sample, queued + b'\0')
     e.call(QUEUE, sample, max_steps=5000)
-    word = m.u32(S.SCAN_BASE)
-    assert word not in defs
-    assert not S.same_raw(struct.pack('<I', next(iter(defs))) + bytes(0x44),
-                          m.read(S.SCAN_BASE, S.ITEM_SIZE))
+    stored = m.read(slot, S.NAME_STRIDE)
+    assert stored.startswith(queued + b'\0'), 'queued name stored'
+    identity_matches = 0
+    for record in (stored[:S.ITEM_SIZE], m.read(S.SCAN_BASE, S.ITEM_SIZE)):
+        assert record[:4] not in (b'\x00\x00\x00\x00', b'\xa5\xa5\xa5\xa5')
+        assert int.from_bytes(record[:4], 'little') not in defs
+        for addr in defs:
+            headed = struct.pack('<I', addr) + bytes(S.ITEM_SIZE - 4)
+            if S.same_raw(headed, record) or S.same_raw(record, headed):
+                identity_matches += 1
+    assert identity_matches == 0
+    print('PASS queued_name stored=1 definitions=%d identity_matches=0' % len(defs), flush=True)
     # Missing variable: the stock prefix creates it at 0. Library calls stay stubbed.
     for seed in SEEDS:
         e = EE(path)
@@ -366,6 +459,7 @@ def name_cases(path, disc):
         assert e.mem.s8(0x86DA80 + len(name) + 1) == 0
         assert e.mem.u32(S.SHARED) == seed
     print('PASS name_windows=%d definition_hits=0 other_files=%d' % (windows, other), flush=True)
+    assert windows == 53903, 'name windows'
     return len(literals) + windows + 4
 
 

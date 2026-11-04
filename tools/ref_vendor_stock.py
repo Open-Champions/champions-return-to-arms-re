@@ -243,4 +243,3 @@ def restock_calls(gold):
         for budget in budgets:
             for attempt in range(5):
                 yield base, budget, attempt, category
-
