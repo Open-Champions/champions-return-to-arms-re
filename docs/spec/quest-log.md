@@ -219,8 +219,8 @@ fixture results, not an integrated quest playthrough.
 The page then reads that stored order. Titles planted as `Q1`, `Q0` are
 looked up in that order, not sorted. The same list with bit 1 set at
 difficulty 1, mission 1 (byte `0xf7` on all four records) draws those two
-rows and no extra row (lines 241–244, 255–257, and 320). The span compare at lines
-278–279 is only the check that the draw does not write the list.
+rows and no extra row (lines 241–244, 255–257, and 320). The span compare at line
+278 is only the check that the draw does not write the list; line 279 is the font-word check.
 
 **Script events that write a journal entry.** The only script commands that
 do are `addQuest` 0x1433c8 and `removeQuest` 0x143448. A disc walk in the
