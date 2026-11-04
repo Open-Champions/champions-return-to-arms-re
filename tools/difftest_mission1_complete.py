@@ -1,0 +1,597 @@
+#!/usr/bin/env python3
+"""Ordinary mission-1 completion against the original script host.
+
+Runs the shipped arena and exit entries in tools/ee_emu.py. Campaign natives
+(grant, quest variables, quest remove, newWorld, scaled time, pause, item
+count wrappers) are the original functions. World, cutscene, sound, HUD and
+bag-walk callees are stubbed. Both register seeds are accepted; this path
+does not draw the seed.
+
+Preload the stdlib dis module first. tools/dis.py shadows it, and this
+interpreter imports dis while building argparse:
+
+  PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; sys.argv=["difftest_mission1_complete.py","--elf","local/SLUS_209.73","--disc","<BG/DATA>"]; runpy.run_path("tools/difftest_mission1_complete.py", run_name="__main__")'
+"""
+import argparse
+import hashlib
+import os
+import struct
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from ee_emu import EE, EmuError
+from gob import gob_entries, lmp_entries
+import ref_mission1_complete as M
+import scr
+
+ELF_SHA256 = "292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675"
+PLAYERS = 0x4D8AF0
+REC = 0x4C30
+MISSION = 0x4BBF
+QUESTS = 0x41D0
+QUEST_COUNT = 0x43D0
+P_OBJECT = 0x43D8
+EVIL = 0x4C1A
+DECISION = 0x4C1B
+MEDAL = 0x4C0D
+GOLD = 0xE4
+EXP = 0x5C
+SEED = 0x404464
+NUM_PLAYERS = 0x4D8AE0
+DIFFICULTY = 0x4F719C
+PAUSED = 0x41B4F4
+CUTSCENE = 0x44FCD0
+JUMPGATE = 0x500AE8
+NETWORK = 0x402791
+MACHINE = 0x86B270
+DEFER_NAMES = 0x86B278
+DEFER_COUNT = 0x86DA78
+DEFER_QUEUED = 0x86DA7C
+DEFER_FLIP = 0x4F8690
+QUEST_VARS = 0x86DA80
+POST_ACTION = 0x86FA80
+SELECTED = 0x4039F8
+PENDING = 0x41B6D0
+ORIENT = 0x41B720
+NATIVE_TABLE = 0x403370
+SCR_LOAD, SCR_REGISTER = 0x13E8F8, 0x141310
+RUN_BY_NAME = 0x1ED694
+RUN_DEFERRED = 0x1ED5A0
+RUN_POST = 0x1EDAC0
+CLEAR_DEFERRED = 0x1EDA08
+GET_SCALED = 0x14412C
+GET_HUB = 0x1EC300
+ROW_AVAILABLE = 0x231078
+COUNT_ITEM = 0x1C5880
+FIND_ITEM = 0x1C5A70
+REMOVE_ITEM = 0x1C1CB0
+O_FLAGS = 0x0C
+OF_CREATURE = 0x20
+STUB_NAMES = {
+    "hideMonster", "showMonster", "killMonster", "deleteMonster", "setMonsterVal",
+    "autoPropSetState", "setCFlag", "setSaveInhibit", "cutScene", "soundSequence",
+    "setInfo", "reapEnemies", "addHelpMessage", "playGotItemSound", "givePlayerItem",
+    "activateMissionMenu", "startDialog", "showBust", "addParticleOnObject",
+    "changeSwoop", "activateStore", "getHitPoints", "addQuest", "showCompass",
+    "setInfo",
+}
+LEVELS = ("drunare", "drunarm", "strife", "drundar", "hub")
+
+
+def mission_addr(slot, difficulty, mission):
+    return PLAYERS + slot * REC + MISSION + difficulty * 13 + mission
+
+
+def load_level(disc, level):
+    gob = open(os.path.join(disc, level.upper() + ".GOB"), "rb").read()
+    off, size = next((o, s) for name, o, s in gob_entries(gob) if name.lower() == level + ".lmp")
+    lump = gob[off:off + size]
+    scripts = [(o, s) for name, o, s in lmp_entries(lump) if name.lower() == "script.scr"]
+    objects = [(o, s) for name, o, s in lmp_entries(lump) if name.lower() == "objects.ob"]
+    assert len(scripts) == 1 and len(objects) == 1
+    return lump[scripts[0][0]:scripts[0][0] + scripts[0][1]], lump[objects[0][0]:objects[0][0] + objects[0][1]]
+
+
+def push_arg(image, call_off, index):
+    """Integer or string cell pushed as argument `index` of the SYSREQ at call_off."""
+    parsed = scr.parse(image)
+    start = parsed["code"][0]
+    pool = dict(scr.strings(image, *parsed["strings"]))
+    # pushes are 8 bytes, right to left, then the byte count, immediately before SYSREQ.C
+    externals = [name for _, name in parsed["externals"]]
+    native = externals[struct.unpack_from("<I", image, start + call_off + 4)[0]]
+    argc = struct.unpack_from("<I", image, start + call_off - 4)[0] // 4
+    assert 0 <= index < argc
+    assert struct.unpack_from("<I", image, start + call_off)[0] == 0x7B
+    assert struct.unpack_from("<I", image, start + call_off - 8)[0] == 0x27
+    cell = struct.unpack_from("<I", image, start + call_off - 8 * (index + 1) - 4)[0]
+    assert struct.unpack_from("<I", image, start + call_off - 8 * (index + 1))[0] == 0x27
+    if cell in pool and cell >= 8:
+        return native, pool[cell]
+    return native, cell
+
+
+def death_links(blob):
+    count, _flags, strtab = struct.unpack_from("<hHi", blob, 0)
+
+    def text(off):
+        at = strtab + off
+        return blob[at:blob.index(b"\0", at)].decode("latin1")
+
+    rows, at = [], 8
+    for _ in range(count):
+        cls, size, _angle = struct.unpack_from("<ihH", blob, at)
+        props, cursor = [], at + 20
+        while cursor < at + size:
+            raw, = struct.unpack_from("<i", blob, cursor)
+            if raw == 0:
+                break
+            props.append(text(raw))
+            cursor += 4
+        kept = {}
+        for item in props:
+            if "=" not in item:
+                continue
+            key, value = item.split("=", 1)
+            if key in ("deathscript", "name", "action", "t"):
+                kept.setdefault(key, []).append(value)
+        rows.append((text(cls), kept))
+        at += size
+    return rows
+
+
+class Host:
+    def __init__(self, elf, seed):
+        self.ee = EE(elf)
+        self.ee.record_writes = False
+        self.ee.record_calls = False
+        self.seed = seed
+        self.counts = [0, 0, 0, 0]
+        self.removes = []
+        self.stubs = []
+        self.hp = 0
+        self.base = self.ee.alloc(0x80000, align=16)
+        self.names = self.ee.alloc(0x1000, align=16)
+        self.player_body = self.ee.alloc(0x40, align=16)
+        self._bind_services()
+        self.reset_campaign()
+
+    def _bind_services(self):
+        ee = self.ee
+        mem = ee.mem
+        handlers = {}
+        for index in range(191):
+            name_at = mem.u32(NATIVE_TABLE + 8 * index)
+            handler = mem.u32(NATIVE_TABLE + 8 * index + 4)
+            if name_at == 0 or handler == 0:
+                break
+            handlers[mem.cstr(name_at)] = handler
+        self.handlers = handlers
+        for name in STUB_NAMES:
+            handler = handlers[name]
+            ee.stub(handler, function=self._native_stub(name), name=name)
+        ee.stub(COUNT_ITEM, function=self._count_item, name="inventory_countItemByName")
+        ee.stub(FIND_ITEM, function=self._find_item, name="inventory_findItemBySubstring")
+        ee.stub(REMOVE_ITEM, function=self._remove_item, name="inventory_removeItem")
+
+    def _native_stub(self, name):
+        def run(_ee):
+            self.stubs.append(name)
+            if name == "getHitPoints":
+                return self.hp
+            return 0
+        return run
+
+    def _count_item(self, ee):
+        slot = ee.r[5] & 0xFFFFFFFF
+        if slot > 3:
+            return 0
+        return self.counts[slot]
+
+    def _find_item(self, ee):
+        mem = ee.mem
+        mem.w32(ee.r[6] & 0xFFFFFFFF, 0)
+        mem.w32(ee.r[7] & 0xFFFFFFFF, 0)
+        return 0
+
+    def _remove_item(self, ee):
+        self.removes.append((ee.r[4] & 0xFFFFFFFF, ee.r[5] & 0xFFFFFFFF, ee.r[6] & 0xFFFFFFFF))
+        return 0
+
+    def reset_campaign(self):
+        ee = self.ee
+        mem = ee.mem
+        mem.w32(SEED, self.seed)
+        mem.w32(NUM_PLAYERS, 1)
+        mem.w32(DIFFICULTY, 0)
+        mem.w32(PAUSED, 0)
+        mem.w8(CUTSCENE, 0)
+        mem.w32(JUMPGATE, 0)
+        mem.w8(NETWORK, 0)
+        mem.w32(SELECTED, 0)
+        mem.w32(DEFER_COUNT, 0)
+        mem.w32(DEFER_QUEUED, 0)
+        mem.w32(DEFER_FLIP, 0)
+        mem.write(POST_ACTION, b"\0" * 16)
+        mem.write(PENDING, b"\0" * 80)
+        mem.w8(ORIENT, 0)
+        mem.write(QUEST_VARS, b"\0" * 0x800)
+        mem.w32(self.player_body + O_FLAGS, OF_CREATURE)
+        for slot in range(4):
+            rec = PLAYERS + slot * REC
+            mem.write(rec + MISSION, b"\0" * (5 * 13))
+            mem.w32(rec + QUEST_COUNT, 0)
+            mem.write(rec + QUESTS, b"\0" * (8 * 0x40))
+            mem.w32(rec + P_OBJECT, self.player_body if slot == 0 else 0)
+            mem.w8(rec + EVIL, 0)
+            mem.w8(rec + DECISION, 0)
+            mem.write(rec + MEDAL, b"\0" * 13)
+            mem.w32(rec + GOLD, 0)
+            mem.w32(rec + EXP, 0)
+        self.counts[:] = (0, 0, 0, 0)
+        self.removes.clear()
+        self.stubs.clear()
+        self.hp = 0
+        self.set_mission(0, 1, 0, 1)
+
+    def set_mission(self, slot, mission, difficulty, value):
+        self.ee.mem.w8(mission_addr(slot, difficulty, mission), value)
+
+    def mission(self, slot, mission, difficulty=0):
+        return self.ee.mem.u8(mission_addr(slot, difficulty, mission))
+
+    def place(self, image):
+        ee = self.ee
+        ee.mem.write(self.base, image + bytes(0x200))
+        ee.mem.w32(MACHINE, self.base)
+        error = ee.call(SCR_LOAD, self.base, self.base + 0x60, max_steps=2000000)
+        bound = ee.call(SCR_REGISTER, self.base, NATIVE_TABLE, 0xFFFFFFFF, max_steps=2000000)
+        assert error == 0 and bound == 0, (error, bound)
+        ee.mem.w32(DEFER_COUNT, 0)
+        ee.mem.w32(DEFER_QUEUED, 0)
+        ee.mem.w32(DEFER_FLIP, 0)
+        ee.mem.write(POST_ACTION, b"\0")
+
+    def run(self, name):
+        ee = self.ee
+        ee.mem.write(self.names, name.encode("latin1") + b"\0")
+        try:
+            return ee.call(RUN_BY_NAME, self.names, max_steps=2000000) & 0xFFFFFFFF
+        except EmuError as exc:
+            raise AssertionError("%s: %s" % (name, exc))
+
+    def deferred(self):
+        try:
+            self.ee.call(RUN_DEFERRED, max_steps=2000000)
+        except EmuError as exc:
+            raise AssertionError("deferred: %s" % exc)
+
+    def post(self):
+        try:
+            self.ee.call(RUN_POST, max_steps=2000000)
+        except EmuError as exc:
+            raise AssertionError("post: %s" % exc)
+
+    def clear_queue(self):
+        self.ee.call(CLEAR_DEFERRED, max_steps=100000)
+
+    def scaled(self, count):
+        # Script natives take (amx, params). params[0] is the byte count.
+        mem = self.ee.mem
+        mem.w32(self.names, 4)
+        mem.w32(self.names + 4, count & 0xFFFFFFFF)
+        return self.ee.call(GET_SCALED, self.base, self.names, max_steps=100000) & 0xFFFFFFFF
+
+    def cstr(self, addr, limit=80):
+        return self.ee.mem.cstr(addr, limit)
+
+    def post_name(self):
+        return self.cstr(POST_ACTION)
+
+    def pending(self):
+        return self.cstr(PENDING)
+
+    def vars(self):
+        mem = self.ee.mem
+        out, at = {}, QUEST_VARS
+        while mem.u8(at) != 0 and at < QUEST_VARS + 0x800:
+            name = mem.cstr(at)
+            at += len(name) + 1
+            out[name] = mem.s8(at)
+            at += 1
+        return out
+
+    def queued_names(self):
+        mem = self.ee.mem
+        count = mem.u32(DEFER_QUEUED)
+        half = (mem.u32(DEFER_FLIP) & 1) ^ 1
+        names = []
+        for index in range(count):
+            names.append(mem.cstr(DEFER_NAMES + (half * 64 + index) * 0x50))
+        return names
+
+    def seed_now(self):
+        return self.ee.mem.u32(SEED)
+
+    def plant_quest(self, title):
+        mem = self.ee.mem
+        mem.write(PLAYERS + QUESTS, title.encode("latin1") + b"\0")
+        mem.write(PLAYERS + QUESTS + 0x20, b"body\0")
+        mem.write(PLAYERS + QUESTS + 0x40, b"Keep\0")
+        mem.write(PLAYERS + QUESTS + 0x60, b"body\0")
+        mem.w32(PLAYERS + QUEST_COUNT, 2)
+
+
+def s32(value):
+    value &= 0xFFFFFFFF
+    return value - 0x100000000 if value & 0x80000000 else value
+
+
+def check_static(images, objects):
+    checks = 0
+    for level, call, entry in (
+            ("drunare", 0xAC4, "levelChange"),
+            ("drunarm", 0x97C, "shardCheckLoop"),
+            ("strife", 0x1ABC, "exitzone"),
+            ("drundar", 0x19EC, "exitzone")):
+        native, arg = push_arg(images[level], call, 0)
+        assert native == "grantMission" and arg == 1, (level, native, arg)
+        checks += 1
+    native, arg = push_arg(images["drunare"], 0xAF0, 0)
+    assert native == "newWorld" and arg == "hub2"
+    native, arg = push_arg(images["drunarm"], 0xC90, 0)
+    assert native == "newWorld" and arg == "strife"
+    native, arg = push_arg(images["strife"], 0x1B94, 0)
+    assert native == "newWorld" and arg == "drunarm"
+    native, arg = push_arg(images["drundar"], 0x1AC4, 0)
+    assert native == "newWorld" and arg == "drunare"
+    native, arg = push_arg(images["drunarm"], 0x89C, 0)
+    assert native == "playerHasItem" and arg == "shardofwar"
+    checks += 5
+    links = death_links(objects["drunare"])
+    by_class = {}
+    for cls, kept in links:
+        by_class.setdefault(cls, []).append(kept)
+    assert [row.get("deathscript") for row in by_class["UndeadKnight1"]] == [["setv4d6b"]]
+    assert [row.get("deathscript") for row in by_class["UndeadKnight2"]] == [["setv772a"]]
+    assert [row.get("deathscript") for row in by_class["UndeadKnight3"]] == [["setv5138"]]
+    assert [row.get("deathscript") for row in by_class["UndeadKnight4"]] == [["setvcccf"]]
+    assert [row.get("deathscript") for row in by_class["CazicAvatar"]] == [["callScria381"]]
+    assert all(row.get("name") == ["knight"] for row in by_class["UndeadKnight1"])
+    assert by_class["CazicAvatar"][0].get("name") == ["avatar"]
+    checks += 6
+    return checks
+
+
+def run_evil(host, image):
+    host.reset_campaign()
+    host.place(image)
+    _native, title = push_arg(image, 0xA4C, 0)
+    host.plant_quest(title)
+    assert host.run("callScria381") == 0
+    assert host.queued_names() == ["bossDefeatedDelay"]
+    assert host.mission(0, 1) == 1
+    host.ee.mem.w32(host.names, 0)
+    paused = host.ee.call(host.handlers["gamePaused"], host.base, host.names, max_steps=100000) & 0xFFFFFFFF
+    expected = M.evil_end_frame(lambda n: s32(host.scaled(n)))
+    noticed = None
+    ended = None
+    for frame in range(expected["frame"] + 8):
+        host.deferred()
+        variables = host.vars()
+        if noticed is None and variables.get("endsound") == 1:
+            noticed = frame
+        if ended is None and host.post_name() == "levelChange":
+            ended = frame
+            break
+    if noticed != expected["notice_frame"] or ended != expected["frame"]:
+        raise AssertionError("pause %s notice %s/%s end %s/%s vars %s" % (
+            paused, noticed, expected["notice_frame"], ended, expected["frame"],
+            sorted(host.vars())))
+    assert host.post_name() == "levelChange"
+    assert host.vars().get("killedav") == 1
+    assert host.vars().get("endsound") == 1
+    assert host.vars().get("firstmissionever") == 1
+    assert host.ee.mem.u32(PLAYERS + QUEST_COUNT) == 1
+    assert host.cstr(PLAYERS + QUESTS) == "Keep"
+    assert "cutScene" in host.stubs and "reapEnemies" in host.stubs
+    assert host.pending() == ""
+    assert [host.mission(slot, 1) for slot in range(4)] == [1, 0, 0, 0]
+    host.post()
+    assert [host.mission(slot, 1) for slot in range(4)] == [3, 2, 2, 2]
+    assert host.pending() == "hub2"
+    assert host.ee.mem.u8(ORIENT) == 0xFF
+    assert host.post_name() == ""
+    assert host.mission(0, 2) == 0
+    assert host.ee.mem.u8(PLAYERS + EVIL) == 0
+    assert host.ee.mem.u8(PLAYERS + MEDAL) == 0
+    assert host.ee.mem.u32(PLAYERS + GOLD) == 0
+    assert host.ee.mem.u32(PLAYERS + EXP) == 0
+    for difficulty in range(1, 5):
+        assert host.mission(0, 1, difficulty) == 0
+    return expected["frame"], expected["notice_frame"]
+
+
+def run_evil_gates(host, image):
+    host.reset_campaign()
+    host.place(image)
+    host.ee.mem.w32(PAUSED, 1)
+    host.run("callScria381")
+    for _ in range(8):
+        host.deferred()
+    assert host.post_name() == ""
+    assert host.mission(0, 1) == 1
+    host.ee.mem.w32(PAUSED, 0)
+    host.clear_queue()
+    host.run("endmission")
+    assert host.post_name() == "levelChange"
+    assert host.mission(0, 1) == 1
+    host.vars()  # killedAv is now 1; a second endmission must not grant or replace the post
+    host.ee.mem.write(POST_ACTION, b"\0")
+    host.run("endmission")
+    assert host.post_name() == ""
+    assert host.mission(0, 1) == 1
+    host.ee.mem.w32(DIFFICULTY, 1)
+    host.run("levelChange")
+    assert host.mission(0, 1, 0) == 1
+    assert host.mission(0, 1, 1) == 2
+    assert host.pending() == "hub2"
+
+
+def run_good(host, image):
+    host.reset_campaign()
+    host.place(image)
+    host.counts[0] = 0
+    assert host.run("start") == 0
+    assert host.queued_names() == ["shardCheckLoop"]
+    assert host.mission(0, 1) == 1
+    host.counts[0] = 1
+    grant = M.shard_grant_frame(lambda _frame: 1)
+    assert grant == M.shard_check_frame(1) == 25
+    for frame in range(grant):
+        host.deferred()
+        assert host.mission(0, 1) == 1
+    host.deferred()
+    assert [host.mission(slot, 1) for slot in range(4)] == [3, 2, 2, 2]
+    raised = [name for name, value in host.vars().items() if value == 1]
+    assert "firstmissionever" in raised, sorted((len(name), value) for name, value in host.vars().items())
+    others = [name for name in raised if name != "firstmissionever"]
+    assert len(others) == 1 and len(others[0]) == 14 and others[0].isascii(), (
+        [(len(name), value) for name, value in host.vars().items()])
+    assert host.post_name() == "endmission"
+    assert host.pending() == ""
+    assert host.removes == []
+    assert host.mission(0, 2) == 0
+    host.post()
+    assert host.mission(0, 1) == 3
+    assert host.pending() == ""
+    assert host.post_name() == ""
+    assert "addHelpMessage" in host.stubs and "soundSequence" in host.stubs
+    assert "grantBronze" not in host.stubs
+
+    host.reset_campaign()
+    host.place(image)
+    host.counts[0] = 1
+    host.run("start")
+    first = M.shard_check_frame(1)
+    for _frame in range(first + 1):
+        host.deferred()
+    assert host.mission(0, 1) == 1
+    host.counts[0] = 2
+    second = M.shard_grant_frame(lambda frame, mark=first: 2 if frame > mark else 1, snapshot=1)
+    assert second == M.shard_check_frame(2)
+    for _frame in range(first + 1, second):
+        host.deferred()
+        assert host.mission(0, 1) == 1
+    host.deferred()
+    assert host.mission(0, 1) == 3
+    assert host.removes == [(0, 0, 0)]
+
+    host.reset_campaign()
+    host.place(image)
+    host.ee.mem.w32(PAUSED, 1)
+    host.counts[0] = 1
+    host.run("start")
+    for _ in range(25):
+        host.deferred()
+    assert host.mission(0, 1) == 1
+
+
+def hp_boundary(host, image):
+    taken = []
+    for hp in (-100, -1, 0, 1, 50, 99, 100, 101, 500, 1000, 5000, 100000):
+        host.reset_campaign()
+        host.place(image)
+        host.hp = hp
+        host.run("rallosHPcheck")
+        taken.append((hp, host.queued_names()))
+    end = [hp for hp, names in taken if names == ["endDelay"]]
+    watch = [hp for hp, names in taken if names == ["rallosHPcheck"]]
+    assert end and watch and max(end) < min(watch), (end, watch)
+    assert (max(end), min(watch)) == (0, 1), (end, watch)
+    return max(end), min(watch)
+
+
+def run_exits(host, images):
+    for level, onward in (("strife", "drunarm"), ("drundar", "drunare")):
+        host.reset_campaign()
+        host.place(images[level])
+        assert host.handlers["demoRunning"]
+        returned = host.ee.call(host.handlers["demoRunning"], max_steps=100000) & 0xFFFFFFFF
+        assert returned == 0
+        assert host.run("exitzone") == 0
+        assert host.pending() == onward
+        assert host.mission(0, 1) == 1
+        assert host.post_name() == ""
+        assert host.queued_names() == []
+
+
+def run_hub_view(host, images):
+    host.reset_campaign()
+    host.place(images["drunare"])
+    host.ee.mem.w32(DIFFICULTY, 0)
+    host.run("levelChange")
+    assert host.mission(0, 1) == 3
+    host.ee.mem.w8(PLAYERS + EVIL, 0)
+    host.ee.mem.w8(PLAYERS + DECISION, 0)
+    plain = host.ee.call(GET_HUB, max_steps=100000) & 0xFFFFFFFF
+    assert host.cstr(plain) == "hub"
+    host.ee.mem.w8(PLAYERS + EVIL, 1)
+    host.ee.mem.w8(PLAYERS + DECISION, 1)
+    evil = host.ee.call(GET_HUB, max_steps=100000) & 0xFFFFFFFF
+    assert host.cstr(evil) == "hub2"
+    host.place(images["hub"])
+    assert host.run("if441a") == 0
+    assert host.run("if7b2c") == 1
+    before = host.ee.call(ROW_AVAILABLE, 0, max_steps=1000000) & 0xFFFFFFFF
+    other = host.ee.call(ROW_AVAILABLE, 1, max_steps=1000000) & 0xFFFFFFFF
+    assert s32(before) == 1 and s32(other) == 0
+    assert host.run("setMissic270") == 0
+    assert host.mission(0, 2) == 1
+    assert host.mission(0, 1) == 3
+    assert host.run("if7b2c") == 0
+    assert s32(host.ee.call(ROW_AVAILABLE, 1, max_steps=1000000) & 0xFFFFFFFF) == 1
+    host.set_mission(0, 2, 0, 0)
+    host.stubs.clear()
+    assert host.run("setMissid125") == 0
+    assert host.mission(0, 2) == 1
+    assert "activateStore" in host.stubs
+
+    host.reset_campaign()
+    host.place(images["hub"])
+    host.set_mission(0, 1, 0, 1)
+    assert host.run("if441a") == 1
+    host.ee.mem.write(host.names, b"startedMission1\0")
+    host.ee.call(0x1ED854, host.names, 1, max_steps=100000)
+    assert host.run("if441a") == 0
+    host.set_mission(0, 1, 0, 0)
+    assert host.run("if441a") == 0
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--elf", required=True)
+    parser.add_argument("--disc", required=True)
+    parser.add_argument("--seed", type=int, default=20973)
+    args = parser.parse_args()
+    digest = hashlib.sha256(open(args.elf, "rb").read()).hexdigest()
+    assert digest == ELF_SHA256, digest
+    images, objects = {}, {}
+    for level in LEVELS:
+        images[level], objects[level] = load_level(args.disc, level)
+    checks = check_static(images, objects)
+    host = Host(args.elf, args.seed)
+    end_call, notice_call = run_evil(host, images["drunare"])
+    run_evil_gates(host, images["drunare"])
+    run_good(host, images["drunarm"])
+    low, high = hp_boundary(host, images["drunarm"])
+    run_exits(host, images)
+    run_hub_view(host, images)
+    assert host.seed_now() == args.seed
+    checks += end_call + notice_call + low + high
+    print("PASS seed %d checks %d notice-call %d end-call %d hp %d/%d" % (
+        args.seed, checks, notice_call, end_call, low, high))
+
+
+if __name__ == "__main__":
+    main()

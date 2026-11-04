@@ -276,20 +276,169 @@ composed dialog controls; private input is read only):
 PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_mission_lifecycle.py --elf local/SLUS_209.73 --iso local/game.iso
 ```
 
+## Ordinary mission 1 completion (2026-11-03)
+
+The offer and menu notes above do not mark mission 1 complete.
+`tools/difftest_mission1_complete.py` runs the shipped entries in the original
+interpreter. `grantMission` `0x1420a4`, `mission_setComplete` `0x1bf770`,
+`getScaledTime` `0x14412c`, `gamePaused` `0x14699c`, `demoRunning` `0x141764`,
+`playerHasItem` `0x145590`, `onePlayerHasItem` `0x145690`,
+`removePlayerItem` `0x14598c`, `removeQuest` `0x143448`, `newWorld` `0x143dd0`,
+`script_runDeferred` `0x1ed5a0` and `script_runPostAction` `0x1edac0` are the
+original functions. Cutscene, sound, HUD, monster and bag-walk callees are
+stubbed. `inventory_countItemByName` `0x1c5880` returns the test's counts;
+`inventory_findItemBySubstring` `0x1c5a70` and `inventory_removeItem`
+`0x1c1cb0` record one removal and do not walk a bag. The register seed is
+unchanged. This is not a played fight, a cutscene, or a level load.
+
+**Observed:** the only `grantMission(1)` sites in the mission-1 levels are
+`drunare` `levelChange` at `0xac4`, `drunarm` `shardCheckLoop` at `0x97c`,
+and the `exitzone` sites already named in `docs/quests.md` (`strife` `0x1abc`,
+`drundar` `0x19ec`). `blood1` has none. `hub` `start` grants mission 0, not
+mission 1. None of those mission-1 sites calls `setMissionAvailable` for
+mission 2, `grantBronze`, `grantSilver`, `grantGold`, or `givePlayerExp`.
+
+### Exits do not complete it
+
+**Executed:** real `demoRunning` returns 0. `strife` `exitzone` then requests
+`drunarm`. `drundar` `exitzone` requests `drunare`. Mission 1's byte stays
+available-only, the post-action name stays empty, and the deferred queue stays
+empty. The demo/counter `grantMission(1)` / `newWorld('hub')` branch is the
+one already mapped at `t3/research-strife-drundar` `docs/strife-drundar.md`
+lines 198–201 and 249–255; this run does not take it.
+
+### Evil arena
+
+**Observed:** `CazicAvatar` `deathscript` is `callScria381`, which only calls
+`bossDefeatedPause`. That entry zeros script global 0 and queues
+`bossDefeatedDelay`. The four `knight` death scripts set `knight1`..`knight4`
+and are not read by the completion entries.
+
+**Executed:** with pause clear, deferred call 0 only promotes that queued
+name. Call 252 sets quest variables `endsound` and `firstmissionever` to 1
+and does not set the post action or the complete bit. Call 877 runs
+`endmission` because `killedAv` was clear: post action `levelChange`, the
+stubbed cutscene and `reapEnemies`, `removeQuest` of that entry's title, and
+`killedAv` stored lowercased as `killedav` (`vars_set` already lowercases). The mission byte is still only available. Eight paused calls
+never reach that post action. A second `endmission` after `killedAv` is set
+does not replace a cleared post action and does not grant.
+`tools/ref_mission1_complete.py` `evil_end_frame` is this queue, using the
+original `getScaledTime` as the oracle. The same threshold wording is the
+unread script note in `docs/spec/arena-monsters.md` lines 959–967; the frame
+indexes here are the executed ones.
+
+**Executed:** `script_runPostAction` then runs `levelChange`. `grantMission(1)`
+sets bit 1 on all four records at the current difficulty. Slot 0 goes from
+available (`1`) to available and complete (`3`); the other three slots, which
+were 0, become complete-only (`2`). The other four difficulty rows stay 0.
+Direct `levelChange` at difficulty 1 writes that row instead and leaves
+difficulty 0 available-only. `newWorld('hub2')` stores `hub2` at `0x41b6d0`
+and orientation `0xff` at `0x41b720` with the evil and decision bytes still
+clear, so this request is not `game_getHubName`. Gold, experience, the medal
+byte, and mission 2's byte stay 0. The quest list loses the matching title
+and keeps the other test entry. Same-act loads do not do that removal; both
+arena names and both hubs are act 0 (`t3/research-story-route-r3` `019a155`,
+`docs/story-route.md` lines 271–276) and a same-act change does not clear
+bags or quest variables (`t3/research-inventory-reset` `6f8beb9`,
+`docs/inventory-reset.md` lines 127–129).
+
+### Good arena
+
+**Executed:** `start` snapshots `playerHasItem('shardofwar')` into script
+global `0xc` and queues `shardCheckLoop`. The same promotion rule applies.
+Each later unpaused call increments global `0x8`. When that global reaches
+25 it is cleared and the live count is compared with the snapshot. A live
+count that is not greater requeues. A greater count plays the stubbed item
+sound, the stubbed help message, sets a 14-character quest variable and
+`firstmissionever` to 1, calls `grantMission(1)`, posts `endmission`, and
+does not requeue. With the snapshot at 0 and the live count at 1, that is
+deferred call 25. With the snapshot at 1, call 25 does not grant; raising
+the live count to 2 grants on call 50. Twenty-five paused calls do not
+grant. The bytes written are the same four-record pattern as `levelChange`.
+`endmission` here is only the stubbed help message and sound: it does not
+grant again and it does not request a level. Pending level stays empty.
+
+**Executed:** one `removePlayerItem` runs only when `onePlayerHasItem`
+returns a count above 1. A rise from 0 to 1 grants and removes nothing. A
+rise from 1 to 2 grants and removes one cell from slot 0 (the stub records
+the slot, index and bag). The real bag walk and equipped-pointer fixups stay
+`inventory_removeItem` as already bounded in `6f8beb9`.
+
+**Executed, separate from the grant:** `rallosHPcheck` queues `endDelay`
+when the stubbed `getHitPoints('rallos')` cell is 0 or below, and requeues
+itself when that cell is 1 or above. `endDelay` leads to `playRallosRuns`,
+which removes a quest and posts `removeRallos`. That chain has no
+`grantMission`. Who reaches the trigger, and the real hit-point float before
+`getHitPoints` converts it, stay **Unknown**.
+
+### What the hub and the menu then read
+
+**Executed** on the bytes `levelChange` just wrote, evil and decision still
+clear: `game_getHubName` `0x1ec300` returns `hub`. With both of those bits
+set on difficulty 0 it returns `hub2`. That agrees with the matrix already
+executed in `docs/quests.md` lines 279–283; the arena request above does not
+consult it.
+
+**Executed** with the hub script loaded on those same mission bytes:
+`if441a` (`0x198`) returns 0, so the mission-1 offer condition
+(available, not complete, and `startedMission1` clear) is false. The same
+entry returns 1 when the byte is available-only and `startedMission1` is
+clear, and 0 when that variable is 1 or the byte is 0. `if7b2c` (`0x734`)
+returns 1 while mission 2 is unavailable and 0 after `setMissic270`
+(`0x7b0`) has called `setMissionAvailable(2,1)`. `setMissid125` (`0x7fc`)
+also sets that bit and then calls the stubbed store open. Row helper
+`0x231078` returns 1 for row 0 and 0 for row 1 until that bit is set, then
+1 for row 1. Mission 1's byte stays complete. Which dialog choice reaches
+`setMissic270` or `setMissid125` stays the executed node-7 result in this
+file (`e5c6176`, lines 99–113), not a new dialog trace.
+
+### What the client can implement from this
+
+1. Do not mark mission 1 complete on the `blood1` exits or on the ordinary
+   `strife` / `drundar` exits. Those exits request `drunarm` or `drunare`.
+2. On the evil arena, run the avatar death entry, then the deferred delay.
+   Set `endsound` and `firstmissionever` when scaled time passes 250. On the
+   call that passes 1500, if `killedAv` is clear, remove that quest, remember
+   `levelChange`, and only then let the post-action grant mission 1 and
+   request `hub2`. Do not grant on the death tick itself.
+3. On the good arena, remember the `shardofwar` count at `start`. Every 25
+   unpaused deferred calls, if the live count is greater, grant mission 1,
+   set `firstmissionever`, and post the help/sound entry. Remove one
+   `shardofwar` only from a slot whose count is above 1. Do not request the
+   hub from this grant, and do not grant from the Rallos hit-point chain.
+4. Leave mission 2 unavailable until a hub action runs `setMissionAvailable(2,1)`.
+   The menu row for mission 2 stays locked until that write. `game_getHubName`
+   still needs the evil bit, the decision bit, and the complete bit; the evil
+   arena's own request is `hub2` even when those bits were clear at the grant.
+5. Keep medals, gold, experience, and the other difficulty rows unchanged
+   across both grants. Apply `removeQuest` only for the evil `endmission`
+   title. Do not run the act-change bag clear: these names stay in act 0.
+
+**Unknown:** the fight that reaches the avatar death script; the trigger that
+reaches `rallosHPcheck`; cutscene playback; the real bag cell `removePlayerItem`
+would delete; the loader and arrival after `hub2` is requested; the good
+path's later return to a hub; `blomedal`'s medal grants, which these entries
+do not call.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; sys.argv=["difftest_mission1_complete.py","--elf","local/SLUS_209.73","--disc","<BG/DATA>","--seed","20973"]; runpy.run_path("tools/difftest_mission1_complete.py", run_name="__main__")'
+```
+
 ## Remaining research / client boundary
 
-**Unknown:** complete campaign prerequisite graph, a complete first-act chain,
-and every offer/turn-in outside this one hub dialog. Specifically: actual actor
-resource/entry binding and containment; level startup and dialog initiation;
-item and boss gates feeding completion; alternative hub/alignment paths;
-variable mission arguments; mission 8/9 availability writers; replay and repeat
-paths outside tested records; demo-specific behavior; physical travel and
-save/load composition. No order is derived from filenames or mission indices.
+**Unknown:** complete campaign prerequisite graph beyond mission 1's two
+completion writers above, and every offer/turn-in outside this one hub
+dialog. Specifically: actual actor resource/entry binding and containment;
+level startup and dialog initiation; the good arena's return to a hub;
+mission 8/9 availability writers; replay and repeat paths outside tested
+records; physical travel and save/load composition. No order is derived
+from filenames or mission indices.
 
-The next round must bind real world entry/interaction to these dialog paths,
-then execute each first-act completion writer and its positive/negative
-containment/item/quest-variable controls, before claiming the first act complete.
-The client's blanket campaign refusal cannot be removed from this evidence.
+Mission 1's two completion writers are the section above. The next round
+must still bind real world entry to the avatar death and to the good arena's
+return, and execute the later acts' completion writers, before claiming the
+first act or the campaign complete. The client's blanket campaign refusal
+cannot be removed from this evidence.
 A bounded client binding can cite the executed second-offer action only when
 its actual dialog/resource/state inputs and admission conditions are established.
 
