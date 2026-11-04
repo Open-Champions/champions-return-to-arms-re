@@ -256,18 +256,14 @@ def run_cases(elf, tables, seed):
                  and not (d.flags & FLAG_41))
     plain = [d for d in defs if not (d.flags & FLAG_STACK) and not (d.flags & FLAG_41)]
     heavy = next(d for d in plain if d.weight != 0)
-    weapon = [d for d in tables.defs if not d.preset and d.name and d.category == 0
-              and d.slot in (0, 2) and d.slot != 8 and not (d.flags & FLAG_41)]
     pinned = tables.by_addr.get(0x3F7F50)
-    if pinned is not None:
-        weapon = [pinned] + [d for d in weapon if d is not pinned]
     refused = next((d for d in defs if d.flags & FLAG_41 and 0 <= d.category <= 2
                     and ((d.flags >> 11) & 0x1F) == 0), None)
     flag39_rows = [d for d in tables.defs if not d.preset and d.name and d.flags & FLAG_39]
     cats = {}
     for d in flag39_rows:
         cats[d.category] = cats.get(d.category, 0) + 1
-    check(len(flag39_rows) > 0,
+    check(len(flag39_rows) == 43 and all(d.category == 2 for d in flag39_rows),
           'base rows with flag bit 39: %d, by category %s' % (len(flag39_rows), sorted(cats.items())))
 
     emu = EE(elf)
@@ -341,8 +337,11 @@ def run_cases(elf, tables, seed):
     emu.mem.w32(bogus, 0)
     v0, _ = call_give(emu, strings, d.name, 1, 0, None)
     equips = calls_to(emu, EQUIP, GIVE, GIVE_END)
-    check(v0 == 0 and bag_count(emu, 0, cat) == 64 and emu.mem.u32(cell(0, cat, 0)) == 0,
-          'count 64 does not append and the handler still returns 0')
+    defined = [cell(0, cat, i) for i in range(64)]
+    copied = [w for w in emu.writes if w[1] in defined]
+    check(v0 == 0 and bag_count(emu, 0, cat) == 64
+          and all(emu.mem.u32(addr) == 0 for addr in defined) and not copied,
+          'count 64 leaves all 64 definition words empty and the handler still returns 0')
     check(emu.mem.u32(R.rec(0) + R.P_LOAD) == F_64,
           'the failed give still recomputes load across the 64 empty cells')
     check(len(equips) == 1 and (equips[0].args[0] & R.M32) == 0
@@ -376,46 +375,45 @@ def run_cases(elf, tables, seed):
         if bag_count(emu, 0, d.category) == 1:
             accepted = 'retail row'
             break
-    if accepted is None:
-        d = by_cat[2]
-        old = emu.mem.u16(d.addr + 0xC)
-        emu.mem.w16(d.addr + 0xC, 0)
-        prepare(emu, seed, 1)
-        emu.mem.w32(R.rec(0) + R.P_LOAD_LIMIT, 0)
-        call_give(emu, strings, d.name, 0, 0, None)
-        emu.mem.w16(d.addr + 0xC, old)
-        if bag_count(emu, 0, d.category) == 1 and not calls_to(emu, 0x14FDB8):
-            accepted = 'count halfword forced to 0'
-    check(accepted is not None,
-          'zero weight is given at limit 0 (%s, retail zero rows %d)' % (accepted, len(natural)))
+    zero_weight = sum(d.weight == 0 for d in natural)
+    zero_count = sum(d.count == 0 for d in natural)
+    check(len(natural) == 44 and accepted == 'retail row'
+          and zero_weight == 44 and zero_count == 0,
+          'one retail zero-weight row is given at limit 0 (%s, rows %d, zero-weight %d, zero-count %d)'
+          % (accepted, len(natural), zero_weight, zero_count))
 
-    # Equipment. A permitted weapon is stored. A flag-41 item stays in the bag.
+    # Equipment. Row 0x3f7f50 is the one the note names. The weapon-class
+    # byte is filled with a sentinel first: that row's subtype is 0, so a
+    # byte left at 0 would not show the store.
     equipped = False
-    reasons = []
-    for d in weapon[:40]:
+    reason = None
+    subtype = None
+    if pinned is not None:
+        d = pinned
         prepare(emu, seed, 1)
         call_give(emu, strings, d.name, 0, 0, None)
         at = cell(0, d.category, 0)
-        if emu.mem.u32(at) != d.addr:
-            reasons.append('other-row')
-            continue
-        reason = R.s32(emu.call(CHECK_EQUIP, 0, at, max_steps=2000000))
-        reasons.append(reason)
-        if reason != 0:
-            continue
-        prepare(emu, seed, 1)
-        call_give(emu, strings, d.name, 1, 0, None)
-        at = cell(0, d.category, 0)
-        ptr = emu.mem.u32(R.rec(0) + 0x43F0 + 4 * (d.slot & 0xFF))
-        idles = calls_to(emu, 0x1B2470, GIVE, GIVE_END)
-        names = calls_to(emu, RUN_BY_NAME)
-        equipped = (ptr == at and emu.mem.u32(at) == d.addr
-                    and emu.mem.u8(R.rec(0) + 0x4A86) == (d.subtype & 0xFF)
-                    and len(idles) == 1 and (idles[0].args[0] & R.M32) == 0
-                    and len(names) == 1 and emu.mem.u32(0x86B270) == 0)
-        break
-    check(equipped, 'equip=1 stores the new cell, sets the weapon class, calls resetIdleAnim; reasons %s'
-          % reasons[:8])
+        if emu.mem.u32(at) == d.addr:
+            emu.set_reg('v0', 0x5A5A5A5A)
+            reason = R.s32(emu.call(CHECK_EQUIP, 0, at, max_steps=2000000))
+            prepare(emu, seed, 1)
+            emu.mem.w8(R.rec(0) + 0x4A86, 0xA5)
+            call_give(emu, strings, d.name, 1, 0, None)
+            at = cell(0, d.category, 0)
+            ptr = emu.mem.u32(R.rec(0) + 0x43F0 + 4 * (d.slot & 0xFF))
+            klass = R.rec(0) + 0x4A86
+            subtype = d.subtype & 0xFF
+            wrote = any(addr == klass and size == 1 and value == subtype
+                        for _pc, addr, size, value in emu.writes)
+            idles = calls_to(emu, 0x1B2470, GIVE, GIVE_END)
+            names = calls_to(emu, RUN_BY_NAME)
+            equipped = (d.addr == 0x3F7F50 and reason == 0 and ptr == at
+                        and emu.mem.u32(at) == d.addr
+                        and emu.mem.u8(klass) == subtype and wrote
+                        and len(idles) == 1 and (idles[0].args[0] & R.M32) == 0
+                        and len(names) == 1 and emu.mem.u32(0x86B270) == 0)
+    check(equipped, 'equip of 0x3f7f50 stores the new cell and replaces weapon-class sentinel 0xa5 with subtype %s; check %s'
+          % (subtype, reason))
 
     if refused is not None:
         prepare(emu, seed, 1)
@@ -491,6 +489,12 @@ def run_cases(elf, tables, seed):
     pri, error = call_give(emu, strings, full.name, 0, 0, machine)
     check(pri == 0 and error == 0 and bag_count(emu, 0, full.category) == 64,
           'a full bag is still script result 0')
+    prepare(emu, seed, 1)
+    emu.mem.w32(R.rec(0) + R.P_LOAD_LIMIT, 0)
+    pri, error = call_give(emu, strings, heavy.name, 0, 0, machine)
+    check(pri == 0 and error == 0 and bag_count(emu, 0, heavy.category) == 0
+          and len(calls_to(emu, 0x14FDB8)) == 1 and not calls_to(emu, 0x1590EC),
+          'a limit-0 positive weight through scr_callNative stores PRI 0')
 
 
 def main(argv):
@@ -504,14 +508,18 @@ def main(argv):
     item_n = jal_count(emu.mem, STARTING, INIT_CHAR, GIVE_ITEM)
     equip_n = jal_count(emu.mem, STARTING, INIT_CHAR, EQUIP)
     parse_n = jal_count(emu.mem, STARTING, INIT_CHAR, PARSE)
-    check(give_n == 0 and item_n > 0 and parse_n > 0,
+    check(give_n == 0 and item_n == 320 and equip_n == 82 and parse_n == 323,
           'starting items 0x1acc78 jal givePlayerItem %d, inventory_giveItem %d, equip %d, parse %d'
           % (give_n, item_n, equip_n, parse_n))
     init_give = jal_count(emu.mem, INIT_CHAR, RESET_IDLE, GIVE)
+    init_item = jal_count(emu.mem, INIT_CHAR, RESET_IDLE, GIVE_ITEM)
+    init_equip = jal_count(emu.mem, INIT_CHAR, RESET_IDLE, EQUIP)
+    init_parse = jal_count(emu.mem, INIT_CHAR, RESET_IDLE, PARSE)
     init_start = jal_count(emu.mem, INIT_CHAR, RESET_IDLE, STARTING)
-    check(init_give == 0 and init_start > 0,
-          'new character 0x1b1d70 jal givePlayerItem %d, player_giveStartingItems %d'
-          % (init_give, init_start))
+    check(init_give == 0 and init_item == 0 and init_equip == 0 and init_parse == 0
+          and init_start == 1,
+          'new character 0x1b1d70 jal givePlayerItem %d, inventory_giveItem %d, equip %d, parse %d, player_giveStartingItems %d'
+          % (init_give, init_item, init_equip, init_parse, init_start))
     try:
         run_cases(elf, tables, seed)
     except (EmuError, StopIteration, KeyError, ZeroDivisionError) as exc:

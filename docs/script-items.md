@@ -431,7 +431,9 @@ start-to-finish play-through.
 - `python3 -m unittest discover -s tools -p 'test_ref_script_items.py'` (26 tests) and
   `... 'test_ref_monster_build.py'` (14 tests).
 - `python3 tools/difftest_give_player_item.py local/SLUS_209.73 --seed 20973` and
-  `--seed 7`: 45 checks, 0 failed. Contract: `docs/give-player-item.md`.
+  `--seed 7`: 46 checks, 0 failed. Those summaries are the last lines of
+  `local/give-item-seed20973.log` and `local/give-item-seed7.log`.
+  Contract: `docs/give-player-item.md`.
 
 ## 10. Open
 

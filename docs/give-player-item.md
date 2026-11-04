@@ -87,16 +87,17 @@ weight is exactly 0. A positive weight at limit 0 calls `pool_new(0x190)` and
 does not touch the bag. `pool_new` returned 0, so `ItemProp_ctor2` `0x1590ec`
 was not entered. The handler result is 0.
 
-A definition whose weight word or count halfword is 0 can be given at limit
-0. Among rows with no variant bits, slot other than 8, and without the thrown
-axe bit, 44 have a zero count or a zero weight word, and one of them was
+A definition whose weight word is 0 can be given at limit 0. Among rows with
+no variant bits, slot other than 8, and without the thrown axe bit, 44 have
+a zero weight word and a nonzero count, and one of those retail rows was
 given. **Unknown:** whether each of the other 43 is given. The exception is
 this call, not a claim about every row.
 
 The handler result is 0 on a successful give, on the full bag, and on the
 drop. Through `scr_callNative`, PRI becomes that 0 and the dispatcher's own
-result (machine error `+0x5c`) is 0. The script cannot tell a gift from a
-lost item.
+result (machine error `+0x5c`) is 0. That dispatcher path was executed for a
+successful category-1 give, for a full bag, and for the limit-0
+positive-weight drop. The script cannot tell a gift from a lost item.
 
 ## Flag 39 and the keep list
 
@@ -126,8 +127,9 @@ remover again here.
 The comparison row at `0x3f7f50` is the class-0 starting weapon from the
 loading-readiness note. Here the caller was `0x145a88`, not `0x1acc78`.
 `inventory_checkEquipAllowed` `0x1c4948` returned 0. The equipment pointer at
-record `+0x43f0 + 4 × slot` became the new cell, and the weapon-class byte
-`+0x4a86` became the definition subtype. `script_runByName` `0x1ed694` was
+record `+0x43f0 + 4 × slot` became the new cell. The weapon-class byte
+`+0x4a86` was `0xa5` before that give and became the definition subtype.
+`script_runByName` `0x1ed694` was
 called once. `g_scriptMachine` `0x86b270` was 0, so that call returned without
 a level script.
 **Unknown:** the weapon and bow hooks when a level script is loaded. Equip
@@ -179,7 +181,7 @@ remains `docs/script-items.md` section 2.4.
 ## Unknown
 
 - The body of `ItemProp_ctor2` when a gift does not fit. `pool_new` returned 0.
-- Which of the other 43 zero-count or zero-weight rows are given at limit 0.
+- Which of the other 43 zero-weight rows are given at limit 0.
 - `shardof` and the exact keep names other than `pickaxe`, on this call.
 - Weapon and bow hooks while `g_scriptMachine` points at a loaded level.
 - Equip sounds, the notice, `player_resetIdleAnim`'s body, and
@@ -198,9 +200,14 @@ python3 tools/difftest_give_player_item.py local/SLUS_209.73 --seed 20973
 python3 tools/difftest_give_player_item.py local/SLUS_209.73 --seed 7
 ```
 
-Both seeds pass 45 checks: the native slot, the starting-item `jal` counts,
-one bag per category, both players, medal mode, stacking, count 63 and 64,
-the zero-weight give, the positive-weight drop, the equip pointer, flag bit
-41, a retail flag-39 row, the keep and drop of `player_removeFlag39Items`, and
+Both seeds pass 46 checks, 0 failed. Those two summaries are the last lines
+of `local/give-item-seed20973.log` and `local/give-item-seed7.log`. The
+checks are the native slot, the starting-item `jal` counts (0, 320, 82, 323)
+and the new-character counts (0, 0, 0, 0, and one `jal` to
+`player_giveStartingItems`), one bag per category, both players, medal mode,
+stacking, count 63 and 64 with all 64 definition words still empty, one of
+the 44 retail zero-weight rows, the positive-weight drop and that drop's PRI,
+the equip of row `0x3f7f50`, flag bit 41, the 43 flag-39 rows all in category
+2 plus one retail give, the keep and drop of `player_removeFlag39Items`, and
 PRI 0 from `scr_callNative` on a success and on a full bag. Existing
 `difftest_script_items.py` vectors are not edited.
