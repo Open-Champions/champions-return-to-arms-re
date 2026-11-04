@@ -151,25 +151,37 @@ def living(e):
     e.mem.w32(0x4D8AF0 + 0x43D8, obj)
 
 
+# Ten directory entries at +0x16010 (10 x 0x18). The word at +0x16100 is the
+# gap after them. Level bodies start at +0x16118 (docs/audio-save.md).
+DIR_OFF = 0x16010
+DIR_BYTES = 0xF0
+BODY_OFF = 0x16118
+DIR_FILL = bytes(0xA5 if i % 2 == 0 else 0x5A for i in range(DIR_BYTES))
+BODY_WORD = 0x13579BDF
+LATCH_SENTINEL = 0xA5
+
+
 def slot_image(name, sub, seed):
+    del seed
     buf = bytearray(R.SAVE_IMAGE_BYTES)
     buf[:len(name)] = name
     if sub:
         buf[0x14:0x14 + len(sub)] = sub
     struct.pack_into("<I", buf, 0x31C, 0)
-    struct.pack_into("<I", buf, 0x16100, seed)
+    buf[DIR_OFF:DIR_OFF + DIR_BYTES] = DIR_FILL
+    struct.pack_into("<I", buf, BODY_OFF, BODY_WORD)
     return bytes(buf)
 
 
-def save_filename(h, *, selected, count, fresh):
+def save_filename(h, *, selected, count, fresh, plant=True):
     m = h.e.mem
     prepare_screen(h, sub=0)
     m.w32(0x88D3B0, selected)
     m.w32(0x4F9238, count)
     m.w8(0x8E1AD8, 1 if fresh else 0)
-    if not fresh:
+    if not fresh and plant:
         m.write(0x88D060 + 64 * selected, R.OVERWRITE_SLOT_NAME.encode() + b"\0")
-    else:
+    elif fresh:
         m.write(0x88D061, b"BASLUS-20973\0")
     m.write(0x41B721, R.LEVEL_NAME.encode() + b"\0")
     m.w8(0x41B771, 0)
@@ -181,9 +193,15 @@ def save_filename(h, *, selected, count, fresh):
 
 
 def save_build_and_write(h):
-    """Continue from sub-state 1 through the queued 0x4bc78 write."""
+    """Continue from sub-state 1 through the queued 0x4bc78 write.
+
+    The slot byte and the player count are different nonzero values so the
+    recorded pair cannot be either constant 0 or g_numPlayers.
+    """
     m = h.e.mem
     m.w32(0x88D3A8, 1)
+    m.w8(0x4F923C, 3)
+    m.w32(0x4D8AE0, 5)
     h.ops.clear()
     h.stored.clear()
     h.call(SAVE)
@@ -224,7 +242,7 @@ def advance_saved_box(h, *, selected, count):
     return after_wait, reached, armed, keys, m.u8(0x4F8F28), s32(m.u32(0x88D3A0))
 
 
-def card_error(path, seed, pending):
+def card_error(path, seed, *, network, pending):
     h = Harness(path, seed)
     prepare_screen(h, sub=2)
     living(h.e)
@@ -232,15 +250,23 @@ def card_error(path, seed, pending):
     m.w8(0x4F8F28, 1)
     m.w32(0x88D3BC, 1)
     h.call(SAVE)
+    after_error = s32(m.u32(0x88D3A0))
+    error_stores = tuple((w[0], w[2], w[3]) for w in h.e.writes
+                         if (w[1] & 0xFFFFFFFF) == 0x88D3A0)
     during = (m.u32(0x88D3A8), m.u8(0x4F8F28), 0x21E5C8 in h.targets())
     m.w32(0x88D3BC, 0)
     m.w32(0x4028DC, 0x20)
     m.w32(0x88D3C8, 0)
+    m.w8(0x402791, 1 if network else 0)
     if pending:
-        m.w8(0x402791, 1)
         m.write(0x41B6D0, b"hub\0")
+    else:
+        m.w8(0x41B6D0, 0)
     h.call(SAVE)
-    return during, s32(m.u32(0x88D3A0)), m.u8(0x4F8F28), (
+    after_cancel = s32(m.u32(0x88D3A0))
+    cancel_stores = tuple((w[0], w[2], w[3]) for w in h.e.writes
+                          if (w[1] & 0xFFFFFFFF) == 0x88D3A0)
+    return during, after_error, error_stores, after_cancel, cancel_stores, m.u8(0x4F8F28), (
         REQUEST_SAVE in h.targets(), m.u32(0x88D3D8))
 
 
@@ -261,23 +287,28 @@ def requests(path, seed):
     m.w32(0x88D3A0, 7)
     m.w32(0x88D3C8, 1)
     m.w8(0x41B510, 1)
+    m.w8(0x4F8F28, LATCH_SENTINEL)
     h.call(REQUEST_LOAD, 2, 1)
     blocked = s32(m.u32(0x88D3A0))
+    blocked_latch = m.u8(0x4F8F28)
     m.w32(0x88D3C8, 0)
+    m.w8(0x4F8F28, LATCH_SENTINEL)
     h.call(REQUEST_LOAD, 2, 1)
-    return idle, opened, blocked, (
+    latch_stores = tuple((w[0], w[3]) for w in h.e.writes
+                         if (w[1] & 0xFFFFFFFF) == 0x4F8F28)
+    return idle, opened, blocked, blocked_latch, latch_stores, (
         m.u8(0x4F923C), m.u8(0x8E1AB8), m.u8(0x8E1AB9),
         s32(m.u32(0x88D3A0)), m.u8(0x4F8F28),
         m.u32(0x88D3E4), m.u32(0x88D3D8))
 
 
-def new_row_and_handoff(path, seed):
-    """Slot-list states that lead back to the save screen with v0 = 1."""
+def prepare_slot(path, seed):
+    """Slot-list machine. The card pump returns 0. Draw, text format and the
+    diagnostic print return 0. text_lookup 0x173c84 is the original."""
     e = EE(path)
     e.mem.auto_map = True
     e.record_calls = True
-    m = e.mem
-    m.w32(0x404460, seed)
+    e.mem.w32(0x404460, seed)
     ops = []
 
     def queue(emu):
@@ -297,13 +328,48 @@ def new_row_and_handoff(path, seed):
     for addr in (0x1800B8, 0x1802E0, 0x180500, 0x181AA0, 0x181C10,
                  0x181CA0, 0x181530, 0x17BD30, 0x17FBB8, 0x17C118):
         e.stub(addr, ret=0)
+    e.ops = ops
+    return e
+
+
+def confirm_case(path, seed, *, float_bits, settled, target, scroll, count):
+    """One state-4 call. Sentinels are planted on the three confirm results."""
+    e = prepare_slot(path, seed)
+    m = e.mem
+    m.w32(0x88D3DC, 4)
+    m.w32(0x88D3A0, 3)
+    m.w32(0x4F9238, count)
+    m.w32(0x879E24, settled)
+    m.w32(0x879E28, target)
+    m.w32(0x879E2C, scroll)
+    m.w32(0x879E30, scroll)     # kept; a mismatch is copied over 0x879e2c
+    m.w32(0x879E34, float_bits)
+    m.w32(0x4F8EF4, 0xA5)
+    m.w32(0x8E11FC, 0x2A)
+    m.w32(0x8E11F8, 0x7F)
+    m.w32(0x88D3C4, 10)
+    m.w32(0x4028DC, 0x40)
+    m.w32(0x4028E0, 0x40)
+    m.w32(0x41BFB8, 0x20)
+    m.w32(0x41BFBC, 0x40)
+    m.w32(0x4F7104, 0xF1F1F1F1)
+    m.w32(0x4F9540, 0)
+    e.call(SLOT, max_steps=300000)
+    return (m.u32(0x88D3DC), m.u32(0x4F8EF4), s32(m.u32(0x8E11FC)))
+
+
+def new_row_and_handoff(path, seed):
+    """Slot-list states that lead back to the save screen with v0 = 1."""
+    e = prepare_slot(path, seed)
+    m = e.mem
+    ops = e.ops
     m.w32(0x88D3DC, 4)
     m.w32(0x88D3A0, 3)
     m.w32(0x4F9238, 2)
-    m.w32(0x879E24, 2)          # settled cursor, same as the target row
-    m.w32(0x879E28, 2)          # the free row, index == count
-    m.w32(0x879E2C, 0)
-    m.w32(0x879E30, 0)
+    m.w32(0x879E24, 1)          # settled cursor
+    m.w32(0x879E28, 1)          # target row; scroll + cursor == count
+    m.w32(0x879E2C, 1)
+    m.w32(0x879E30, 1)
     m.w32(0x879E34, 0)
     m.w32(0x88D3C4, 10)
     m.w32(0x8E11F8, 0x7F)
@@ -341,7 +407,31 @@ def new_row_and_handoff(path, seed):
     e.call(SLOT, max_steps=300000)
     short = (m.u32(0x88D3DC), R.SPACE_KEY in
              tuple(e.mem.cstr(c.args[0] & 0xFFFFFFFF)
-                   for c in e.calls if c.target == 0x173C84))
+                   for c in e.calls if c.target == 0x173C84),
+             s32(m.u32(0x8E11FC)))
+    # Odd cache count: the threshold is 0x88d3ec plus the low bit (0x21cd60, 0x21cd74).
+    m.w32(0x4F9238, 3)
+    m.w32(0x88D3DC, 7)
+    m.w32(0x88D3C4, 0)
+    m.w32(0x8E11FC, 8)
+    m.w32(0x8E11F8, 0x20)
+    m.w32(0x88D3EC, 100)
+    m.w32(0x88D3AC, 100)
+    e.reset_log()
+    e.call(SLOT, max_steps=300000)
+    odd_short = (m.u32(0x88D3DC), R.SPACE_KEY in
+                 tuple(e.mem.cstr(c.args[0] & 0xFFFFFFFF)
+                       for c in e.calls if c.target == 0x173C84),
+                 s32(m.u32(0x8E11FC)))
+    m.w32(0x88D3DC, 7)
+    m.w32(0x88D3C4, 0)
+    m.w32(0x8E11FC, 8)
+    m.w32(0x8E11F8, 0x20)
+    m.w32(0x88D3AC, 101)
+    e.reset_log()
+    e.call(SLOT, max_steps=300000)
+    odd_enough = (m.u32(0x88D3DC), s32(m.u32(0x8E11FC)))
+    m.w32(0x4F9238, 2)
     m.w32(0x88D3DC, 7)
     m.w32(0x88D3C4, 0)
     m.w32(0x8E11F8, 0)
@@ -357,7 +447,7 @@ def new_row_and_handoff(path, seed):
     m.w32(0x8E11FC, 0)
     m.w8(0x402791, 0)
     returned = e.call(SLOT, max_steps=300000)
-    return armed, after_fade, enough, short, to_commit, listed, (
+    return armed, after_fade, enough, short, odd_short, odd_enough, to_commit, listed, (
         returned & 0xFFFFFFFF, m.u32(0x88D3DC))
 
 
@@ -380,12 +470,14 @@ def load_restore(path, seed, name, sub, live_level, live_sub, flag):
     m.w32(0x4F8EEC, buf)
     m.w32(0x88D3A8, 4)
     m.w8(0x41B6D0, 0)
+    m.w8(0x4F8F28, LATCH_SENTINEL)
     h.call(LOAD)
     pending = m.cstr(0x41B6D0)
     side = m.cstr(0x8E1A98)
     marker = m.u8(0x41B720)
     loaded = m.u8(0x8E1AD6)
-    sentinel = m.u32(R.SAVE_BUFFER + 0x16100)
+    directory = bytes(m.read(R.SAVE_BUFFER + DIR_OFF, DIR_BYTES))
+    body = m.u32(R.SAVE_BUFFER + BODY_OFF)
     current = m.cstr(0x41B721)
     called = SAVE_LOAD in h.targets()
     world = bool(h.targets() & {WORLD_LOAD, LEVEL_OBJECTS, SAVE_RELOAD})
@@ -405,24 +497,30 @@ def load_restore(path, seed, name, sub, live_level, live_sub, flag):
         matched = (m.u32(0x88D3A8), m.u8(0x4F8F28), s32(m.u32(0x88D3A0)))
     else:
         stayed = matched = None
-    return queued, buf, pending, side, marker, loaded, sentinel, current, (
+    return queued, buf, pending, side, marker, loaded, directory, body, current, (
         called, world, sub_state, latch, closed, stayed, matched)
 
 
 def accept_copies_directory(path, seed):
+    """Slot list is stubbed to the committed return 1. The pump returns 0, so
+    the original store at 0x2195a8 runs. The 0x40-byte copy is original."""
     h = Harness(path, seed)
     m = h.e.mem
     prepare_screen(h, stage=0, sub=0, mode=4)
     h.e.stub(SLOT, ret=1, name="memcard_slotList")
-    h.e.stub(PUMP, ret=1, name="mc_pump")  # busy: accept runs, machine waits
+    h.e.stub(PUMP, ret=0, name="mc_pump")
+    payload = b"BASLUS-20973_slot1\0" + bytes((i + 1) & 0xFF for i in range(0x40 - 19))
     m.w32(0x88D3B0, 1)
-    m.write(0x88D080, b"BASLUS-20973_slot1\0")
+    m.write(0x88D080, payload)
     m.w8(0x8E1AB8, 0)
     m.w8(0x8E1AB9, 1)
-    m.w8(0x4F8F28, 0)
+    m.w8(0x4F8F28, LATCH_SENTINEL)
     h.call(LOAD)
-    return (m.cstr(0x88D2C0), m.u32(0x88D3D8), m.u32(0x88D3A8),
-            m.u8(0x4F8F28), s32(m.u32(0x8E11FC)))
+    stores = tuple((w[0], w[2], w[3]) for w in h.e.writes
+                   if (w[1] & 0xFFFFFFFF) == 0x4F8F28)
+    return (bytes(m.read(0x88D2C0, 0x40)), payload, stores,
+            m.u32(0x88D3D8), m.u32(0x88D3A8), m.u8(0x4F8F28),
+            s32(m.u32(0x8E11FC)))
 
 
 def main(argv):
@@ -448,12 +546,23 @@ def main(argv):
             Harness(path, seed), selected=1, count=0, fresh=True)
         assert made and forced_name == R.FRESH_SLOT_NAME, (seed, made, forced_name)
         checks += 1
+        clear_name, _, _, _, made = save_filename(
+            Harness(path, seed), selected=0, count=0, fresh=False, plant=False)
+        assert made and clear_name == R.FRESH_SLOT_NAME, (seed, made, clear_name)
+        checks += 1
+        for count in (1, 2, 3):
+            numbered, _, _, _, made = save_filename(
+                Harness(path, seed), selected=count, count=count,
+                fresh=False, plant=False)
+            assert made and numbered == "BASLUS-20973_slot1", (
+                seed, count, made, numbered)
+            checks += 1
 
         h = Harness(path, seed)
         save_filename(h, selected=1, count=2, fresh=False)
         built, packed, args, name, stored, ops, sub = save_build_and_write(h)
         assert built and not packed, (seed, built, packed)
-        assert args == (0, 0), (seed, args)
+        assert args == (3, 0), (seed, args)
         assert name == R.LEVEL_NAME, (seed, name)
         assert stored == [R.LEVEL_NAME], (seed, stored)
         assert [(op[0], op[2], op[1]) for op in ops] == [
@@ -465,6 +574,10 @@ def main(argv):
         assert sub == 3, (seed, sub)
         assert not (h.targets() & {WORLD_LOAD, LEVEL_OBJECTS}), seed
         checks += 7
+        # The saved-box button is read from slot 0's pad word. The build above
+        # used slot byte 3 only to identify save_build's first argument.
+        h.e.mem.w8(0x4F923C, 0)
+        h.e.mem.w32(0x4D8AE0, 0)
         waited, reached, armed, keys, latch, state = advance_saved_box(
             h, selected=1, count=2)
         assert waited == (1, -16, 3), (seed, waited)
@@ -495,45 +608,71 @@ def main(argv):
         assert net.e.mem.u32(0x88D3A8) == 2, seed
         checks += 2
 
-        during, state, latch, reopen = card_error(path, seed, pending=False)
-        assert during == (9, 1, True), (seed, during)
-        assert state == -1 and latch == 1 and reopen == (True, 1), (
-            seed, state, latch, reopen)
-        during, state, latch, reopen = card_error(path, seed, pending=True)
-        assert during == (9, 1, True), (seed, during)
-        assert state == -1 and latch == 1 and reopen == (False, 1), (
-            seed, state, latch, reopen)
-        checks += 4
+        for network, pending, called in (
+            (False, False, True),
+            (False, True, True),
+            (True, False, True),
+            (True, True, False),
+        ):
+            during, after_error, error_stores, after_cancel, cancel_stores, latch, reopen = (
+                card_error(path, seed, network=network, pending=pending))
+            assert during == (9, 1, True), (seed, network, pending, during)
+            assert after_error == 3 and error_stores == (), (
+                seed, network, pending, after_error, error_stores)
+            assert after_cancel == -1 and cancel_stores == ((0x21F254, 4, 0xFFFFFFFF),), (
+                seed, network, pending, after_cancel, cancel_stores)
+            assert latch == 1 and reopen == (called, 1), (
+                seed, network, pending, latch, reopen)
+            checks += 4
 
-        idle, opened, blocked, loaded = requests(path, seed)
+        idle, opened, blocked, blocked_latch, latch_stores, loaded = requests(path, seed)
         assert idle == 7, (seed, idle)
         assert opened == (0, 3), (seed, opened)
         assert blocked == 7, (seed, blocked)
+        assert blocked_latch == LATCH_SENTINEL, (seed, blocked_latch)
+        assert (0x217760, 0) in latch_stores, (seed, latch_stores)
         assert loaded == (2, 1, 1, 4, 0, 0, 0), (seed, loaded)
-        checks += 4
+        checks += 6
 
-        armed, faded, enough, short, to_commit, listed, handoff = (
+        held = confirm_case(path, seed, float_bits=0x3F000000, settled=2,
+                            target=2, scroll=0, count=2)
+        assert held == (4, 0xA5, 0x2A), (seed, held)
+        uneven = confirm_case(path, seed, float_bits=0, settled=1, target=2,
+                              scroll=0, count=2)
+        assert uneven == (4, 0xA5, 0x2A), (seed, uneven)
+        snapped = confirm_case(path, seed, float_bits=0x3F800000, settled=1,
+                               target=2, scroll=1, count=2)
+        assert snapped == (4, 7, -16), (seed, snapped)
+        checks += 3
+
+        armed, faded, enough, short, odd_short, odd_enough, to_commit, listed, handoff = (
             new_row_and_handoff(path, seed))
         assert armed == (4, 7, -16), (seed, armed)
         assert faded == (7, R.SPACE_OP), (seed, faded)
         assert enough == (7, -16), (seed, enough)
-        assert short == (7, True), (seed, short)
+        assert short == (7, True, 8), (seed, short)
+        assert odd_short == (7, True, 8), (seed, odd_short)
+        assert odd_enough == (7, -16), (seed, odd_enough)
         assert to_commit == 12, (seed, to_commit)
         assert listed[0] == 12 and listed[1] == (R.DIRECTORY_OP, 0x53F268), (
             seed, listed)
         assert listed[2] == "/BASLUS-20973", (seed, listed)
         assert handoff == (1, 0), (seed, handoff)
-        checks += 7
+        checks += 9
 
-        copied = accept_copies_directory(path, seed)
-        assert copied == ("BASLUS-20973_slot1", 1, 0, 0, 16), (seed, copied)
-        checks += 1
+        copied, payload, stores, stage, step, latch, fade = accept_copies_directory(
+            path, seed)
+        assert copied == payload, (seed, copied, payload)
+        assert (0x2195A8, 1, 1) in stores, (seed, stores)
+        assert (stage, step, latch, fade) == (1, 0, 1, 16), (
+            seed, stage, step, latch, fade)
+        checks += 3
 
         for name, sub, live, live_sub, pending in (
             (b"strife\0", b"", b"origin\0", b"\0", R.LOAD_PLAIN),
             (b"hub\0", b"west\0", b"hub\0", b"\0", R.LOAD_QUALIFIED),
         ):
-            (queued, buf, got, side, marker, loaded_flag, sentinel, current,
+            (queued, buf, got, side, marker, loaded_flag, directory, body, current,
              rest) = load_restore(path, seed, name, sub, live, live_sub, 1)
             called, world, sub_state, latch, closed, stayed, matched = rest
             assert queued[0][0] == 0 and queued[0][2] == 1, (seed, queued)
@@ -543,7 +682,7 @@ def main(argv):
             assert called and not world, (seed, called, world)
             assert got == pending and side == pending, (seed, got, side, pending)
             assert marker == 0xFD and loaded_flag == 1, (seed, marker, loaded_flag)
-            assert sentinel == seed, (seed, sentinel)
+            assert directory == DIR_FILL and body == BODY_WORD, (seed, body)
             assert current == "origin", (seed, current)
             assert sub_state == 5 and latch == 1 and closed == 4, (
                 seed, sub_state, latch, closed)
@@ -551,10 +690,11 @@ def main(argv):
             assert matched[1] == 0 and matched[2] == -1, (seed, matched)
             checks += 10
         skipped = load_restore(path, seed, b"strife\0", b"", b"origin\0", b"\0", 0)
-        assert skipped[8][0] is False and skipped[2] == "", (seed, skipped[2], skipped[8])
-        assert skipped[8][2] == 0 and skipped[8][3] == 0 and skipped[8][4] == -1, (
-            seed, skipped[8])
-        assert skipped[6] == seed, (seed, skipped[6])
+        assert skipped[9][0] is False and skipped[2] == "", (seed, skipped[2], skipped[9])
+        assert skipped[9][2] == 0 and skipped[9][3] == 0 and skipped[9][4] == -1, (
+            seed, skipped[9])
+        assert skipped[6] == DIR_FILL and skipped[7] == BODY_WORD, (
+            seed, skipped[7])
         checks += 3
     print("PASS save-screen flow: %d checks; seeds 20973, 7" % checks)
 

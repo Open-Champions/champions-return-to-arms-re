@@ -190,40 +190,58 @@ does not add object-record or camera evidence. The world body stays
 reload stays `t3/research-death-reload` `2c95314`
 `docs/death-reload-sequence.md` lines 49–88 and 116–180.
 
-Confirm is read only when the cursor float at 0x879e34 is 0 and the settled
-row 0x879e24 equals the target row 0x879e28 (**Observed** at 0x21caa4,
-**Executed**). On a save screen, confirm on the free row (scroll + cursor
-equals the cache count) leaves slot state 4, stores 7 at 0x4f8ef4 and sets
-the fade step to −16 (0x21cb2c). When that fade reaches 0, the list queues
-card operation 8 and enters slot state 7 (0x21cce8). State 7 waits until the
-countdown at 0x88d3c4 has run down, then compares the word at 0x88d3ac with
-0x88d3ec plus the low bit of the cache count. The greater-or-equal case sets
-the fade step to −16. The short case looks up `MemcardNeedFreeSpaceBrowser`
-and stays in state 7. With the fade already 0, state 7 becomes 12. What those
-two words count is **Unknown**. Overwrite confirm (state 5, mask bit 0x80)
-still enters state 11; state 11 queues operation 0x0a on `/BASLUS-20973` and
-enters 12 (0x21d3f4). State 12, with the pump idle, 0x4f9540 non-negative and
-the fade at 0, returns 1 and clears the slot state (0x21d474). That return is
-what the save and load screens treat as a committed slot.
+The state-4 compare at 0x21caa4 is the cursor float at 0x879e34 against 0
+(**Observed**). **Executed:** bit pattern 0x3f000000, with 0x879e24 equal to
+0x879e28 and the confirm mask held, leaves slot state 4, 0x4f8ef4 at 0xa5 and
+the fade step at 0x2a. Those three were planted for that call. Unequal row
+words, with the float at 0, leave the same three. Bit pattern 0x3f800000 is
+the snap at 0x21ca3c: the float is cleared and 0x879e28 is copied from
+0x879e24, so the compare then sees 0 and a free row arms. Draw helpers return
+0 and the card pump returns 0. Those stubs do not write the three words.
+
+On a save screen whose card state is 3, the free row is 0x879e2c plus
+0x879e28. **Executed** with both scroll words (0x879e2c and 0x879e30) at 1
+and the cursor at 1, against cache count 2: the call leaves slot state 4,
+stores 7 at 0x4f8ef4 and sets the fade step to −16 (0x21cb2c). A mismatch
+copies 0x879e30 over 0x879e2c before that add (0x21c9f8). When the fade
+reaches 0, the list queues card operation 8 and enters slot state 7
+(0x21cce8). State 7 waits until the countdown at 0x88d3c4 has run down and
+the fade step is positive, then compares 0x88d3ac with 0x88d3ec plus the low
+bit of the cache count (**Observed** at 0x21cd68 and 0x21cd74). The pump stub
+returns 0, so the compare runs. **Executed:** count 2, 100 against 100 sets
+the fade step to −16 and stays in state 7; 99 looks up
+`MemcardNeedFreeSpaceBrowser` and leaves the planted fade step at 8. Count 3
+moves the threshold up by 1: 100 against 100 takes that short path, and 101
+against 100 sets the fade step to −16. With the fade already 0, state 7
+becomes 12. What those two words count is **Unknown**. Overwrite confirm
+(state 5, mask bit 0x80) still enters state 11; state 11 queues operation
+0x0a on `/BASLUS-20973` and enters 12 (0x21d3f4). State 12, with the pump
+idle, 0x4f9540 non-negative and the fade at 0, returns 1 and clears the slot
+state (0x21d474). That return is what the save and load screens treat as a
+committed slot.
 
 The save screen's own step is the word at 0x88d3a8, indexed through the table
 at 0x53f170 (**Observed**). **Executed** in order:
 
 | Step | What the original function did |
 |---|---|
-| 0 | If byte 0x8e1ad8 is nonzero, or the selected index equals the cache count, `memcard_makeSlotName` 0x21effc writes `BASLUS-20973_slot0` at 0x879d08. The product prefix was supplied at 0x88d061; who fills that prefix in the browser was not run. Otherwise the name is copied from 0x88d060 + index×64. An occupied row copied `BASLUS-20973_slot1`. This step does not queue the image write. The writer of 0x8e1ad8 is **Unknown**. |
-| 1 | Offline, `save_build` 0x221914 is called as `(owner byte 0x4f923c, 0)`. The image at 0x895580 then begins with the live level name, and `save_storeLevelState` 0x21777c is called with that same name. Network byte 0x402791 calls `save_packLocalPlayer` 0x2223d4 instead, and does not call `save_build`. |
+| 0 | If byte 0x8e1ad8 is nonzero, or the selected index equals the cache count, `memcard_makeSlotName` 0x21effc runs. **Executed:** a set byte with cache count 0 writes `BASLUS-20973_slot0` at 0x879d08. A clear byte with the index and the count both 0, and an empty directory, does the same and does call 0x21effc. A clear byte whose index equals a count of 1, 2 or 3 still calls 0x21effc, and that empty directory makes the name `BASLUS-20973_slot1`. The product prefix for the set-byte cases was supplied at 0x88d061; who fills that prefix in the browser was not run. Otherwise the name is copied from 0x88d060 + index×64. An occupied row copied `BASLUS-20973_slot1` and did not call 0x21effc. This step does not queue the image write. The writer of 0x8e1ad8 is **Unknown**. |
+| 1 | Offline, `save_build` 0x221914 is called as `(slot byte 0x4f923c, 0)`. **Executed** with slot byte 3 and `g_numPlayers` 5: the recorded pair is (3, 0). The camera returns 0xc4, the jump-gate returns 0x1e4, and `save_storeLevelState` is the recording stub; none of those supply the pair. The image at 0x895580 then begins with the live level name, and that stub is called with the same name. Network byte 0x402791 calls `save_packLocalPlayer` 0x2223d4 instead, and does not call `save_build`. |
 | 2 | Queues open mode 0x202 of the name at 0x879d08, write operation 5 of 0x4bc78 bytes from 0x895580, close, then file info. |
 | 3 | Sets byte 0x4f8f29 and the fade step to −16. The next call, once the fade is 0, advances to step 4. |
 | 4 | Looks up `MemcardContinue` and `MemcardSaveComplete`, plus `MemcardSaveGood2` for a new row or `OverwriteGood` for an occupied row. Confirm sets the fade step to −16. When the fade reaches 0 the latch at 0x4f8f28 is cleared and `memcard_setState` stores −1. |
 
 A nonzero card result at 0x88d3bc moves the save screen to step 9 and calls
-`memcard_closeFile` 0x21e5c8. That path does not clear the latch.
-**Executed:** cancel then calls `memcard_requestSave` 0x2175b4. While slot
-stage 0x88d3d8 is still 1, that call returns without opening the screen, so
-the card state stays −1. The pending-level byte suppresses the call only when
-network byte 0x402791 is set. Offline, the call is made either way. The latch
-stays 1.
+`memcard_closeFile` 0x21e5c8. That path does not clear the latch, and it does
+not write the card state: a prepared 3 is still 3, with no store to 0x88d3a0.
+**Executed:** the cancel that follows calls `memcard_setState` 0x21f238, which
+stores −1 at 0x21f254. While slot stage 0x88d3d8 is still 1,
+`memcard_requestSave` 0x2175b4 returns without opening the screen. The
+pending-level byte suppresses that call only when network byte 0x402791 is
+set. **Executed** four ways, with `dialog_isOpen` and `memcard_popPause`
+returning 0: offline with the pending name clear or set, and network with the
+name clear, all call it at 0x2192f4; network with the name set does not. The
+latch stays 1.
 
 `memcard_requestSave` itself opens only from card state −1, with 0x88d3c8 and
 0x88d3d8 both 0, and only when some player is counted living (**Executed** for
@@ -233,23 +251,32 @@ card state unchanged. A negative hit-point value and a set bit 3 were read at
 0x2175fc–0x21761c and were not executed. `memcard_requestLoad` 0x2176e0 stores
 its slot argument at 0x4f923c, copies byte 0x41b510 to 0x8e1ab8, stores its
 flag argument at 0x8e1ab9, clears the latch, and sets card state 4. A nonzero
-word at 0x88d3c8 makes the call return without opening (**Executed**).
+word at 0x88d3c8 makes the call return without opening (**Executed**). The
+latch sentinel 0xa5 is still there on that return. The opening call stores 0
+at 0x217760.
 
-Load acceptance copies the 0x40-byte directory record from
-0x88d040 + index×64 to 0x88d2c0 and sets the load step to 0 (0x21948c). The
-latch is stored later, once the card pump is idle (0x2195a8). **Executed:**
-step 2 queues open mode 1 of the name at 0x88d2e0, read operation 3 of
-0x4bc78 bytes, and close. Step 4 copies those bytes into `g_saveBuffer`.
-When 0x8e1ab9 is 0, `save_load` is not called, the latch is cleared, the card
-state becomes −1 and the step word is cleared. When the flag is 1, original
-`save_load` 0x221d60 runs. For a header name `strife` and an empty subname,
-pending level 0x41b6d0 and the side name 0x8e1a98 are both `strife`. For
-`hub` plus subname `west`, both are `hub_west`. The marker at 0x41b720 becomes
-0xfd and the loaded flag 0x8e1ad6 becomes 1. The live level name at 0x41b721
-is left as it was. A seed word planted at image +0x16100 is still there, so
-the screen does not consume the level directory. `world_loadRecords` 0x14e808,
-`level_loadScriptAndObjects` 0x217978 and `save_reload` 0x22266c are not
-called.
+Load acceptance copies all 0x40 bytes from 0x88d040 + index×64 to 0x88d2c0,
+including the bytes past the name (**Executed** at 0x2194a4), and sets the
+load step to 0 (0x21948c). The slot list is stubbed to return 1 for that
+call, so the list is not re-run. With the pump stub returning 0, the latch
+is stored as 1 at 0x2195a8 over the sentinel 0xa5; the step word is still 0
+and the fade step is still 16. **Executed:** step 2 queues open mode 1 of
+the name at 0x88d2e0, read operation 3 of 0x4bc78 bytes, and close. Step 4
+copies those bytes into `g_saveBuffer`. When 0x8e1ab9 is 0, `save_load` is
+not called, a latch planted at 0xa5 is cleared, the card state becomes −1
+and the step word is cleared. When the flag is 1, original `save_load`
+0x221d60 runs and the latch is 1 afterward, over that same sentinel. For a
+header name `strife` and an empty subname, pending level 0x41b6d0 and the
+side name 0x8e1a98 are both `strife`. For `hub` plus subname `west`, both
+are `hub_west`. The marker at 0x41b720 becomes 0xfd and the loaded flag
+0x8e1ad6 becomes 1. The live level name at 0x41b721 is left as it was. The
+0xf0 directory bytes at image +0x16010 and the word at +0x16118 are still
+the planted sentinels after step 4, flag 0 and flag 1. The word at +0x16100
+is the gap after those ten entries, not the directory. This call does not
+consume the level directory. `save_load`'s camera, jump-gate, player-fixup
+and quest callees are stubbed and return the sizes in `docs/audio-save.md`.
+`world_loadRecords` 0x14e808, `level_loadScriptAndObjects` 0x217978 and
+`save_reload` 0x22266c are not stubbed and are not called.
 
 Step 5 builds the live qualified name with 0x1ec0f0 from 0x41b721 and 0x41b771
 and compares it with 0x8e1a98 (**Observed** at 0x21984c, **Executed**). A
@@ -265,29 +292,37 @@ a matching directory body in and constructs its records
 never opens this screen. `deathTask` calls `save_reload`, which calls the same
 `save_load` on the checkpoint already in the buffer, and the following loader
 still stops at syscall 124 before world reconstruction
-(`docs/death-reload-sequence.md` lines 71–88 and 144–176). A dismissed save
+(`docs/death-reload-sequence.md` lines 71–88). Lines 144–176 of that note
+are later stops, a store through a null particle slot and `TerminateThread`
+syscall 37, and both still precede world reconstruction. A dismissed save
 box is not a death reload, and a finished card read is not a restored level.
 
 ## What the client can implement
 
 1. The five-row list, dates, clock and preview already in this note, and a
-   confirm that is ignored until 0x879e24, 0x879e28 and 0x879e34 have settled.
-2. The free-row save start, the free-space compare on the two words above, the
-   overwrite confirm, and the list's return of 1 once its card step is idle.
+   confirm that is ignored while 0x879e34 is neither 0 nor the 1.0 snap, or
+   while 0x879e24 and 0x879e28 differ. The 1.0 snap copies the settled row.
+2. The free-row save start, including a nonzero scroll whose sum is the cache
+   count, the free-space compare with the cache count's low bit, the overwrite
+   confirm, and the list's return of 1 once its card step is idle.
 3. The save machine: fresh name versus the existing directory name, offline
-   `save_build(owner, 0)` or the net pack, one 0x4bc78-byte write, the new-slot
-   or overwrite saved box, and a dismiss that clears the latch. An error keeps
-   the latch. Treat a same-call reopen as absent while 0x88d3d8 is still 1.
-4. The load machine: read 0x4bc78, call `save_load` only when 0x8e1ab9 is set,
-   and take the pending world from the header (`name` or `name_sub`). Hold the
-   screen until the live level name matches. Leave the world body for the
-   level loader in the save-world order. Do not route this screen through
+   `save_build(slot byte, 0)` or the net pack, one 0x4bc78-byte write, the
+   new-slot or overwrite saved box, and a dismiss that clears the latch. An
+   error keeps the latch and leaves card state 3; cancel stores −1. A pending
+   level name suppresses the save request only together with the network byte.
+   Treat a same-call reopen as absent while 0x88d3d8 is still 1.
+4. The load machine: copy the whole 0x40-byte directory record, read 0x4bc78,
+   call `save_load` only when 0x8e1ab9 is set, and take the pending world from
+   the header (`name` or `name_sub`). Hold the screen until the live level
+   name matches. Leave the 0xf0 directory bytes and the word at +0x16118 for
+   the level loader in the save-world order. Do not route this screen through
    `save_reload`, and do not drop the death-reload refusal.
 
 Localized strings, pixels, real directory timestamps, the units of the
 free-space words, the writer of 0x8e1ad8, and a retail card capture stay
 **Unknown**. Object-record load effects stay the save-world unknowns. Death
-reload stays blocked at syscall 124.
+reload stays blocked at syscall 124 (lines 71–88), and at the later stops
+in lines 144–176, all before world reconstruction.
 
 ## Ordered native port list
 
@@ -310,8 +345,7 @@ reload stays blocked at syscall 124.
 ## Reproduction and limits
 
 `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_save_screen.py
-local/SLUS_209.73 '<private-disc>.iso' --completed-slot
-'/Users/syndicatemike/champions-re/local/rig-out/run6-6/data-b/vfs/mc0/BASLUS-20973/BASLUS-20973_slot0'`
+local/SLUS_209.73 local/disc.iso --completed-slot local/BASLUS-20973_slot0`
 passed **189 checks** across seeds 20973 and 7, including indexed numbered
 rows, the single-digit date format, clock boundaries, read-only tile header
 dimensions, and completed-record preview branches with debug on and off.
@@ -330,3 +364,8 @@ tools/difftest_save_screen_flow.py local/SLUS_209.73` passed 120 checks at
 seeds 20973 and 7, and the unit suite again passed 652 tests. The flow run
 stubs the card queue and the world-body callees. No game bytes or raw
 disassembly are tracked.
+
+The same day's audit fix reran the flow command and passed 170 checks at
+seeds 20973 and 7. The art command above, with `local/disc.iso` and
+`local/BASLUS-20973_slot0`, passed 189 checks. The unit suite passed 652
+tests in 5.636s.
