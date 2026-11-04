@@ -262,6 +262,10 @@ def skill_gates(elf):
         (dict(cls=2, node=14, ack=22), 'none', False),
         (dict(cls=2, node=13, ranks=((0xB, 1),), ack=20), 'send', True),
         (dict(cls=2, node=13, ack=20), 'none', False),
+        (dict(cls=4, node=19, ranks=((18, 1),), ack=29, earned=29), 'send', True),
+        (dict(cls=4, node=19, ack=29, earned=29), 'none', False),
+        (dict(cls=6, node=9, ranks=((86, 1),), ack=15, earned=15), 'send', True),
+        (dict(cls=6, node=9, ack=15, earned=15), 'none', False),
         (dict(cls=1, node=4, passive_masks=((0x40, 1),), ack=8), 'none', False),
     ]
     for seed in (20973, 7):
@@ -382,6 +386,51 @@ def progression(elf):
             assert got == first, (cls, got, first)
             count += 1
         print('PASS seed %d: %d level-grant cases' % (seed, count))
+    balance_sentinels(elf)
+
+
+def balance_sentinels(elf):
+    """Skill word +0xe8 gets the 1-5 table; stat byte +0xec gets +3.
+
+    The skill screen reads the word at 0x1d57e0. The stat screen reads the
+    byte at 0x1d1f64. Sentinels stay distinct so a swapped add cannot pass.
+    """
+    bands = ((5, 1), (6, 2), (15, 2), (16, 3), (25, 3), (26, 4), (35, 4), (36, 5), (79, 5))
+    skill_base, stat_base = 41, 70
+    for seed in (20973, 7):
+        for level, grant in bands:
+            ee = boot(elf, seed)
+            ee.follow = {RECALC}
+            ee.default_ret = 0
+            ee.record_writes = False
+            ee.mem.w32(NUM_PLAYERS, 1)
+            levels = table(ee)
+            rec = RECORD
+            ee.mem.w32(rec + 0x50, 0)
+            ee.mem.w8(rec + 0x58, 2)
+            ee.mem.w8(rec + 0x59, level)
+            ee.mem.w32(rec + 0x5C, (levels[level] - 1) & 0xFFFFFFFF)
+            ee.mem.w32(rec + 0xE8, skill_base)
+            ee.mem.w8(rec + 0xEC, stat_base)
+            ee.mem.wf32(rec + 0xAC, 1.0)
+            ee.mem.wf32(rec + 0xB0, 40.0)
+            ee.mem.wf32(rec + 0xC0, 3.0)
+            ee.mem.wf32(rec + 0xC4, 9.0)
+            ee.mem.w32(rec + 0x43D8, 0)
+            ee.record_writes = True
+            ee.writes = []
+            ee.call(GIVE_EXP, 0, 1, max_steps=2_000_000)
+            assert ee.mem.u32(SEED) == seed
+            want_skill = skill_base + grant
+            want_stat = (stat_base + 3) & 0xFF
+            assert ee.mem.s32(rec + 0xE8) == want_skill, (seed, level, ee.mem.s32(rec + 0xE8))
+            assert ee.mem.u8(rec + 0xEC) == want_stat, (seed, level, ee.mem.u8(rec + 0xEC))
+            assert ee.mem.s8(rec + 0x59) == s8(level + 1)
+            word_writes = [item for item in ee.writes if item[1] == rec + 0xE8]
+            byte_writes = [item for item in ee.writes if item[1] == rec + 0xEC]
+            assert word_writes == [(0x1D3214, rec + 0xE8, 4, want_skill)], word_writes
+            assert byte_writes == [(0x1D3220, rec + 0xEC, 1, want_stat)], byte_writes
+        print('PASS seed %d: %d point-balance sentinel crosses' % (seed, len(bands)))
 
 
 def field_bytes(ee, addr):
@@ -431,6 +480,7 @@ def save_restore(elf):
         ee.mem.w32(rec + 0x43D8, 0x11111111)
         ee.call(SNAPSHOT, 0, max_steps=2_000_000)
         image = ee.mem.read(SAVED, REC_STRIDE)
+        # Direct stores in this fixture, not a call to a stat or skill handler.
         ee.mem.w8(rec + 0x58, 1)
         ee.mem.w8(rec + 0x59, 1)
         ee.mem.w32(rec + 0x5C, 1)

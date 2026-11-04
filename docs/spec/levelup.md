@@ -32,7 +32,12 @@ award, clamps to that ceiling, and loops while `exp >= table[earnedLevel]`.
 Each iteration increases earned level `R+0x59` by one, grants three stat
 points at byte `R+0xec`, grants skill points at word `R+0xe8` by the **old**
 level band (1 for 1–5, 2 for 6–15, 3 for 16–25, 4 for 26–35, 5 for 36+),
-and calls `player_recalcStats` 0x1b6458. If current HP was positive, it then
+and calls `player_recalcStats` 0x1b6458. `stats_screen` reads that stat byte
+at 0x1d1f64 and passes that byte to `sprintf` 0x3b7ef0. Its later load of the
+skill word at 0x1d1f84 is compared with 1 at 0x1d1f8c and is not the stat
+balance. `skills_screen` reads the skill word at 0x1d57e0 and rejects a
+non-positive value at 0x1d57e4 and 0x1d5850. The 1–5 sum is the word store
+at 0x1d3214; the +3 is the byte store at 0x1d3220. If current HP was positive, it then
 fills current HP and mana to their new maxima. This repeats for multi-level
 awards. It does not advance the separately acknowledged level `R+0x58`;
 inventory message 9 does that when the owner opens the level-up panel
@@ -43,11 +48,15 @@ against the original, including the per-class stat recalculation and refill.
 the threshold words from the executable and not copying them here: one below
 `table[old]` does not level; the exact word does. Old levels 5, 6, 15, 16, 25,
 26, 35, 36 and 79 grant 1, 2, 2, 3, 3, 4, 4, 5 and 5 skill points. Stat points
-are a byte add of 3 (254 becomes 1). Experience already equal to `table[7]`
+are a byte add of 3 (254 becomes 1). With the skill word set to 41 and the
+stat byte set to 70, those same old levels store 42, 43, 43, 44, 44, 45, 45,
+46 and 46 at `+0xe8` and 73 at `+0xec`. Experience already equal to `table[7]`
 at level 5 takes levels 5, 6 and 7. Classes 0–6 produce the same point deltas:
 `player_giveExp` does not read the class word. With the object pointer left
-null, `player_recalcStats` copies base stats to the effective stats and does
-not enter its class-constant chain; those maxima stay the combat comparison.
+null, `player_recalcStats` copies the four base words at `+0x78` to the
+effective words at `+0x90` (0x1b64b0) and does not enter its class-constant
+chain: 0x1b64d8 branches to 0x1b6a4c when `+0x43d8` is zero. Those maxima stay
+the combat comparison.
 A current-HP value greater than zero is replaced by the stored maxima; a zero
 HP value is left, and mana is left with it. Acknowledged level `R+0x58` is
 not written. The shared seed at 0x404464 is not drawn.
@@ -118,11 +127,15 @@ not, **executed** on the row that carries the id:
 | 4 | skill 57 | skill 1 | skill id |
 | 2 | skill 97 | skill 0x28 | skill id |
 | 2 | skill 40 | skill 0x0b | skill id |
+| 4 | skill 95 | skill 18 | skill id |
+| 6 | skill 90 | skill 86 | skill id |
 
-Class 1's skill 55 row is not unlocked by passive 0x40 (**executed**). The
-compares for class 1 ident 0x37, class 2 ident 0x5a and class 6 ident 0x5f
-have no row of that class with that ident (**Inferred** from the tree words
-and the class test; those three branches were not entered).
+Class 1 node 4 is ident 55. That row exists, and its prerequisite kind is 1,
+so the passive-0x40 compare at 0x1d558c is only on the passive-prerequisite
+chain and does not see it (**executed**: mask 0x40 does not send). Class 4
+node 19 is ident 95 and class 6 node 9 is ident 90. Both rows sit inside the
+terminator, both prerequisite kinds take the skill chain, and both
+alternatives are the rows above.
 
 Rank 20 does not send; rank 19 does (0x1d5778). The level test is
 acknowledged `R+0x58 < row.need + current rank` (0x1d57a8–0x1d57bc).
@@ -173,14 +186,15 @@ equipment pointer becomes −1. The object pointer is copied. `player_giveExp`
 is not called. The shared seed is not drawn.
 
 **Executed** the player loop inside `save_load` 0x221d60, from 0x221ec0
-through the return to the next slot, for one pending record. The live record
-is overwritten with the snapshot, `save_fixupPlayer` 0x216ea8 runs, and the
-object pointer is zero. After a spend that changed the live levels, points
-and half byte, the restore put back earned 6, acknowledged 4, the saved
-experience and point balances, and half 1. No level was applied and no point
-was spent. The header, camera, quest and memory-card steps of `save_load`
-were not run. **Unknown**: whether any later caller acknowledges the restored
-level or clears `R+0xee`.
+through the return to the next slot, for one pending record. Before that
+loop the fixture directly stores different live levels, experience, both
+point balances and the half byte. Those stores are not a stat or skill
+handler. The loop then overwrites the live record with the snapshot,
+`save_fixupPlayer` 0x216ea8 runs, and the object pointer is zero. The restore
+put back earned 6, acknowledged 4, the saved experience and point balances,
+and half 1. No level was applied and no point was spent. The header, camera,
+quest and memory-card steps of `save_load` were not run. **Unknown**: whether
+any later caller acknowledges the restored level or clears `R+0xee`.
 
 ## Verification on 2026-10-23
 
@@ -202,13 +216,17 @@ passed 15 stat sender cases on each seed; the full Python unit suite passed
 
 ## Verification on 2026-11-03
 
+Stdout for this audit-fix rerun is the untracked
+`local/levelup-r3-difftest.log` and `local/levelup-r3-unittest.log`.
+
 On the Mac mini, `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_levelup.py local/SLUS_209.73`
-passed, per seed: 15 stat-point sender gates, 40 skill-point sender gates,
-48 level-grant cases, and the pending-level snapshot and restore.
-`PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools -p 'test_*.py'`
-passed 652 tests in 5.522s. The executable was the same pinned SLUS_209.73.
-Seeds 20973 and 7 agreed. This is interpreter evidence on constructed state,
-not a live level or a memory card.
+passed, and each of these lines is in that log for seeds 20973 and 7:
+15 stat-point sender gates, 44 skill-point sender gates, 48 level-grant
+cases, 9 point-balance sentinel crosses, and the pending level-up snapshot
+and restore. `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools -p 'test_*.py'`
+passed 652 tests in 4.754s, which is the last line of the unit log. The
+executable was the same pinned SLUS_209.73. Seeds 20973 and 7 agreed. This
+is interpreter evidence on constructed state, not a live level or a memory card.
 
 ## Ordered native port list
 
@@ -225,14 +243,15 @@ not a live level or a memory card.
    presentation bookkeeping. A save image must round-trip both level bytes,
    both point balances and that half byte, and must not apply the pending
    level on load.
-5. Port the executed `skills_screen` sender: tree prerequisite, the seven
-   alternatives in the table above, rank below 20, acknowledged level, a
-   positive skill-point word, and the passive-mask or skill-id send. Compare
-   the planted virtual float with maximum mana before the skill send. Then
-   apply the already verified message 7 handler. Do not treat the handler as
-   the sender. Leave the original per-skill virtual bodies, the cursor-box
-   edges, and the three unmatched class compares unported until they are
-   executed.
+5. Port the executed `skills_screen` sender: tree prerequisite, every
+   alternative in the table above, including class 4 skill 18 and class 6
+   skill 86, rank below 20, acknowledged level, a positive skill-point word,
+   and the passive-mask or skill-id send. Compare the planted virtual float
+   with maximum mana before the skill send. Then apply the already verified
+   message 7 handler. Do not treat the handler as the sender. Leave the
+   original per-skill virtual bodies and the cursor-box edges unported until
+   they are executed. Class 1 ident 55 exists; its passive-0x40 compare is
+   only on the passive-prerequisite chain.
 6. Compare verified layers against the existing `ref_combat` and `ref_messages`
    difftests, the stat gate probe and the skill gate probe on seeds 20973 and
    7; verify integration separately in a real level and multiplayer tick
