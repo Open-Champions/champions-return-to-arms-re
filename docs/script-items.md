@@ -191,7 +191,10 @@ still −1 and the definition has variants (bits 11–15 of its flags), and one 
 `ItemProp_ctor2` per ground item (`tools/ref_messages.py` notes it; it is a stub here).
 Equipping can run the `*weaponEquipNotify` and `*bowEquipNotify` script hooks, and it
 plays sounds only for the local slot (`inventory_equipItem`, executed in
-`difftest_messages`).
+`difftest_messages`). The campaign grant — dispatcher result, bag, stack, full
+bag, flag 39 and the equip pointer — is executed in
+[docs/give-player-item.md](give-player-item.md). That path is not
+`player_giveStartingItems`.
 
 `givePlayerRandom` 0x145f18 is modelled in `tools/ref_natives.py` and was not composed
 here. No shipped script calls it.
@@ -427,6 +430,8 @@ start-to-finish play-through.
   without a spell block. The factory suite covers 90 names.
 - `python3 -m unittest discover -s tools -p 'test_ref_script_items.py'` (26 tests) and
   `... 'test_ref_monster_build.py'` (14 tests).
+- `python3 tools/difftest_give_player_item.py local/SLUS_209.73 --seed 20973` and
+  `--seed 7`: 45 checks, 0 failed. Contract: `docs/give-player-item.md`.
 
 ## 10. Open
 
