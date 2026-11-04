@@ -335,20 +335,36 @@ has bit `0x80` and the count byte at object `+0x118` is less than 2.
 Bit `0x08` of that halfword selects the format at `0x53ff58`; otherwise
 the format is `0x53ff68`. Both are a leading `%s` plus a fixed suffix.
 The `%s` is the descriptor name at `0x4fbbf8 + row*0x26c`, unless that
-name is the literal at `0x53fd38`. That literal instead copies one of the
-thirteen short names selected by the signed byte at `0x8e2c91` (the byte
-plus one, and only results 0..12). `anim_start` is called with flags 3.
-The new cell's time and weight are 0. On an empty state the 0.2 blend
-loaded at `0x225584` is forced to 0, so the rate is 1. When the count is
-already 1 the new cell keeps that blend and the rate is `0x3daaaaab`.
-Evidence:
-[creation rows](../../tools/difftest_char_picture.py#L139).
-`playerSel_task` and the helpers through `0x22e700` do not call
-`anim_advance`. The installed frame is therefore time 0 and weight 0.
-Which other task steps that preview object before a draw is **Unknown**.
+name is the literal at `0x53fd38`. Only carousel row 0 has that literal.
+The signed byte at `0x8e2c91` plus one then selects one of the thirteen
+short names, and only results 0..12 are in range. Bytes −1 through 11
+were executed, so slot 4 (byte 3) is one of those thirteen. `anim_start`
+is called with the `addiu` immediate 3 at `0x225580`, and the new cell's
+flag halfword reads back as 3. Before that call the cell's time and weight
+are nonzero sentinels; both words are stored as 0. On an empty state the
+0.2 blend loaded at `0x225584` is forced to 0, so the rate is 1. When the
+count is already 1 the new cell keeps that blend and the rate is
+`0x3daaaaab`. Evidence:
+[creation rows](../../tools/difftest_char_picture.py#L310)
+and the [direct-call census](../../tools/difftest_char_picture.py#L152).
 
-**Observed; Executed** three transition setups, same empty-state cell
-(time 0, weight 0, rate 1):
+**Observed** direct calls in `playerSel_task` `0x225478` through
+`0x22e700`. This is not a run of the task. The probe records every `jal`
+and `j` target in that span, and every linking branch and `jalr`. The
+span is 569 `jal` instructions and 107 targets, with no `j`, linking
+branch, or `jalr`. None of those targets is `anim_advance` `0x16d748`,
+`anim_advanceUnitSpeed` `0x1709d8`, `anim_syncToSimFrame` `0x1709f8`,
+`anim_randomizeTopTime` `0x16d0b8`, `anim_jumpTopToEnd` `0x170bc8`, or
+`anim_snapTopToEnd` `0x170c80`. Across the executable, `anim_advance` is the target of `jal` sites
+`0x1163a4`, `0x189910` and `0x1b95e4`, and of one `j` at `0x1709ec`.
+There is no linking branch, composed address, or aligned data word.
+None of those four sites is in this span. The executed restart and
+transition slices call `0x16cfe0`, `0x17365c`, `0x22d2b4`, `0x3b7ef0`,
+`0x3b8534` and `0x3b868c`, and not `anim_advance`. Indirect `jalr` inside
+a callee is not followed. Which task steps that preview is **Unknown**.
+
+**Observed; Executed** three transition setups. Each cell's time and
+weight start as nonzero sentinels and are stored as 0; the rate is 1:
 
 | Slice | Format | Flags |
 |---|---:|---:|
@@ -361,13 +377,14 @@ is chosen by the model index through `0x5385b0`, and the clip name is
 chosen by weapon class `+0x4a86`: classes 1, 2, 3, 4, 5 and 7 each have
 their own address, and every other class shares `0x538598`. Flags are
 `0x43` (loop, purge-below, fixed step). If that clip is already the
-current track, the time word is not written. A fresh empty state stores
-time 0, weight 0 and rate 1; the 0.1 blend at `0x1c4078` is forced off
-for cell 0. The inventory draw then calls `anim_advance` at speed 1 from
-`0x1c0a10`, before `model_draw`. One such step from that fresh cell stores
-time `0x3f7fffff` and weight 1. That is the first frame the inventory
-stand draws. Evidence:
-[inventory and play rows](../../tools/difftest_char_picture.py#L206).
+current track, the time word is not written. A fresh state starts with
+nonzero time and weight sentinels; the call stores time 0, weight 0 and
+rate 1. The 0.1 blend at `0x1c4078` is forced off for cell 0. The
+inventory draw then calls `anim_advance` at speed 1 from `0x1c0a10`,
+before `model_draw`. One such step from that fresh cell stores time
+`0x3f7fffff` and weight 1 (`0x3f800000`). That is the first frame the
+inventory stand draws. Evidence:
+[inventory and play rows](../../tools/difftest_char_picture.py#L402).
 
 **Observed; Executed** `player_resetIdleAnim` `0x1b2470`. No player at
 `+0x43d8`, or hit points `+0xac` not greater than 0, leaves a prefilled
@@ -399,7 +416,7 @@ from `0x1c0c20` with layer 6, mesh object `+0x544` and texture object
 empty mesh. The body picture therefore uses the mask stored by the
 previous `Player_drawEquipped`, not the update that follows the body draw
 in the same call. Evidence:
-[mask rows](../../tools/difftest_char_picture.py#L317).
+[mask rows](../../tools/difftest_char_picture.py#L518).
 
 **Observed; Executed** `model_emitShellPasses` `0x174e78`. Flag `0x20`
 clear leaves a prefilled packet unchanged. Flag set walks table 0: the
@@ -433,8 +450,9 @@ and the GS rasterizer remain **Unknown**.
   returned-handle propagation, not actual loading/relocation or GPU use.
   Starting item identity and metadata offsets are reused from round 4; this
   note does not re-execute that loader. The draw argument's projection inputs
-  are not named. The creation preview is installed at time 0 and weight 0;
-  the task that would step it was not found in the selection functions.
+  are not named. The creation preview stores time 0 and weight 0 over a
+  nonzero sentinel. No direct call in `0x225478`–`0x22e700` targets
+  `anim_advance`. The task that would step the preview was not run.
   In-play time is not rewritten by the idle reset, and `Player_move` was
   not re-executed. `anim_releaseCaches` stays stubbed.
 - **Unknown:** input reachability of every option combination, the full menu
@@ -462,8 +480,9 @@ The client can implement these pieces without inventing values:
    every nonempty table-0 mesh, then the restore pass. The byte image is
    `shell_packet`.
 5. Creation pose: the restart rules and the three transition formats above.
-   Install time 0 and weight 0. Do not invent a step the selection task
-   does not perform.
+   Install time 0 and weight 0. The selection span has no direct call to
+   `anim_advance`. Do not add one, and do not invent a step from a task
+   this note did not run.
 6. Inventory pose: the model lump and the class idle filename, flags `0x43`.
    The first drawn frame is one fixed step later: time `0x3f7fffff`, weight
    1. A repeated draw keeps stepping; do not restart a clip that is already
