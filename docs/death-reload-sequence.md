@@ -199,8 +199,9 @@ install it. `tools/difftest_death_reload_thread.py` installs both.
 
 **Observed:** `TerminateThread` `0x352830` loads v1 = `0x25` (37), executes
 `SYSCALL` at `0x352834`, and returns through `jr` at `0x352838`. A scan of
-`jal` and `j` instructions finds nine call sites and no pointer word. Eight
-sites do not read v0:
+`jal` and `j` instructions finds nine call sites. A data word at `0x51f7b8`
+holds `0x352830` inside the stub-address run at `0x51f71c`–`0x51f8c4`. This
+scan found no use of that run as a call. Eight sites do not read v0:
 
 - `0x17de04` and `0x17e478` load the id word at `0x7cfd04`. The instructions
   after each call reload that word and call `0x353b20` with a1 = 0. The call
@@ -219,8 +220,9 @@ return address.
 **Observed:** `0x353b20` calls `0x3534b0`. That function returns 1 when COP0
 Status bit 0 is clear. `0x353b20` then returns -1 and does not execute a
 syscall. When the bit is set, `0x353b20` calls `ReferThreadStatus` `0x3528e0`
-and calls `_StartThread` `0x352800` only if the first status word equals
-`0x10`. What `0x10` means to the kernel is not established here.
+only when `0x35bfe8` returns non-zero, and then calls `_StartThread`
+`0x352800` only if the first status word equals `0x10`. What `0x10` means to
+the kernel is not established here.
 
 **Executed:** the handler accepts only v1 = 37 and only the eight return
 addresses above. It writes v0 = 0 and does not read or write guest memory.
@@ -248,9 +250,9 @@ sequence whose ELF entry is `0x14fa88`. No pointer word holds `particle_init`,
 and no `lui` followed within eleven instructions by `addiu` or `ori` on the
 same register builds that address. The address of `0x323dcc` built at
 `0x30de30` is shifted and stored by `getretmips_unwind` `0x30dde4`; it is not
-a call. The entry address built at `0x19ddc8` is subtracted by
-`dbg_memoryReport` `0x19dd98`; it is not a call. A call computed some other
-way was not searched and is **Unknown**. `game_clearLevel` calls the particle
+a call. The entry address built at `0x19ddc8` is subtracted at `0x19dd98`;
+it is not a call. A call computed some other way was not searched and is
+**Unknown**. `game_clearLevel` calls the particle
 reset `0x18ebb8` at `0x1e5024` and again at `0x1e5054`. It does not call
 `particle_init`.
 
@@ -262,8 +264,9 @@ reset is **Unknown**. This sequence does not execute that interval.
 
 **Executed, separate:** original `texcache_init` from the loaded image, with
 no syscall handler, writes `0x7cfe00` at `0x7cfd40` and then stops at
-`CreateThread` `0x3527e0`. The syscall is v1 = 32 at `0x3527e4`, return
-address `0x17a37c`, a0 = `0x425e58`. The parameter words are 0, entry
+`CreateThread` `0x3527e0`. The trap names `0x3527e4` and the emulator pc is
+the following instruction, `0x3527e8`. The syscall is v1 = 32, return address
+`0x17a37c`, a0 = `0x425e58`. The parameter words are 0, entry
 `0x17ca58`, stack `0x7cbd00`, size `0x4000`, the current gp, and 6. gp is 0
 in this call because the startup store at `0x14fc40` was not executed. The id
 word is still 0: the store of v0 is the delay slot of the following `0x353b20`
@@ -278,8 +281,10 @@ non-zero before a later reset. This fixture does not run that boot. The zero
 slot is the fixture's untouched memory, not a retail reload result.
 
 **Unknown:** the retail result of `TerminateThread`, including for id 0; the
-branch at `0x35f3bc`; COP0 Status at reload; `ReferThreadStatus` and
-`_StartThread` when Status bit 0 is set; the `CreateThread` id; file loading,
+branch at `0x35f3bc`; COP0 Status at reload; the result of `0x35bfe8` when
+Status bit 16 is set, and therefore whether `ReferThreadStatus` runs;
+`_StartThread` when that result is non-zero and the first status word equals
+`0x10`; the `CreateThread` id; file loading,
 world reconstruction, player construction and playable arrival. These host
 calls are a synthetic sequence, not game-main. Keep the native
 `blocked_death_reload` boundary.
