@@ -131,3 +131,23 @@ def slot_action(state, edge, *, selected=0, count=2):
             return (4, selected, 0)
         return (9, selected, 0)
     raise ValueError(state)
+
+
+# Play flow. These are the screen's own results; the slot image and the
+# world-body consumer stay in the saves and save-world research.
+
+SAVE_BUFFER = 0x895580
+SAVE_NAME = 0x879D08
+SAVE_IMAGE_BYTES = 0x4BC78
+SAVE_OPEN_MODE = 0x202
+SAVE_WRITE_OP = 5
+FRESH_SLOT_NAME = "BASLUS-20973_slot0"
+OVERWRITE_SLOT_NAME = "BASLUS-20973_slot1"
+LEVEL_NAME = "innovat1"
+LOAD_PLAIN = "strife"
+LOAD_QUALIFIED = "hub_west"
+SAVED_KEYS_NEW = ("MemcardContinue", "MemcardSaveComplete", "MemcardSaveGood2")
+SAVED_KEYS_OVERWRITE = ("MemcardContinue", "MemcardSaveComplete", "OverwriteGood")
+SPACE_KEY = "MemcardNeedFreeSpaceBrowser"
+DIRECTORY_OP = 0x0A
+SPACE_OP = 8
