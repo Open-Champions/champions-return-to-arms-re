@@ -47,6 +47,12 @@ CUT_WORDS = (
     (0x41B4FC, 4, 0x3C), (0x4F66A8, 1, 1), (0x83D198, 4, 0), (0x83D18C, 4, 0),
     (0x44FDB8, 4, 2),
 )
+ITEM_TEST, COUNT_ITEM = 0x145690, 0x1C5880
+FIND_OBJECTS, SPRINTF = 0x14BF58, 0x3B7EF0
+FMT_LMP, FMT_CUT = 0x531270, 0x531288
+LIMIT_INSN, FMT_INSN_LMP, FMT_INSN_CUT = 0x142354, 0x143F54, 0x143F74
+SENTINEL = 0xA5A5A5A5
+SENTINEL64 = 0xA5A5A5A5A5A5A5A5
 
 
 class Boundary(Exception):
@@ -85,9 +91,6 @@ def apply_cut(mem, header):
             mem.w8(address, value)
         elif address != 0x506048:
             mem.w32(address, value)
-    camera = mem.u32(CAMERA)
-    if camera:
-        mem.w32(camera + 0x34, 0)
     mem.w32(header, 0)
 
 
@@ -168,6 +171,53 @@ def plant_prop(o, name, states):
     return obj
 
 
+def fill_words(mem, obj):
+    mem.w32(obj + 0x178, SENTINEL)
+    mem.w32(obj + 0x17C, SENTINEL)
+    mem.w64(obj + 0x180, SENTINEL64)
+
+
+def words_untouched(mem, obj):
+    assert mem.u32(obj + 0x178) == SENTINEL
+    assert mem.u32(obj + 0x17C) == SENTINEL
+    assert mem.u64(obj + 0x180) == SENTINEL64
+
+
+def words_stored(mem, obj, state):
+    assert mem.u32(obj + 0x178) == state & 0xFFFFFFFF
+    assert mem.u32(obj + 0x17C) == 0
+    assert mem.u64(obj + 0x180) == 0
+
+
+def state_stores(writes, obj):
+    return {(addr - obj, size, value) for pc, addr, size, value in writes
+            if 0x23D680 <= pc < 0x23D7B0 and obj <= addr < obj + 0x188}
+
+
+def seal_camera(e, camera):
+    for off in (0x34, 0x38, 0x3C, 0x98):
+        e.mem.w32(camera + off, SENTINEL)
+
+
+def arm_item_return(m, results):
+    """Record v0 when this 0x145690 returns, and the callees it made."""
+    start = len(m.calls)
+    ret = m.r[31] & 0xFFFFFFFF
+    previous = m.hooks.get(ret)
+
+    def done(emu, start=start, ret=ret, previous=previous):
+        results.append(emu.r[2])
+        assert emu.r[2] == 0
+        assert COUNT_ITEM not in {call.target for call in emu.calls[start:]}
+        if previous is None:
+            emu.unhook(ret)
+        else:
+            emu.hooks[ret] = previous
+            previous(emu)
+
+    m.hooks[ret] = done
+
+
 def capture(o, image_off, address, entry):
     found = {}
 
@@ -191,7 +241,7 @@ def capture(o, image_off, address, entry):
     raise AssertionError('capture missed 0x%x' % address)
 
 
-def hook_natives(o, permit, stops, trace):
+def hook_natives(o, permit, stops, trace, item_results=None):
     e = o.emu
     e.hooks.clear()
     e.record_calls = True
@@ -206,6 +256,8 @@ def hook_natives(o, permit, stops, trace):
             trace.append((address, args))
             if address not in permit:
                 raise Boundary('native', address)
+            if address == ITEM_TEST and item_results is not None:
+                arm_item_return(m, item_results)
         return run
 
     for index in range(191):
@@ -315,12 +367,58 @@ def cut_matches(e, mem):
         assert word(e.mem, address, size) == value
         assert word(mem, address, size) == value
     camera = e.mem.u32(CAMERA)
-    assert camera and e.mem.u32(camera + 0x34) == mem.u32(mem.u32(CAMERA) + 0x34) == 0
+    assert camera
+    # 0x2072e8 with argument 0 stores that 0 at +0x34 and leaves the later words alone.
+    assert e.mem.u32(camera + 0x34) == 0
+    assert any(pc == 0x207304 and addr == camera + 0x34 and size == 4 and value == 0
+               for pc, addr, size, value in e.writes)
+    assert e.mem.u32(camera + 0x38) == SENTINEL
+    assert e.mem.u32(camera + 0x3C) == SENTINEL and e.mem.u32(camera + 0x98) == SENTINEL
     header = e.mem.u32(0x44FCE4)
     assert header and e.mem.u32(header) == 0 and mem.u32(mem.u32(0x44FCE4)) == 0
     notable = tuple(c.target for c in e.calls if c.target in set(CUT_CALLS))
     assert notable == CUT_CALLS
     assert CD_FIND not in {c.target for c in e.calls}
+
+
+def state_cases(path, image, body, seed):
+    """Signed argument < States. Equal and greater return; a negative argument enters."""
+    o = fresh(path, image, body, seed)
+    e = o.emu
+    cases = (
+        (0, 0, False, None),
+        (0, 100, True, 0),
+        (50, 10, False, None),
+        (-1, 100, True, 0xFFFFFFFF),
+        (0, -1, False, None),
+    )
+    for arg, states, enters, stored in cases:
+        obj = e.alloc(0x198)
+        e.mem.w32(obj + 0x120, states & 0xFFFFFFFF)
+        fill_words(e.mem, obj)
+        e.hooks.clear()
+        e.record_writes = True
+        e.writes.clear()
+        e.calls.clear()
+        e.r[29] = o.SP
+        e.hook(HIDE_MASK, lambda _m: (_ for _ in ()).throw(Boundary('callee', HIDE_MASK)))
+        try:
+            e.call(0x23D680, obj, arg, max_steps=200000)
+            hit = False
+        except Boundary as error:
+            assert error.kind == 'callee' and error.address == HIDE_MASK
+            hit = True
+        assert hit is enters
+        if enters:
+            words_stored(e.mem, obj, stored)
+            got = state_stores(e.writes, obj)
+            assert {(0x178, 4, stored & 0xFFFFFFFF), (0x17C, 4, 0), (0x180, 8, 0)} <= got, got
+        else:
+            words_untouched(e.mem, obj)
+            assert not state_stores(e.writes, obj)
+            assert HIDE_MASK not in {c.target for c in e.calls}
+        print('PASS setstate body=%d seed=%d arg=%d states=%d entered=%d' % (
+            body, seed, arg, states, int(hit)))
 
 
 def main():
@@ -343,9 +441,15 @@ def main():
             assert phases[-1][1] == 'stop' and trace[-1][0] == 0x14598C
             assert queues(o.emu) == (0, 2, 0) and game.defer_count == 0 and game.defer_queued == 2
             assert 0x23D680 not in {c.target for c in o.emu.calls}
-            assert 0x14BF58 in {c.target for c in o.emu.calls}
-            # The two queued names then run. No player object, so each item test returns 0.
-            permit.add(0x145690)
+            limits = [c.args[2] & 0xFFFFFFFF for c in o.emu.calls if c.target == FIND_OBJECTS]
+            assert limits == [0x64]
+            assert o.emu.mem.u16(LIMIT_INSN) == 0x64
+            adjust = o.emu.mem.s16(VT_AUTOPROP + 8 * 18)
+            slot = o.emu.mem.u32(VT_AUTOPROP + 8 * 18 + 4)
+            assert adjust == 0 and slot == 0x23D680
+            # The two queued names then run. No player object, so each item test returns 0
+            # before the inventory counter.
+            permit.add(ITEM_TEST)
             mark = len(expected)
             seen = []
             hook_natives(o, permit, set(), seen)
@@ -355,31 +459,40 @@ def main():
             assert queues(o.emu) == (2, 0, 1)
             regions_match(o, game.mem)
             seen = []
-            hook_natives(o, permit, set(), seen)
+            item_results = []
+            hook_natives(o, permit, set(), seen, item_results)
             o.call(0x1EDA24, max_steps=8000000)
             game.run_deferred()
             assert seen == expected[mark:]
-            assert [a for a, _ in seen] == [0x145690] * 48
+            assert [a for a, _ in seen] == [ITEM_TEST] * 48
+            assert item_results == [0] * 48
             assert queues(o.emu) == (0, 0, 2)
             assert not differences(o, model, len(image))
             regions_match(o, game.mem)
             assert not any(c.stubbed for c in o.emu.calls)
-            print('PASS route0_empty body=%d seed=%d enqueued=2 item_tests=48 stop=0x14598c' % (body, seed))
+            print('PASS route0_empty body=%d seed=%d enqueued=2 item_v0=%s limit=0x64 slot18=0x%x adjust=%d stop=0x14598c' % (
+                body, seed, ','.join(str(v) for v in item_results), slot, adjust))
 
-            # State 0 is not below States 0, so slot 18 returns before the mask call.
+            # Direct 0x23d680 calls separate signed < from != and from an unsigned compare.
+            state_cases(path, image, body, seed)
+            # Argument 0 with States 0 does not store. States 100 stores the three words.
             cap = fresh(path, image, body, seed)
             found = capture(cap, off, 0x142320, 0x53F020)
             assert found['args'][1] == 0 and len(found['text']) == 6
             for states, stop in ((0, None), (100, HIDE_MASK)):
                 o = fresh(path, image, body, seed)
                 obj = plant_prop(o, found['text'], states)
+                fill_words(o.emu.mem, obj)
+                o.emu.record_writes = True
+                o.emu.writes.clear()
                 permit = set(ROUTE0)
                 model, game, expected = model_for(image, o, permit)
                 stops = set() if stop is None else {stop}
                 if stop is None:
                     trace, _phases = drive(o, model, game, permit, stops, expected)
                     assert tuple(a for a, _ in trace) == ROUTE0_ORDER
-                    assert o.emu.mem.u32(obj + 0x178) == 0
+                    words_untouched(o.emu.mem, obj)
+                    assert not state_stores(o.emu.writes, obj)
                     assert 0x23D680 in {c.target for c in o.emu.calls}
                     assert HIDE_MASK not in {c.target for c in o.emu.calls}
                 else:
@@ -392,9 +505,8 @@ def main():
                     except Boundary as hit:
                         assert hit.kind == 'callee' and hit.address == HIDE_MASK
                     assert tuple(a for a, _ in trace) == ROUTE0_ORDER[:4]
-                    assert o.emu.mem.u32(obj + 0x178) == 0
-                    assert o.emu.mem.u32(obj + 0x17C) == 0
-                    assert o.emu.mem.u64(obj + 0x180) == 0
+                    words_stored(o.emu.mem, obj, 0)
+                    assert state_stores(o.emu.writes, obj) >= {(0x178, 4, 0), (0x17C, 4, 0), (0x180, 8, 0)}
                     assert 0x23D680 in {c.target for c in o.emu.calls}
                     assert queues(o.emu) == (0, 0, 0)
                     assert not any(c.stubbed for c in o.emu.calls)
@@ -426,6 +538,21 @@ def main():
             assert CD_FIND not in {c.target for c in o.emu.calls}
             assert 0x14F028 not in {c.target for c in o.emu.calls}
             print('PASS route1_resident body=%d seed=%d natives=%d returned=1' % (body, seed, len(trace)))
+            o = fresh(path, image, body, seed)
+            plant_lump(o.emu, found['text'], b'\0\0\0\0')
+            o.emu.mem.w32(LUMPS + 0x14, 1)
+            permit = set(PERMITTED) | {0x14222C}
+            trace = []
+            hook_natives(o, permit, {CD_FIND}, trace)
+            try:
+                o.call(0x1ED694, 0x53F000, max_steps=4000000)
+                raise AssertionError('bit0 resident returned')
+            except Boundary as hit:
+                assert hit.kind == 'callee' and hit.address == CD_FIND
+            assert tuple(a for a, _ in trace) == (0x14222C,)
+            assert {c.target for c in o.emu.calls} >= {0x173558, 0x17306C, CD_FIND}
+            assert 0x144DB8 not in {a for a, _ in trace}
+            print('PASS route1_bit0 body=%d seed=%d hit=0 stop=0x1724fc' % (body, seed))
 
             # Route 2: fixture level name, resident cut, offline, no player object.
             image, off = images[2], offs[2]
@@ -454,6 +581,9 @@ def main():
             e.mem.w32(e.mem.u32(LUMPS + 0x10) + 4, label)
             camera = e.alloc(0x100)
             e.mem.w32(CAMERA, camera)
+            seal_camera(e, camera)
+            e.record_writes = True
+            e.writes.clear()
             permit = set(PERMITTED) | {0x143F1C, 0x144B44}
             model, game, expected = model_for(image, o, permit)
             game.mem.w32(game.host.header, 0)
@@ -464,6 +594,11 @@ def main():
             assert e.mem.u32(0x4D8AF0 + 0x43D0) == 1
             assert queues(e) == (0, 0, 0)
             cut_matches(e, game.mem)
+            fmts = [c.args[1] & 0xFFFFFFFF for c in e.calls
+                    if c.target == SPRINTF and 0x143F1C <= c.site < 0x143FA8]
+            assert fmts == [FMT_LMP, FMT_CUT]
+            assert e.mem.u16(FMT_INSN_LMP) == 0x1270 and e.mem.u16(FMT_INSN_CUT) == 0x1288
+            assert e.mem.cstr(FMT_LMP) == '%s.lmp' and e.mem.cstr(FMT_CUT) == '%s.cut'
             assert e.mem.u32(payload) == 0
             mark = len(expected)
             seen = []
@@ -477,7 +612,8 @@ def main():
             assert not differences(o, model, len(model.image))
             regions_match(o, game.mem)
             assert not any(c.stubbed for c in e.calls)
-            print('PASS route2_cut body=%d seed=%d tasks=2 replacement_stop=returned' % (body, seed))
+            print('PASS route2_cut body=%d seed=%d tasks=2 formats=0x%x,0x%x replacement_stop=returned' % (
+                body, seed, fmts[0], fmts[1]))
             cases += 1
     print('PASS arrival_stage_r5 cases=%d' % cases)
 
