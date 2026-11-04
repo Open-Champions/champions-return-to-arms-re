@@ -30,6 +30,9 @@ SEED, PLAYERS, FREE_HEAD = 0x404464, 0x4D8AF0, 0x864EA8
 TEX_NAME, LUMP_COUNT, LUMPS = 0x44FE18, 0x41BF7C, 0x7B9480
 EXT_WORLD, USE_MASK = 0x53DAA8, 0x41B9C0
 PROMPT, USE = 0x1ECA94, 0x1ECC70
+PROP, STRLEN = 0x14F4C0, 0x3B8DC4
+BOX = 0x14A928
+SENTINEL = 0xA5A5A5A5
 TERMINATE_RA = frozenset((
     0x17DE0C, 0x17E480, 0x17FE68, 0x31EF38,
     0x36782C, 0x368E2C, 0x3A02CC, 0x3A1270,
@@ -112,15 +115,26 @@ def boot(elf, disc, particles=False):
     disc.install(emu)
     allow_diagnostic(emu)
     emu.call(POOL_INIT, max_steps=2000000)
+    emu.record_writes = True
+    emu.mem.w32(FREE_HEAD, SENTINEL)
+    emu.reset_log()
     emu.call(HANDLE_INIT, max_steps=2000000)
+    assert emu.mem.u32(FREE_HEAD) == 0x847268
+    assert any(pc == 0x1A181C and addr == FREE_HEAD and value == 0x847268
+               for pc, addr, _size, value in emu.writes)
+    emu.record_writes = False
+    emu.reset_log()
     if particles:
+        emu.r[2] = SENTINEL
         assert emu.call(PARTICLE, max_steps=5000000) & 0xFFFFFFFF == 2
     return emu
 
 
-def construct(emu, address, size, pos, props):
+def construct(emu, address, size, pos, props, prefill=()):
     block = emu.call(POOL_NEW, size, max_steps=1000000) & 0xFFFFFFFF
     assert block
+    for off, value in prefill:
+        emu.mem.w32(block + off, value)
     emu.call(address, block, pos, 0, props, max_steps=8000000)
     return block
 
@@ -130,8 +144,13 @@ def constructors(elf, disc, seed):
     assert emu.mem.u32(FREE_HEAD) == 0x847268
     emu.mem.w32(SEED, seed)
     pos, props = emu.alloc(16), emu.alloc(4)
-    block = construct(emu, OBJECT_CTOR, 0x80, pos, props)
+    block = emu.call(POOL_NEW, 0x80, max_steps=1000000) & 0xFFFFFFFF
+    assert block
+    emu.mem.w32(block + 0x44, SENTINEL)
+    emu.r[2] = SENTINEL
+    ret = emu.call(OBJECT_CTOR, block, pos, 0, props, max_steps=8000000) & 0xFFFFFFFF
     stepped = (seed * 0x19660D + 0x3C6EF35F) & 0xFFFFFFFF
+    assert ret == 0
     assert emu.mem.u32(SEED) == stepped
     assert emu.mem.u32(block + 0x44) == (stepped >> 16) & 0xFFFF
     flags = {}
@@ -140,7 +159,8 @@ def constructors(elf, disc, seed):
             ('trigger', TRIGGER, 0x70, 3),
             ('npc', NPC, 0x480, 0x01100028)):
         fresh = boot(elf, disc)
-        body = construct(fresh, address, size, fresh.alloc(16), fresh.alloc(4))
+        body = construct(fresh, address, size, fresh.alloc(16), fresh.alloc(4),
+                         prefill=((0x0C, SENTINEL),))
         flags[name] = fresh.mem.u32(body + 0x0C)
         assert flags[name] == expected, (name, hex(flags[name]))
     portal = boot(elf, disc)
@@ -157,10 +177,17 @@ def constructors(elf, disc, seed):
 def interact(elf, disc, seed):
     emu = boot(elf, disc)
     emu.mem.w32(SEED, seed)
+    emu.mem.w32(PLAYERS + 0xAC, SENTINEL)
+    emu.mem.w32(PLAYERS + 0xB0, 0x5A5A5A5A)
+    emu.mem.w32(PLAYERS + 0x43D8, SENTINEL)
     name, look = emu.alloc(8), emu.alloc(4)
     emu.mem.write(name, b'A\0')
-    emu.call(PLAYER_INIT, 0, 0, name, look, 0, 1, 0, 0, max_steps=8000000)
+    emu.r[2] = SENTINEL
+    init = emu.call(PLAYER_INIT, 0, 0, name, look, 0, 1, 0, 0, max_steps=8000000)
+    assert init & 0xFFFFFFFF == 0
     assert emu.mem.u32(PLAYERS + 0xAC) == 0x4E6E6B27
+    assert emu.mem.u32(PLAYERS + 0xB0) == 0
+    assert emu.mem.u32(PLAYERS + 0x43D8) == 0
     pos, props = emu.alloc(16), emu.alloc(4)
     body = construct(emu, PUSH, 0x4C, pos, props)
     owner = construct(emu, OBJECT_CTOR, 0x590, pos, props)
@@ -185,13 +212,20 @@ def interact(elf, disc, seed):
     emu.mem.w32(pad + 8, 0x40)
     emu.mem.w32(pad + 0x0C, 0x40)
     emu.record_calls = True
+    emu.record_writes = True
+    emu.reset_log()
+    emu.r[2] = SENTINEL
     value = emu.call(INTERACT, owner, pad, 0, max_steps=3000000) & 0xFFFFFFFF
     targets = [call.target for call in emu.calls]
-    assert 0x14A928 in targets
-    assert PROMPT in targets
+    assert targets.count(BOX) == 1 and targets.count(PROMPT) == 1
+    assert targets.count(PROP) == 2 and targets.count(STRLEN) == 2
     assert USE not in targets
+    real = {BOX, PROMPT, PROP, STRLEN}
+    assert all(not call.stubbed for call in emu.calls if call.target in real)
     assert seen == [1], seen
     assert value == 0x4D8AC0
+    planted = {USE_MASK, pad + 8, pad + 0x0C}
+    assert not any(addr in planted for _pc, addr, _size, _value in emu.writes)
     return value
 
 
@@ -199,10 +233,17 @@ def archive(elf, disc, seed):
     emu = boot(elf, disc)
     emu.mem.w32(SEED, seed)
     emu.mem.write(TEX_NAME, b'innovat1\0')
+    emu.mem.w32(LUMP_COUNT, 0)
     name = emu.alloc(16)
     emu.mem.write(name, b'innovat1.gob\0')
     disc.reads.clear()
+    emu.record_calls = True
+    emu.record_writes = True
+    emu.reset_log()
     emu.call(GOB, name, max_steps=20000000)
+    assert any(call.target == FLUSH and call.stubbed and call.ret == 0 for call in emu.calls)
+    count_writes = [value for _pc, addr, _size, value in emu.writes if addr == LUMP_COUNT]
+    assert count_writes and count_writes[-1] == 3
     assert disc.reads[0] == ('innovat1.gob', 0x800, 0, 1)
     assert ('innovat1.tex', 0x5000, 0, 1) in disc.reads
     assert all(hits == 1 for _name, _size, _offset, hits in disc.reads)
@@ -216,6 +257,7 @@ def archive(elf, disc, seed):
     found = emu.call(FIND_EXT, level, EXT_WORLD, 0, max_steps=2000000) & 0xFFFFFFFF
     assert found
     word = emu.mem.u32(found + 4)
+    assert EE.HEAP_LO <= word < EE.HEAP_HI
     assert emu.mem.is_mapped(word, 4)
     return found, word
 
