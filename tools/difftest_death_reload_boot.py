@@ -47,6 +47,8 @@ def run_entry(elf):
     assert moved == [0x1fffff0]
     assert (e.r[28] & 0xffffffff) == GP
     assert (e.r[4] & 0xffffffff) == 0x80000000
+    assert (e.r[5] & 0xffffffff) == 0x80080000
+    assert (e.r[6] & 0xffffffff) == 0x35c108
     assert (e.r[3] & 0xffffffff) == 131
     assert (e.r[31] & 0xffffffff) == 0x35c1ec
     assert e.cur == 0x35c108

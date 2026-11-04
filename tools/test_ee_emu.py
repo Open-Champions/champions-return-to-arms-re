@@ -748,6 +748,68 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(str(plain.exception),
                          'SYSCALL at 0x%08x (v1 = 99); no kernel is modelled' % (BASE + 4))
 
+    def test_modelled_intc_delivers_one_handler_then_retries(self):
+        handler = 0x30000
+        wrapper = 0x352a10
+        # Cause is stored, then a0 is reloaded from DATA+0x40, then iSignalSema.
+        body = [R(0x21, T1, RA, ZERO),
+                I(0x0F, T0, 0, 2),
+                I(0x2B, A0, T0, 0x60),
+                I(0x0F, A0, 0, 2),
+                I(0x23, A0, A0, 0x40),
+                J(3, wrapper),
+                NOP,
+                addiu(S0, ZERO, 99),
+                R(0x21, RA, T1, ZERO),
+                JR_RA,
+                NOP]
+        main = [I(0x0F, A0, 0, 2),
+                addiu(V1, ZERO, 64),
+                R(0x0C),
+                addiu(A0, ZERO, 2),
+                I(0x0F, A1, 0, 3),
+                addiu(A2, ZERO, 0),
+                addiu(V1, ZERO, 16),
+                R(0x0C),
+                addiu(A0, ZERO, 2),
+                addiu(V1, ZERO, 20),
+                R(0x0C),
+                addiu(S0, ZERO, 0x11),
+                addiu(A0, ZERO, 1),
+                addiu(V1, ZERO, 68),
+                R(0x0C)]
+        param = struct.pack('<6I', 0, 1, 0, 0, 0, 0) + bytes(0x28) + struct.pack('<I', 1)
+        blocked = machine(main, data=param, run=False)
+        blocked.load_words(handler, body)
+        blocked.load_words(wrapper, [addiu(V1, ZERO, -0x43), R(0x0C), JR_RA, NOP])
+        blocked.install_modelled_boot()
+        blocked.hook(BASE + 40, lambda emu: emu.set_reg('ra', 0x353560))
+        blocked.hook(BASE + 44, lambda emu: emu.set_reg('ra', EE.RETURN_ADDR))
+        with self.assertRaises(CpuTrap) as still:
+            blocked.call(BASE)
+        self.assertIn('modelled WaitSema count is 0', str(still.exception))
+        self.assertEqual(blocked.mem.u32(DATA + 0x60), 0)
+        self.assertEqual(blocked.intc_deliveries, [])
+        delivered = machine(main, data=param, run=False)
+        delivered.load_words(handler, body)
+        delivered.load_words(wrapper, [addiu(V1, ZERO, -0x43), R(0x0C), JR_RA, NOP])
+        delivered.install_modelled_boot()
+        delivered.install_modelled_intc()
+        with self.assertRaises(EmuError):
+            delivered.install_modelled_intc()
+        delivered.hook(BASE + 40, lambda emu: emu.set_reg('ra', 0x353560))
+        delivered.hook(BASE + 44, lambda emu: emu.set_reg('ra', EE.RETURN_ADDR))
+        self.assertEqual(delivered.call(BASE), 1)
+        self.assertEqual(delivered.r[S0], 0x11)
+        self.assertEqual(delivered.mem.u32(DATA + 0x60), 2)
+        self.assertEqual(delivered.intc_deliveries, [(2, handler, 1)])
+        self.assertEqual(delivered._semas[1]['count'], 0)
+        bare = machine([addiu(V1, ZERO, -0x43), R(0x0C)], run=False)
+        bare.install_modelled_boot()
+        with self.assertRaises(CpuTrap) as unsigned:
+            bare.call(BASE)
+        self.assertIn('no kernel is modelled', str(unsigned.exception))
+
     def callee_program(self):
         """v0 = callee(a0 + 1) + 1000, where callee(x) = x * 2 and stores x at DATA."""
         return [R(0x25, S0, RA, ZERO),          # 0: s0 = ra

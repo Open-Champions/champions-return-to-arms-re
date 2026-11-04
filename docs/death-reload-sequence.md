@@ -382,3 +382,95 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_death_reload_boot.py local/SLUS
 
 Each seed: one entry stop, two engine_init WaitSema stops and two
 particle-reset faults. No stubs. Success output reports counts only.
+
+## Round 6: one modelled interrupt per blocked wait, 2026-11-03
+
+The round-5 WaitSema trap remains the default.
+`EE.install_modelled_intc` is opt-in and composes with
+`EE.install_modelled_boot`. `tools/difftest_death_reload_boot.py` does not
+install it. `tools/difftest_death_reload_intc.py` does. Without this opt-in,
+syscall `-0x43` still raises `CpuTrap`.
+
+**Observed:** `engine_init` calls AddIntcHandler `0x3526c0` at `0x19d37c`.
+That wrapper loads v1 = `0x10` (16). The arguments are cause 2, handler
+`0x19b6e4` and next 0. EnableIntc `0x352720` loads v1 = `0x14` (20) and is
+reached through `0x353528` with cause 2. `0x19b6e4` returns through `jr ra`
+and sets v0 to 0. It does not read a0 before overwriting it. Both exits `jal`
+`0x352a10`. That wrapper loads v1 = `-0x43` and executes `SYSCALL`. One delay
+slot loads the id at `0x8400f4`. The other signal uses the id loaded from
+`0x8400f0`. Both exits add 1 to the word at `0x44fd98`. The loaded image
+has 0 at `0x8400f8`. The branch at `0x19b71c` goes to `0x19b784` when that
+byte is 0, and the exit at `0x19b8c8` still increments and signals. This run
+does not record which exit ran. The word at `0x19b920` is `0x42000038`,
+which is `EI`.
+
+**Inferred:** a0 on entry is the cause, because that is AddIntcHandler's
+first argument and the body is an ordinary function. This model passes cause
+2 in a0. When the handler returns, the interrupted registers are restored,
+because the waiter at `0x19d05c` continues with the values it held. The BIOS
+save mask is not in this image. Restoring the register file is the model.
+The count update for syscall `-0x43` is the same increment the modelled
+SignalSema already applies. It does not consult the max word, and it is not
+a recovered kernel result. Registration order is the delivery order. This
+boot registers one handler, and its next argument is 0.
+
+**Executed:** the delivery cadence is one run per blocking WaitSema. That
+cadence is modelled. It is not a vertical-blank interval. The waits at
+`0x19d394`, `0x19d3a4`, `0x19d3f0`, `0x19d3fc` and `0x19d408` each deliver
+the handler once. The word at `0x44fd98` becomes 5. A planted `0x11111111`
+at `0x44fd94` stays. A planted `0xA5` at `0x44fd9c` becomes 0, the low bit of
+the zero doubleword read from `0x12001000`. Semaphore 1's modelled count is
+5. Semaphore 2 is waited after each signal, so its modelled count is 0. The
+later wait at `0x19d828` does not run.
+
+**Executed:** the next stop is a 2-byte write at pc `0x19d4b4`, return
+address `0x19d498`, to address `0x21800094`. v0 is `0x2300`. That is the word
+`0x230000` at `0x83d290`, shifted right by 8; the word is not negative, so
+the `0xff` adjustment is not applied. a1 is `0x1800080`, the word at
+`0x1800010`. a2 is that word OR `0x20000000`, from the `lui` at `0x19d3a8`.
+The cached address `0x1800094` is mapped. The alias is not, so the store does
+not complete. The call at `0x19d490` has returned, and s5 holds `0x1000a000`.
+`texcache_init`, `particle_init`, world reconstruction `0x14e808` and
+`Player_ctor` `0x1a1d28` are not entered. The ring word `0x7cfd40` and the
+particle word `0x82c408` stay 0. Planted neighbors `0x22222222` at `0x7cfd44`
+and `0x33333333` at `0x82c40c` stay.
+
+**Observed:** syscall 131 is the body installed for number `0x83` at
+`0x35c108`. The call at `0x35c1e4` passes a0 = `0x80000000`, a1 =
+`0x80080000` and a2 = `0x35c108`. The body loads the word at the cursor and
+compares it with a2. A match returns that address. Reaching a1 without a
+match returns 0. **Executed:** the first instruction reads `0x80000000` and
+stops. The round-5 boot test now also requires those two arguments. The
+bytes from `0x80000000` through `0x8007ffff` are not in the loaded image, so
+neither a match nor a miss is modelled. The second search, whose needle is
+`0x35c0d0`, does not run.
+
+**Executed, same session:** the death sequence still supplies its own player,
+checkpoint and task list. The loader stops on the 4-byte write to address 4
+at pc `0x18ec10`, return address `0x1e502c`. World reconstruction and
+`Player_ctor` are not called.
+
+**Unknown:** the retail interrupt timing, the retail ids, the kernel window,
+whether the uncached store would write the cached bytes, file loading, world
+reconstruction, player construction and playable arrival. These host calls
+are not game-main. Keep the native `blocked_death_reload` boundary.
+
+A native client can run `0x19b6e4` once for each blocked wait on semaphore 2
+and apply that count increment. That passes the five waits and leaves
+`0x44fd98` at 5. It does not fill the texture-cache ring or the particle
+word, and it does not construct a player. The original teardown still stops
+on the null particle slot, so the client refusal stays.
+
+This boot does not unblock the `texcache_reset` store at `0x179b30` reached
+from `game_loadLevel`. That store adds `0x18` to the pointer at `0x7cfd40`.
+The pointer is still 0, so the address is still `0x18`.
+
+## Reproduce, round 6
+
+```
+PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_death_reload_intc.py local/SLUS_209.73 --seed 20973
+PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_death_reload_intc.py local/SLUS_209.73 --seed 7
+```
+
+Each seed: two engine_init stops on the uncached store and two
+particle-reset faults. No stubs. Success output reports counts only.
