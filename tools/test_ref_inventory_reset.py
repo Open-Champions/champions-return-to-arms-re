@@ -158,6 +158,38 @@ class ShareAndWipe(unittest.TestCase):
         self.assertIsNone(record.weapons[0])
         self.assertEqual(record.weapon_class, 5)
 
+    def test_bag0_count_of_three_keeps_the_second_cell(self):
+        record = Q.ItemRecord()
+        weapon = item('sword', 0, equip=0)
+        shield = item('shield', 0, equip=3, stamp=1)
+        gem = item('gem', 0, equip=1, stamp=2)
+        record.bags[0] = [weapon, shield, gem]
+        record.bags[1] = [item('questgem', BIT, equip=5)]
+        record.bags[2] = [item('potion', 0)]
+        record.equip[0] = weapon
+        record.equip[1] = gem
+        record.equip[3] = shield
+        record.equip[5] = record.bags[1][0]
+        record.weapons[0] = weapon
+        Q.remove_all_bag_items(record)
+        self.assertEqual([entry.name for entry in record.bags[0]], ['shield'])
+        self.assertEqual(shield.stamp, 0)
+        self.assertEqual(record.bags[1], [])
+        self.assertEqual(record.bags[2], [])
+        self.assertEqual(equip_names(record), [(3, 'shield')])
+        self.assertIsNone(record.weapons[0])
+        self.assertEqual(record.weapon_class, 5)
+
+    def test_later_bags_lose_every_cell_when_each_holds_two(self):
+        record = Q.ItemRecord()
+        record.bags[0] = [item('a', 0), item('b', 0), item('c', 0)]
+        record.bags[1] = [item('d', 0), item('e', 0)]
+        record.bags[2] = [item('f', 0), item('g', 0)]
+        Q.remove_all_bag_items(record)
+        self.assertEqual([entry.name for entry in record.bags[0]], ['b'])
+        self.assertEqual(record.bags[1], [])
+        self.assertEqual(record.bags[2], [])
+
 
 class CleanupGate(unittest.TestCase):
     def test_gate(self):

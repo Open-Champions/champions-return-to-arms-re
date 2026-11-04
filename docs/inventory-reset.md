@@ -21,7 +21,7 @@ The shared seed at `0x404464` is unchanged on seeds 20973 and 7.
 | Granting a quest item | Open. Starting equipment's `inventory_giveItem` `0x1c1868` is executed. `givePlayerItem`'s descriptor parse is not | `t3/research-loading-readiness` `366b65a`, `docs/starting-equipment-r4.md` |
 | Removing a turned-in item | The equipped-pointer fixups inside `inventory_removeItem` `0x1c1cb0` are executed on the act-change path below. The substring search in front of a script turn-in was already specified | this note; `docs/spec/game-messages.md` §5.2; `docs/spec/script-builtins.md` §3.6 |
 | Cutscenes and the shop | Open. None of the four neighbouring branches execute them | — |
-| Menu draw `0x232300` | Open. The run task's lifetime is executed, including counter 0 staying registered. State 4's helper `0x18ebb8` faults on a 4-byte write at `0x00000004` when it is not stubbed | `e5c6176`; `b8e2d11` |
+| Menu draw `0x232300` | Open. State 0 of `missionMenu_run` `0x2316fc` calls `0x18ebb8` at `0x2319a4`. Unstubbed, that call faults on a 4-byte write at `0x00000004` | `b8e2d11` |
 | Save and load of the record | Partial. A direct `save_build` / `save_load` does not snapshot the menu task registry. A party-wipe `save_reload` `0x22266c` restores the checkpoint record, so gold, experience, bags, and equipment roll back with it; no separate death fee was established. The quest-item copy below is the callee `save_load` uses when `0x4f85b4` is set | `e5c6176`; `t3/research-death-reload` `9a34671`, `docs/death-reload.md`; this note |
 | Which script entry runs | Open outside the one hub offer above | `b8e2d11` |
 
@@ -56,9 +56,11 @@ unchanged. **Unknown:** whether a followed object destructor, which this run
 does not enter, writes bag bytes. The earlier arena-entry note still says
 that destructor zeroes the object pointer and five record words.
 
-A frontend byte at `0x41b510` that is not 0 takes the branch at `0x320f94`.
-Its delay slot clears the gate, so `save_actChanged` is not called and the
-clear does not run. The act stays the one already stored.
+A frontend byte at `0x41b510` that is not 0 takes the branch at `0x320f94`,
+because that address is loaded as a word. The branch skips `save_actChanged`.
+The delay slot zeroes the result register, so the compare at `0x320fa8`
+skips the clear. The byte at `0x41b510` is not stored. The act stays the one
+already stored.
 
 ## An act change strips unkept flag-39 items
 
@@ -110,12 +112,26 @@ rule for a matching stack is the one already executed in
 
 ## The arena call is not a mission reset
 
-**Observed / Executed:** `player_removeAllItems` `0x1bf600` removes the first
-cell of each non-empty bag and leaves a later cell in place. Equipment and
-weapon pointers follow the same fixups. Gold and the mission byte stay. Its
-only `jal` site is `0x304e9c`. The walk entered at `0x304e88` and stopped at
-`0x304eb4` calls it once per slot below `g_numPlayers`, not until a bag is
-empty. That site is the arena init path. It is not the act-change stretch.
+**Observed / Executed:** `player_removeAllItems` `0x1bf600` removes index 0
+of a non-empty bag, then reloads the count at record `+0x1330`. That word is
+bag 0, not the bag just walked. While the reloaded count is greater than 1,
+`0x1bf668` removes index 1 of bag 0. A bag-0 count of 3 or more therefore
+keeps the cell that started at index 1 and drops every later bag-0 cell. A
+bag-0 count of 1 is removed, because the reload is not greater than 1. The
+delay slot at `0x1bf66c` sets the bag argument to 0, and the walk then
+advances, so the next visit after a non-empty bag is bag 1. A later bag that
+still has a cell is visited again. Each of those visits removes only index
+0; the bag-0 count test does not remove a later index from bag 1 or bag 2.
+Two cells in bag 1, or in bag 2, are therefore both removed. Equipment and
+weapon pointers follow the same fixups. Gold and the mission byte stay.
+
+Executed for a bag-0 count of 2, which keeps the second cell and removes the
+one cell in bags 1 and 2, and for a bag-0 count of 3, which keeps the
+original index-1 cell. The same count of 3 with two cells in bags 1 and 2
+leaves those bags empty. Its only `jal` site is `0x304e9c`. The walk entered
+at `0x304e88` and stopped at `0x304eb4` calls it once per slot below
+`g_numPlayers`. The call site does not repeat until a bag is empty. That
+site is the arena init path. It is not the act-change stretch.
 
 `player_removeFlag39Items` is reached from `0x220684` and from the stretch at
 `0x320ffc`. The second of those is the campaign clear above.
@@ -144,6 +160,6 @@ python3 tools/difftest_quests.py local/SLUS_209.73
 ```
 
 Both seeds pass the caller sites, the flag-39 fixups, the bag-2 copy, the
-one-cell arena removal, the slot walk, the seven act gates, and the stubbed
-`game_clearLevel` body. The pure model test passes without the executable.
-Existing quest vectors are not edited.
+bag-0 counts of 2 and 3, the arena slot walk, the seven act gates, and the
+stubbed `game_clearLevel` body. The pure model test passes without the
+executable. Existing quest vectors are not edited.

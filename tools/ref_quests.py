@@ -517,14 +517,25 @@ def share_bag2_quest_items(records, source_slot, num_players):
 
 
 def remove_all_bag_items(record):
-    """player_removeAllItems. One pass: the first cell of each non-empty bag.
+    """player_removeAllItems.
 
-    A second cell in that bag stays. The call site at 0x304e9c repeats the
-    call once per player slot; it does not repeat it until a bag is empty.
+    A non-empty bag loses index 0. The body then reloads the bag-0 count.
+    While that count is greater than 1 it removes index 1 of bag 0, so a
+    bag-0 count of 2 or more keeps the cell that started at index 1. A
+    bag-0 count of 1 is removed. The delay slot clears the bag argument, and
+    the walk then advances to bag 1. A later bag that still has a cell is
+    visited again and loses index 0 on each visit, so bags 1 and 2 end
+    empty. The call site at 0x304e9c repeats the call once per player slot;
+    it does not repeat it until a bag is empty.
     """
-    for bag in range(3):
+    bag = 0
+    while bag < 3:
         if record.bags[bag]:
             remove_bag_item(record, bag, 0)
+            while len(record.bags[0]) > 1:
+                remove_bag_item(record, 0, 1)
+            bag = 0
+        bag += 1
     return record
 
 

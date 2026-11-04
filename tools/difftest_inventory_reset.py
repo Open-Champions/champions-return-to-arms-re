@@ -250,9 +250,18 @@ def check_share(seed):
         machine = new_emu(seed)
         records = build(machine)
         machine.mem.w32(NUM, players)
+        for slot in range(4):
+            machine.mem.w32(G_PLAYERS + slot * REC + GOLD, 40 + slot)
+            machine.mem.w8(G_PLAYERS + slot * REC + MISSION, 6)
         fault = call_ok(machine, SHARE, (source,))
         if fault:
             bad.append((title, fault))
+            return
+        golds = [machine.mem.s32(G_PLAYERS + slot * REC + GOLD) for slot in range(4)]
+        missions = [machine.mem.u8(G_PLAYERS + slot * REC + MISSION) for slot in range(4)]
+        print('share %s gold=%s mission=%s' % (title, golds, missions))
+        if golds != [40, 41, 42, 43] or missions != [6, 6, 6, 6]:
+            bad.append((title, 'scalars', golds, missions))
             return
         Q.share_bag2_quest_items(records, source, players)
         for slot in range(4):
@@ -296,26 +305,63 @@ def check_share(seed):
 
 
 def check_remove_all(seed):
-    machine = new_emu(seed)
-    record = Q.ItemRecord()
-    weapon = Q.BagItem('sword', 0, 1, 0, 0)
-    extra = Q.BagItem('shield', 0, 1, 3, 1)
-    quest = Q.BagItem('questgem', BIT, 1, 5, 0)
-    plant(machine, record, 0, 0, 0, weapon, equip=0, weapon=0)
-    plant(machine, record, 0, 0, 1, extra)
-    plant(machine, record, 0, 1, 0, quest, equip=5)
-    plant(machine, record, 0, 2, 0, Q.BagItem('potion', 0))
-    machine.mem.w32(G_PLAYERS + GOLD, 50)
-    machine.mem.w8(G_PLAYERS + MISSION, 3)
-    fault = call_ok(machine, REMOVE_ALL, (0,))
-    if fault:
-        report('remove all', False, fault)
-        return
-    Q.remove_all_bag_items(record)
-    kept = scalars(machine, 0)
-    same = view(pull(machine, 0)) == view(record)
-    report('remove all', same and kept['gold'] == 50 and kept['mission'] == 3,
-           'first cell of each non-empty bag' if same else 'snapshot mismatch')
+    bad = []
+
+    def names(record):
+        return [[item.name for item in bag] for bag in record.bags]
+
+    def run(title, build, expect):
+        machine = new_emu(seed)
+        record = Q.ItemRecord()
+        build(machine, record)
+        machine.mem.w32(G_PLAYERS + GOLD, 50)
+        machine.mem.w8(G_PLAYERS + MISSION, 3)
+        fault = call_ok(machine, REMOVE_ALL, (0,))
+        if fault:
+            bad.append((title, fault))
+            return
+        pulled = pull(machine, 0)
+        print('remove %s %s' % (title, names(pulled)))
+        Q.remove_all_bag_items(record)
+        kept = scalars(machine, 0)
+        if names(pulled) != expect:
+            bad.append((title, 'survivor', names(pulled), expect))
+        elif view(pulled) != view(record) or kept['gold'] != 50 or kept['mission'] != 3:
+            bad.append((title, 'snapshot' if view(pulled) != view(record) else 'scalars'))
+
+    def count_two(machine, record):
+        weapon = Q.BagItem('sword', 0, 1, 0, 0)
+        extra = Q.BagItem('shield', 0, 1, 3, 1)
+        quest = Q.BagItem('questgem', BIT, 1, 5, 0)
+        plant(machine, record, 0, 0, 0, weapon, equip=0, weapon=0)
+        plant(machine, record, 0, 0, 1, extra)
+        plant(machine, record, 0, 1, 0, quest, equip=5)
+        plant(machine, record, 0, 2, 0, Q.BagItem('potion', 0))
+
+    def count_three(machine, record):
+        weapon = Q.BagItem('sword', 0, 1, 0, 0)
+        kept = Q.BagItem('shield', 0, 1, 3, 1)
+        tail = Q.BagItem('gem', 0, 1, 1, 2)
+        plant(machine, record, 0, 0, 0, weapon, equip=0, weapon=0)
+        plant(machine, record, 0, 0, 1, kept)
+        plant(machine, record, 0, 0, 2, tail, equip=1)
+        plant(machine, record, 0, 1, 0, Q.BagItem('questgem', BIT, 1, 5, 0), equip=5)
+        plant(machine, record, 0, 2, 0, Q.BagItem('potion', 0))
+
+    def later_bags(machine, record):
+        plant(machine, record, 0, 0, 0, Q.BagItem('a', 0))
+        plant(machine, record, 0, 0, 1, Q.BagItem('b', 0))
+        plant(machine, record, 0, 0, 2, Q.BagItem('c', 0))
+        plant(machine, record, 0, 1, 0, Q.BagItem('d', 0))
+        plant(machine, record, 0, 1, 1, Q.BagItem('e', 0))
+        plant(machine, record, 0, 2, 0, Q.BagItem('f', 0))
+        plant(machine, record, 0, 2, 1, Q.BagItem('g', 0))
+
+    run('count 2', count_two, [['shield'], [], []])
+    run('count 3', count_three, [['shield'], [], []])
+    run('later bags', later_bags, [['b'], [], []])
+    report('remove all', not bad,
+           'bag 0 keeps its original index 1; later bags are emptied' if not bad else str(bad[:2]))
 
 
 def check_arena_walk(seed):
@@ -395,7 +441,14 @@ def check_transition(seed):
         ('from -1', 'blood1', '', -1, 0, 0, 0),
         ('hub2', 'hub2', 'hub', 0, 0, 0, 0),
     )
+    expect_act = {
+        'same act': 0,
+        'hub2': 0,
+        'act change': 1,
+        'from -1': 0,
+    }
     bad = []
+    observed = []
     for title, pending, current, act, latch, frontend, death in cases:
         machine = new_emu(seed)
         records = [Q.ItemRecord(), Q.ItemRecord(), Q.ItemRecord(), Q.ItemRecord()]
@@ -410,6 +463,7 @@ def check_transition(seed):
         mem.w32(ACT, act & 0xFFFFFFFF)
         mem.w8(LATCH, latch)
         mem.w8(FRONT, frontend)
+        front_before = mem.u32(FRONT)
         if death:
             machine.stub(TASK, ret=1, name='death')
         machine.r[19] = 0x420000
@@ -430,6 +484,10 @@ def check_transition(seed):
         if cleanup:
             for slot in range(2):
                 Q.drop_unkept_flag39(records[slot])
+        got_act = machine.mem.s32(ACT)
+        level = machine.mem.u8(G_PLAYERS + LEVEL)
+        front_after = machine.mem.u32(FRONT)
+        observed.append((title, got_act, level, front_before, front_after))
         for slot in range(3):
             if view(pull(machine, slot)) != view(records[slot]):
                 bad.append((title, 'bag', slot))
@@ -437,7 +495,6 @@ def check_transition(seed):
         else:
             targets = {call.target for call in machine.calls}
             mark_writers = [pc for pc, addr, _size, _value in machine.writes if addr == MARK]
-            got_act = machine.mem.s32(ACT)
             got_mark = machine.mem.u32(MARK)
             title0 = bytes(machine.mem.read(G_PLAYERS + QUEST, 9))
             title2 = bytes(machine.mem.read(G_PLAYERS + 2 * REC + QUEST, 9))
@@ -469,8 +526,14 @@ def check_transition(seed):
                 problems.append('canary quest')
             if machine.mem.s32(G_PLAYERS + GOLD) != 1234 or machine.mem.s32(G_PLAYERS + EXP) != 50:
                 problems.append('progress')
+            if level != 3:
+                problems.append(('level', level))
             if machine.mem.u8(G_PLAYERS + MISSION) != 3 or machine.mem.u8(G_PLAYERS + MEDAL) != 1:
                 problems.append('mission')
+            if front_after != front_before:
+                problems.append(('front', front_before, front_after))
+            if title in expect_act and got_act != expect_act[title]:
+                problems.append(('stored act', got_act, expect_act[title]))
             if machine.mem.s32(G_PLAYERS + REC + GOLD) != 9:
                 problems.append('gold1')
             if frontend and ACT_CHANGED in targets:
@@ -479,6 +542,18 @@ def check_transition(seed):
                 problems.append('no ask')
             if problems:
                 bad.append((title, problems))
+    by_title = {title: act for title, act, _level, _before, _after in observed}
+    print('stored acts same=%s hub2=%s change=%s from-1=%s' % (
+        by_title.get('same act', 'missing'), by_title.get('hub2', 'missing'),
+        by_title.get('act change', 'missing'), by_title.get('from -1', 'missing')))
+    print('level bytes %s' % ' '.join('%s=%d' % (title, level) for title, _act, level, _before, _after in observed))
+    print('frontend words %s' % ' '.join(
+        '%s:%d->%d' % (title, before, after) for title, _act, _level, before, after in observed))
+    for title, want in expect_act.items():
+        if by_title.get(title) != want:
+            bad.append((title, 'stored act', by_title.get(title), want))
+    if len(observed) != len(cases) or any(level != 3 or before != after for _title, _act, level, before, after in observed):
+        bad.append(('reads', [(title, level, before, after) for title, _act, level, before, after in observed]))
     report('act transition', not bad, '%d gates' % len(cases) if not bad else str(bad[:3]))
 
 
