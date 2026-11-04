@@ -260,8 +260,10 @@ and its evil bit is bit 1 of the evil byte: bit 0 still selects the story
 level of the first row that has an evil pointer. `0x231078(0)` returns 1 on
 a cleared mission row, and a confirm then writes `blood1` while mission 1's
 byte stays 0. Later rows return 1 only when that mission is available.
-Evidence: `story_column_open` lines 100–105 and the seed log of
-`difftest_story_beats.py`.
+The twelve `(story, evil, act-from-minus-one)` tuples above are asserted
+against the image, and each evil name is the same act as its story name.
+Evidence: `tools/difftest_story_beats.py` lines 59–72 and 310–318, and
+`story_column_open` in `tools/ref_story_route.py`.
 
 Medal and bonus columns are not re-run. The fade values passed here are 0
 and 128; the exact-128 test stays `e5c6176` and is not remeasured.
@@ -288,9 +290,15 @@ Evidence: `hub_name` lines 108–114 and `check_hub`.
 `0x8e2f10` is `0x3f800000` (float 1). A direction tick leaves it unequal to
 that value, and the next cross is not read. Writing 1 back, in the test
 rather than by an original task, lets the next cross through. `missionMenu`
-draw `0x232300`, entered with its callees live after that direction tick,
-faults on an 8-byte write at `0x00000010` (pc `0x0017b968`). Who sets the
-word back to 1 during play is **Unknown**.
+draw `0x232300` is then entered with `follow` clear while the menu stubs
+stay installed: `res_find` `0x17365c`, pause-menu open `0x18cbfc`, and
+helper `0x18ebb8`. Those three callees do not run. The draw faults on an
+8-byte write at `0x00000010` (pc `0x0017b968`). The store goes through the
+display-list cursor at `0x44fe10`, which is 0 in this image, plus `0x10`.
+The free-count word at `0x44fda4` is `0x88b8`, which is not below 3000, so
+the skip in front of that store is not taken. This is not the helper fault
+on `b8e2d11`. Who sets `0x8e2f10` back to 1 during play is **Unknown**.
+Evidence: `tools/difftest_story_beats.py` lines 510–525.
 
 **Observed / Executed:** reopening the menu stores state 0, clears
 `0x8e2f00`, the countdown and the mark, and keeps the row, a nonempty
@@ -312,9 +320,10 @@ the executed mission 2 chain is `innovat1` → `inmine1` → `inmine2` →
 above).
 
 **Unknown:** physical approach and use; the loader body and arrival; who
-completes mission 1 on the ordinary path; every in-level exit and completion
-writer for missions 3–12; hub2's dialog choices; the body that restores
-`0x8e2f10`; `0x18ebb8` beyond the cited fault. A file that contains
+completes mission 1 on the ordinary path; in-level beats for missions 4–12;
+hub2's dialog choices beyond the cited mission-2 and mission-3 offer;
+the body that restores `0x8e2f10`; `0x18ebb8` beyond the cited fault.
+Mission 3's in-level writers are section 7. A file that contains
 `grantMission` is not, by that fact, the next beat. No continuous
 hub → `blood1` → later mission session was run.
 
@@ -338,9 +347,11 @@ hub → `blood1` → later mission session was run.
    predicate is nonzero.
 6. After `blood1`, follow the cited strife/drundar note, and do not mark
    mission 1 complete on entry. After `innovat1`, follow the cited mission 2
-   chain through `innovat2` and stop where that note stops. Missions 3–12
-   can request the table level and then refuse: their in-level beats are
-   not established here.
+   chain through `innovat2` and stop where that note stops. Mission 3 can
+   follow section 7. Missions 4–12 can request the table level and then
+   refuse: their in-level beats are not established here. Mission 4's
+   availability bit is the hub entries in section 7, not a side effect of
+   granting mission 3.
 7. Keep dialog admission on the live run task (`e5c6176`). A nonempty
    pending string does not mean the menu is idle, as the reopen check shows.
 
@@ -348,6 +359,175 @@ hub → `blood1` → later mission session was run.
 PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; sys.path.insert(0,"tools"); sys.argv=["difftest_story_beats.py","--elf","local/SLUS_209.73"]; runpy.run_path("tools/difftest_story_beats.py", run_name="__main__")'
 ```
 
-Both seeds: 147 checks, 0 failed. The section 5 story-route command still
+Both seeds: 148 checks, 0 failed. The section 5 story-route command still
 passes, 26 menu snapshots per seed. Preload stdlib `dis`, then
-`python3 -m unittest discover -s tools -p 'test_*.py'` is 661 tests.
+`python3 -m unittest discover -s tools -p 'test_*.py'` is 662 tests.
+Section 7 has its own command.
+
+## 7. Mission 3 after the islc1 request
+
+2026-11-03. The menu confirm that writes pending `islc1` stays section 6.
+Hub2's two choices that call `mission_setAvailable` for mission 3 stay
+`t3/research-mission2-route` `b8e2d11`
+(`docs/mission2-compose.md` lines 141–148) and are not re-run. Quest add and
+remove stay `t3/research-quest-log` `28f1ccd`
+(`docs/spec/quest-log.md` lines 207–217); this section only checks the
+mission bytes and the quest count those entries leave. `dialog_onMsg` is
+not run on these dialogs. The condition results below are the script
+entries themselves.
+
+Every executed entry goes through `scr_load` `0x13e8f8`, `scr_registerNatives`
+`0x141310` and `script_runByName` `0x1ed694` in `tools/ee_emu.py`, on seeds
+20973 and 7. Mission bytes start at `0xA0`. Quest slot bytes start at
+`0x5A`, and the other three players' quest counts start at `0x5A5A5A5A`.
+The pending level and entrance start as sentinel strings. One player,
+difficulty 0. Item search, help text, cutscene lookup and sound playback
+are stubbed and recorded. No dialogue text is copied.
+
+### Level start
+
+**Observed / Executed:** `islc1` `start` at script `0x30c` calls
+`setMissionAvailable(3, 1)` at `0x340`, `setv(startedMission3, 1)` at
+`0x374`, `setv(currentMission, 3)` at `0x3a8`, and `postAction(absorb)` at
+`0x400`. Record 0's mission-3 byte becomes `0xA1`. Records 1–3 stay `0xA0`.
+Mission 4 stays `0xA0` on all four records. The quest count stays 0. The
+pending level stays the sentinel. The same three stores, without the post,
+are `islcave1` `start` at `0x44` (`0x78`, `0xac`, `0xe0`).
+Evidence: `tools/difftest_story_mission3.py` lines 244–261.
+
+**Observed / Executed:** the posted `absorb` at `0x478` runs through
+`script_runPostAction` `0x1edac0`. A missing `sawislc` is read as 0 and
+then negated, so this first visit calls `cutScene` at `0x4dc` (`res_find`,
+then `cut_start`) and stores `sawislc` 1 at `0x510`. The cut name is
+`islcave`. Running `absorb` again does not call `cut_start`, and the
+variable stays 1. `res_find` returns 0 here, so this is the request, not a
+played cutscene. Evidence: lines 263–278.
+
+### Dialog, quest, and the exits from islc1
+
+**Observed:** `islc1` `mermaid.dbin` has three nodes. Nodes 0 and 1 use
+condition `if4257`. Node 0's only choice has no action and targets node 1.
+Node 1's action is `setvdea6` and targets node 2. Node 2 uses `ifa305` and
+closes. No dialog text is copied. Evidence: lines 433–446.
+
+**Observed / Executed:** `if4257` returns 1 when `wa_metKerriel` is absent
+or 0, and 0 when it is 1. `ifa305` returns the opposite. The first-true
+node rule would therefore open node 0 before the meeting and node 2 after
+it. That selector was not run, so the reachability is **Inferred** from
+those returns and the node order. Evidence: lines 297–308.
+
+**Observed / Executed:** `setvdea6` at `0xb08` stores `wa_metKerriel` 1 at
+`0xb3c` and calls `addQuest` at `0xb70`. The quest count becomes 1. The
+stored title and body match that call's two script arguments. Record 1's
+quest bytes stay `0x5A` and its count stays `0x5A5A5A5A`. Mission bytes
+stay `0xA0`. Evidence: lines 280–295.
+
+**Observed / Executed:** five `islc1` entries request another level and
+entrance `boat`, and they set orientation `0xff` because no object is
+selected. Mission bytes stay `0xA0`.
+
+| Entry | Pending level |
+|---|---|
+| `lostHope` `0x7d0` | `islsm2a` |
+| `solitary` `0x840` | `islsm1` |
+| `regret` `0x8b0` | `islsm3a` |
+| `gnome` `0x920` | `islgnome` |
+| `kerriel` `0x990` | `islc1` |
+
+`g_racer.dbin` node 1 names the first four of those entries as choice
+actions. Which node play selects was not run. Evidence: lines 365–383.
+
+### islgnome entrances and islc2 completion
+
+**Observed / Executed:** `islgnome` `entrance1` `0x1bf8`, `entrance2`
+`0x1d18` and `entrance3` `0x1e38` each write entrance `one`, `two` or
+`three` and pending `islc2`. With `startedQuest` and `finishedQuest`
+absent, with only `startedQuest` 1, and with both 1, `killMonster`
+`0x144a84` is not called. With `startedQuest` 1 and `finishedQuest` 0 it
+is called eight times, which is `failQuest`. The name table is empty, so
+no creature is changed. All four states still request `islc2`. The gnome
+journal and the `islgoth` post are a different script and were not run.
+Evidence: lines 385–412.
+
+**Observed:** `islc2` `mermaid.dbin` node 0 uses condition `iffbe4` and
+action `callScri8a40`. Node 1 uses `if9be1`. Node 2 uses `iffa37`. Both
+later choices close and have no action.
+
+**Observed / Executed:** `iffbe4` returns 1 only when the item-count stub
+returns 1. `if9be1` returns 1 when `wa_gotBlessed` is 1. `iffa37` returns
+1 when that variable is absent or 0. The selector was not run.
+Evidence: lines 309–326.
+
+**Observed / Executed:** `callScri8a40` at `0x438` calls `endMission` at
+`0x280`. From mission-3 byte `0xA1` on record 0 and `0xA0` on the others,
+and from a planted one-entry quest whose title is that entry's
+`removeQuest` argument: `wa_gotBlessed` becomes 1, the quest count becomes
+0, `removePlayerItem` calls `inventory_findItemBySubstring` (stubbed to
+not found, so the bag is not shown to change), `addHelpMessage` calls
+`hud_showHelpMessage`, `grantMission(3)` makes record 0's byte `0xA3` and
+records 1–3 `0xA2`, and `soundSequence` calls `sound_playOnObject`. Mission
+4 stays `0xA0`. The seed is unchanged. Evidence: lines 327–347.
+
+### The cave grant, and mission 4
+
+**Observed / Executed:** `islcave1` `callScri7351` at script 0 passes data
+offset 0 to `callScript`, and that string is the public entry
+`steppedOnTrigger`. The entry grants mission 3 from the `0xA0` sentinel:
+all four records become `0xA2`. It calls `hud_showHelpMessage` and does not
+call the item finder, does not change the `0x5A` quest slot, and does not
+change mission 4. Evidence: lines 349–363.
+
+**Observed, not executed here:** the same `setMissionAvailable(4, 1)` call
+also appears in `wat1` `start` at `0x314` and `water1` `start` at `0x78`.
+`grantMission(4)` appears in `water1` `steppedOnTrigger` and in the six
+`shardCheck` entries of `wate2a`, `wate2b`, `wate2c`, `watg2a`, `watg2b`
+and `watg2c`. Those bodies were not run. Hub and hub2 also contain mission-3
+availability entries; hub2's executed pair stays the citation above.
+
+**Observed / Executed:** four hub entries set mission 4's bit and leave
+mission 3 at `0xA0`. `setMissi5f9f` `0xc88` and `setMissidce3` `0xcd4`
+leave the quest slot `0x5A` and the count 0. `setMissie8e9` `0x21ac` and
+`setMissic4` `0x222c` also call `addQuest`, so the count becomes 1 and the
+first quest byte is no longer `0x5A`. Only record 0 changes, to `0xA1`.
+Which dialog node reaches them was not run. Evidence: lines 414–431.
+
+### What the client can implement from this
+
+1. After the section 6 confirm writes `islc1`, `islc1` `start` makes
+   mission 3 available, stores `startedMission3` and `currentMission`, and
+   posts `absorb`. Do not grant the mission there, and do not make mission
+   4 available there.
+2. That post requests cutscene `islcave` while `sawislc` is 0, then stores
+   1. A later `absorb` does not request it. Do not claim the cut plays:
+   `cut_start` was reached with `res_find` returning 0.
+3. The mermaid action `setvdea6` stores `wa_metKerriel` and adds one quest.
+   It does not change mission bytes. The node order plus the two condition
+   returns say the unmet dialog reaches that action and the met dialog does
+   not. `dialog_onMsg` was not run on this file.
+4. The five travel entries above may request those levels with entrance
+   `boat` and orientation `0xff`. They are not mission completion.
+5. The three `islgnome` entrances request `islc2`. Call the eight
+   `killMonster`s only when `startedQuest` is 1 and `finishedQuest` is 0.
+   An empty name table means this does not establish a kill.
+6. `islc2` `callScri8a40` is the completion: set `wa_gotBlessed`, remove
+   that quest, request the item removal and the help message, set mission
+   3's completion bit on all four records, and request the sound. Leave
+   mission 4 clear. The item finder was stubbed, so do not remove a real
+   stack from this result.
+7. `islcave1` `start` repeats the availability stores. Its trigger grants
+   mission 3 and requests help, without the quest removal. Treat it as a
+   second completion writer, not as proof of which entrance play uses.
+8. Make mission 4 available from the four hub entries, not from either
+   grant. Two of those entries also add a quest. `wat1` remains unrun.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; sys.path.insert(0,"tools"); sys.argv=["difftest_story_mission3.py","--elf","local/SLUS_209.73","--data","/path/to/BG/DATA"]; runpy.run_path("tools/difftest_story_mission3.py", run_name="__main__")'
+```
+
+Both seeds: 84 checks, 0 failed.
+
+**Unknown:** the loader and arrival that follow the pending `islc1` write;
+which object use reaches the mermaid and racer dialogs; who gives the item
+`iffbe4` tests; a name table in which the eight `killMonster` calls change
+a creature; `wat1` and the rest of mission 4; a continuous session from the
+hub menu through `islc2`.

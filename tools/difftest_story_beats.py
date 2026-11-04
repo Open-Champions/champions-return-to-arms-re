@@ -54,6 +54,26 @@ MENU_RUN = 0x2316FC
 HELPER = 0x18EBB8
 INPUT_READY = 0x8E2F10
 READY_ONE = 0x3F800000
+# save_findAct from current act -1. Evil is empty when the row pointer is 0.
+# The evil name is the same act as the story name.
+TABLE_FROM_MINUS_ONE = (
+    ('blood1', '', 0),
+    ('innovat1', '', 1),
+    ('islc1', '', 2),
+    ('wat1', '', 3),
+    ('tormenta', '', 4),
+    ('swamp1', 'swamp2', 5),
+    ('valor', '', 6),
+    ('fire1', '', 7),
+    ('storm1', '', 8),
+    ('fay2', 'fay1', 9),
+    ('nit1', '', 10),
+    ('bossgood', 'bossevil', 11),
+)
+CURSOR = 0x44FE10
+FREE_COUNT = 0x44FDA4
+RES_FIND = 0x17365C
+PAUSE_OPEN = 0x18CBFC
 MENU_FOLLOW = {
     0x231078, 0x2310A8, 0x2310D4, 0x23112C, 0x231180, 0x2311D4, 0x231228,
     0x2312A8, 0x231310, 0x231360, 0x2313B4, 0x231438, 0x2314BC, 0x2314C8,
@@ -142,10 +162,10 @@ def prepare_menu(emu, local=1):
     # closed so that slot is not the pause-menu early return.
     emu.stub(0x13E150, ret=local, name='isLocal')
     emu.stub(0x13DD40, ret=1, name='slotActive')
-    emu.stub(0x18CBFC, ret=0, name='pauseOpen')
+    emu.stub(PAUSE_OPEN, ret=0, name='pauseOpen')
     emu.stub(0x1DF5EC, ret=0, name='fade')
     emu.stub(HELPER, ret=0, name='menuHelper')
-    emu.stub(0x17365C, ret=0, name='resFind')
+    emu.stub(RES_FIND, ret=0, name='resFind')
     emu.stub(0x214230, ret=0, name='menuHost')
 
 
@@ -290,6 +310,14 @@ def check_seed(emu, seed, rows, acts, report):
         if extra not in names:
             names.append(extra)
     checks += check_acts(emu, names, acts)
+    observed = tuple((story, evil_name, R.find_act(story, -1, acts))
+                     for story, evil_name in rows)
+    if observed != TABLE_FROM_MINUS_ONE:
+        raise AssertionError(observed)
+    for story, evil_name, act in TABLE_FROM_MINUS_ONE:
+        if evil_name and R.find_act(evil_name, -1, acts) != act:
+            raise AssertionError((story, evil_name, act))
+    checks += 1
     if report:
         for name in ('hub', 'hub2', 'strife', 'drundar', 'drunarm', 'drunare',
                      'inmine1', 'inmine2', 'innovat2'):
@@ -479,12 +507,20 @@ def check_seed(emu, seed, rows, acts, report):
     offer(emu, 2, 0)
     prepare_menu(emu)
     tick(emu, state, R.BTN_DOWN, set(available) | {2}, rows, False)
+    # follow None runs every callee that is not already stubbed. The menu
+    # stubs stay installed, so res_find, pause open and the helper do not run.
     emu.follow = None
+    if any(addr not in emu.hooks for addr in (RES_FIND, PAUSE_OPEN, HELPER)):
+        raise AssertionError('menu stubs were not still installed')
+    cursor = emu.mem.u32(CURSOR)
+    if cursor != 0 or emu.mem.u32(FREE_COUNT) != 0x88B8:
+        raise AssertionError((hex(cursor), hex(emu.mem.u32(FREE_COUNT))))
     try:
         emu.call(0x232300, max_steps=200000)
     except MemoryFault as exc:
-        if (exc.pc, exc.addr, exc.size, exc.kind) != (0x17B968, 0x10, 8, 'write'):
-            raise AssertionError((hex(exc.pc), hex(exc.addr), exc.size, exc.kind))
+        # The 8-byte store goes through the display-list cursor plus 0x10.
+        if (exc.pc, exc.addr, exc.size, exc.kind) != (0x17B968, cursor + 0x10, 8, 'write'):
+            raise AssertionError((hex(exc.pc), hex(exc.addr), exc.size, exc.kind, hex(cursor)))
     else:
         raise AssertionError('menu draw returned')
     checks += 1

@@ -14,6 +14,13 @@ class StoryBeatModel(unittest.TestCase):
         self.assertEqual(R.opening_row({1, 3}), 2)
         self.assertEqual(R.opening_row({12}), 11)
 
+    def test_mission_bits_keep_the_other_bit(self):
+        self.assertEqual(R.available_byte(0xA0, 1), 0xA1)
+        self.assertEqual(R.available_byte(0xA3, 0), 0xA2)
+        self.assertEqual(R.complete_byte(0xA0, -1), 0xA2)
+        self.assertEqual(R.complete_byte(0xA1, -1), 0xA3)
+        self.assertEqual(R.complete_byte(0xA3, 0), 0xA1)
+
     def test_story_level_uses_evil_only_when_named(self):
         self.assertEqual(R.story_level('story', 'evil', False), 'story')
         self.assertEqual(R.story_level('story', 'evil', True), 'evil')

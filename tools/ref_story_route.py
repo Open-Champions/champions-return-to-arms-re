@@ -97,6 +97,19 @@ def story_level(story, evil_name, evil):
     return story or ''
 
 
+def available_byte(byte, on):
+    """mission_setAvailable 0x1bf6d0. Bit 0 is replaced from bit 0 of on."""
+    return (byte & 0xFE) | (on & 1)
+
+
+def complete_byte(byte, value):
+    """mission_setComplete 0x1bf770. Value -1 sets bit 1; any other value
+    stores its bit 0 into bit 1."""
+    if value == -1:
+        return byte | 2
+    return (byte & 0xFD) | ((value & 1) << 1)
+
+
 def story_column_open(row, available):
     """0x231078. Row 0 accepts even when mission 1's byte is clear.
     Every later row accepts only when that mission is available."""
