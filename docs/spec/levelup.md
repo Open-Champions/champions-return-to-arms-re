@@ -224,7 +224,7 @@ passed, and each of these lines is in that log for seeds 20973 and 7:
 15 stat-point sender gates, 44 skill-point sender gates, 48 level-grant
 cases, 9 point-balance sentinel crosses, and the pending level-up snapshot
 and restore. `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools -p 'test_*.py'`
-passed 652 tests in 4.754s, which is the last line of the unit log. The
+passed 652 tests in 4.754s; the unit log records `Ran 652 tests in 4.754s` followed by `OK`. The
 executable was the same pinned SLUS_209.73. Seeds 20973 and 7 agreed. This
 is interpreter evidence on constructed state, not a live level or a memory card.
 
