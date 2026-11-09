@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Round 12: controller-only kills through all three recipe-0 waves, with the original
-arena task run every frame, ending at the original next-level request.
+"""Round 12: controller-only kills through the recipe-0 waves, with the original arena
+task run every frame.  The checks hold on both seeds; how far each seed gets (kills per
+wave, whether the third-wave next-level request is reached) is printed as OUTCOME lines.
 
     python3 tools/difftest_arena_round12.py local/SLUS_209.73 DISC --seed 20973
     python3 tools/difftest_arena_round12.py local/SLUS_209.73 DISC --seed 7
@@ -15,10 +16,9 @@ Differences from round 11, all disclosed in docs/spec/arena-acceptance.md:
     input chosen from positions the way a player would: walk to 58 units, face, press
     attack every 36 frames; after three swings on a target reach no Player_meleeHit,
     walk to 26 units of that target instead.
-  * The record's item stagger resistance +0xdc is 1.0 (an equipment stat; at 1.0 the
-    stagger chance clamps to 0, docs/spec/combat-r6.md 2.1).  The isolated player
-    object has no animation set and Player_animStep 0x1b9520 is not followed, so a
-    stagger (state 3) could never end; round 11's swing stall was this.
+  * Player_animStep 0x1b9520 is followed.  Round 11 left it a stub, so the first
+    player reaction (state 3) waited forever on the clip-end bit: its swing stall.
+    (--resist can plant item stagger resistance +0xdc; the retained runs do not.)
   * HP and maximum HP are 10,000, as in round 11.  A level-up (player_giveExp) recomputes
     max HP from the real class-0 statistics and refills HP to it; the driver then
     writes 10,000 to both again and reports each such frame.
@@ -26,6 +26,9 @@ Differences from round 11, all disclosed in docs/spec/arena-acceptance.md:
     bodies); round 10's animation follow set omitted them.
   * A Scorpion sting's SpellDiseaseEffect block (pool_new 0x1b0 at 0x1e9de8) is
     allocated and its constructor 0x2d5594 followed; the effect's tick is an auto-stub.
+  * obj_delete 0x14f200 is followed and world_flushDeleteList 0x14f3a8 runs at each
+    frame start with every callee followed, as runObjects does inline; the
+    saved-creature table 0x50388c gets the 0x4b0-byte block arena_init allocates.
   * The arena task 0x306b78 runs every frame with the original grid walker 0x14a610
     and empty-wave callback 0x3069e8, arena_nextWave, the preparation walk,
     arena_startWave, the ring step and the spawn body.  Nothing marks a wave empty.
