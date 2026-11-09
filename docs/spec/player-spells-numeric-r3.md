@@ -67,8 +67,9 @@ stored that amount, and `+0x2dc` stored the flag word.
 - Creature flag `0x800` returns 0 and does not change hit points.
 - Hit points equal to the handed 40 become 0 after `0x116638`.
 
-**Unknown:** any resistance or armour combination not listed here, and kill
-credit inside `Creature_processDamage`. Attack 100000 with the armour values
+**Unknown:** any resistance or armour combination not listed here. Kill credit
+inside `Creature_processDamage` is executed in `docs/spec/combat-r6.md` section 3.
+Attack 100000 with the armour values
 above did not miss; that is not a claim about every armour value. The player
 slot, the player death test and the knock-back speeds are the following sections.
 
@@ -114,9 +115,10 @@ Below-cost mana becomes negative. The helper does not refuse it. Aim and rank
 answers are scripted; can-use for ID 49 has a shield pointer and a class byte other
 than 4. No unknown call was accepted.
 
-**Unknown:** payment with the real cast body in the same call, the animation wait
-before the helper, and mana regeneration on the following ticks. Those remain the
-player-tick contract, not a new measurement here.
+**Unknown:** the animation wait before the helper, and mana regeneration on the
+following ticks. Those remain the player-tick contract, not a new measurement here.
+Payment with the real cast body in the same call is executed in
+`docs/spec/combat-r6.md` section 5.
 
 ## Player damage slot
 
@@ -137,7 +139,8 @@ is set: `g_recallCountdown` `0x41b51d` = 1, `g_menuInputLockout` `0x41b4fc` = 60
 is the jump-gate query this caller already tests. It is not a run of the
 jump-gate body.
 
-**Unknown:** the hit direction at `+0x2e0`.
+This probe passes no attacker. The hit direction at `+0x2e0` is executed in
+`docs/spec/combat-r6.md` section 1.
 
 ## Player death
 
@@ -175,7 +178,7 @@ tick with no pending damage: 100, 150, 200, 250 (`0x42c80000`, `0x43160000`,
 No pending damage leaves the record unchanged. State becomes 3, except a
 killing hit ends at 4. The seed advances one step. Without one of those bits
 the sentinel is not written, and on these two seeds a survived hit leaves state
-2. Which draws stagger is **Unknown**.
+2. Which draws stagger is executed in `docs/spec/combat-r6.md` section 2.
 
 `Creature_processDamage` `0x110d30` does not subtract hit points. The same four
 bits store:
@@ -190,8 +193,9 @@ bits store:
   (`0x42c80000`, `0x43160000`, `0x43480000`, `0x439c4000`); object flags become
   `0x2129`
 
-The shared seed does not change. Slot 27 is the zero stand-in. Kill credit
-remains **Unknown**.
+The shared seed does not change. Slot 27 is the zero stand-in here. Kill credit
+and the death path with a real slot 27 are in `docs/spec/combat-r6.md` sections 3
+and 4.
 
 `Creature_applyKnockback` `0x115eb8` starts from 30 (`0x41f00000`) at scale 1.
 `math_cos16` `0x166630` and `math_sin16` `0x1666e0` run. `Creature_moveBy`
@@ -227,6 +231,6 @@ game, calls move and stores 28 (`0x41e00000`).
 - Step `Creature_applyKnockback` by 2 offline. Store 0 for a player in a net
   game or in PvP mode B.
 
-Do not treat this as campaign combat. Spatial queries, the holy-shield split,
-the hit direction, the stagger threshold, creature kill credit and the real
-cast body inside the helper are still open.
+Do not treat this as campaign combat. Spatial queries and the holy-shield
+split are still open. The hit direction, the stagger rules, creature kill credit
+and the real cast body inside the helper are in `docs/spec/combat-r6.md`.

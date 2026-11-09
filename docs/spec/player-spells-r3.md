@@ -20,6 +20,7 @@ Private executable input remains under ignored `local/`; receipts contain counts
 | ID 55 | Rank-1–20 cost, stable-list recipient/range/team gates, actual synthetic-state health writes, cached versus recipient-current maximum, first-eight-call tint and 68th-call ending | Cast `0x2e8cf8`, cost `0x2e8e94`, run `0x2e90b8`; [melee/support contract](player-spells-support-r3.md) |
 | Existing ID 4 cleanup | Derived and base destructor order, real handles, names and registries, pool release, immediate terminal destruction, separate deferred flush | Run `0x2ca1a8`, derived `0x3ccfd4`, shared `0x3c2940`, base `0x14cf90`; [cleanup contract](projectile-cleanup-r3.md) |
 | IDs 16, 23, 49, 55 numeric delivery | Original `damage_apply` amount, creature HP subtraction, cold timer, bash stun store, heal product, and cast-helper debit/recast | `0x1e8230`, `0x116638`, `0x118a58`, `0x2e90b8`, `0x1a42b8`; [numeric contract](player-spells-numeric-r3.md) |
+| Combat round 6 | Hit direction `+0x2e0` and knock-back push, player block, stagger rolls, kill credit to `player_giveExp`, creature death and despawn, real cast bodies inside the helper | `0x1b5330`, `0x116638`, `0x1b2cc0`, `0x110d30`, `0x1108a0`, `0x1a42b8`; [combat round 6](combat-r6.md) |
 
 These are **Executed** contracts: original instructions ran in `tools/ee_emu.py`
 and were compared with existing independent reference models plus new narrow
