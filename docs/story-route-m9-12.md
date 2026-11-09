@@ -27,7 +27,7 @@ stay in ignored `local/`.
 - Every entry runs through `scr_load` `0x13e8f8`, `scr_registerNatives`
   `0x141310` and `script_runByName` `0x1ed694` (the harness in
   `tools/difftest_natives.py`), as in sections 7 and 8 of `story-route.md`.
-- Sentinels, set by `prepare` (test lines 224–231, and
+- Sentinels, set by `prepare` (test lines 240–247, and
   `difftest_story_mission45.prepare`): mission bytes 8..12 on all four player
   records start at `0xA0`; quest slots at `0x5A`; the other three records'
   quest counts at `0x5A5A5A5A`; pending level `PENDING-SENTINEL`; entrance
@@ -35,7 +35,7 @@ stay in ignored `local/`.
   `+0x4c28` start at `0xA5A5A5A5` (bit 0 set, bit 4 clear). Where a test
   says a variable was stored, it planted `0x5A` (or the value is newly created)
   and checks the recorded write (`require_stored`). "Held" (test lines
-  238–242) means every story byte 8..12 on every record is still `0xA0`.
+  254–258) means every story byte 8..12 on every record is still `0xA0`.
 - One player, difficulty 0, `g_paused` 0, unless stated.
 - **Call lists** are the exact ordered list of stubbed callees an entry made.
   The stubs are the 96 entries of `ref_natives.EXT`. Unless stated, every stub
@@ -45,7 +45,7 @@ stay in ignored `local/`.
   a stub's return says so.
 - **Text keys.** Quest and help keys are disc text, so this file names them by
   neutral ids. The test reads each one from the script image at a fixed call
-  site (`TEXT_SITES`, test lines 65–90; `read_keys`, lines 139–159) and checks
+  site (`TEXT_SITES`, test lines 81–105; `read_keys`, lines 155–174) and checks
   execution against it. `--keys-out local/m912-keys.tsv` writes the real map
   to an ignored path.
 
@@ -62,16 +62,32 @@ stay in ignored `local/`.
 
 `read_keys` also asserts that hub `setMissi22ce`/`setMissi8ea7` add the
 same `Q10g` pair, hub2 `setMissiec81` the `Q10e` pair, hub/hub2
-`setMissi3604`/`setMissi2732` the `Q11` pair (executed, test lines 842–868),
-that `fay3` removes `Q10e`/`Q10g` and `nit2` removes `Q11` (lines 151–158).
+`setMissi3604`/`setMissi2732` the `Q11` pair (executed, test lines 1073–1102),
+that `fay3` removes `Q10e`/`Q10g` and `nit2` removes `Q11` (lines 167–173).
 
-## 1. Who writes missions 9 to 12 at all
+## 1. Every script call site for missions 9 to 12
 
-**Observed, asserted over the whole disc** (`CENSUS` and `check_census`,
-test lines 874–951): the test parses every `.GOB` script on the owner's disc
-(more than 100 files) and reads the raw first immediate of each
-`setMissionAvailable` and `grantMission` call. No call has a computed first
-argument. For missions 9 to 12 the complete site list is:
+**Observed, asserted over the whole disc** (`CENSUS`, `raw_mission_calls`,
+`disc_scripts` and `check_census`, test lines 1105–1234). The test reads
+every `script.scr` lump in every `.GOB` on the owner's disc: 120 files, 120
+scripts. One file keeps its script in a lump not named after the file; it is
+read too. A `.GOB` whose bytes name `script.scr` but that yields no script
+fails the test. The test reads the raw first immediate of every
+`setMissionAvailable` and `grantMission` call. Checks on that sweep:
+- No call has a computed first argument. The argument byte count pushed last
+  matches the arguments collected (2 and 1), so no argument was dropped.
+- Every native index is in range, and the sweep ends exactly at the end of
+  the code.
+- Independently of the sweep's stepping, every native-call word pair for
+  either native, at any word offset, is a call the sweep decoded.
+- The disc totals are 88 `setMissionAvailable` calls in 23 scripts and 33
+  `grantMission` calls in 32. These are the counts in
+  `docs/spec/script-builtins.md` (lines 432–433), made in an earlier round.
+
+This covers script calls only. Code in the executable that calls
+`mission_setAvailable` `0x1bf6d0` or `mission_setComplete` `0x1bf770`
+other than through these two natives was not surveyed. For missions 9 to
+12 the script call sites are:
 
 | Mission | `setMissionAvailable(n, 1)` | `grantMission(n)` |
 |---|---|---|
@@ -89,19 +105,21 @@ here.
 
 ### How mission 9 becomes available
 
-**Observed** (`check_links`, test lines 199–201): `valor`'s `mattmar.dbin`
+**Observed** (`check_links`, test lines 215–217): `valor`'s `mattmar.dbin`
 node 0 has condition `if2a2e` and action `setMissi1bb4` (target node 1).
 Node 2 has condition `ifa054` and action `setMissie47a` (target node 3).
 
-**Executed** (test lines 291–323): `setMissie47a` sets mission 9's
+**Executed** (test lines 365–406): `setMissie47a` sets mission 9's
 available bit on record 0 only (`0xA1`). Records 1–3, and missions 8, 10, 11
 and 12 on all records, stay `0xA0`. With `KV1` planted as the only quest, the
 count becomes 0 and the slot becomes the `NoQuests` placeholder. With a
 different title planted, that quest stays. Call list: empty.
-`setMissi1bb4` sets mission 8 the same way and edits no quest.
+`setMissi1bb4` sets mission 8 the same way. It has no `removeQuest` site,
+and a planted `KV1` quest stays.
 `ifa054` returns 1 exactly when mission 9's available bit is clear
 (`0xA0`, `0xA2` → 1; `0xA1`, `0xA3` → 0), whatever mission 8's byte is.
-`if2a2e` is the same test on mission 8. Neither checks mission 7's
+`if2a2e` is the same test on mission 8. Setting mission 7's byte to `0xA0`
+or `0xA3` does not change either result, so neither reads mission 7's
 completion.
 
 **Inferred:** under the first-true node rule, node 2 opens only when nodes 0
@@ -111,7 +129,7 @@ to the mission 6–8 work and is not run here.
 
 ### How mission 9 starts after the menu request
 
-**Executed** (test lines 326–347): `storm1` `start` from `0xA0`:
+**Executed** (test lines 408–428): `storm1` `start` from `0xA0`:
 - `getMissionComplete(9)` at `0x1d8` returns 0.
 - Adds quest `Q9` (count 1).
 - `setMissionAvailable(9, 1)` makes record 0 `0xA1`; the rest stay held.
@@ -123,7 +141,7 @@ to the mission 6–8 work and is not run here.
 With mission 9 already complete (`0xA2`) it does the same, except no quest is
 added and the byte becomes `0xA3`.
 
-**Executed** (lines 348–361): `absorb` calls `cut_start` for `storm` when
+**Executed** (lines 429–445): `absorb` calls `cut_start` for `storm` when
 `sawstorm` is absent or 0. Call list: `res_find(".lmp", "storm.cut")` →
 0, `cut_start(0, "storm.cut")`. It stores `sawstorm` 1. With `sawstorm`
 planted at `0x5A` or 1 it makes no call and no store. The gate is
@@ -131,7 +149,7 @@ planted at `0x5A` or 1 it makes no call and no store. The gate is
 
 ### The storm levels
 
-**Executed** (`TRAVEL` and `check_travel`, test lines 365–408). Each entry
+**Executed** (`TRAVEL` and `check_travel`, test lines 447–491). Each entry
 requests the level, stores orientation `0xff` over `0x5A`, leaves mission
 bytes and quests held, and calls only `net_closeLocalMenus(0)`, which
 returns 0. "—" means the entrance sentinel is left in place.
@@ -155,23 +173,25 @@ returns 0. "—" means the entrance sentinel is left in place.
 | `storm3` | `newWorlda363` | `storm4` | — |
 | `storm4` | `newWorld1dd1` | `storm3` | — |
 
-**Observed** (`check_links`, lines 173–198): each entry is named by a
+**Observed** (`check_links`, lines 189–214): each entry is named by a
 `PushTrigger` `action=` (and `storm3`/`storm4` also by a `Trigger` `t=`)
 property in that level's `objects.ob`. Which use reaches them was not run.
 
 ### The shard: `storm4`
 
-**Executed** (test lines 411–428): `storm4` `start` stores `currentMission`
+**Executed** (test lines 493–510): `storm4` `start` stores `currentMission`
 9. It does not set availability. Call list:
-`inventory_countItemByName("shardofstorms", 0)`, and that count (0 here) is
-saved in script local `0xc`. It queues `shardCheck` and posts `absorb`.
+`inventory_countItemByName("shardofstorms", 0)`. That count is saved in
+script local `0xc`: with the stub at 2, the local reads 2 afterwards and was
+written. It queues `shardCheck` and posts `absorb`.
 `absorb` cuts `boss` (`res_find(".lmp", "boss.cut")` → 0,
 `cut_start(0, "boss.cut")`), stores `sawBoss` 1 and posts `cutsave`.
 
-**Executed** (lines 429–452): after that `start`, 24 unpaused `shardCheck`
-calls make no call and leave the flag words, `stm_gotShard` (planted `0x5A`)
-and the mission bytes alone. The 25th unpaused call compares the item count
-with local `0xc`:
+**Executed** (lines 511–546): after a `start` with the count at 0, each of
+the 24 unpaused `shardCheck` calls is checked on its own. Each makes no call,
+sets counter local `0x8` to the call number, leaves the flag words,
+`stm_gotShard` (planted `0x5A`) and the mission bytes alone, and requeues.
+The 25th unpaused call resets the counter to 0 and reads the item count:
 - **Count stub 1 or 2:** sets bit 4 of the flag word on all four records
   (`0xA5A5A5A5` → `0xA5A5A5B5`) and stores `stm_gotShard` 1. Call list:
   - `inventory_countItemByName("shardofstorms", 0)`
@@ -181,7 +201,17 @@ with local `0xc`:
 
   It posts `secondMsgDelay` and does not requeue `shardCheck`.
 - **Count stub 0:** the only call is the count. No flag or variable store.
-- A `g_paused` call does not count, so the grant comes one unpaused call later.
+  `shardCheck` is requeued.
+- A `g_paused` call after the 24th makes no call and leaves the counter at
+  24, so the grant comes one unpaused call later.
+- **Saved count planted** in local `0xc`: saved 1 with stub 1 does not
+  grant; saved 1 with stub 2, and saved −1 with stub 0, grant. So the grant
+  needs count > saved, compared signed.
+
+**Observed** (static, `check_shard_static`, test lines 321–341, for `storm4`,
+`nit2` and both boss levels): the branch that skips the grant reads the saved
+local (`storm4` `0x3bc` reads `0xc`). That local has one store in the image,
+in `start`, right after its `playerHasItem` call.
 
 `storm4` never grants mission 9. All story bytes stay held. With no player
 object planted, `onePlayerHasItem` returns 0, so `removePlayerItem` is not
@@ -190,38 +220,67 @@ being no player object, not on a stub.
 
 ### How mission 9 is marked complete: `storm2`
 
-**Executed** (test lines 456–468): `storm2` `start` stores `currentMission`
-9. If `getPlayerFlag(0, 4)` is set (record 0 flag word `0xA5A5A5B5`), it
+**Executed** (test lines 549–570): `storm2` `start` stores `currentMission`
+9 and clears the frame counter local `0xac` (pre-filled `0x5A5A5A5A`). If `getPlayerFlag(0, 4)` is set (record 0 flag word `0xA5A5A5B5`), it
 clears bit 4 on all four records, stores `stm_gotShard` 1 and queues
 `checkEveryFrame`. Without the flag it creates `stm_gotShard` at 0 and
 queues nothing. Call list in both cases: `automap_revealAll()`.
 
-**Observed** (`storm2` script `0xd98`–`0x1028`, local listing): each call
-copies the live-monster count (script local `0xb0`, raised by the
-three init scripts and `rezzone`, lowered by `invdeathscript`) into a local. While that count
-is below 21 and `storm2cleared` is 0, it shows the remaining-count bust. When
-the count is 0 and the frame counter (local `0xac`, cleared by `start`)
-equals 100, it stores `storm2cleared` 1 and shows the help. Then, if
-`stm_gotShard` is set, it grants mission 9 and plays the completion sound.
-The counter only advances when `gamePaused` is 0. The entry always requeues
-itself.
+**Observed** (`storm2` script `0xd98`–`0x1028`, local listing; the test
+asserts the locals read at `0xdb4` and `0xea0` and the `== 100` compare at
+`0xea8`): each call copies the live-monster count (script local `0xb0`,
+raised by the three init scripts and `rezzone`, lowered by
+`invdeathscript`) into local `0xa8`.
+- When that count is 21 or more, or `storm2cleared` is set, the call jumps
+  straight to the requeue (`0xe28` → `0xff8`).
+- Otherwise it shows the remaining-count bust. If the count is not 0 it then
+  jumps to the requeue as well (`0xe8c`).
+- With the count at 0, when the frame counter (local `0xac`, cleared by
+  `start` at `0x3d0`) equals 100, it stores `storm2cleared` 1 and shows the
+  help. Then, if `stm_gotShard` is set, it grants mission 9 and plays the
+  completion sound.
+- Last, the counter advances if `gamePaused` is 0 (`0xfc8`–`0xff0`).
 
-**Executed** (lines 469–498), with the monster count at its image value 0
-(no monsters were spawned, and this is a precondition of the claim):
-- **Calls 1–100:** each call list is `text_lookup(B9)`, then
-  `hud_setBust("bust_bubonian.tex", 0, 0, -1)`. No store; the story bytes are
-  held.
-- **Call 101 with `stm_gotShard` 1:** stores `storm2cleared` 1 and makes
-  mission 9 `0xA2` on all four records. Call list: the two bust calls,
+So the counter counts only unpaused frames with no monsters left, before the
+clear. The entry always requeues itself.
+
+**Executed** (lines 572–644). The counter, the monster count and
+`storm2cleared` start at their image values (0). The monster count is
+planted where stated.
+- **Calls 1–100, no monsters:** each call is checked on its own. Its call
+  list is `text_lookup(B9)`, then `hud_setBust("bust_bubonian.tex", 0, 0,
+  -1)`. The counter equals the call number, `storm2cleared` is 0, the story
+  bytes are held, and the entry is requeued.
+- **Call 101 with `stm_gotShard` 1:** stores `storm2cleared` 1, leaves the
+  counter at 101 and makes mission 9 `0xA2` on all four records. Call list: the two bust calls,
   `text_lookup(H9 title)`, `text_lookup(H9 body)`,
   `hud_showHelpMessage(-1, 0, 0)`, `res_find("fx.lmp",
   "quest_complete.anm")` → 0, `sound_playOnObject(0, 0, 1.0)` and
   `sound_setPlaysWhileFrozen(0)`.
-- **Call 101 with `stm_gotShard` 0:** stores `storm2cleared` 1 and shows the
-  help, but grants nothing. Every later call returns with no call. So a
-  shardless clear forfeits this grant path.
-- **Paused calls:** 50 unpaused, 10 paused, then 50 unpaused calls do not
-  grant; the next call does.
+- **Call 101 with `stm_gotShard` 0** (a planted state, see below): stores
+  `storm2cleared` 1 and shows the help, but grants nothing.
+- **After the clear:** each of 150 more calls makes no call, leaves the
+  counter at 101, does not write `storm2cleared`, and requeues. In the
+  shard-0 run the test plants `stm_gotShard` 1 right after the clear, and
+  none of the 150 calls grants.
+- **Monsters left:** with the count planted at 3, each of 120 calls shows the
+  bust with that count (`hud_setBust("bust_bubonian.tex", 0, 3, -1)`) and
+  leaves the counter at 0. At 21, each of 120 calls makes no call and leaves
+  it at 0. With the count set back to 0, calls 1–100 count, and the 101st
+  grants.
+- **Paused calls:** 50 unpaused calls, then 10 paused calls, then 50
+  unpaused calls do not grant. Each paused call still shows the bust and
+  leaves the counter at 50. The next call grants.
+
+**Inferred** (not reached by any script route in these runs): the shard-0
+clear. In the `storm2` script, `checkEveryFrame` is queued only by `start`
+(`0x9a0`) and by itself (`0x1014`). `start` reaches `0x9a0` only when
+`stm_gotShard` is nonzero at `0x54c`. The census finds two `setv` stores of
+`stm_gotShard` on the disc, both of 1: `storm4` `0x4a4` and `storm2`
+`0x520`. So the check runs with the shard at 0 only when planted, as in the
+test. If play could reach that state, the gate at `0xdf8`–`0xe28` would keep
+the path from ever granting afterwards, as the planted run shows. Whether
+play can reach it is Unknown.
 
 **Observed, not executed** (hub script `0x3150`–`0x3244`): hub `start` clears
 flag bit 4 on all players unless `currentMission` is 7 or 9. The shard flag
@@ -230,13 +289,13 @@ therefore survives a hub visit during mission 9.
 ### Which entries make mission 10 available
 
 See section 6. Mission 9's grant does not set mission 10's bit: after the
-101st call, mission 10 is still `0xA0` (held check, line 482).
+101st call, mission 10 is still `0xA0` (held check, line 598).
 
 ## 3. Mission 10: `fay2` (good) or `fay1` (evil)
 
 ### How mission 10 starts
 
-**Executed** (test lines 507–522): `preStart` decides only while
+**Executed** (test lines 646–675): `preStart` decides only while
 `playerisevil` and `playerisgood` are both absent or 0. The `madeDecision`
 byte is record `+0x4c1b`, and the evil byte `+0x4c1a`.
 - No decision: `fay2` stores good (`playerisevil` 0, `playerisgood` 1), and
@@ -245,9 +304,11 @@ byte is record `+0x4c1b`, and the evil byte `+0x4c1a`.
   good.
 
 Call list: `lump_load("bust.lmp")`, which returns 0, so nothing is loaded.
-With `playerisgood` already 1 there is no store.
+With `playerisgood` planted at 1, it is not written. Reading the absent
+`playerisevil` creates it, which is a 1-byte store of 0. With both planted
+at `0x5A`, neither is written and both stay `0x5A`.
 
-**Executed** (lines 523–542): `start` on either level makes mission 10
+**Executed** (lines 676–695): `start` on either level makes mission 10
 available on record 0 (`0xA1` from `0xA0`, `0xA3` from `0xA2`). It stores
 `startedMission10` 1 and `currentMission` 10 and queues `checkEachFrame`.
 - `fay2` adds `Q10g` only when the evil byte is clear and mission 10 is not
@@ -272,7 +333,7 @@ cut, and the `we_king` dialog.
 **Observed:** `SpiritAnchorAct` `action=anchorscript` in `fay3`
 (`check_links`).
 
-**Executed** (lines 544–567): each `anchorscript` call adds 1 to
+**Executed** (lines 703–726): each `anchorscript` call adds 1 to
 `anchCompleted`. Calls 1–7 change no story byte and no quest, and make no
 call. On call 8 it:
 - makes mission 10 `0xA2` on all four records (others held);
@@ -283,8 +344,14 @@ call. On call 8 it:
 
 Call list: empty.
 
-**Executed** (lines 568–578): `missionDone`, which `fay3` `checkEachFrame`
-queues when `anchCompleted` is 8, removes the side's quest. Call list:
+**Observed** (static, test lines 696–702): `fay3` `checkEachFrame` queues
+`missionDone` at `0x10f0`, after the `anchCompleted == 8` compare at
+`0x10c4`, and requeues itself at `0x1184`. In the local listing that compare
+is reached only on a call where its countdown local `0x110` is 1 (not
+asserted).
+
+**Executed** (lines 727–738): `missionDone` removes the side's quest. Call
+list:
 - `res_find("fx.lmp", "quest_complete.anm")`, `sound_playOnObject(0, 0, 1.0)`,
   `sound_setPlaysWhileFrozen(0)`
 - `text_lookup(H10e title)`
@@ -299,11 +366,17 @@ was not run; the countdown local it reads comes from `getScaledTime`.
 
 ### How mission 11 starts
 
-**Executed** (test lines 586–603): `nit1` `start` makes mission 11
+**Executed** (test lines 753–792): `nit1` `start` makes mission 11
 available on record 0 and stores `startedMission11` 1 and `currentMission`
 11. It adds `Q11` when mission 11 is not complete. Call list: empty.
-`faywords` is set from `getRand() % 4 + 1`. It ends between 1 and 4 and **the
-seed changes**: this entry consumes a shared random draw.
+
+**It makes exactly one shared-seed draw.** The seed after `start` is one
+`ref_core.Lcg` step from the seed before (seed × `0x19660d` + `0x3c6ef35f`,
+mod 2³²). `faywords` is stored as draw % 4 + 1, where the draw is the new
+seed `>> 16`. The test runs further seeds after the test seed until all four
+values have come up. `nit1` has one `getRand` site (`0x1ec`). With
+`faywords` planted at 3, the seed is unchanged and `faywords` is not
+written: no draw is made.
 
 **Executed** (`TRAVEL`): `nit1` `newWorld980` → `nitdung1`, `newWorld3ab3` →
 `nitdung4`; `nitdung1` `newWorld9ad` → `nit1` (`n1nd1`), `newWorldb992`
@@ -313,50 +386,72 @@ seed changes**: this entry consumes a shared random draw.
 
 ### How mission 11 is marked complete: `nit2`
 
-**Executed** (lines 604–631): `nit2` `start` saves the shard count
-(`inventory_countItemByName("shardofnightmare", 0)`; the call list is just
-that) and queues `shardCheck`. With `Q11` planted afterwards:
-- **Calls 1–24:** no call and no change.
-- **Call 25, count stub 1:** makes mission 11 `0xA2` on all four records,
+**Executed** (lines 793–831): `nit2` `start` saves the shard count in local
+`0x6c` (with the stub at 2 it reads 2 afterwards) and queues `shardCheck`.
+Its call list is just `inventory_countItemByName("shardofnightmare", 0)`.
+With `Q11` planted afterwards:
+- **Calls 1–24:** each call is checked on its own. It makes no call, sets
+  counter local `0x68` to the call number, leaves the story bytes, the quest
+  and `nit_gotShard` (planted `0x5A`) alone, and requeues.
+- **Call 25, count stub 1:** resets the counter, makes mission 11 `0xA2` on all four records,
   stores `nit_gotShard` 1, removes `Q11` (`NoQuests`) and does not requeue.
   Call list: the count, `text_lookup(H11 title)`, `text_lookup(H11 body)`,
   `hud_showHelpMessage(-1, 0, 0)`, then the three sound calls above.
-- **Call 25, count stub 0:** no grant and no store.
-- **`nit2` `shardCheck` has no `gamePaused` test:** 25 calls with `g_paused`
-  1 still grant.
+- **Call 25, count stub 0:** no grant and no store. `shardCheck` is
+  requeued.
+- **`nit2` `shardCheck` has no `gamePaused` test:** with `g_paused` 1
+  throughout, calls 1–24 still advance the counter one per call, and call 25
+  grants.
+- **Saved count planted** in local `0x6c`: 1 with stub 1 does not grant; 1
+  with stub 2, and −1 with stub 0, grant. The skip branch at `0x84c` reads
+  `0x6c` (static, as for `storm4`).
 
-**Executed** (lines 632–640): the second writer. `nitmar1` `start` makes
+**Executed** (lines 832–846): the second writer. `nitmar1` `start` makes
 mission 11 available with no quest. Its trigger `callScri7351` grants mission
-11 on all four records with no quest edit. Call list: `text_lookup(H11m
+11 on all four records. A planted `Q11` quest stays, and the `nitmar1`
+script has no `removeQuest` site. Call list: `text_lookup(H11m
 title)`, `text_lookup(H11m body)`, `hud_showHelpMessage(-1, 0, 0)`.
 
 ## 5. Mission 12: `bossgood` or `bossevil`, and the ending
 
 ### How mission 12 starts
 
-**Executed** (test lines 650–664), on both levels:
+**Executed** (test lines 851–884), on both levels:
 - `start` makes mission 12 available on record 0 and stores
   `startedMission12` 1 and `currentMission` 12.
-- It posts `absorb`, creates `killedThule` (good) or `killedMar` (evil) at 0,
-  and stores `g_saveInhibit` `0x50605c` = 1 over `0x5A5A5A5A`.
+- It posts `absorb` and reads `killedThule` (good) or `killedMar` (evil).
+  Absent, the variable is created at 0. Only while it is 0 does `start`
+  store `g_saveInhibit` `0x50605c` = 1 over `0x5A5A5A5A`. With the variable
+  planted at 1, `start` does not write `0x50605c`, which stays `0x5A5A5A5A`.
 - It saves the count of `shardoffear` (good) or `shardoftranquility` (evil)
-  and queues `shardCheck`.
+  in local `0x4` (with the stub at 2 it reads 2 afterwards), and queues
+  `shardCheck`.
 - No quest. Call list: that one count.
 
 `absorb` cuts `boss`, stores `sawThule`/`sawMar` 1 and posts
-`cutsave`. `killedboss` stores `killedThules` (good; note the extra `s`,
-so `start`'s test of `killedThule` never sees it) or `killedMar` (evil) 1,
-with no call (lines 718–729).
+`cutsave`. `killedboss` stores `killedThules` (good; note the extra `s`)
+or `killedMar` (evil) 1, with no call (lines 951–964). With `killedThules`
+planted at 1, `bossgood` `start` still stores save-inhibit 1, because it
+reads `killedThule`.
+
+**Inferred:** re-entering `bossevil` after `killedboss` would skip the
+save-inhibit store, and re-entering `bossgood` would not. Re-entry itself
+was not run.
 
 ### How mission 12 is first marked complete
 
-**Executed** (lines 665–682): after `start`, 24 unpaused `shardCheck`
-calls do nothing.
+**Executed** (lines 885–915): after `start`, each of 24 unpaused
+`shardCheck` calls is checked on its own. It makes no call, sets counter
+local `0x0` to the call number, leaves the story bytes and `finalShard`
+(planted `0x5A`) alone, and requeues.
 - **Call 25, count stub 1:** stores `finalShard` 1. Mission 12 becomes
   `0xA3` on record 0 (it was `0xA1`) and `0xA2` on records 1–3. Call list:
   the count, `text_lookup(H12 title)`, `text_lookup(H12 body)`,
   `hud_showHelpMessage(-1, 0, 0)`. There is no completion sound.
-- **Count stub 0:** no grant and no store.
+- **Count stub 0:** no grant and no store. `shardCheck` is requeued.
+- **Saved count planted** in local `0x4`: 1 with stub 1 does not grant; 1
+  with stub 2, and −1 with stub 0, grant. The skip branch at `0xab0` reads
+  `0x4` (static).
 
 The removal loop again needs a player object, so no item is removed.
 
@@ -365,7 +460,7 @@ The removal loop again needs a player object, so no item is removed.
 **Observed:** both boss levels carry `PushTrigger` `key=returnc798` with
 `action=callScri53d3`, and `Trigger` `t=callScri1ef1` (`check_links`).
 
-**Executed** (lines 683–704):
+**Executed** (lines 916–938):
 - `returnc798` returns `finalShard`: 0 when absent or 0, 1 when set.
 - `gatewaytrigger` (through `callScri1ef1`) stores `firedgate` 1 only when
   `finalShard` is set and `firedgate` is 0. Its `trigger("portal", 0)` found
@@ -373,7 +468,7 @@ The removal loop again needs a player object, so no item is removed.
   is a harness limit; section 2 of `story-route.md` ran the same request with
   a synthetic portal.
 
-**Executed** (lines 705–717): `callScri53d3` → `end`:
+**Executed** (lines 939–950): `callScri53d3` → `end`:
 - Stores `g_saveInhibit` 0 over `0x5A5A5A5A`.
 - `setPlayerFlag(-1, 0, 0)` clears bit 0 of record 0's flag word only, because
   there is one player. Records 1–3 stay `0xA5A5A5A5`.
@@ -389,7 +484,7 @@ The story bytes are unchanged by `end`. The pairing of key and action is
 
 ### The ending levels: what completion triggers
 
-**Executed** (test lines 733–747): `endgood` and `endbad` `start` posts
+**Executed** (test lines 966–980): `endgood` and `endbad` `start` posts
 `absorbExtra`, with no call. `absorbExtra`:
 - calls `res_find(".lmp", "endgood.cut")` / `"endbad.cut"` → 0, then
   `cut_start(0, …)`;
@@ -397,7 +492,7 @@ The story bytes are unchanged by `end`. The pairing of key and action is
 - grants mission 12 again: `0xA2` on all four records from `0xA0`. This is a
   second completion writer after the shard grant.
 
-**Executed** (lines 748–788), difficulty 1 and 0, card idle
+**Executed** (lines 981–1023), difficulty 1 and 0, card idle
 (`memcard_getState` → −1) and busy (→ 0). Destinations were pre-filled:
 `g_sessionExitCode` `0x41b508` = `0x5A5A5A5A`, `g_gameCompleteFlag`
 `0x4f85c5` = `0x5A`, config byte `0x4f8f38` = `0x41`, and `0x41b4f8` =
@@ -429,7 +524,7 @@ save starts at all depends on the `memcard_getState` stub.
 `frontend_start(0)`, `0x65` with `frontend_start(1)`, and `0xc9` with
 `frontend_start(2)`.
 
-**Executed** (`check_frontend`, test lines 792–828; every callee of
+**Executed** (`check_frontend`, test lines 1025–1061; every callee of
 `frontend_start` `0x1e1f34` stubbed to return 0):
 - `frontend_start(1)` stores 1 at `0x4f701a` (pre-filled `0x5A`) and writes
   `intro` to `g_pendingLevel`. It adds the `frontend_run` task
@@ -465,8 +560,8 @@ header level name becomes `gameComplete` while the flag is set
 
 ## 6. Which entries make the next mission available
 
-**Observed** (`check_links`, test lines 202–220) and **Executed** (lines
-830–869):
+**Observed** (`check_links`, test lines 218–236) and **Executed** (lines
+1063–1102):
 - The hub conditions `if3a40`, `if2302` and `ifb354` return 1 exactly when
   mission 10, 11 or 12 respectively is not available (bit 0 clear), on both
   hub and hub2. Call list: empty.
@@ -512,18 +607,22 @@ of `story-route.md` (`startDia3314`), not re-checked here.
 3. **Storm travel.** The sixteen storm entries in the section 2 table request
    their levels and entrances with orientation `0xff`.
 4. **`storm4` shard.** Count `shardofstorms` at `start`. On every 25th
-   unpaused `shardCheck` where the count has risen, set player flag 4 on every
-   record, store `stm_gotShard`, show `H9s` and play the got-item voice.
-   Do not grant there.
+   unpaused `shardCheck` where the count is above the one saved at `start`
+   (signed compare), set player flag 4 on every record, store
+   `stm_gotShard`, show `H9s` and play the got-item voice. Do not grant
+   there.
 5. **`storm2` `start`** turns flag 4 into `stm_gotShard` 1, clears flag 4,
    and only then queues `checkEveryFrame`. Hub `start` must keep flag 4
    while `currentMission` is 7 or 9 (observed, not run).
-6. **Grant mission 9 in `storm2` `checkEveryFrame`.** It needs no monsters
-   left and 100 unpaused frames counted. It stores `storm2cleared` and shows
-   `H9`, then grants (all records) and plays the sound only if
-   `stm_gotShard` is set. If the shard is missing at that moment, the clear is
-   spent and that path never grants. Showing the bust while fewer than 21
-   remain is cosmetic.
+6. **Grant mission 9 in `storm2` `checkEveryFrame`.** Advance the frame
+   counter only on unpaused frames with no monsters left, while
+   `storm2cleared` is 0. While any monster remains it holds; it does not
+   count from level entry. On the frame where it is 100 and none remain,
+   store `storm2cleared` and show `H9`, then grant (all records) and play the
+   sound only if `stm_gotShard` is set. `start` queues this check only when
+   it also stores `stm_gotShard` 1, so the scripts give no route to a clear
+   without the shard (Inferred, section 2). Showing the bust while fewer than
+   21 remain is cosmetic.
 7. **Mission 10 `preStart`.** Pick the side as in section 3. `start` (either
    level) makes mission 10 available, stores the two variables and adds
    `Q10g` (fay2, good) or `Q10e` (fay1, evil) unless already complete.
@@ -532,14 +631,18 @@ of `story-route.md` (`startDia3314`), not re-checked here.
    and remove the side's quest. `missionDone` repeats the removal, plays the
    sound and shows `H10e` or `H10g`.
 9. **`nit1` `start`** makes mission 11 available, adds `Q11` unless complete,
-   and consumes one `getRand` draw. Travel follows the nit table.
+   and consumes exactly one shared `getRand` draw (`faywords` = draw % 4 +
+   1) unless `faywords` is already set. Travel follows the nit table.
 10. **Grant mission 11 on the 25th `nit2` `shardCheck`** once the
-    `shardofnightmare` count has risen. This check counts paused frames too.
+    `shardofnightmare` count is above the one saved at `start`. This check
+    counts paused frames too.
     Store `nit_gotShard`, remove `Q11`, show `H11` and play the sound.
     `nitmar1`'s trigger is a second writer.
-11. **Boss `start`** makes mission 12 available and sets save-inhibit. Count
+11. **Boss `start`** makes mission 12 available. It sets save-inhibit only
+    while `killedThule` (good) or `killedMar` (evil) is 0; `killedboss` on
+    the good side stores `killedThules`, so that side always sets it. Count
     `shardoffear` (good) or `shardoftranquility` (evil). The 25th unpaused
-    `shardCheck` with a raised count grants mission 12 and stores
+    `shardCheck` with a count above the saved one grants mission 12 and stores
     `finalShard`. Shows `H12`, no sound.
 12. **Boss exit.** The portal request fires once `finalShard` is set; the
     exit key is `finalShard`. Its action clears save-inhibit, clears player
@@ -556,7 +659,7 @@ of `story-route.md` (`startDia3314`), not re-checked here.
 PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; sys.path.insert(0,"tools"); sys.argv=["difftest_story_mission912.py","--elf","local/SLUS_209.73","--data","/path/to/BG/DATA","--keys-out","local/m912-keys.tsv"]; runpy.run_path("tools/difftest_story_mission912.py", run_name="__main__")'
 ```
 
-Result on the owner's disc: `PASS seed 20973: 244` and `PASS seed 7: 244`
+Result on the owner's disc: `PASS seed 20973: 289` and `PASS seed 7: 289`
 mission-9..12 and ending checks. The log is in ignored `local/story-m912.log`.
 
 ## 8. Unknown
@@ -566,8 +669,15 @@ mission-9..12 and ending checks. The log is in ignored `local/story-m912.log`.
   action, and the dialogs. `PushTrigger_interact` and `dialog_onMsg` were not
   run.
 - Live monster counts for `storm2`, and the `fay1`/`fay2` kill counters.
+- How `storm2` `checkEveryFrame` could run with no shard in play (no script
+  route was found; section 2).
+- Whether `storm2cleared`, `stm_gotShard` and the other quest variables
+  survive a level re-entry.
+- Re-entering a boss level after `killedboss`.
+- Callers of `mission_setAvailable` and `mission_setComplete` in the
+  executable outside the script natives (section 1).
 - Real inventory counts, and item removal with a player object present.
-- `fay3` `checkEachFrame`'s countdown.
+- `fay3` `checkEachFrame`'s countdown (the entry was not run).
 - The Portal virtual call on the boss levels.
 - `fearboss`.
 - `credits_run`, and the medal and bonus levels (`nitmedal`, `faybonus`,
