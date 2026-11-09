@@ -24,15 +24,36 @@ MAIN_CALL = 0x14fcb8
 WORLD_RECORDS, PLAYER_CTOR = 0x14e808, 0x1a1d28
 TEXCACHE_INIT, CREATE_THREAD = 0x17a1d0, 0x3527e0
 RING_SLOT, PARTICLE_WORD = 0x7cfd40, 0x82c408
+RING_SENTINEL, PARTICLE_SENTINEL = 0x51525354, 0x61626364
 HANDLER_ID = 0x44fd4c
 GP = 0x56c170
+WATCH = ((RING_SLOT, 4), (PARTICLE_WORD, 4))
+
+
+def arm_sentinels(emu):
+    emu.mem.w32(RING_SLOT, RING_SENTINEL)
+    emu.mem.w32(PARTICLE_WORD, PARTICLE_SENTINEL)
+    emu.writes.clear()
+    emu.record_writes = True
+    emu.write_watch = WATCH
+
+
+# crt0 clears .bss 16 bytes at a time with sq $zero at 0x14fbe0.  Those two
+# stores are the only ones in startup that overlap the ring or particle word.
+BSS_CLEAR = [(0x14fbe0, RING_SLOT, 16, 0), (0x14fbe0, PARTICLE_WORD & ~0xf, 16, 0)]
+
+
+def assert_sentinels(emu):
+    assert emu.mem.u32(RING_SLOT) == RING_SENTINEL
+    assert emu.mem.u32(PARTICLE_WORD) == PARTICLE_SENTINEL
+    assert emu.writes == []
 
 
 def run_entry(elf):
     e = EE(elf)
     e.record_calls = False
-    e.record_writes = False
     e.install_modelled_boot()
+    arm_sentinels(e)
     reached = []
     moved = []
     e.hook(MAIN_CALL, lambda _emu: reached.append(1))
@@ -54,19 +75,19 @@ def run_entry(elf):
     assert e.cur == 0x35c108
     assert e.mem.u32(0x5075d0) == 1
     assert e.mem.u32(0x5075d4) == 2
-    assert e.mem.u32(RING_SLOT) == 0
-    assert e.mem.u32(PARTICLE_WORD) == 0
+    assert e.mem.u32(RING_SLOT) == 0 and e.mem.u32(PARTICLE_WORD) == 0
+    assert e.writes == BSS_CLEAR, e.writes
     return e
 
 
 def run_engine(elf):
     e = EE(elf)
     e.record_calls = False
-    e.record_writes = False
     # The first store in engine_init targets the GS register window.
     e.mem.map(0x12000000, 0x2000)
     e.install_deci2_kputs()
     e.install_modelled_boot()
+    arm_sentinels(e)
     e.r[28] = GP
     try:
         e.call(ENGINE_INIT, max_steps=4000000)
@@ -79,8 +100,7 @@ def run_engine(elf):
     assert (e.r[31] & 0xffffffff) == 0x19d05c
     assert (e.r[4] & 0xffffffff) == 2
     assert (e.r[28] & 0xffffffff) == GP
-    assert e.mem.u32(RING_SLOT) == 0
-    assert e.mem.u32(PARTICLE_WORD) == 0
+    assert_sentinels(e)
     assert e.mem.u32(HANDLER_ID) == 1
     return e
 
@@ -104,8 +124,7 @@ def reload_after(elf, rng, qualified):
     targets = [c.target for c in e.calls]
     assert WORLD_RECORDS not in targets and PLAYER_CTOR not in targets
     assert TEXCACHE_INIT not in targets and CREATE_THREAD not in targets
-    assert e.mem.u32(RING_SLOT) == 0
-    assert e.mem.u32(PARTICLE_WORD) == 0
+    assert_sentinels(e)
     assert e.mem.u8(0x41b720) == 254
     assert not any(c.stubbed for c in e.calls)
 

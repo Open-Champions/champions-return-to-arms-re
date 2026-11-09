@@ -595,6 +595,7 @@ class EE:
         self.record_calls = True
         self.writes = []                # (pc, address, size, value) outside the stack
         self.record_writes = True
+        self.write_watch = None        # None, or ((address, size), ...): keep only overlaps
         self.reads = None               # set to [] to record (pc, address, size, value)
         self.trace = None               # set to [] to record every executed pc
         self.notes = []                 # things worth telling the reader (e.g. divide by 0)
@@ -1274,6 +1275,13 @@ class EE:
         return False
 
     # ---- memory access from instructions -----------------------------------------------
+    def _overlaps_watch(self, addr, size):
+        end = addr + size
+        for watch, width in self.write_watch:
+            if addr < watch + width and watch < end:
+                return True
+        return False
+
     def _load(self, addr, size):
         if addr & (size - 1):
             raise CpuTrap('unaligned %d-byte load from 0x%08x at pc 0x%08x' % (size, addr, self.cur))
@@ -1287,7 +1295,8 @@ class EE:
             raise CpuTrap('unaligned %d-byte store to 0x%08x at pc 0x%08x' % (size, addr, self.cur))
         self.mem.store(addr, size, value)
         if self.record_writes and not self.stack_lo <= addr < self.stack_hi:
-            self.writes.append((self.cur, addr, size, value & ((1 << (size * 8)) - 1)))
+            if self.write_watch is None or self._overlaps_watch(addr, size):
+                self.writes.append((self.cur, addr, size, value & ((1 << (size * 8)) - 1)))
 
     def _unimplemented(self, word, what=''):
         raise UnimplementedInstruction(self.cur, word, what)

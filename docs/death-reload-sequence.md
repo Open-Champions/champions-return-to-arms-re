@@ -330,8 +330,14 @@ number 131. Its wrapper returns with `jr ra` and a nop, so the model
 transfers to `0x35c108` and leaves ra unchanged.
 
 **Executed:** `0x35c108` reads `0x80000000` and stops. That address is not in
-the loaded image. The call at `0x14fcb8` does not run. The ring word
-`0x7cfd40` and the particle word `0x82c408` stay 0. **Unknown:** the bytes
+the loaded image. The call at `0x14fcb8` does not run. A planted
+`0x51525354` at `0x7cfd40` and a planted `0x61626364` at `0x82c408` do not
+survive startup. With write recording on, the only stores that overlap
+either word are two 16-byte stores of 0 at pc `0x14fbe0`, to `0x7cfd40` and
+`0x82c400`. **Observed:** `0x14fbe0` is the `sq $zero` of the loop at
+`0x14fbd8`-`0x14fbf0` that clears `.bss` 16 bytes at a time. So both words
+are 0 at the stop because startup cleared them, not because nothing wrote
+them. **Unknown:** the bytes
 from `0x80000000` through `0x8007ffff`. The scan compares the cursor with a1,
 and this caller passes a1 = `0x80080000`.
 
@@ -350,15 +356,20 @@ return address `0x353560`, saves v0; the modelled previous state is 1.
 **Executed:** WaitSema at `0x352a24` has a0 = 2 and return address `0x19d05c`.
 The semaphore's count is 0, so the handler raises. The waiter `0x19d028`
 samples the word at `0x44fd98` and repeats while that word is unchanged.
-**Observed:** `0x19b6e4` increments that word and signals the semaphore.
-**Observed:** `engine_init` calls the waiter at `0x19d394`, `0x19d3a4`,
-`0x19d3f0`, `0x19d3fc` and `0x19d408`. This run stops on the first call. The
-handler is not delivered. CreateThread `0x3527e0`, `texcache_init` and
+**Observed:** inside `0x19b6e4`, the increment at `0x19b75c` and the two
+`iSignalSema` calls at `0x19b760` and `0x19b76c` run only when the byte at
+`0x8400f8` is nonzero. The first passes the id at `0x8400f0`. The second
+passes the id at `0x8400f4`. The loaded image has 0 at `0x8400f8`, so the
+branch at `0x19b71c` goes to `0x19b784` instead. This run does not deliver
+the handler. **Observed:** `engine_init` enters the waiter at `0x19d394`.
+The five calls that do not run are `0x19d3a4`, `0x19d3f0`, `0x19d3fc`,
+`0x19d408` and `0x19d82c`. CreateThread `0x3527e0`, `texcache_init` and
 `particle_init` do not run.
 
 **Executed, same session:** the death sequence then uses that machine. It
-still supplies its own player, checkpoint and task list. The particle word
-and the ring stay 0. The loader stops on the 4-byte write to address 4 at pc
+still supplies its own player, checkpoint and task list. The planted ring
+and particle sentinels are unchanged, and the write log has no store that
+overlaps either word. The loader stops on the 4-byte write to address 4 at pc
 `0x18ec10`, return address `0x1e502c`. World reconstruction `0x14e808` and
 `Player_ctor` `0x1a1d28` are not called.
 
@@ -431,9 +442,10 @@ the `0xff` adjustment is not applied. a1 is `0x1800080`, the word at
 The cached address `0x1800094` is mapped. The alias is not, so the store does
 not complete. The call at `0x19d490` has returned, and s5 holds `0x1000a000`.
 `texcache_init`, `particle_init`, world reconstruction `0x14e808` and
-`Player_ctor` `0x1a1d28` are not entered. The ring word `0x7cfd40` and the
-particle word `0x82c408` stay 0. Planted neighbors `0x22222222` at `0x7cfd44`
-and `0x33333333` at `0x82c40c` stay.
+`Player_ctor` `0x1a1d28` are not entered. A planted `0x51525354` at
+`0x7cfd40` and a planted `0x61626364` at `0x82c408` are unchanged, and the
+write log has no store that overlaps either word. Planted neighbors
+`0x22222222` at `0x7cfd44` and `0x33333333` at `0x82c40c` stay.
 
 **Observed:** syscall 131 is the body installed for number `0x83` at
 `0x35c108`. The call at `0x35c1e4` passes a0 = `0x80000000`, a1 =
@@ -446,9 +458,10 @@ neither a match nor a miss is modelled. The second search, whose needle is
 `0x35c0d0`, does not run.
 
 **Executed, same session:** the death sequence still supplies its own player,
-checkpoint and task list. The loader stops on the 4-byte write to address 4
-at pc `0x18ec10`, return address `0x1e502c`. World reconstruction and
-`Player_ctor` are not called.
+checkpoint and task list. The same two sentinels are unchanged and the write
+log still has no overlapping store. The loader stops on the 4-byte write to
+address 4 at pc `0x18ec10`, return address `0x1e502c`. World reconstruction
+and `Player_ctor` are not called.
 
 **Unknown:** the retail interrupt timing, the retail ids, the kernel window,
 whether the uncached store would write the cached bytes, file loading, world
@@ -463,7 +476,8 @@ on the null particle slot, so the client refusal stays.
 
 This boot does not unblock the `texcache_reset` store at `0x179b30` reached
 from `game_loadLevel`. That store adds `0x18` to the pointer at `0x7cfd40`.
-The pointer is still 0, so the address is still `0x18`.
+The planted sentinel is still there, so this boot has not stored a ring
+pointer. The loader still faults at `0x18ec10` before that store.
 
 ## Reproduce, round 6
 

@@ -25,6 +25,8 @@ TEXCACHE_INIT, PARTICLE_INIT = 0x17a1d0, 0x18e648
 TEX_RELOCATE, LATER_WAIT = 0x179e10, 0x19d828
 RING_SLOT, RING_NEIGHBOR = 0x7cfd40, 0x7cfd44
 PARTICLE_WORD, PARTICLE_NEIGHBOR = 0x82c408, 0x82c40c
+RING_SENTINEL, PARTICLE_SENTINEL = 0x51525354, 0x61626364
+WATCH = ((RING_SLOT, 4), (PARTICLE_WORD, 4))
 COUNTER, COUNTER_NEIGHBOR, FIELD_BYTE = 0x44fd98, 0x44fd94, 0x44fd9c
 HANDLER_ID = 0x44fd4c
 SEMA_A, SEMA_B = 0x8400f0, 0x8400f4
@@ -34,7 +36,6 @@ GP = 0x56c170
 def run_engine(elf):
     e = EE(elf)
     e.record_calls = False
-    e.record_writes = False
     # The first store in engine_init targets the GS register window.
     e.mem.map(0x12000000, 0x2000)
     e.install_deci2_kputs()
@@ -43,8 +44,13 @@ def run_engine(elf):
     e.r[28] = GP
     e.mem.w32(COUNTER_NEIGHBOR, 0x11111111)
     e.mem.w8(FIELD_BYTE, 0xA5)
+    e.mem.w32(RING_SLOT, RING_SENTINEL)
     e.mem.w32(RING_NEIGHBOR, 0x22222222)
+    e.mem.w32(PARTICLE_WORD, PARTICLE_SENTINEL)
     e.mem.w32(PARTICLE_NEIGHBOR, 0x33333333)
+    e.writes.clear()
+    e.record_writes = True
+    e.write_watch = WATCH
     hits = []
     for addr in (TEX_RELOCATE, TEXCACHE_INIT, PARTICLE_INIT, WORLD_RECORDS,
                  PLAYER_CTOR, LATER_WAIT):
@@ -75,8 +81,10 @@ def run_engine(elf):
     assert e.mem.u32(SEMA_A) == 1 and e.mem.u32(SEMA_B) == 2
     assert e._semas[1]['count'] == 5 and e._semas[2]['count'] == 0
     assert e.intc_deliveries == [(2, HANDLER, 2)] * 5
-    assert e.mem.u32(RING_SLOT) == 0 and e.mem.u32(RING_NEIGHBOR) == 0x22222222
-    assert e.mem.u32(PARTICLE_WORD) == 0 and e.mem.u32(PARTICLE_NEIGHBOR) == 0x33333333
+    assert e.mem.u32(RING_SLOT) == RING_SENTINEL and e.mem.u32(RING_NEIGHBOR) == 0x22222222
+    assert e.mem.u32(PARTICLE_WORD) == PARTICLE_SENTINEL
+    assert e.mem.u32(PARTICLE_NEIGHBOR) == 0x33333333
+    assert e.writes == []
     assert hits == [TEX_RELOCATE]
     assert not any(c.stubbed for c in e.calls)
     return e
@@ -101,8 +109,9 @@ def reload_after(elf, rng, qualified):
     targets = [c.target for c in e.calls]
     assert WORLD_RECORDS not in targets and PLAYER_CTOR not in targets
     assert TEXCACHE_INIT not in targets and PARTICLE_INIT not in targets
-    assert e.mem.u32(RING_SLOT) == 0
-    assert e.mem.u32(PARTICLE_WORD) == 0
+    assert e.mem.u32(RING_SLOT) == RING_SENTINEL
+    assert e.mem.u32(PARTICLE_WORD) == PARTICLE_SENTINEL
+    assert e.writes == []
     assert e.mem.u8(0x41b720) == 254
     assert not any(c.stubbed for c in e.calls)
 
