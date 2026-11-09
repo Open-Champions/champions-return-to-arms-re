@@ -256,7 +256,7 @@ executable's act table. Messages, `task_isRunning`, `save_build` and
    keyed `CheckPoint` (lookup 0x173c84; the displayed wording is not
    documented) and returns **without** building. The level's state is not
    stored. This is the same for a1 = 0 and for the daemon's call
-   `save_game(0, 1)` (`docs/audio-save.md` lines 158–159), executed with
+   `save_game(0, 1)` (`docs/audio-save.md` lines 161–162), executed with
    act 0 and act 2 current.
 4. For the exact row-0 name (`hub`; `hub_west` is not row 0) with no stored
    entry, it builds silently. Every other found level, and a stored `hub`,
