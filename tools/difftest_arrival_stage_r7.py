@@ -159,6 +159,7 @@ def producer(path, archives, body, seed):
             else:
                 assert hit.address == SELECT_START and c.emu.mem.u8(DEST) == 0
                 assert c.emu.mem.u8(DEST + 1) == 0xA5
+        assert not any(r.stubbed for r in c.emu.calls) and not c.emu.patches  # round 8, R8-12
     # A2. game_getHubName: hub_b only with decision, choice and mission 1 complete.
     level = e.mem.u32(DIFFICULTY)
     sites = (RECORD + DECISION, RECORD + CHOICE, RECORD + COMPLETE + 13 * level + 1)
@@ -201,6 +202,7 @@ def producer(path, archives, body, seed):
         stores_from(fe.writes, PENDING, len(want) + 1, STRCPY, STRCPY_END)
         assert any(pc == 0x22A484 and a == ORIENT and v == 0xFF for pc, a, _s, v in fe.writes)
         assert calls(fe, HUB_NAME) == 1 and calls(fe, FADE_WAIT) == 1
+        assert not any(c.stubbed for c in fe.calls) and not fe.patches  # round 8, R8-12
         results.append(fe.mem.cstr(PENDING))
         if not all_set:
             finished = f
@@ -234,7 +236,9 @@ def producer(path, archives, body, seed):
         assert pcs == {0x3210AC, 0x3210D8}, pcs
         stores_from(se.writes, TEX_NAME, len(name) + 1, STRCPY, STRCPY_END)
         split[name] = [i for i, p in enumerate(archives) if Path(p).stem.lower() == name]
+        assert not any(c.stubbed for c in se.calls) and not se.patches  # round 8, R8-12
     ordinals = (split[hub], split[mission1], split[boot])
+    assert not any(c.stubbed for c in e.calls) and not e.patches  # round 8, R8-12
     assert ordinals == ([0], [2], [1]), ordinals
     same('producer', (tuple(results), ordinals))
     print('PASS producer body=%d seed=%d dest_stores=0x1e3c44,0x1e3c48 hub_name=%s finish=%s,%s '
@@ -366,6 +370,7 @@ def prop_case(path, image, off, body, seed, clip, flags, capacity, collide):
     slot = [c for c in e.calls if c.target == SLOT19]
     assert len(slot) == 1 and slot[0].args[0] & 0xFFFFFFFF == obj
     assert slot[0].args[1] & 0xFFFFFFFF == flags & 1
+    assert not any(c.stubbed for c in e.calls) and not e.patches  # round 8, R8-12
     return o, obj, clip_block, stop, trace
 
 
@@ -553,6 +558,7 @@ def cut_refusals(path, image, off, body, seed, text):
             assert stop == (0x2168A0, 0) and CD_FIND not in made and 0x216860 in made
         else:
             assert stop == (0x17363C, 0) and made.count(CD_FIND) == 1 and 0x1964D4 in made
+        assert not any(c.stubbed for c in e.calls) and not e.patches  # round 8, R8-12
         out.append('0x%x' % stop[0])
     return same('cut_refusals', tuple(out))
 
@@ -612,6 +618,9 @@ def cut(path, archive, image, off, body, seed, text):
     assert CUT_ADVANCE not in [c.target for c in e.calls[mark:]] and e.mem.u32(CUT_CLOCK) == 1
     # Task frames: argument 0 with g_warmupFrames 0, the value the warm-up loop leaves.
     e.record_writes = False
+    # Round 8 (R8-12): keep recording, for the setup byte only, through the task frames.
+    e.write_watch = ((CUT_SETUP_BYTE, 1),)
+    e.record_writes = True
     advanced = 0
     frames = 0
     last = prev = None
@@ -630,6 +639,12 @@ def cut(path, archive, image, off, body, seed, text):
         advanced += 1
         frames += 1
     assert e.mem.u8(CUT_ACTIVE) == 0
+    setup_all = tuple((pc, v) for pc, _a, _s, v in overlaps(e.writes, CUT_SETUP_BYTE, 1))
+    assert setup_all == ((0x199BBC, 1),)  # round 8, R8-12: every store to 0x44fcd2
+    e.write_watch = None
+    same('cut_setup_byte', setup_all)
+    print('PASS cut_setup_byte body=%d seed=%d stores=%s' % (
+        body, seed, ','.join('0x%x:%d' % pair for pair in setup_all)))
     assert [a for a, _ in natives] == [0x144B44]
     assert len(amx_string(e.mem, o.base, off, natives[0][1][0])) == 5
     order = [(c.target, c.site) for c in e.calls if c.target in {0x322934, 0x2072E8, 0x1EDAC0}]

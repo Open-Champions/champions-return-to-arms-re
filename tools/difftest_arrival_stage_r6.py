@@ -462,6 +462,10 @@ def route2(path, image, off, body, seed, text):
     assert calls(o.emu, DTOR) == 1
     assert calls(o.emu, STR_WALK) == 0
     assert calls(o.emu, HANDLE_CLEAR) == 3
+    # Round 8 (R8-11): this counts linking calls only. GameObject_dtor reaches pool_free
+    # by a plain j at 0x14d1fc, which records no call. The block IS freed: see
+    # tools/difftest_arrival_stage_r7.py delete() (the two pool_free stores) and
+    # docs/loading-arrival-r7.md "Correction to round 6".
     assert calls(o.emu, POOL_FREE) == 0
     after = o.emu.mem.u32(NAME_COUNT)
     assert after == before == 1
