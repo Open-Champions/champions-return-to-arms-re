@@ -18,7 +18,7 @@ directly. **Unknown**: not established. Nothing here was **Ran** on a game.
 
 ## 1. What was run, and what was stubbed
 
-`tools/difftest_mission1_levels.py` (lines 161–364, `Host`) loads each level's
+`tools/difftest_mission1_levels.py` (lines 169–372, `Host`) loads each level's
 `script.scr` from the private disc through the original `scr_load` 0x13e8f8
 and `scr_registerNatives` 0x141310. It then runs entries through
 `script_runByName` 0x1ed694, frames through `script_runDeferred` 0x1ed5a0, and
@@ -28,31 +28,32 @@ their original bodies: `getv`/`setv`, `addDeferedCall`, `postAction`,
 `playerHasItem`, `onePlayerHasItem`, `removePlayerItem`, `removeQuest`,
 `demoRunning`, `sin1000`, `cos1000`. Each one gets a recording hook at its
 first instruction. These are **stubbed**, and only record their decoded
-arguments: the `STUB_NAMES` set at lines 77–84, which covers monster
+arguments: the `STUB_NAMES` set at lines 85–92, which covers monster
 show/hide/kill/delete/values/flags, auto-prop state, save inhibit, cutscenes,
 sounds, notices, help, busts, dialog, particles, `getHitPoints`, `addQuest`,
 `trigger`, `preloadResource` and `setParticle`. So are
 `inventory_countItemByName` 0x1c5880 (it returns the test's counts),
 `inventory_findItemBySubstring` 0x1c5a70 and `inventory_removeItem` 0x1c1cb0.
-Text-key arguments are recorded only as `<text>` (lines 87–99, 208–224). A
+Text-key arguments are recorded only as `<text>` (lines 95–107, 216–232). A
 *frame* is one `script_runDeferred` call. A cutscene's length is synthetic: the
 test sets `g_cutsceneActive` 0x44fcd0 for a stated number of frames, then runs
 the post action.
 
-`tools/ref_mission1_levels.py` `Model` (lines 245–970) is the four scripts
-rewritten in Python from the listings. `Pair` (difftest lines 394–478) runs
+`tools/ref_mission1_levels.py` `Model` (lines 262–987) is the four scripts
+rewritten in Python from the listings. `Pair` (difftest lines 402–486) runs
 each step on both. After **every** step and frame it compares the following:
 the ordered native list with arguments, the entries started, the
 return value, all quest variables, the post action, the pending level
 0x41b6d0, both deferred halves, the mission-1 byte and the script globals
-named in `CELLS` (lines 383–388). Before the first step, every compared global
+named in `CELLS` (lines 391–396). Before the first step, every compared global
 holds a sentinel 0x5a + cell (`plant`) in the strife, drundar and drunare runs,
 in drunarm's runs `q` (cells 0x4, 0xc, 0x10), `r` and the eight `start` states,
 so a store of 0 that the model makes and the original does not (or the reverse)
-shows as a state divergence. Only drunarm's main run `p` starts from the
-`scr_load` state (all 0), on purpose: that is the state the misspelled
-`prestart` leaves. Five **controls** must make the two disagree (lines
-1117–1160): drunarm's `endDelay` literal 275 changed to 276, drundar's `A == 8`
+shows as a state divergence. drunarm's runs `p`, `x` and `w` start from the
+`scr_load` state (all 0). For `p` that is on purpose: it is the state the
+misspelled `prestart` leaves. `x` and `w` store only cells whose stores are
+proven elsewhere: 0x4 and 0x10 by run `q`'s sentinels, 0x8 by value in `p`. Five **controls** must make the two disagree (lines
+1208–1251): drunarm's `endDelay` literal 275 changed to 276, drundar's `A == 8`
 changed to 7 (both in the in-memory image), the model's `getScaledTime` changed
 to `n`, and the model without one zeroing store each in strife `step2pause`
 (0x154) and drundar `preStart` (0x28). All five are rejected by a log or state
@@ -70,18 +71,18 @@ Portal, 2 PushTriggers, 2 Triggers and 2 `Player1` markers (one has
 `from=drunarm`).
 
 **Scripted encounters (Observed links, Executed run).** The links are pinned in
-`LINKS["strife"]` (ref lines 58–123) and checked at difftest lines 817–844:
+`LINKS["strife"]` (ref lines 58–123) and checked at difftest lines 825–852:
 
 - *Stage 1, orcs.* Thirteen Orc records (8 Archer, 5 Soldier) carry
   `initscript` `callScri52e` and `deathscript` `callScria77e`. `preStart` sets
-  global 0x140 to 1 and `start` clears it (ref lines 583–606). An init script
+  global 0x140 to 1 and `start` clears it (ref lines 600–623). An init script
   that runs during object load adds one to 0x144; a death subtracts one; both
   only while `sfe_step1Complete` is clear. **Executed:** after `preStart`, the
   13 + 2 init scripts and `start`, global 0x144 is 13 and 0x148 is 2 (difftest
-  lines 628–642).
+  lines 636–650).
   The counter starts when the first scout's dialog action `setv176d` sets
   `sfe_talkedtofirstscout`, calls `showOrcCounter` and adds the quest.
-  `showOrcCounter` (ref 618–630) polls every frame with a bust until 0x144 is
+  `showOrcCounter` (ref 635–647) polls every frame with a bust until 0x144 is
   0. It then sets `sfe_step1Complete` and queues `step1delay`. **Executed:**
   `step1com` is requested 102 frames after `step1delay` is queued, because
   `getScaledTime(n)` is `n − 1` and the test is `> 100`. Its post action
@@ -106,19 +107,19 @@ Portal, 2 PushTriggers, 2 Triggers and 2 `Player1` markers (one has
 - *Fourth scout.* `setv70e6` calls `trigger('bridge3', 0)` and removes the
   stage quest.
 - *Scouts.* `start` shows exactly one scout according to the three stage flags
-  (ref 592–606). Each NPC's `exclamation` predicate (`returne210`, `return1e8e`,
+  (ref 609–623). Each NPC's `exclamation` predicate (`returne210`, `return1e8e`,
   `returnadae`, `returnc3ef`) is 1 until that scout's talked flag is set. The
   dialog actions `setv176d`, `setv23a8`, `setv8921`, `setv70e6` and the
   predicates `if70a4`, `iff29`, `if3e90`, `if40b3` are named by **no** record.
   They are named in the bytes of `we_scout.dbin` … `we_scout_4.dbin` in the same
-  lump (`DIALOG_ENTRIES`, ref lines 126–133; asserted at difftest 830–835).
+  lump (`DIALOG_ENTRIES`, ref lines 126–133; asserted at difftest 838–843).
   Which dialog node calls each is **Unknown**: dialog was not executed. Trigger
   `if9d85` starts the first scout's dialog once (`sfe_metscout1`).
 
 The order is forced. Each later scout is hidden until the previous stage's post
 action or cutscene shows them: `hideElf1` shows `we_scout_2`, and the show keys
 of `step2complete` and `step3complete` show `we_scout_3` and `we_scout_4`
-(section 6). **Executed** as one 469-frame run, difftest lines 628–712.
+(section 6). **Executed** as one 469-frame run, difftest lines 636–720.
 
 **Exits:** see section 7. `exitzone` requests `drunarm` (with `demoRunning` 0),
 and `newWorld5d32` requests `blood1`.
@@ -132,9 +133,9 @@ them named `ogreminiboss` with `miniboss=1`. The scripted pieces are 8
 PushTriggers (8 with only a clock icon), 6 Triggers, one Portal and one
 `Player1`.
 
-**Scripted encounter (Executed, difftest lines 715–759):**
+**Scripted encounter (Executed, difftest lines 723–767):**
 
-- `start` (ref 874–891) sets three values on `ogreminiboss` (which 4 = 3000,
+- `start` (ref 891–908) sets three values on `ogreminiboss` (which 4 = 3000,
   1 = 500, 5 = 1000; `docs/spec/script-builtins.md` line 659: which 4 is slot
   34, 1 and 5 are +0x3ac/+0x3c4), sets the intro flag, and restarts the pillar
   loops of switches already on, counting them into global 0.
@@ -150,7 +151,7 @@ PushTriggers (8 with only a clock icon), 6 Triggers, one Portal and one
   6). It then sets `drun_sawdoors`. The persistent-flag predicate at 0xa78 was
   executed in `3216e7b` (`docs/strife-drundar.md` lines 214–237).
 - **Executed quirk:** `switchNeffect` skips its own requeue on a paused frame
-  (ref 914–926). The `doors` cutscene therefore stops all eight particle loops
+  (ref 931–943). The `doors` cutscene therefore stops all eight particle loops
   until the next `start` (the test pauses five frames and compares).
 - **Executed:** the exit key `return56e0` is `global0 == 8`. Before the eighth
   switch it is 0; after it, 1.
@@ -159,7 +160,7 @@ PushTriggers (8 with only a clock icon), 6 Triggers, one Portal and one
 
 ## 4. drunarm (good arena)
 
-**Objects (Observed counts; Executed factory, difftest lines 782–814,
+**Objects (Observed counts; Executed factory, difftest lines 790–822,
 `COUNTS`/`FACTORY` ref lines 14–49):** 302 records, 230 of which make an
 object.
 
@@ -183,17 +184,17 @@ lights/metadata. The property facts in this table are asserted from the records
 the ref).
 
 **How play reaches the Rallos trigger (Observed links; Executed run, difftest
-lines 481–578):**
+lines 489–586):**
 
 1. **Load.** The loader runs the fixed names `preStart` then `start`.
    **Observed:** `level_loadScriptAndObjects` loads `a0 = 0x53f000` = `preStart`
    before `jal 0x1ed694` at 0x217acc, and `0x53f020` = `start` at 0x217bac
-   (`LOADER_NAMES`, asserted at difftest 1027–1035). Entry lookup is
+   (`LOADER_NAMES`, asserted at difftest 1118–1126). Entry lookup is
    case-sensitive (`docs/spec/script-builtins.md` lines 267–285), and this
    level's entry is spelled `prestart`. **Executed:** `script_runByName('preStart')`
    returns −1, so the zeroing body never runs at load. It is harmless here:
    **Executed**, every global in `CELLS` is 0 straight after `scr_load`.
-2. **`start`** (ref 330–341) hides `rallos` until `war_triggeredonce`, hides
+2. **`start`** (ref 347–358) hides `rallos` until `war_triggeredonce`, hides
    him again once `war_foundShard`, always hides `rallos2`, queues
    `removeRallos` after `war_killedRallos`, stores `playerHasItem('shardofwar')`
    in global 0xc and queues `shardCheckLoop`. **Executed** for all eight flag
@@ -213,7 +214,7 @@ lines 481–578):**
    `docs/spec/script-builtins.md` line 661). Triggers fire on a change of
    inside/outside (lines 292–315).
 5. **The fight.** `rallosHPcheck` polls `getHitPoints('rallos')` every frame,
-   paused or not (ref 360–367). At 0 or below it zeroes global 0x10 and queues
+   paused or not (ref 377–384). At 0 or below it zeroes global 0x10 and queues
    `endDelay`. **Executed:** with no shard pickup, `rallosruns` is requested
    277 frames after `endDelay` is queued (the test is `> 275`). `playRallosRuns`
    then shows `rallos2`, sets `war_killedRallos`, removes the Rallos quest and
@@ -238,7 +239,7 @@ lines 481–578):**
 **New Executed interactions:**
 
 - **The grant restarts the outro timer.** `shardCheckLoop`'s grant also stores
-  0 into global 0x10 (ref line 409), and global 0x10 is `endDelay`'s counter.
+  0 into global 0x10 (ref line 426), and global 0x10 is `endDelay`'s counter.
   A shard picked up during the 277-frame outro delay therefore restarts it.
   In the main run `rallosruns` comes 303 frames after the kill and 277 after
   the grant; there `endDelay` runs before `shardCheckLoop` in the grant frame.
@@ -277,9 +278,9 @@ and two unnamed), 14 `uwflag` props, two Triggers, one PushTrigger and one
 `docs/issues/arena-desync.md` lines 122–150.
 
 **How play reaches the avatar death (Observed links; Executed run, difftest
-lines 581–625):**
+lines 589–633):**
 
-1. **`start`** (ref 455–466) hides `Rallos`, `avatar` and every `knight`.
+1. **`start`** (ref 472–483) hides `Rallos`, `avatar` and every `knight`.
    Name lookup is case-insensitive (`docs/script.md` line 231), so `Rallos`
    finds `rallos`. It removes the quest that drundar's `arenaMessage` added (the
    same text key, compared by equality only), sets which 4 = 2000 on the avatar
@@ -289,8 +290,9 @@ lines 581–625):**
    requests cutscene `knights`, posts `nosave` and sets `sawknights`; `nosave`
    then calls `setSaveInhibit(1)` and `setCFlag('avatar', 0, 1)`. On re-entry
    it calls only `setFlag`. **Observed spawn:** the `knights` file binds the four
-   placed knights (the box search finds exactly one candidate for each, section
-   6) and has one show key (type 8) per knight. A script-hidden creature is
+   placed knights (the box search finds exactly one candidate for each and the
+   query has room for every counted object, section 6) and has one show key
+   (type 8) per knight. A script-hidden creature is
    re-gridded for the actor search and hidden again by a second walk, and
    `cut_end` clears flags 0x88000 and inert bit 1 on bound actors
    (`docs/issues/arena-desync.md` lines 183–206). But `start`'s `hideMonster`
@@ -310,7 +312,8 @@ lines 581–625):**
    352–367, which covers single-entry states.
 4. **The avatar is shown by `cazic`. Observed (asserted, `SLOT3_KEYS`):**
    `cazic` binds `exitdoor` and gives it one type-3 key (virtual slot 3 with 1,
-   key time 1.91) and one type-4 key (slot 3 with 0, key time 10.01). It binds
+   key time 1.91) and then one type-4 key (slot 3 with 0, key time 10.01); the
+   order and both times are asserted (`SLOT3_ORDER`, key times to 0.01). It binds
    the `avatar` with one show key and creates a `Player` stand-in. `arenadoor`
    is a `HackDoor`, an AutoProp, whose slot 3 moves to the next state when
    `triggerable` and `states` are set (`docs/monsters-2.md` lines 143, 7814–7819,
@@ -340,22 +343,43 @@ virtual slot 3 (trigger) with 1 and 0; type 8 puts it back on the grid (lines
 511–525).
 
 **Actor binding. Observed** in `cut_setup` 0x19a6cc (0x19b098–0x19b324): for a
-bound actor, `world_collectObjectsInBox` 0x14a928 is called with the actor
-position ±240 on x and y and ±100000 on z, capacity 0x40. A candidate's factory
+bound actor, `world_collectObjectsInBox` 0x14a928 (call at 0x19b148) is called
+with the actor position ±240 on x and y and ±100000 on z, capacity 0x40.
+**Asserted from the ELF** (`bind_constants`, decoded from the instruction
+fields, not copied): the `lui` at 0x19b098 (240.0, x and y), the `lui`/`ori` at
+0x19b0a4/0x19b0a8 (100000.0, z), the capacity in a3 at 0x19b0f8 (0x40), the
+`lui` at 0x19b0fc (600.0), the call target, and the type-name call: the
+virtual table loaded from +0x48 at 0x19b1b8, the word at table + 4 loaded at
+0x19b1bc and called at 0x19b1c0. A candidate's factory
 class string (+0x34) or its C++ type name (leading digits skipped) must equal
 the actor's class; objects already bound (flag 0x80000) are skipped; the
 nearest in 2-D below 600 units is taken, and once a class-string match is held,
 type-only matches are skipped. (`docs/engine.md` line 447 says "within 240
 units"; it is this box.) **Executed/asserted** (`type_names`, `bind_actor`):
-the type name of every constructor the four levels select was read from the
-original type-info functions (no type name equals a cutscene actor class
-except `NPC`, whose type-`NPC` records are the NPC records). For every bound
+the type name of every constructor the four levels select was read by calling
+the original type-info function at table + 4. The 26 names are asserted by
+value (`TYPE_NAMES`) and printed in the log; among them, the NPC constructor
+0x29df04 gives `NPC` and `Player1_ctor` 0x158928 gives `Player1` (the
+executed `7Player1` of `docs/spec/object-system.md` line 769), and none is
+`GameObject`. Asserted: the only type name that equals a cutscene actor class
+is `NPC`, and every record of type `NPC` is of class `NPC`. For every bound
 actor below exactly one matching record lies in the box, its 2-D distance is
 below 600, and no other matching record lies in the box grown by 240 units on x
-and y, so the result holds for any object radius below 240. Records are taken
-as on the grid; an object off the grid could only remove a candidate. The
+and y, so the result holds for any object radius below 240. **Capacity
+(asserted):** the query keeps only the first 63 objects in walk order
+(`docs/spec/object-system.md` lines 192–212). For each of the 25 bindings the
+difftest counts every record that makes an object, of any class and bound or
+not, whose centre cell lies in the cell range the query walks (an object
+outside it is never returned, whatever its radius), plus four player slots
+(`g_players[4]`, `docs/script.md` line 682) and the cutscene's created actors.
+Every count is below 63 (the largest is 28), so the target is returned.
+Records are taken at their placed positions; an object off the grid could only
+remove a candidate. Not counted, and **Unknown**: objects spawned at run time
+(drops, summoned creatures) and placed creatures that walked into the box; the
+largest count leaves room for 35 of them. The
 table is asserted against `CUTSCENES` (ref lines 142–164), the type-3/4 keys
-against `SLOT3_KEYS`.
+against `SLOT3_KEYS` and, for `cazic` and `bossdefeated`, their order
+against `SLOT3_ORDER` (in key order, times ascending).
 
 | Level | Requested by (offset) | Cutscene | Flags | Keys | Actors: bound record (or created) | Shows |
 |---|---|---|---:|---:|---|---|
@@ -380,8 +404,8 @@ stub, and the post action runs when the test ends the synthetic pause.
 ## 7. Every exit and travel entry
 
 **Executed** in the main runs. Each newWorld site writes the pending level
-0x41b6d0 through the original `newWorld` (`NEWWORLD`, ref lines 210–220; all
-nine sites in the four scripts are asserted at difftest lines 1012–1024).
+0x41b6d0 through the original `newWorld` (`NEWWORLD`, ref lines 227–237; all
+nine sites in the four scripts are asserted at difftest lines 1103–1115).
 
 | From | Object (link) | Gate | Entry → request |
 |---|---|---|---|
@@ -400,12 +424,12 @@ nine sites in the four scripts are asserted at difftest lines 1012–1024).
 
 The `demoRunning` branches of both `exitzone`s (count to 150, then
 `grantMission(1)` and `hub`, still requeueing) are **Observed** and modelled
-(ref lines 732–745) but not executed. The original `demoRunning` returns 0 in
+(ref lines 749–762) but not executed. The original `demoRunning` returns 0 in
 this state. **Inferred:** the four drundar walk-in exits and the drunare
 walk-in exit sit behind doors the scripts open. Their geometry is **Unknown**.
 
 **Arrival markers. Executed** `Player1_ctor` 0x158928 over each level's markers
-in record order (difftest lines 1038–1071; `MARKERS`, ref lines 990–997).
+in record order (difftest lines 1129–1162; `MARKERS`, ref lines 1007–1014).
 Coming from `drunarm`, strife's `from=drunarm` marker takes the spawn slots
 (rank 2, eight spawn searches). Coming from `blood1`, the plain marker takes
 them (rank 1). drundar, drunarm and drunare each have one plain marker, and it
@@ -432,7 +456,7 @@ Nothing in strife or drunarm requests a hub outside the demo branch
    which leaves one slot, the hub identity. A discovery that appends a level
    removes the first other hub-like entry whose name differs from the
    current hub.
-4. **Executed here** (difftest lines 1163–1168): `game_getHubName` 0x1ec300 is
+4. **Executed here** (difftest lines 1254–1259): `game_getHubName` 0x1ec300 is
    `hub` for evil 0, decision 1, with mission 1 available or complete, and
    `hub2` for evil 1, decision 1, complete. `blood1` calls `setEvil(0)`,
    `setEvil(1)` and `setMadeDecision` (`2ab82b2` `docs/quests.md` line 112);
@@ -510,12 +534,15 @@ selection, the menu states 0–4 and the hub load are **Unknown**.
 - A second path to the `shardofwar` drop: a reload after the outro and before
   the pickup. `start` queues `removeRallos` once `war_killedRallos` is set, and
   `rallos` is then not hidden (`war_triggeredonce` 1, `war_foundShard` 0; ref
-  lines 330–341). `removeRallos` calls `killMonster('rallos')`, which on a live
+  lines 347–358). `removeRallos` calls `killMonster('rallos')`, which on a live
   creature calls slot 27 with 0x14 (`docs/spec/script-builtins.md` line 667),
   and `Zek_setState` 0x14 reaches slot 28 with quiet 0
   (`docs/spec/arena-monsters.md` lines 666–671, `tools/ref_arena_monsters.py`
   `Zek_setState`), the same drop. Not executed (`killMonster` is stubbed);
   whether the reloaded `rallos` is live and in the grid then is Unknown.
+- How many spawned objects (drops, summoned creatures) and moved creatures are
+  in a cutscene actor's search box when the cutscene starts. The counted
+  records, players and created actors leave room for at least 35 (section 6).
 - Whether the object flag 0x8000 and creature bit 3 that `hideMonster` sets are
   cleared for the knights after `knights` and for the avatar after `cazic`, and
   the door states after `doors`, `cazic` and `bossdefeated`.
@@ -537,6 +564,8 @@ Each seed prints PASS with these counts: 261 arena objects made, 109 record
 links, 9 cutscenes (25 actor bindings by the `cut_setup` box search, 26 type
 names), 16 record facts, 9 travel sites, 2 loader names, 6 marker cases, 20
 death cases, 4 hub cases, 5 controls rejected, and 3,575 compared steps (2,409
-frames in the four main runs), plus the milestones in `MILESTONES`. The retained logs
+frames in the four main runs), plus the milestones in `MILESTONES`. Two more
+lines print the 26 type names and the actor-search constants read from the
+ELF, with the largest counted search (28 objects, below 63). The retained logs
 are named in `work/cursor-report.md`. The existing
 `tools/difftest_strife_drundar.py` was rerun unchanged on both seeds.
