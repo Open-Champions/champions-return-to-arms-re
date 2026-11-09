@@ -1,7 +1,8 @@
 """Vectors for tools/ref_player_anim_states.py that need no game executable.
 
-The values were also produced by the original code in
-tools/difftest_player_anim_states.py (docs/player-anim-states.md)."""
+Every value here is also an input/output pair the difftest
+tools/difftest_player_anim_states.py compared with the original code on seed 20973
+(docs/player-anim-states.md), except the combo-step table, which is Observed only."""
 import os
 import sys
 import unittest
@@ -51,7 +52,14 @@ class Timing(unittest.TestCase):
                          (0x3DCCCCCC, 0x3D4CCCCC, 4))
         rest = M.locomotion_step(0x3D4CCCCC, C.ZERO, C.ZERO, 5)
         self.assertEqual((rest['rate'], rest['blend'], rest['event']), (C.ONE, C.ZERO, 0))
-        self.assertEqual(M.run_weight(C.ONE, C.ONE, M.D_045_BITS), 0x3FD33333)
+        # First moving tick (blend 0.1, held speed 0.05), reached by the difftest's stick
+        # script: truncation gives ...8e / ...13, IEEE rounding would give ...8f / ...14.
+        self.assertEqual((first['run1'], first['run2']), (0xBDF5C28E, 0xBE47AE13))
+        self.assertEqual(M.run_weight(0x3DCCCCCC, 0x3D4CCCCC, M.D_045_BITS), 0xBDF5C28E)
+        self.assertEqual(M.run_weight(0x3DCCCCCC, 0x3D4CCCCC, M.D_07_BITS), 0xBE47AE13)
+
+    def test_combo_steps(self):
+        self.assertEqual([M.COMBO_STEPS[c] for c in range(8)], [7, 7, 4, 9, 7, 2, 7, 7])
 
 
 if __name__ == '__main__':

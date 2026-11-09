@@ -7,18 +7,28 @@ tools/ref_player_anim_states.py.
 Four parts, all on constructed state (no game data is read or written):
   L  Player_move 0x1b4020 mode 0: the locomotion blend, playback rate, acceleration
      clamp, layer weights, idle restart and footstep event mask; modes 1-6 (sentinels).
-  R  Player_animStep 0x1b9520: the speed handed to anim_advance (Drowsy, slow) and the
-     root delta turned into world axes; Player_move adding root x 60 to the move.
+  R  Player_animStep 0x1b9520: the speed handed to anim_advance (Drowsy gate and
+     planted fraction, slow) and the root delta turned into world axes; Player_move
+     adding root x 60 to the move.
   H  Player_processDamage 0x1b2cc0: which clip a hit, knock-down, flinch or death starts,
      with flags, blend times, the fade of an older top track and the call sites.
-  M  Player_run 0x1a5030: a melee swing timeline (start, hit frame, combo window,
-     move mode, swing end) and the block entry/exit gates, one tick at a time.
+  M  Player_run 0x1a5030: a melee swing timeline (start, hit frame, combo window with
+     the ticks after an early press and a held button, the next swing's hit, move mode,
+     swing end), the block entry/exit gates (top-track weight, 7 tracks) and state 3
+     (no Player_move call; Player_animStep's root is stored, not applied), one tick at a
+     time.
 
 Stubs (disclosed): everything not listed as followed is a recording stub that returns 0
 unless the part names another answer.  Followed: the C library and software float range
 0x3a5000-0x3c0000, math_cos16/sin16/atan2_16, angle_approach, net_isSlotActive and
 GameObject_rand.  Animation clips are sentinel pointers; anim_advance, anim_start,
-anim_startBlendInOut, res_find and Player_hasAnim are stubs.  A pass is evidence about
+anim_startBlendInOut, res_find and Player_hasAnim are stubs.  Stubs with non-zero
+answers: Player_animStep returns planted bits (L, and M except state 3, where it is
+followed); anim_advance writes a planted root and returns planted bits (R, M state 3);
+SpellDrowsy_typeinfo 0x3d1234 returns the sentinel TYPE_INFO, creature_findSpellByType
+0x11a710 returns a constructed spell or 0 (the case says which), SpellDrowsy_getStat3Fraction
+0x30ef08 puts a planted fraction in f0 (R); the skill-rank slot 7, 0x30851c 40, res_find a
+sentinel clip, Player_hasAnim 0 or 1 (H); player_canBlock 1 (M).  A pass is evidence about
 these functions on this state, not about loaded clips or a rendered game.
 """
 import argparse
@@ -54,6 +64,7 @@ SEED_INC, SEED_STEP = 0x3C6EF35F, 0x0019660D
 VTABLE_STUBS = 0x00E30000
 ATTACK, BLOCK = 0x4000, 0x8000
 SENT = 0x7F7F0001
+TYPE_INFO = 0x00E31000            # what the SpellDrowsy_typeinfo stub returns
 
 COUNTS = {}
 FAILS = []
@@ -168,7 +179,9 @@ def part_locomotion(elf, rng):
             values = [mem.u32(P + off) for off in LOCO_FIELDS]
             want = [0] * 7 if mode in (1, 4, 6) else [SENT] * 7
             steps = [c for c in rig.emu.calls if c.target == PLAYER_ANIM_STEP]
-            check('L', 'mode%d net=%d' % (mode, network), values == want and not steps, values)
+            clip_starts = [c for c in rig.emu.calls if c.target in (ANIM_BLEND, ANIM_START)]
+            check('L', 'mode%d net=%d' % (mode, network), values == want and not steps and not clip_starts,
+                  values)
         # Mode 5 (with a vector) also leaves them.
         rig, planted = loco_rig(elf, network)
         mem, P = rig.mem, rig.player
@@ -176,13 +189,17 @@ def part_locomotion(elf, rng):
             mem.w32(P + off, SENT)
         vec = rig.emu.alloc(16)
         move_call(rig, 5, 0.0, -1.0, vec)
-        check('L', 'mode5 net=%d' % network, [mem.u32(P + off) for off in LOCO_FIELDS] == [SENT] * 7)
+        clip_starts = [c for c in rig.emu.calls if c.target in (ANIM_BLEND, ANIM_START)]
+        check('L', 'mode5 net=%d' % network,
+              [mem.u32(P + off) for off in LOCO_FIELDS] == [SENT] * 7 and not clip_starts)
 
 
 # ---------------------------------------------------------------------------------------
 # R. Root motion
 # ---------------------------------------------------------------------------------------
-def anim_step_case(elf, facing, speed, slow, flags, rx, ry, bits, drowsy=None):
+def anim_step_case(elf, facing, speed, slow, flags, rx, ry, bits, timer=0, found=False, fraction=None):
+    """timer = s16 +0x31a; found = whether the finder returns a spell; fraction = the
+    bits the SpellDrowsy_getStat3Fraction stub puts in f0."""
     emu = EE(elf)
     mem = emu.mem
     P = emu.alloc(0x600)
@@ -200,23 +217,34 @@ def anim_step_case(elf, facing, speed, slow, flags, rx, ry, bits, drowsy=None):
         e.mem.w32((e.r[6] + 4) & M32, ry)
         return bits
     emu.stub(ANIM_ADVANCE, function=advance, name='anim_advance')
-    if drowsy is not None:
-        mem.w16(P + 0x31A, 30)
-        spell = emu.alloc(0x40)
-        emu.stub(FIND_SPELL, ret=spell, name='creature_findSpellByType')
+    mem.w16(P + 0x31A, timer & 0xFFFF)
+    spell = emu.alloc(0x40)
+    finds, fractions = [], []
+    emu.stub(DROWSY_TYPE, ret=TYPE_INFO, name='SpellDrowsy_typeinfo')
 
-        def fraction(e):
-            e.f[0] = drowsy
-        emu.stub(DROWSY_FRACTION, function=fraction, name='SpellDrowsy_fraction')
+    def finder(e):
+        finds.append((e.r[4] & M32, e.r[5] & M32))
+        return spell if found else 0
+    emu.stub(FIND_SPELL, function=finder, name='creature_findSpellByType')
+
+    def get_fraction(e):
+        fractions.append(e.r[4] & M32)
+        e.f[0] = fraction if fraction is not None else SENT
+    emu.stub(DROWSY_FRACTION, function=get_fraction, name='SpellDrowsy_getStat3Fraction')
     emu.follow = {COS16, SIN16}
     emu.reset_log()
     ret = emu.call(PLAYER_ANIM_STEP, P, fargs=(raw_to_float(speed),)) & M32
-    want_speed = M.anim_step_speed(speed, slow, drowsy)
+    gate = C.s16(timer & 0xFFFF) > 0
+    applied = fraction if gate and found else None
+    want_speed = M.anim_step_speed(speed, slow, applied)
     want_root = M.root_to_world(C.s16(facing), rx, ry)
     sound = 0 if flags & 0x200000 else P + 0x10
+    want_finds = [(P, TYPE_INFO)] if gate else []
+    want_fractions = [spell] if gate and found else []
     ok = (seen.get('f12') == want_speed and seen.get('args') == (P + 0x114, sound, P + 0xBC, 0)
-          and (mem.u32(P + 0xBC), mem.u32(P + 0xC0)) == want_root and ret == bits)
-    return ok, (seen, want_speed, (mem.u32(P + 0xBC), mem.u32(P + 0xC0)), want_root)
+          and (mem.u32(P + 0xBC), mem.u32(P + 0xC0)) == want_root and ret == bits
+          and finds == want_finds and fractions == want_fractions)
+    return ok, (seen, want_speed, (mem.u32(P + 0xBC), mem.u32(P + 0xC0)), want_root, finds, fractions)
 
 
 def part_root(elf, rng):
@@ -228,11 +256,19 @@ def part_root(elf, rng):
             speed = rng.choice((C.ONE, 0x40000000, fbits(1.25), fbits(0.7)))
             ok, detail = anim_step_case(elf, facing, speed, slow, flags, rx, ry, rng.randrange(256))
             check('R', 'animStep slow=%d flags=%x' % (slow, flags), ok, detail)
-    for _ in range(8):
+    # Drowsy gate: timer +0x31a > 0 (s16) and a spell found; the finder is asked for
+    # (P, SpellDrowsy_typeinfo()).  The fraction is planted, so only the multiply and its
+    # order before the slow scaling are executed, not SpellDrowsy_getStat3Fraction.
+    gates = ((30, True), (30, False), (0, True), (0xFFFF, True))
+    for index in range(12):
+        timer, found = gates[index % 4]
         facing = rng.randrange(-0x8000, 0x8000)
-        ok, detail = anim_step_case(elf, facing, C.ONE, 0, 0x60, fbits(rng.uniform(-3, 3)),
-                                    fbits(rng.uniform(-3, 3)), 0, drowsy=fbits(0.5))
-        check('R', 'animStep drowsy', ok, detail)
+        slow = rng.choice(slows)
+        fraction = fbits(rng.choice((0.5, 0.25, 0.8, 0.333)))
+        ok, detail = anim_step_case(elf, facing, rng.choice((C.ONE, fbits(1.25))), slow, 0x60,
+                                    fbits(rng.uniform(-3, 3)), fbits(rng.uniform(-3, 3)), 0,
+                                    timer=timer, found=found, fraction=fraction)
+        check('R', 'animStep drowsy timer=%d found=%d slow=%d' % (C.s16(timer), found, slow), ok, detail)
     # Player_move: W = V + root x 60, then root is cleared.
     for network in (False, True):
         rig, planted = loco_rig(elf, network)
@@ -247,6 +283,33 @@ def part_root(elf, rng):
         check('R', 'move adds root x 60 net=%d' % network,
               moved is not None and moved[:2] == want and mem.u32(P + 0xBC) == 0 and mem.u32(P + 0xC0) == 0,
               (moved, want))
+    # Player_move mode 0 with Player_animStep followed: the step overwrites a stale root
+    # (as left by state 3) before the move stage, so the move carries this tick's root.
+    for network in (False, True):
+        rig = ET.MoveRig(elf, network=network)
+        mem, P = rig.mem, rig.player
+        rx, ry = fbits(rng.uniform(-2, 2)), fbits(rng.uniform(-2, 2))
+
+        def advance(e):
+            e.mem.w32(e.r[6] & M32, rx)
+            e.mem.w32((e.r[6] + 4) & M32, ry)
+            return 0
+        rig.emu.stub(ANIM_ADVANCE, function=advance, name='anim_advance')
+        mem.w32(P + 0xBC, fbits(rng.uniform(-2, 2)))
+        mem.w32(P + 0xC0, fbits(rng.uniform(-2, 2)))
+        mem.wf32(rig.pad + 0x14, 0.0)
+        mem.wf32(rig.pad + 0x18, 0.0)
+        rig.emu.follow = Follow(MOVE_FOLLOW.addresses | {PLAYER_ANIM_STEP})
+        rig.emu.reset_log()
+        rig.emu.call(PLAYER_MOVE, P, 0, rig.pad, 0)
+        root = M.root_to_world(C.s16(mem.u16(P + 0x38)), rx, ry)
+        vx, vy = mem.u32(P + 0x4BC), mem.u32(P + 0x4C0)
+        want = (C.add(vx, C.mul(root[0], M.F_60)), C.add(vy, C.mul(root[1], M.F_60)))
+        moved = rig.moved[-1] if rig.moved else None
+        steps = [c for c in rig.emu.calls if c.target == PLAYER_ANIM_STEP]
+        check('R', 'mode 0 steps before the move net=%d' % network,
+              len(steps) == 1 and moved is not None and moved[:2] == want
+              and mem.u32(P + 0xBC) == 0 and mem.u32(P + 0xC0) == 0, (moved, want))
 
 
 # ---------------------------------------------------------------------------------------
@@ -365,10 +428,12 @@ def part_hits(elf, rng, seed):
     emu, P, table = damage_rig(elf, seed, 1, bits=0x80000, high=FALL_HIGH, has_anim=1)
     check('H', 'knockdown already playing', not anim_calls(emu)
           and not [c for c in emu.calls if c.target == RES_FIND] and emu.mem.u32(P + 0x58C) == 3)
-    for bits, high in ((0x80000, FALL_HIGH), (0x40000, RESIST_HIGH)):
+    # (knock-down, light knock, surviving-hit flinch at 0x1b38d0)
+    for bits, high, resist in ((0x80000, FALL_HIGH, C.ONE), (0x40000, RESIST_HIGH, C.ONE), (0, 0, 0)):
         for tracks, weight, want_weight in ((5, fbits(2.0), C.ONE), (6, fbits(0.5), fbits(0.5)),
                                             (4, fbits(2.0), fbits(2.0))):
-            emu, P, table = damage_rig(elf, seed, 0, bits=bits, high=high, tracks=tracks, top_weight=weight)
+            emu, P, table = damage_rig(elf, seed, 0, bits=bits, high=high, tracks=tracks, top_weight=weight,
+                                       resist=resist)
             top = P + 0x11C + (tracks - 1) * 0x20
             want_rate = M.FADE_RATE if tracks >= 5 else SENT
             check('H', 'fade tracks=%d bits=%x' % (tracks, bits),
@@ -421,7 +486,7 @@ class RunRig:
         emu.stub(CAN_BLOCK, ret=can_block, name='player_canBlock')
         self.pad = G_PADS
 
-    def tick(self, held=0, pressed=0, stick=(0.0, 0.0)):
+    def tick(self, held=0, pressed=0, stick=(0.0, 0.0), extra_follow=()):
         emu, mem = self.emu, self.mem
         self.frame += 1
         mem.w32(G_FRAME, self.frame)
@@ -429,7 +494,7 @@ class RunRig:
         mem.w32(self.pad + 0x0C, pressed)
         mem.wf32(self.pad + 0x14, stick[0])
         mem.wf32(self.pad + 0x18, stick[1])
-        emu.follow = Follow(self.FOLLOW)
+        emu.follow = Follow(self.FOLLOW | set(extra_follow))
         emu.reset_log()
         emu.call(PLAYER_RUN, self.P, max_steps=400000)
         calls = emu.calls
@@ -441,12 +506,16 @@ class RunRig:
                       if c.target in (ANIM_BLEND, ANIM_START)],
             'moves': [c.args[1] & M32 for c in calls if c.target == PLAYER_MOVE],
             'picks': [c for c in calls if c.target == PICK_ATTACK],
+            'steps': [c.fargs[0] & M32 for c in calls if c.target == PLAYER_ANIM_STEP],
+            'collide': [c for c in calls if c.target == ET.OBJ_MOVE_COLLIDE],
         }
 
 
-def swing(elf, network, cls, press_at=None, stick_from=None, status2=0, ticks=110):
+def swing(elf, network, cls, press_at=None, stick_from=None, status2=0, ticks=110, hold_from=None):
     """Press attack in state 2, then optionally once more at elapsed `press_at`, or hold
-    the stick from elapsed `stick_from`.  Returns per-tick logs keyed by elapsed frame."""
+    the stick from elapsed `stick_from`.  From elapsed `hold_from` on, attack is held
+    (pad +0x08) without a fresh press (pad +0x0c), except on `press_at` itself.
+    Returns per-tick logs keyed by elapsed frame."""
     rig = RunRig(elf, network, cls, status2=status2)
     first = rig.tick(held=ATTACK, pressed=ATTACK)
     start = rig.frame
@@ -454,8 +523,9 @@ def swing(elf, network, cls, press_at=None, stick_from=None, status2=0, ticks=11
     for _ in range(ticks):
         elapsed = rig.frame + 1 - start
         pressed = ATTACK if press_at == elapsed else 0
+        held = ATTACK if pressed or (hold_from is not None and elapsed >= hold_from) else 0
         stick = (0.0, -1.0) if stick_from is not None and elapsed >= stick_from else (0.0, 0.0)
-        logs[elapsed] = rig.tick(held=pressed, pressed=pressed, stick=stick)
+        logs[elapsed] = rig.tick(held=held, pressed=pressed, stick=stick)
         if logs[elapsed]['state'] != 1:
             break
     return rig, first, start, logs
@@ -486,18 +556,41 @@ def part_melee(elf, rng):
                 modes_ok = all(log['moves'] == [M.move_mode(e)] for e, log in logs.items())
                 check('M', 'move modes cls=%d net=%d' % (cls, network), modes_ok,
                       [(e, log['moves']) for e, log in logs.items()][:30])
-                # Combo window: a press one frame early does nothing; on the frame it starts.
+                # Combo window.  A press one frame early does nothing on that tick, and
+                # with the button then held (no fresh press) nothing on the next three
+                # ticks either: no latch.  A press on the first frame starts the next
+                # swing, whose own hit lands hit_frame ticks later.
                 window = M.first_combo_frame(cls, haste, speed)
-                for at, starts in ((window - 1, False), (window, True)):
-                    rig, first, start, logs = swing(elf, network, cls, press_at=at, status2=status2,
-                                                    ticks=at + 1)
-                    log = logs[at]
-                    combo = (log['start'] == start + at and len(log['picks']) == 1
-                             and [(a[0], a[1], a[3]) for a in log['anims']] == [(ANIM_START, 0x1AAE5C, 0x802)]
-                             and log['state'] == 1)
-                    nothing = log['start'] == start and not log['picks'] and not log['anims']
-                    check('M', 'combo cls=%d net=%d haste=%d at=%d' % (cls, network, status2, at),
-                          combo if starts else nothing, log)
+
+                def quiet(log, start):
+                    return log['start'] == start and not log['picks'] and not log['anims'] and log['state'] == 1
+                at = window - 1
+                rig, first, start, logs = swing(elf, network, cls, press_at=at, status2=status2,
+                                                ticks=at + 3, hold_from=at + 1)
+                check('M', 'combo cls=%d net=%d haste=%d early at=%d then held' % (cls, network, status2, at),
+                      sorted(logs)[-1] == at + 3 and all(quiet(logs[e], start) for e in range(at, at + 4)),
+                      [(e, logs[e]['start'] - start, len(logs[e]['picks']), logs[e]['anims'])
+                       for e in sorted(logs) if e >= at])
+                at = window
+                rig, first, start, logs = swing(elf, network, cls, press_at=at, status2=status2,
+                                                ticks=at + hit + 1)
+                log = logs[at]
+                combo = (log['start'] == start + at and len(log['picks']) == 1
+                         and [(a[0], a[1], a[3]) for a in log['anims']] == [(ANIM_START, 0x1AAE5C, 0x802)]
+                         and log['state'] == 1)
+                check('M', 'combo cls=%d net=%d haste=%d at=%d' % (cls, network, status2, at), combo, log)
+                # The new swing restarts the clock: a hit frame after the press tick is
+                # never reached (class 7 with haste: window 9 < hit 12, one hit only).
+                hits = [e for e, log in logs.items() if log['hits']]
+                want_hits = ([hit] if hit <= at else []) + [at + hit]
+                check('M', 'next hit cls=%d net=%d haste=%d' % (cls, network, status2),
+                      hits == want_hits and all(logs[e]['hits'] == [(rig.target, 0 if network else 1)]
+                                                              for e in hits), (hits, hit, at))
+                # Attack held from tick 1 without a fresh press: no combo through window + 3.
+                rig, first, start, logs = swing(elf, network, cls, status2=status2, ticks=window + 3, hold_from=1)
+                check('M', 'held no press cls=%d net=%d haste=%d' % (cls, network, status2),
+                      sorted(logs)[-1] == window + 3 and all(quiet(log, start) for log in logs.values()),
+                      [(e, log['start'] - start, len(log['picks'])) for e, log in logs.items()][-6:])
             # Stick over 0.8 ends the swing once 39.3 frames have passed.
             rig, first, start, logs = swing(elf, network, cls, stick_from=30)
             end = max(logs)
@@ -529,6 +622,48 @@ def part_melee(elf, rng):
         rig.mem.w32(top, C.ONE)
         log = rig.tick()
         check('M', 'block release net=%d' % network, log['state'] == 2, log['state'])
+        # Release with 7 tracks stays in 8 even at weight 1.0; with 6 it leaves.
+        for tracks, want_state in ((7, 8), (6, 2)):
+            rig = RunRig(elf, network, 0)
+            rig.tick(held=BLOCK)
+            rig.tick(held=BLOCK)
+            rig.mem.w8(rig.P + 0x118, tracks)
+            rig.mem.w32(rig.P + 0x11C + (tracks - 1) * 0x20 + 8, C.ONE)
+            log = rig.tick()
+            check('M', 'block release tracks=%d net=%d' % (tracks, network), log['state'] == want_state,
+                  log['state'])
+    # State 3: Player_animStep (followed) runs at 1.0 and stores the clip's root delta at
+    # +0xbc/+0xc0, but Player_run makes no Player_move or collision-move call, and the
+    # position does not change.  With marker 8 gone from +0x11a it returns to 2.
+    for network in (False, True):
+        rig = RunRig(elf, network, rng.randrange(8))
+        mem, P = rig.mem, rig.P
+        rx, ry = fbits(rng.uniform(-3, 3)), fbits(rng.uniform(-3, 3))
+
+        def advance(e):
+            e.mem.w32(e.r[6] & M32, rx)
+            e.mem.w32((e.r[6] + 4) & M32, ry)
+            return 0
+        rig.emu.stub(ANIM_ADVANCE, function=advance, name='anim_advance')
+        facing = rng.randrange(-0x8000, 0x8000)
+        mem.w16(P + 0x38, facing & 0xFFFF)
+        mem.w32(P + 0x58C, 3)
+        mem.w16(P + 0x11A, 8)
+        pos = [mem.u32(P + 0x10 + 4 * i) for i in range(3)]
+        mem.w32(P + 0xBC, SENT)
+        mem.w32(P + 0xC0, SENT)
+        log = rig.tick(stick=(0.0, -1.0), extra_follow=(PLAYER_ANIM_STEP,))
+        root = (mem.u32(P + 0xBC), mem.u32(P + 0xC0))
+        check('M', 'state 3 marker net=%d' % network,
+              log['state'] == 3 and log['steps'] == [C.ONE] and not log['moves'] and not log['collide']
+              and root == M.root_to_world(C.s16(facing), rx, ry)
+              and [mem.u32(P + 0x10 + 4 * i) for i in range(3)] == pos,
+              (log, root, M.root_to_world(C.s16(facing), rx, ry)))
+        mem.w16(P + 0x11A, 0)
+        log = rig.tick(stick=(0.0, -1.0), extra_follow=(PLAYER_ANIM_STEP,))
+        check('M', 'state 3 exit net=%d' % network,
+              log['state'] == 2 and log['start'] == rig.frame and not log['moves'] and not log['collide']
+              and [mem.u32(P + 0x10 + 4 * i) for i in range(3)] == pos, log)
 
 
 def main():

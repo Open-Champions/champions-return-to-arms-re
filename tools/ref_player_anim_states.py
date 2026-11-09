@@ -36,7 +36,10 @@ def stick_magnitude(scale, lx, ly):
 
 
 def speed_scale(network, record_mul=ONE, run_speed=ONE):
-    """0x1b40d8-0x1b4188 without the level-name, PvP-mode-B and Drowsy branches."""
+    """0x1b40d8-0x1b4188 without the level-name ("watmedal" keeps the offline base),
+    PvP-mode-B (word 0x4f7124) and Drowsy branches (docs/spec/movement-camera.md 4.1(b)).
+    The difftest runs it only with record_mul = run_speed = 1.0, so the two multipliers
+    and the 1.2 cap are Observed there, not executed here."""
     base = SPEED_NET if network else SPEED_OFFLINE
     s = C.mul(C.mul(base, record_mul), run_speed)
     return SPEED_CAP if C.lt(SPEED_CAP, s) else s
@@ -195,10 +198,17 @@ K_STICK_END, K_STICK_FRAMES = 0x3F4CCCCC, 0x421D3332   # 0.8, 39.3
 K_SWING_LIFE = 0x3FCCCCCC   # 1.6 s
 K_LUNGE, K_LUNGE_HEAVY = 0x3EDDB22D, 0x3F1126E9
 F_60 = 0x42700000
-COMBO_STEPS = {2: 4, 1: 7, 3: 9, 5: 2, 7: 7}
+COMBO_STEPS = {2: 4, 1: 7, 3: 9, 5: 2, 7: 7, 0: 7, 4: 7, 6: 7}
+"""Combo length by weapon class (0x1a9678, docs/spec/player-tick.md state 1 step 2:
+"7 (others)", so classes 0, 4 and 6 are 7; heavy attack 1).  Observed, not executed."""
 
 
 def swing_speed(haste=ZERO, status2=False, status4=False):
+    """(speed, haste) of a swing with no Ancestral Call / Battle Cry factor, no Berserker
+    Rage and no slow (docs/spec/player-tick.md state 1 steps 3-4): speed = 1.0 + haste,
+    haste = `haste` (the item modifier 0x14 part) + 0.25 when status counter P+0x374 is set
+    + 0.1 when P+0x37c is set.  Executed by the difftest only with haste 0 and status2;
+    the status4 (+0x37c) branch is Observed, not executed."""
     if status2:
         haste = C.add(haste, 0x3E800000)
     if status4:
@@ -229,7 +239,8 @@ def first_combo_frame(weapon_class, haste, speed):
 
 def swing_end_frame(life=None):
     """Elapsed frames at which the swing returns to neutral without input; life is
-    +0x470 (1.6 s for a melee swing, 0x3f5b645a for the heavy attack)."""
+    +0x470 (1.6 s for a melee swing, 0x3f5b645a for the heavy attack).  Executed with the
+    default only; a given life (heavy attack) is Observed, not executed."""
     limit = C.mul(K_SWING_LIFE if life is None else life, F_60)
     n = 0
     while not C.le(limit, C.from_int(n)):
@@ -245,5 +256,7 @@ def stick_end_frame():
 
 
 def move_mode(elapsed, heavy=False):
+    """Player_move mode in state 1 (player-tick.md state 1 step 6).  Executed for
+    heavy=False; the heavy limit 0x3f1126e9 is Observed, not executed."""
     limit = C.mul(K_LUNGE_HEAVY if heavy else K_LUNGE, F_60)
     return 4 if C.le(C.from_int(elapsed), limit) else 3
