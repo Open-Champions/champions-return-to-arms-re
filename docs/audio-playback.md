@@ -5,6 +5,9 @@ IOP driver site (or measured in the named private run); **Inferred** means a con
 of that evidence; **Unknown** is not ready to hard-code. File bytes, decompiler text
 and recordings are intentionally absent. See [formats/audio.md](formats/audio.md)
 for media layouts and `docs/issues/native-sound.md` for the recompiled-build study.
+What ordinary play asks for (level entry and recall, the per-level track list, menus
+and slider previews, voice lines, foley, hit names, volume channels, the order inside
+`sound_update`) is in [audio-session.md](audio-session.md).
 
 ## Effects: from event to voice
 
@@ -195,7 +198,7 @@ the creature type name at +0x34 is compared without case (`libc_strcasecmp`
 `libc_strstr` 0x3b96a8): once per displayed frame the countdown word at 0x50608c
 (the load is 0x32254c) is decremented. The image word is 0x2a30. At zero it is
 reset to 14,400–21,599 frames (240–360 seconds at 60 Hz) using `g_cosmeticSeed`
-0x404460. If stream 2's queued flags lack 0x20, the routine walks the current
+0x404460. If stream 2's flags lack 0x20, the routine walks the current
 level's `dialog.bin` directory in order and queues the first name containing
 `_env_` or `mx_theme` through `music_playLevel(name, 0x102)` at 0x322634.
 Separately, when `g_drawFrame` 0x44fdd0 has its low four bits clear, if stream 0
@@ -205,7 +208,11 @@ is 0x400, so the image frame itself is one of those frames. This corrects the
 earlier **inference** in `docs/formats/anim-audio.md` 3.4 and `docs/audio-save.md`
 that stream 0 was only seen for the intro. The `amb_` scan is separate from
 `ambient.bin` one-shots (`ss_*`), which use stream 2 only when no music is active
-or queued (0x2149d0).
+or queued (0x2149d0). The flags tested are `stream_queuedFlags(2)` 0x216310, which ORs the
+active entry's flags with every queued entry's (0x3225a4–0x3225b0), so an active boss or
+PvP track also blocks the poll. The poll's first queue after a non-recall load comes
+after 60 frames, and a level load copies `g_randSeed` into `g_cosmeticSeed` first
+(audio-session.md section 2.1).
 
 `music_updateDucking` 0x212500 is **executed** (`tools/difftest_audio.py` "duck",
 repeated under the six `tools/ee_emu.py` rounding setups). The current scalar is
