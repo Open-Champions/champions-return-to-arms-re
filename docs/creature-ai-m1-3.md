@@ -21,9 +21,9 @@ or game bytes are included. Level contents are given as record counts only.
 
 ## 1. Which creatures a player meets
 
-**Executed** (`check_levels`, `tools/difftest_creature_ai_m1_3.py:374-407`):
+**Executed** (`check_levels` in `tools/difftest_creature_ai_m1_3.py`):
 every record of the eleven level archives is parsed, the per-level totals and the
-creature counts below match `tools/ref_creature_ai_m1_3.py:19-46`, and the
+creature counts below match `CREATURES` and `RECORDS` in `tools/ref_creature_ai_m1_3.py`, and the
 original factory `0x159c94` picks the listed pool size and constructor for all
 **807** creature/hazard records (allocation and constructors stubbed). The run
 order is shuffled per seed. The property-**key** counts named in the table and
@@ -517,18 +517,28 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_arena_monsters.py \
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools -p 'test_*.py'
 ```
 
-Results after the final edit: both seeds PASS — twelve classes, 16,445 / 16,436
-answer paths, 261 setState entries, 84 filter redirects, 60 vtable slots, 64 hit
-cases, 807 factory selections. The reused arena difftest compares 4,054
-(seed 20973) and 4,012 (seed 7) calls with no failing property. The unit suite
-runs 659 tests, OK. Logs (ignored, not committed):
-`local/creature-ai/seed-20973.log`, `seed-7.log`, `arena-seed-20973.log`,
-`arena-seed-7.log`, `unittest.log`.
+Results after the final code edit (fix round, commit `10cb5c2`; each log starts with
+the commit and the SHA-256 of the tools): both seeds PASS. Twelve classes,
+503,723 contexts a seed (grid, draw, HP and exit), 57,170 executed walks with
+91,747 (seed 20973) / 91,780 (seed 7) executed answer paths, plus 736,352 /
+736,350 replayed model paths. Every model line was hit in every class (`COVER`,
+0 marked not walked). Also: 264 setState entries, 84 filter redirects, 72
+vtable slots, 81 hit cases, 807 factory selections and 4 property-key counts.
+The reused arena difftest compares 4,054 (seed 20973) and 4,012 (seed 7) calls
+with no failing property. The unit suite runs 659 tests, OK.
+
+Logs (ignored, not committed; no game data): `local/creature-ai-r2/seed-20973.log`,
+`seed-7.log`, `arena-seed-20973.log`, `arena-seed-7.log` and `unittest.log`.
+They are in the mini worktree, with a copy in the MacBook worktree
+`~/Projects/champions-re-wt/research-campaign-combat/local/creature-ai-r2/`. The
+first round's logs stay in `local/creature-ai/` on the mini, and a copy sits in
+the same MacBook `local/`.
 
 ## 6. Unknown
 
 Live trajectories and pathing; real animation-event spacing under blend and slow;
 Goblin 7/8, Froglock 7/8 and Kobold 9 bodies; cutter and IronGuardian missile
 cadence; IronGuardian Droid spawning; Cazic, Critter and Catapult execution;
-slot 20/21 overrides by execution; final stats and delivered player HP loss;
-PCSX2 or console captures.
+slot 20/21 overrides by execution; HP rules inside the stubbed base
+`Creature_run` / `processDamage`; the meaning of object flag 8 in `hitAtReach`;
+final stats and delivered player HP loss; PCSX2 or console captures.
