@@ -786,3 +786,14 @@ python3 tools/difftest_arena_round11.py local/SLUS_209.73 "$ISO" --seed 7
    fade, confirm/cancel and pending-level hand-off. Verify a full match and
    displayed results in a running game before promoting the bounded task
    executions to gameplay proof.
+
+## Round 12: controller-only waves and the acceptance boundary (2026-11-09)
+
+Continued in `docs/spec/arena-acceptance.md`. Round 11's controller swings stopped
+because `Player_animStep` `0x1b9520` was not followed, so the first player reaction
+(state 3) never ended. `tools/difftest_arena_round12.py` follows it, runs the original
+arena task, deferred-delete flush and wave bodies every frame, and kills by
+controller only: wave 0 on both seeds, three wave-1 and three wave-2 creatures on
+seed 20973, one wave-1 creature on seed 7 (§9 there). The same note covers match
+setup, `arena_init`, the result page, rewards, PvP knock-back and signed-wave
+overflow, with a client checklist in its section 0.
