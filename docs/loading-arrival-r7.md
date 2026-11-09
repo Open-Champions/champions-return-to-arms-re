@@ -353,7 +353,7 @@ that has no creature flag.
 - With `0x44fe18` set to the fixture level, `res_find` `0x17365c` is called
   once, from `0x21689c`, with a0 = `"<level>.lmp"` and a1 = `"dialog.bin"`. It
   returns 0, and `0x2168a0` reads address 0 (`dialog_refusal`,
-  [r8 lines 613–651](../tools/difftest_arrival_stage_r8.py#L613)).
+  [r8 lines 617–655](../tools/difftest_arrival_stage_r8.py#L617)).
 
 The cut therefore needs the level's own entries.
 
@@ -370,7 +370,7 @@ records can be removed at `0x1719c8`–`0x171a34`. `res_find` finds an entry wit
 the binary search `0x171de4`, which compares with `0x3b8534`.
 **Inferred:** the strings are region prefixes.
 
-**Executed** (`lump_order`, [r8 lines 487–609](../tools/difftest_arrival_stage_r8.py#L487); counts only):
+**Executed** (`lump_order`, [r8 lines 487–613](../tools/difftest_arrival_stage_r8.py#L487); counts only):
 
 - Fixup removes 3 records, at archive indices 13, 14 and 15, and leaves 16.
 - Before fixup, 2 adjacent pairs of names are out of order under `0x3b8534`.
@@ -378,10 +378,11 @@ the binary search `0x171de4`, which compares with `0x3b8534`.
   finds all 16 names, and the cut path runs setup with 12 actors.
 - **Negative control, reversed records:** after fixup 15 pairs are out of
   order, the search finds 1 of 16, and the post action faults in `cut_start`
-  at `0x19b504` on address 0.
+  `0x19b4dc` at `0x19b504` on address 0.
 - **Negative control, sorted by the unstripped name** (case-folded, which is not
-  the archive order): 1 pair is out of order, the search finds 15 of 16, and the
-  cut frame faults at `0x2168a0` on address 0.
+  the archive order): 1 pair is out of order and the search finds 15 of 16. The
+  post action runs, and the first cut frame faults at `0x2168a0` on address 0,
+  the same pc as the `dialog.bin` refusal above.
 
 So the archive is in search order once fixup has stripped the prefixes and
 removed the three records, and a copy in either other order fails the search.

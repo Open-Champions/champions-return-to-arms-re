@@ -541,11 +541,11 @@ def run_cut_prefix(o, e, lump_name, base, size):
     try:
         o.call(0x1EDAC0, max_steps=4000000)
     except MemoryFault as fault:
-        return trace, ('fault', fault.pc, fault.addr)
+        return trace, ('fault', 'post', fault.pc, fault.addr)
     except Boundary as hit:
-        return trace, ('stop', hit.address)
+        return trace, ('stop', 'post', hit.address, 0)
     if e.mem.u8(CUT_ACTIVE) != 1:
-        return trace, ('inactive', e.mem.u32(0x44FCE4))
+        return trace, ('inactive', 'post', e.mem.u32(0x44FCE4), 0)
     every = set()
     for index in range(191):
         if not e.mem.u32(R7.TABLE + 8 * index):
@@ -556,9 +556,9 @@ def run_cut_prefix(o, e, lump_name, base, size):
     try:
         o.call(CUT_RUN, 1, max_steps=6000000)
     except MemoryFault as fault:
-        return trace, ('fault', fault.pc, fault.addr)
+        return trace, ('fault', 'frame', fault.pc, fault.addr)
     except Boundary as hit:
-        return trace, ('stop', hit.address)
+        return trace, ('stop', 'frame', hit.address, 0)
     return trace, ('ran', e.mem.u32(R7.CUT_ACTORS))
 
 
@@ -603,7 +603,11 @@ def lump_order(path, archive, image, off, body, seed, text):
         _trace, cstop = run_cut_prefix(c, ce, lump_name, cbase, csize)
         # Negative control: the permuted copy is not in search order, some names are not
         # found, and the cut path faults instead of running setup.
-        assert len(crecs) == 16 and cinv > 0 and chits < len(crecs) and cstop[0] == 'fault', cstop
+        assert len(crecs) == 16 and cinv > 0 and chits < len(crecs), (cinv, chits)
+        # reversed: the post action faults in cut_start; raw_sorted: the first cut frame
+        # faults where the dialog.bin refusal does.
+        assert cstop == {'reversed': ('fault', 'post', 0x19B504, 0),
+                         'raw_sorted': ('fault', 'frame', 0x2168A0, 0)}[label], cstop
         result.append((label, int(list(order(len(by_raw))) == list(range(len(by_raw)))),
                        len(crecs), cinv, chits, cstop))
     return same('lump_order', tuple(result))
@@ -690,7 +694,7 @@ def main():
             print('PASS lump_order body=%d seed=%d archive:removed=%s raw_inversions=%d fixed_inversions=%d '
                   'found=%d/16 cut=setup,actors=%d %s' % (
                       body, seed, ','.join(map(str, removed)), raw_inv, fixed_inv, hits, stop[1],
-                      ' '.join('%s:same_as_archive=%d,records=%d,inversions=%d,found=%d/16,stop=0x%x/%d' % (
+                      ' '.join('%s:same_as_archive=%d,records=%d,inversions=%d,found=%d/16,stop=%s@0x%x/%d' % (
                           (label, flag, n, inv, found) + tuple(st[1:]))
                           for label, flag, n, inv, found, st in controls)))
             looked, site = dialog_refusal(path, images[2], offs[2], body, seed, text)
