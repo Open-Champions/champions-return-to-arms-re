@@ -100,8 +100,9 @@ ends `move $2, $zero` and returns (0x1423c8, 0x144b30, 0x143704, 0x142254, 0x144
 dispatcher clears the machine error before the call and returns it afterwards
 (`docs/spec/script-machine.md`, `scr_callNative`).
 None reads or writes the interpreter's control state.
-**Observed (executed)** [direct: *]: in 200 dispatcher calls per seed the error word was 0
-and the result cell 0. In the shipped runs the entries went on past the call to their later
+**Observed (executed)** [direct: *]: in 200 dispatcher calls per seed (40 per command) the
+error word was 0 and the result cell 0, except where both sides stop on a fault (sections
+2 and 5). In the shipped runs the entries went on past the call to their later
 built-ins, and the machine error word (+0x5c) was 0. There are two ways a call can stop the
 *game* (not the script); both are listed under their commands: `lump_load` of a missing file,
 and an AutoProp state at or past the animation table.
@@ -156,8 +157,8 @@ generator. **Observed (executed)**: the shared seed was unchanged in every run.
 **Hazard. Observed (executed)**: setState indexes the clip and flag tables (+0x128 / +0x12c,
 8-byte entries, 10 states before +0x178) with no bound but States. With States 12 and
 state 11, the "clip" is the word at +0x180 that step 3 has just written. The original then
-trapped on an unaligned load at 0x170c0c (counted as a stop on both sides in [direct:
-autoPropSetState]). A negative state below States indexes below +0x128; that case was not
+trapped on an unaligned load at 0x170c0c (one case at seed 20973, counted as a stop on
+both sides in [direct: autoPropSetState]). A negative state below States indexes below +0x128; that case was not
 run. **Observed (static)**: no shipped record has States above 3 (tormenta 2, hub portal 3).
 
 ### Calls
@@ -252,8 +253,8 @@ expectations; store regions], `Bodies.gnome_set_state`:
 
 1. State gate 0x10a9c0 (state 0x14). It **refuses**, and nothing below happens (only the
    handler's flags and hit points remain), when the arena flag 0x4f7120 is set, 0x4f711c is
-   0, 0x503890 is set and 0x503894 is 0. It refused 15 deaths in 20 islgnome runs (seed
-   20973). Otherwise it zeroes the s16 timers +0x31c, +0x318, +0x314, +0x31a. The attack
+   0, 0x503890 is set and 0x503894 is 0. It refused 15 of 69 deaths at seed 20973 and 13 of
+   59 at seed 7 (20 islgnome runs each). Otherwise it zeroes the s16 timers +0x31c, +0x318, +0x314, +0x31a. The attack
    test 0x1195f0 stores 0 into +0x318 again when +0x234 is 0. The gate then passes.
 2. One draw of the object's **own** generator `GameObject_rand` 0x1509d0 (+0x44 =
    +0x44 x 0x19660d + 0x3c6ef35f). It is not the shared seed, which was unchanged in every run.
@@ -356,8 +357,8 @@ may call `lump_load` (0x173558 is called from 0x17365c, static), which touches o
 resource cache (section 5).
 
 **Shipped (Observed, executed)**: the soundSequence entries of tormenta and the six water
-levels were run whole, 70 runs per seed. In the 9–10 runs whose seeded state reached the
-call, each went on to its later built-ins with error word 0.
+levels were run whole, 70 runs per seed. In the runs whose seeded state reached the call
+(9 at seed 20973, 10 at seed 7), each went on to its later built-ins with error word 0.
 
 **Client (Inferred)**: gameplay state is unaffected. Treat it as a recorded no-op that
 plays the sequence S1/S2, or port the player selection above for audio.
@@ -456,19 +457,20 @@ In this round `shop_openOrStock` was a stub.
 **Observed (executed)**: each control is the model with one deliberate change, run on the
 first 12 direct cases of its command. Each must be rejected by the comparison:
 
-| control | change | rejected (seed 20973 / 7) |
+| control | change | rejected, seed 20973 / seed 7 |
 |---|---|---|
-| autoprop_bits_for_zero | state 0 also sets reached bit 0 | 3/12, 2/12 |
-| autoprop_mode_swapped | looping state pushed with mode 6, others 3 | 5/12, 5/12 |
-| passable_inverted | setPassable argument inverted | 6/12, 6/12 |
-| kill_no_deathscript | the deathscript is not run | 5/12, see log |
-| kill_keeps_selected | g_scriptSelectedObj not cleared | 5/12, see log |
-| gnome_anim_first | death animation 0 always | 4/12, see log |
-| sound_first_free | the first free player instead of the last | 10/12, see log |
-| lump_skip_loaded_check | a loaded lump is read again | 5/12, see log |
-| store_any_index | the < 0x15 test removed | 9/12, see log |
+| autoprop_bits_for_zero | state 0 also sets reached bit 0 | 2/12, 2/12 |
+| autoprop_mode_swapped | looping state pushed with mode 6, others 3 | 6/12, 7/12 |
+| passable_inverted | setPassable argument inverted | 8/12, 7/12 |
+| kill_no_deathscript | the deathscript is not run | 6/12, 7/12 |
+| kill_keeps_selected | g_scriptSelectedObj not cleared | 6/12, 7/12 |
+| gnome_anim_first | death animation 0 always | 5/12, 6/12 |
+| sound_first_free | the first free player instead of the last | 10/12, 8/12 |
+| lump_skip_loaded_check | a loaded lump is read again | 7/12, 4/12 |
+| store_any_index | the < 0x15 test removed | 10/12, 10/12 |
 
-(The full per-seed figures are in the PASS log; see the report.)
+A control is rejected in a case where its change matters (for example bits_for_zero only
+when the state is 0). Every control was rejected at least once on both seeds.
 
 ## 8. How to run
 
