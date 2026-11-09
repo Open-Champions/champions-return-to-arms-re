@@ -535,7 +535,8 @@ Register windows are not aliased.
   absence of a store, not a measured retail value. Below `0x90a434` nothing
   changes, so the null-based faults at address 4 and `0x18` still fault.
 - **EndOfHeap**, syscall 62 at `0x3529c0`, accepted only for return address
-  `0x353138`. That caller compares v0 with the requested break.
+  `0x353138`, by its own opt-in `EE.install_modelled_end_of_heap` (moved out
+  of `install_modelled_boot` in round 8, audit R7-3). That caller compares v0 with the requested break.
   **Inferred:** a size of -1 ends at the stack base. **Model:** v0 =
   `0x1fc0000`. It is not a recovered kernel limit.
 - **GIF and VIF1 channel words.** **Observed:** `0x350680` waits through
@@ -553,7 +554,10 @@ Register windows are not aliased.
   `EE.install_modelled_vpu_stat` returns 0 for that encoding only. Any other
   COP2 instruction still stops.
 - **FlushCache**, syscall 100 at `0x352c60`, accepted only for return
-  addresses `0x19d628` and `0x355744`. **Observed:** each is a `lui` that
+  addresses `0x19d628` and `0x355744`, by its own opt-in
+  `EE.install_modelled_flush_cache` (round 8, audit R7-3). Only the mirror
+  test and later tests install these two. The round-5 and round-6 tests do
+  not. **Observed:** each is a `lui` that
   replaces its register, and neither path reads v0 first. **Model:** v0 = 0.
   This emulator has no cache, so nothing else changes.
 - **The startup semaphore.** **Observed:** the allocator waits at `0x3b61c8`

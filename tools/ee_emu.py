@@ -57,7 +57,9 @@ install_modelled_main_ram creates heap pages from 0x0090a434 to 0x01fc0000
 zeroed on first access.  install_modelled_dma_idle keeps three words of the
 VIF1 and GIF channels and two status words, and returns the channel control
 word with the start bit clear.  install_modelled_vpu_stat makes CFC2 of
-register 29 return 0.  Every value these handlers write in v0 is modelled, not a recovered kernel
+register 29 return 0.  install_modelled_flush_cache and
+install_modelled_end_of_heap accept FlushCache and EndOfHeap only at the
+callers named on those methods.  Every value these handlers write in v0 is modelled, not a recovered kernel
 result.  Every other number still raises CpuTrap.  The opt-ins compose; none
 is installed by default.
 
@@ -616,6 +618,8 @@ class EE:
         self._main_ram = False
         self._dma_idle = False
         self._vpu_stat = False
+        self._flush_cache = False
+        self._end_of_heap = False
         self._hw_words = {}
         self._in_intc = False
         self._threads = {}
@@ -757,17 +761,9 @@ class EE:
         there, and whose next instructions are jr ra and nop, transfers to the
         registered address with ra unchanged.  AddIntcHandler records cause,
         handler and next.  EnableIntc marks that cause enabled.  Neither change
-        delivers an interrupt.  FlushCache is accepted only for return
-        addresses 0x19d628 and 0x355744.  The instruction at each is a lui that
-        replaces the register it writes, and neither path reads v0 before
-        that.  The modelled result is 0; this emulator has no cache to flush.  EndOfHeap is accepted only for return
-        address 0x353138.  That caller compares v0 with the requested break
-        and, when v0 is not below the request, returns the previous break.
-        The modelled end is 0x01fc0000.  Observed: SetupThread at 0x14fc48 is
-        passed stack base 0x01fc0000, and SetupHeap at 0x14fc64 is passed start
-        0x0090a434 and size -1.  Inferred: a heap of size -1 ends where that
-        stack begins.  It is not a recovered kernel limit.  Composes with the
-        other opt-ins.
+        delivers an interrupt.  FlushCache and EndOfHeap are not part of this
+        opt-in; see install_modelled_flush_cache and
+        install_modelled_end_of_heap.  Composes with the other opt-ins.
         """
         if self._modelled_boot:
             raise EmuError('modelled boot handler is already installed')
@@ -782,6 +778,37 @@ class EE:
         self._next_tid = 2
         self._next_sid = 1
         self._next_handler = 1
+        self.syscall_handler = EE._dispatch_opt_in_syscall
+
+    def install_modelled_flush_cache(self):
+        """Opt in to FlushCache (syscall 100) at the two callers that do not read v0.
+
+        Accepted only for return addresses 0x19d628 and 0x355744.  The
+        instruction at each is a lui that replaces the register it writes, and
+        neither path reads v0 before that.  The modelled result is 0; this
+        emulator has no cache to flush.  Any other caller still raises
+        CpuTrap.  Composes with the other opt-ins.
+        """
+        if self._flush_cache:
+            raise EmuError('modelled FlushCache is already installed')
+        self._flush_cache = True
+        self.syscall_handler = EE._dispatch_opt_in_syscall
+
+    def install_modelled_end_of_heap(self):
+        """Opt in to EndOfHeap (syscall 62) at the sbrk return 0x353138.
+
+        0x353138 is the only return address of a jal to the wrapper 0x3529c0.
+        That caller compares v0 with the requested break and, when v0 is not
+        below the request, returns the previous break.  The modelled end is
+        0x01fc0000.  Observed: SetupThread at 0x14fc48 is passed stack base
+        0x01fc0000, and SetupHeap at 0x14fc64 is passed start 0x0090a434 and
+        size -1.  Inferred: a heap of size -1 ends where that stack begins.
+        It is not a recovered kernel limit.  Any other caller still raises
+        CpuTrap.  Composes with the other opt-ins.
+        """
+        if self._end_of_heap:
+            raise EmuError('modelled EndOfHeap is already installed')
+        self._end_of_heap = True
         self.syscall_handler = EE._dispatch_opt_in_syscall
 
     def install_modelled_intc(self):
@@ -923,6 +950,12 @@ class EE:
         if number == 37 and self._terminate_thread:
             self.terminate_thread()
             return
+        if number == 100 and self._flush_cache and (self.r[31] & M32) in self._FLUSH_IGNORED_RA:
+            self._set_v0(0)
+            return
+        if number == 62 and self._end_of_heap and (self.r[31] & M32) == 0x353138:
+            self._set_v0(0x01FC0000)
+            return
         if self._modelled_boot and self._modelled_boot_syscall(number):
             return
         raise CpuTrap('SYSCALL at 0x%08x (v1 = %d); no kernel is modelled'
@@ -978,16 +1011,6 @@ class EE:
                 return False
             self._installed_syscalls[a0] = a1
             self._set_v0(0)
-            return True
-        if number == 100:
-            if ra not in self._FLUSH_IGNORED_RA:
-                return False
-            self._set_v0(0)
-            return True
-        if number == 62:
-            if ra != 0x353138:
-                return False
-            self._set_v0(0x01FC0000)
             return True
         if number == 32:
             entry = self.mem.u32(a0 + 4)

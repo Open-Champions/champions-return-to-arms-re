@@ -921,35 +921,46 @@ class ControlTests(unittest.TestCase):
 
     def test_flushcache_is_accepted_only_at_the_unread_return(self):
         words = [addiu(V1, ZERO, 100), R(0x0C)]
-        accepted = machine(words, run=False)
-        accepted.install_modelled_boot()
-        accepted.hook(BASE + 4, lambda emu: emu.set_reg('ra', 0x19d628))
-        accepted.hook(BASE + 8, lambda emu: emu.set_reg('ra', EE.RETURN_ADDR))
-        self.assertEqual(accepted.call(BASE), 0)
-        second = machine(words, run=False)
-        second.install_modelled_boot()
-        second.hook(BASE + 4, lambda emu: emu.set_reg('ra', 0x355744))
-        second.hook(BASE + 8, lambda emu: emu.set_reg('ra', EE.RETURN_ADDR))
-        self.assertEqual(second.call(BASE), 0)
+        for ra in (0x19d628, 0x355744):
+            accepted = machine(words, run=False)
+            accepted.install_modelled_flush_cache()
+            accepted.hook(BASE + 4, lambda emu, ra=ra: emu.set_reg('ra', ra))
+            accepted.hook(BASE + 8, lambda emu: emu.set_reg('ra', EE.RETURN_ADDR))
+            self.assertEqual(accepted.call(BASE), 0)
+        with self.assertRaises(EmuError):
+            accepted.install_modelled_flush_cache()
         rejected = machine(words, run=False)
-        rejected.install_modelled_boot()
+        rejected.install_modelled_flush_cache()
         rejected.hook(BASE + 4, lambda emu: emu.set_reg('ra', 0x19d630))
         with self.assertRaises(CpuTrap) as trap:
             rejected.call(BASE)
         self.assertIn('v1 = 100', str(trap.exception))
+        # install_modelled_boot alone no longer accepts it.
+        boot_only = machine(words, run=False)
+        boot_only.install_modelled_boot()
+        boot_only.hook(BASE + 4, lambda emu: emu.set_reg('ra', 0x19d628))
+        with self.assertRaises(CpuTrap):
+            boot_only.call(BASE)
 
-    def test_end_of_heap_is_the_address_engine_init_reserves(self):
+    def test_end_of_heap_is_accepted_only_at_the_sbrk_return(self):
         words = [addiu(V1, ZERO, 62), R(0x0C)]
         accepted = machine(words, run=False)
-        accepted.install_modelled_boot()
+        accepted.install_modelled_end_of_heap()
+        with self.assertRaises(EmuError):
+            accepted.install_modelled_end_of_heap()
         accepted.hook(BASE + 4, lambda emu: emu.set_reg('ra', 0x353138))
         accepted.hook(BASE + 8, lambda emu: emu.set_reg('ra', EE.RETURN_ADDR))
         self.assertEqual(accepted.call(BASE), 0x01FC0000)
         rejected = machine(words, run=False)
-        rejected.install_modelled_boot()
+        rejected.install_modelled_end_of_heap()
         with self.assertRaises(CpuTrap) as trap:
             rejected.call(BASE)
         self.assertIn('v1 = 62', str(trap.exception))
+        boot_only = machine(words, run=False)
+        boot_only.install_modelled_boot()
+        boot_only.hook(BASE + 4, lambda emu: emu.set_reg('ra', 0x353138))
+        with self.assertRaises(CpuTrap):
+            boot_only.call(BASE)
 
     def callee_program(self):
         """v0 = callee(a0 + 1) + 1000, where callee(x) = x * 2 and stores x at DATA."""

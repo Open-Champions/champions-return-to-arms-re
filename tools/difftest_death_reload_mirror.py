@@ -2,7 +2,7 @@
 """Run startup, then engine_init past the uncached store, then the death sequence.
 
 Opt-ins on top of the round-6 machine: main-RAM mirrors, main RAM above the
-loaded image, the two DMA channel words the GIF kick and sceGsSyncPath use,
+second PT_LOAD, the two DMA channel words the GIF kick and sceGsSyncPath use,
 CFC2 of VPU_STAT, FlushCache at two callers that do not read v0, and
 EndOfHeap at one caller.  Every returned syscall value, the cleared DMA start
 bit and the VPU_STAT 0 are modelled.  No service is stubbed.  The test heap is
@@ -48,6 +48,8 @@ def run_boot(elf):
     e.install_modelled_main_ram()
     e.install_modelled_dma_idle()
     e.install_modelled_vpu_stat()
+    e.install_modelled_flush_cache()
+    e.install_modelled_end_of_heap()
     e.writes.clear()
     e.record_writes = True
     e.write_watch = WATCH
