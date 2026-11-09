@@ -109,7 +109,10 @@ have effects during draw; their safety in a native online port is
 unestablished. Those two stay refused. Fractional world positions are no
 longer outside the reveal model: `reveal_world` in `ref_hud_inputs.py` matches
 `0x16a4b0` for them (`difftest_hud_inputs.py`, 48 cases per seed; see
-[hud-live-producers.md](hud-live-producers.md)).
+[hud-live-producers.md](hud-live-producers.md)). Round 3 of that note runs
+the tile program in `tools/vu1_emu.py` (its section 10: cells read, quads, UV,
+alpha) and the icon gates with the real `vars_get` and `script_runByName`
+(section 9). The atlas texels and the tile X/Y remain open there.
 
 ## Ordered native port list
 
@@ -143,8 +146,8 @@ in [hud-live-producers.md](hud-live-producers.md). That note executes
 `hud_tickMessage` / the message alpha store, on seeds 20973 and 7. Quick-slot
 spells and potion items stay the contracts in sections 1 and 2 and in
 [hud-quickslots.md](hud-quickslots.md). The 17 equipment pointers that scale
-regeneration are executed with the regen bodies; the ammunition and thrown
-notice starters are still the unexecuted lines in hud-quickslots.md.
+regeneration are executed with the regen bodies. The ammunition and thrown
+notice starters are executed in hud-live-producers.md section 8.
 
 ## Validation boundary
 

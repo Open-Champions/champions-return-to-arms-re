@@ -246,7 +246,8 @@ Shared 0x404464, cosmetic 0x404460 and third 0x404468: no write in any executed 
 - The exact zoom and rotate conditions of the camera starters (line 0) were read only
   at the store sites; executing `Camera_followZoomInput` would settle them.
 - Lines 3, 6, 7 were not executed here; `tools/ref_player.py` (`hud_notice`) models them
-  inside `Player_run` for `tools/difftest_player.py`.
+  inside `Player_run` for `tools/difftest_player.py`. Their five starters are executed
+  in [hud-live-producers.md](hud-live-producers.md) section 8.
 
 ## Native client: what to implement
 

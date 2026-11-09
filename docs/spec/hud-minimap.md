@@ -8,7 +8,9 @@ tests: [test_ref_hud_minimap.py](../../tools/test_ref_hud_minimap.py), difftest:
 **Status:** the EE side of `0x168cac` is executed byte for byte: every display-list byte,
 every call and every store. The map tiles themselves are drawn by a VU1 program
 (`0x403e20`, loaded at micro address 0x79a). That program was read (O) but not executed;
-ee_emu has no VU. No game or emulator was run.
+ee_emu has no VU. No game or emulator was run. Later: the strip packets were run in
+`tools/vu1_emu.py` ([hud-live-producers.md](hud-live-producers.md) section 10), and
+the icon gates with the real `vars_get` and `script_runByName` (section 9).
 
 ## Body and arguments (O, Executed)
 
@@ -148,7 +150,8 @@ applied. **Simulation risk:** phase B calls `vars_get` (it appends unknown names
 
 ## Unknown
 
-- What the VU program at `0x403e20` computes, numerically: needs a VU1 interpreter.
+- What the VU program at `0x403e20` computes, numerically: UV and alpha per vertex are
+  executed in hud-live-producers.md section 10; vertex X/Y are not reduced.
 - The atlas layout of world +0x6c (10-texel tiles assumed from the code): decode one .world.
 - `gfx_addSortedPacket` was stubbed. Whether it moves `0x44fe10` was not run.
 - Whether icon scripts draw from a generator: depends on the script; it was stubbed.
