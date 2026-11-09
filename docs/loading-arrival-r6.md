@@ -190,3 +190,10 @@ level-name bytes the loader stores.
 Run: `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_arrival_stage_r6.py local/SLUS_209.73 local/arrival-route-r4.json`.
 Result: bodies 0–11, seeds 7 and 20973, all stages PASS.
 Existing reference APIs, vectors, and the round-4 difftest are unchanged. The round-6 commit left the round-5 note and difftest untouched. `662d408` then changed both.
+
+**Correction, round 7:** the delete row and the client item above say the
+delete does not reach `pool_free` `0x150470` and must not free the block. That
+check counted only linking calls. `0x144b44` passes a1 = 3, and `0x14cf90`
+tail-jumps to `0x150470` at `0x14d1fc`. The recorded free-list stores are in
+[loading-arrival-r7.md](loading-arrival-r7.md), "Delete with and without a
+property list".
