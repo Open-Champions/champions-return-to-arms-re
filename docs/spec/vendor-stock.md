@@ -237,8 +237,8 @@ the subject of its control-flow checks.
   `storeLevel` the restored variables hold; that restore was not executed.
 - +0x22 of the four fixed weapons at the category-0 compare is the stack
   from before the pass, which this work cannot know for a real game. The
-  generator's own +0x22 is fixed within a pass but not modelled ("Stock
-  residue"). The slot contents before the first pass are no longer a gate.
+  generator's own +0x22 is decided inside the pass (independent of the
+  pre-pass stack and slot bytes) but not modelled ("Stock residue"). The slot contents before the first pass are no longer a gate.
 
 ## Buy and sell prices
 
@@ -563,7 +563,7 @@ word holds), only 0x10000 confirms the choice (into either list) and only
 0x20000 cancels each list and the choice; the shipped values 0x40 and 0x120
 do nothing in the choice, the stock list or the own-bags list. The lists
 confirm with 0x41b970 instead, and the choice confirm does not buy (lines
-705–706). In a shop opened after `game_initCamera` 0x1e6b68 ran with
+822–823). In a shop opened after `game_initCamera` 0x1e6b68 ran with
 region 1 in the same machine, a lone 0x20 cancels the stock list, the
 own-bags list and the choice, and 0x100 does not.
 `game_initCamera` writes the masks by the region byte 0x41b69c. The
@@ -644,7 +644,10 @@ quantity entry.
 
 ## Stock residue: slot bytes before the first pass, and unwritten bytes at the compare
 
-2026-11-09. `tools/difftest_vendor_residue.py` (new; nothing existing changed),
+2026-11-09. `tools/difftest_vendor_writers.py` (round 3 fix 3, new; groups
+`boot`, `census`, `join` and `paths`) adds the extended census, the recorded
+writes over emulated session paths, the join site and the per-record
+constructor check below. `tools/difftest_vendor_residue.py` (new; nothing existing changed),
 groups `boot` (`boot_cases`, lines 70–154), `census` (`census_cases`, lines
 217–334), `compare` (`compare_cases`, lines 337–359) and `residue`
 (`stock_pass`, `boot_state_passes`, `residue_cases`, lines 362–515), seeds
@@ -656,32 +659,109 @@ groups `boot` (`boot_cases`, lines 70–154), `census` (`census_cases`, lines
 lists and the category-2 scan window (0x866e78..0x86c898) filled with a
 sentinel, kernel calls 0x3c and 0x3d answered 0 and every callee stubbed,
 reaches `main` 0x323dcc with every one of those bytes 0. The only writer is
-the 16-byte store at 0x14fbe0, the `.bss` clear over 0x564300..0x90a430
-(this is the step-1 row of `docs/startup.md`, now executed).
+the 16-byte store at 0x14fbe0, part of the `.bss` clear (this is the
+step-1 row of `docs/startup.md`, now executed). Its 16-byte stores cover
+0x564300..0x90a430. The byte store at 0x14fc00 then clears the last four
+bytes, 0x90a430..0x90a434, so the whole clear is 0x564300..0x90a434: the
+`.sbss` start and the `.bss` end in the section headers, and the range
+`docs/startup.md` gives (Executed, `difftest_vendor_writers.py` group
+`boot`).
 
 **Observed (executed, boot):** `main`'s first call (site 0x323e10) is the
-run-once routine 0x3ad310. It walks the static constructors (127 calls; a
-second call makes none). One of them, 0x1d1988 (a `.ctors` entry, called
+run-once routine 0x3ad310. It walks the static constructors: 127 calls in
+all, of which 124 are `.ctors` entries, each called once from 0x3ad2e4, the
+stock constructor among them and counted once. A second call makes none
+(group `boot`). One of them, 0x1d1988 (a `.ctors` entry, called
 from 0x3ad2e4), calls 0x1d10b0(1, 0xffff), which runs the item constructor
 over all 192 records of the three lists. Run alone on sentinel lists it
 writes, with the stores 0x1d1194, 0x1d11ac, 0x1d11b4, 0x1d11cc and
 0x1d11d8, exactly +0x10..+0x1f (0), +0x20 and +0x21 (0xff) and the four
-modifier codes (−1). It does not write +0x00..+0x0f (definition, count,
+modifier codes (−1); in each of the 192 records those bytes hold exactly
+those values and every other byte keeps the sentinel (group `boot`). It
+does not write +0x00..+0x0f (definition, count,
 flags), +0x22/+0x23, the slot values, +0x44..+0x47 or the count words. So
 after boot every record of all three lists is the same constructed
 pattern: definition pointer 0, prefix and suffix 0xff, codes −1, every
 other byte 0 (+0x22 included), and all three counts are 0. The `.dtors`
 entry 0x1d19a8 is the matching destructor call.
 
-**Observed (static census, lines 177–233):** across `.text`, the only
-instructions that form an address inside the lists (lui pairing, through
-addiu/daddiu and through every load/store) are 13 sites in seven
-functions: `shopmsg_sendBuy` 0x1c5f78, `shop_openOrStock` 0x1c7af8,
-`shop_restockByGold` 0x1c8a00 (called only from 0x1d1474 / 0x1d14b4, the
-never-constructed `ShopDaemon`), `itemGrid_build` 0x1cbbe8, the list
-drawer 0x1cc7e0, the constructor body 0x1d10b0 and `ShopDaemon_ctor`
-0x1d13c8. No data word points into the lists. No save, load, level-load or
-new-game routine forms a list address.
+**Observed (static census, lines 177–233, and the extended census,
+`difftest_vendor_writers.py` group `census`):** the first census
+(`difftest_vendor_residue.py`) follows a `lui` high half only into
+addiu/daddiu and load/store offsets on the same register, in straight-line
+order. It finds 13 sites in seven functions: `shopmsg_sendBuy` 0x1c5f78,
+`shop_openOrStock` 0x1c7af8, `shop_restockByGold` 0x1c8a00 (called only
+from 0x1d1474 / 0x1d14b4, the never-constructed `ShopDaemon`),
+`itemGrid_build` 0x1cbbe8, the list drawer 0x1cc7e0, the constructor body
+0x1d10b0 and `ShopDaemon_ctor` 0x1d13c8. The extended census follows
+constants through each function's branches, and walks blocks reached only
+by jump tables with nothing known. It carries a high half through
+addiu/daddiu, `ori`, and `addu`/`daddu`/`or`/`subu` into another register,
+which is the indexed-global form `lui`, `addu`, then `lw`/`sw` with the low
+half. It checks every memory offset. It walks all 235 functions that hold
+`lui 0x86` or `lui 0x87`, the only high halves whose 16-bit window reaches
+the lists. 130 instructions form a list address (81 direct, 65 through an
+indexing add, none through `ori`), all in the same seven functions, and
+every site of the first census is among them. No data word points into
+the lists. So no instruction outside those seven functions forms a list
+address from constants (Observed, static).
+
+What the census does not settle (stated, not assumed):
+- a base formed below the lists that reaches them through a run-time index
+  or length. 103 functions store through an indexed base formed within
+  1 MiB below the lists, and their bounds were not followed. The highest
+  constant-formed address below the lists is 0x866d78 (in
+  `inventory_staticInitDestroy` 0x1c5358).
+- clear-class library calls (memset, memcpy, memmove, bzero, bcopy,
+  strcpy, strncpy, strcat; 775 call sites). 13 take a destination formed
+  from constants within 1 MiB below the lists, and none starts inside them.
+  Each with a plain base and a constant length ends below 0x866e78. Nine
+  have a run-time length or are string copies (0x17124c, 0x17136c,
+  0x172e44, 0x1731f4, 0x173614, 0x19ac0c, 0x19b614, 0x19f094, 0x1a2e1c).
+  564 take their destination at run time.
+- pointers that arrive as arguments, from the heap or through a vtable.
+
+**Executed (`difftest_vendor_writers.py` group `paths`, seeds 20973 and
+7):** one machine per seed runs the real routines with every callee live,
+and records every store into the three lists with its phase:
+1. `main`'s static-constructor walker. Only the stock constructor writes
+   the lists.
+2. A session start (`mainloop_runSession` 0x322998, its cycle-counter
+   seeds replaced by the test seed) with `hub` pending. This is the first
+   level, so the act-change block runs (`save_clearBuffer` 0x320fcc,
+   `vars_clearAll` 0x32101c). Then `playerSel_applyPending`,
+   `game_loadLevel` with `item_loadResources`, the cosmetic seed copy and
+   `objects_levelReset`, `script_runDeferred`, the warm-up frames, and the
+   stock call at 0x3230c4, up to the first frame.
+3. A level load (`mainloop_loadRequestedWorld` 0x320edc, `blood1`).
+4. A new game as `frontend_run` makes one: `game_resetState` 0x1e6f58,
+   then `player_initNewCharacter` 0x1b1d70 for slot 0.
+5. A level load with that living character, `save_build` 0x221914,
+   `save_load` 0x221d60, and the load of the level the save names.
+6. The session exit (loop head with the exit code set: `game_clearLevel(1)`,
+   lump unload and the rest of the teardown).
+7. A new session's start, up to its level-load call 0x322e30.
+
+Every list store falls inside the stock call. The writers are the
+generators 0x1046e0 and 0x104ca4, the parser 0x1069b8 and
+`shop_openOrStock` 0x1c7af8. At the stock call's entry the list bytes are
+still those the constructor left, and after the call they stay unchanged
+through steps 3–7.
+
+Stubs and limits, each named in the group:
+- the debug stack check 0x19d9f8, the GS path sync 0x34fe78 (a COP2
+  instruction the emulator lacks) and the DMA idle wait 0x350190;
+- 0x18b270, which `game_loadLevel` runs on the previous level's scenery
+  block, and `eqcache_loadHeader` 0x1a2680, because no file data is
+  delivered (no level file is read, so those blocks are stale heap);
+- the resource request 0x173558, answered 0 as in `residue`;
+- `strcmp` 0x3b8534, done in Python; it only reads.
+
+Kernel calls are answered 0, PollSema −1 and ReferThreadStatus 0x10, so
+the loading-screen thread does not run. Hardware registers read 0. A level
+with its files loaded (objects, scripts, triggers), the loading-screen
+thread, a shop visit, the memory-card screens and the new session's own
+level load were not run.
 
 **Executed (lines 235–277 and 299–326):** of the run-time paths that hold a list
 pointer, `shop_buy` 0x1d1240 with `inventory_giveItem` live reads the stock
@@ -695,11 +775,18 @@ that armour generation scans is 64 constructed records: definition 0,
 +0x22 = 0, codes −1, counts 0. Observed. Pass 1 from that state (executed,
 both seeds, `storeLevel` 8, difficulty 2) compares every armour candidate
 with such records and none matches, because 0x108924 needs equal
-definition pointers and the candidate's is non-null. Nothing clears the
-lists again: a later pass in the same boot, including one after a new game
-or a save load, scans whatever the previous pass and the shop's grid builds
-left there. Observed for the census and the executed paths; Inferred for
-any write through a pointer computed outside them (none was found).
+definition pointers and the candidate's is non-null. After boot, no clear
+of the lists was found. On the paths run in `paths` (a session start with
+its first level load and act change, a level load, a new game, a save
+build and save load with the saved level's load, the session exit and a
+new session's start), nothing but the stock call writes them (Executed,
+with the stubs named there). No instruction outside the seven census
+functions forms a list address from constants (Observed, static). For code
+those runs did not reach, for a level whose files are loaded, and for
+writes through a base or length computed at run time, that nothing else
+clears them is Inferred. On that basis a later pass in the same boot,
+including one after a new game or a save load, scans whatever the previous
+pass and the shop's grid builds left there.
 
 ### (b) What the unwritten bytes hold when the duplicate compare reads them
 
@@ -748,12 +835,14 @@ nothing else there; records at n ≥ count keep their bytes. `shop_task`
 reaches it on the tick where the shop's resources become ready: 0x17306c
 returns 0 at 0x1c6088, `inventory_pollResources` runs, then 0x17306c
 returns 1 at 0x1c60a0, and the jump at 0x1c6110 enters
-`itemGrid_build(0, 0, 1)`. The panel-1 join also calls it, with (1, 1, 1)
-at 0x1c7734. Whether every shop open takes that ready transition, rather
-than finding the resources ready at the first check, is Inferred: a stock
-list needs its grid before it can show a cell. So after a shop visit, the
-next pass's category-1 scan reads +0x22 = n for the old third list's
-populated records.
+`itemGrid_build(0, 0, 1)`. The panel-1 join also calls it: on the join
+tick the only `itemGrid_build` call is at 0x1c7734 with (1, 1, 1)
+(Executed, `difftest_vendor_writers.py` group `join`, both seeds). Whether
+every shop open takes that ready transition, rather than finding the
+resources ready at the first check, is Inferred: a stock list needs its grid
+before it can show a cell. Inferred, from that: after a shop visit, the next
+pass's category-1 scan reads +0x22 = n for the old third list's populated
+records.
 
 **Counts (`residue`, executed):** `storeLevel` 0, difficulty 1, both
 seeds, 473 compares per pass, three sentinel sets each. +0x22 was
@@ -761,14 +850,17 @@ pass-internal for 946 candidates and 462 accepted records, pre-pass stack
 for 176 fixed-weapon entries, the previous occupant for 272 old third-list
 entries, and unchanged for 36 name-window entries. No compare had equal
 definition, flags and +0x20/+0x21, and none matched. In the four boot-state
-passes (`storeLevel` 8, difficulty 2, both seeds) the 136 + 272
-category-1 compares matched none. So +0x22 decided no executed compare.
+passes (`storeLevel` 8, difficulty 2, both seeds) the 272 + 272
+category-1 compares (136 per seed in each pass) matched none. So +0x22 decided no executed compare.
 
 **Answer (b):** the bytes a generated record never writes are not
-leftovers of the slot's previous occupant, and no clear zeroes them. Each
+leftovers of the slot's previous occupant, and no clear that zeroes them
+first was found (see (a) for what was run). Each
 new record brings its own +0x22 from the generator's or parser's stack
-frame (Observed). For generated records that value is fixed within the
-pass. For the four fixed weapons it is the stack from before the pass
+frame (Observed). For generated records that value is decided inside the
+pass (independent of the pre-pass stack and slot bytes); whether it is the
+same for every candidate was not tested, and `docs/spec/items.md` traces it
+to floating-point temporaries of an earlier candidate. For the four fixed weapons it is the stack from before the pass
 (Unknown in the game). The old third list keeps its previous bytes: 0
 from boot, the index stamp after a shop grid build, otherwise the previous
 pass's own. The compare reads +0x22/+0x23 and nothing else of the
@@ -785,8 +877,11 @@ unwritten bytes.
    budget, retry, duplicate-scan and stable sort contract above. Keep the
    previous third list until armour generation has finished scanning it.
    Initialise the three lists at boot to the constructed record (definition
-   0, prefix/suffix 0xff, codes −1, all else 0) with counts 0, and never
-   clear them again.
+   0, prefix/suffix 0xff, codes −1, all else 0) with counts 0. Do not
+   clear them on a new game, a level load or a save load: no clear was
+   found there (Executed for the paths in `difftest_vendor_writers.py`,
+   with its stubs; Inferred for code those runs did not reach, see "Stock
+   residue" (a)).
 3. Take fixed records from the parser. Take ordinary and special records
    from the existing item generators. Do not invent a 121-tick restock and
    do not call 0x1c8a00.
@@ -818,14 +913,28 @@ unwritten bytes.
 10. Duplicate test and the unwritten +0x22 (see "Stock residue"). Compare
    definition, flags and +0x20/+0x21 exactly as 0x108924 does. A port that
    cannot reproduce the generator's stack must decide +0x22 itself, and
-   must state that choice as a deviation. In every executed compare the
-   other fields already differed, so any +0x22 rule reproduces every
-   executed outcome. Recommended: treat a fixed weapon's +0x22 as never
-   equal to a candidate's (its value is pre-pass stack; Inferred), and
-   between two ordinary records treat +0x22 as equal (Inferred; this can
-   only add retries where the original might accept, and the six-retry cap
-   bounds it). The reference sweep in "Generation failure", which repeats
-   the smallest budget, does produce field-equal pairs, so the rule can
-   matter there. Do not refuse a pass for this. On the first pass after
+   must state that choice as a deviation. What was checked: in all 946
+   compares of the two `residue` passes (`storeLevel` 0, difficulty 1,
+   both seeds) and in the 272 + 272 category-1 compares of the four
+   boot-state passes, the other fields already differed, so there any +0x22
+   rule gives the original's outcome. The category-0 and category-2
+   compares of the boot-state passes were not checked for field equality,
+   and `difftest_vendor_stock.py` plants field-equal duplicates on purpose.
+   Recommended, as **port choices** (not evidence labels): (i) treat a
+   fixed weapon's +0x22 as never equal to a candidate's. The game's value
+   there is pre-pass stack and Unknown (gate above), so this is a choice,
+   not a finding. It diverges when the candidate's definition, flags and
+   +0x20/+0x21 equal a fixed weapon's and the stack bytes the parser copied
+   happen to equal the candidate's +0x22/+0x23: the original rejects and
+   retries, and the port accepts. (ii) Between two ordinary records treat
+   +0x22 as equal. It diverges when the other fields match and the two
+   pass-internal values differ: the original accepts, and the port
+   retries. In either case the attempt's outcome changes. One retry more or
+   less is one more or fewer draw from the shared seed, so every later
+   record of that pass, and the seed the pass leaves behind, differ from
+   the original's. The six-retry cap bounds the retries per accepted
+   record, not this divergence. The reference sweep in "Generation
+   failure", which repeats the smallest budget, does produce field-equal
+   pairs, so the rule can matter there. Do not refuse a pass for this. On the first pass after
    boot no category-1 compare can match (definition 0), and category 2
    keeps the name-window rule (item 5).
