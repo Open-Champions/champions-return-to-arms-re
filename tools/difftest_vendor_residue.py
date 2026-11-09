@@ -147,7 +147,7 @@ def boot_cases(path):
             raw = e.mem.read(base + n * S.ITEM_SIZE, S.ITEM_SIZE)
             assert all(raw[k] == 0xA5 for k in range(S.ITEM_SIZE) if k not in want), (category, n)
     cases += 1
-    print('PASS boot main@0x%x first calls walker 0x%x (%d constructors, once); constructor 0x%x -> 0x%x(1, 0xffff) '
+    print('PASS boot main@0x%x first calls walker 0x%x (%d calls, once); constructor 0x%x -> 0x%x(1, 0xffff) '
           'writes +0x10..+0x21 and the four codes of all 192 records (stores %s), not +0x00..+0x0f, +0x22, '
           'the slot values, +0x44 or the counts; after boot every record is the constructed pattern, counts 0' % (
               MAIN, WALKER, ctors, STOCK_CTOR, ITEM_ARRAY_CTOR, ','.join('0x%x' % p for p in sorted(pcs))), flush=True)
