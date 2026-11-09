@@ -10,6 +10,8 @@ available.
 Disc text keys (quest titles and bodies, help and info ids) are not written
 here. Each is read from its script call site and pinned by the first ten hex
 digits of its SHA-256 (TEXT below). The keys themselves stay in ignored local/.
+check_text_untracked confirms that no tracked file holds a key, or any word
+whose SHA-256 prefix is one of the TEXT ids.
 
   PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; \
   sys.path.insert(0,"tools"); \
@@ -19,11 +21,14 @@ digits of its SHA-256 (TEXT below). The keys themselves stay in ignored local/.
 import argparse
 import hashlib
 import os
+import re
 import struct
+import subprocess
 import sys
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import difftest_natives as N  # noqa: E402
+import difftest_story_beats as BEATS  # noqa: E402
 import difftest_story_mission45 as M  # noqa: E402
 import ref_story_route as R  # noqa: E402
 import scr  # noqa: E402
@@ -34,6 +39,7 @@ SENTINEL, FILL = M.SENTINEL, M.FILL
 G_PAUSED = M.G_PAUSED
 G_POST_LEVEL = 0x4FDCF0          # newWorldPost copies its name here (script-builtins.md line 499)
 POST_SENTINEL = 'POSTLEVEL-SENTINEL'
+G_SAVE_INHIBIT = 0x50605C        # setSaveInhibit's word (script-builtins.md line 516)
 WATCHED = (5, 6, 7, 8, 9)
 AVAIL = R.available_byte(SENTINEL, 1)
 DONE = R.complete_byte(SENTINEL, -1)
@@ -62,6 +68,7 @@ TEXT = {
     ('dis2', 0x1280, 0): 'a0df82f764',
     ('dis2', 0x1280, 1): '5d38865288',
     ('dis2', 0xC90, 1): '9f656ce178',
+    ('dis2', 0xD20, 1): '9f656ce178',
     ('valor', 0xE7C, 0): 'b2b7b8b5f1',
     ('valor', 0xE7C, 1): 'a09d8f2789',
     ('valor', 0xF3C, 0): 'd124df7d2f',
@@ -251,6 +258,68 @@ SITES = (
     ('obsfor1', 0x124, 'grantMission', (8,)),
     ('obsfor1', 0x158, 'addHelpMessage', ('#', '#')),
     ('storm1', 0x24C, 'setMissionAvailable', (9, 1)),
+    # Calls the doc names by offset beyond the writers and text sites above.
+    ('swamp1', 0x02C, 'newWorld', ('dis2',)),
+    ('swamp2', 0x02C, 'newWorld', ('dis2',)),
+    ('dis2', 0x3A8, 'preloadResource', ('bust.lmp',)),
+    ('dis2', 0x3D4, 'getv', ('dis_portalCount',)),
+    ('dis2', 0x51C, 'postAction', ('absorb',)),
+    ('dis2', 0x98C, 'postAction', ('initLevel',)),
+    ('dis2', 0xA30, 'setv', ('dis_sawScene', 1)),
+    ('dis2', 0xA5C, 'addDeferedCall', ('everyFrame',)),
+    ('dis2', 0xAE8, 'setv', ('dis_portalCount',)),
+    ('dis2', 0xB40, 'setv', ('dis_activatedAllPortals', 1)),
+    ('dis2', 0xB6C, 'callScript', ('gotAllPortals',)),
+    ('dis2', 0xC90, 'showBust', ('bust_portal.tex', '#')),
+    ('dis2', 0xD20, 'showBust', ('bust_portal.tex', '#')),
+    ('dis2', 0xDC0, 'addDeferedCall', ('pause',)),
+    ('dis2', 0x10F8, 'callScript', ('receivedShard',)),
+    ('dis2', 0x1178, 'soundSequence', ('fx.lmp', 'quest_complete.anm')),
+    ('valor', 0x0FA4, 'setv', ('startedMission7', 1)),
+    ('valor', 0x0FD8, 'setv', ('currentMission', 7)),
+    ('valor', 0x1094, 'getv', ('numberOfWaves',)),
+    ('valor', 0x10D4, 'setv', ('numberOfWaves', 1)),
+    ('valor', 0x1290, 'addDeferedCall', ('checkperiodicSpawn',)),
+    ('valor', 0x12F4, 'postAction', ('absorb',)),
+    ('valor', 0x1808, 'setv', ('sawValor', 1)),
+    ('valor', 0x21E0, 'setv', ('gateon', 1)),
+    ('honor', 0x3F8, 'addDeferedCall', ('particleEffects',)),
+    ('honor', 0x534, 'playerHasItem', ('shardofvalor',)),
+    ('honor', 0xC44, 'callScript', ('shardCheck',)),
+    ('honor', 0x11C4, 'playerHasItem', ('shardofvalor',)),
+    ('fire5', 0x144, 'addDeferedCall', ('shardCheck',)),
+    ('fire5', 0x1A8, 'setSaveInhibit', (1,)),
+    ('fire5', 0x1D4, 'postAction', ('absorb',)),
+    ('fire5', 0x284, 'setv', ('fire_sawDragon', 1)),
+    ('fire5', 0x2B0, 'postAction', ('firsaved',)),
+    ('fire5', 0x3A0, 'setCFlag', ('reddragon',)),
+    ('fire5', 0x3DC, 'setMonsterVal', ('reddragon', 1, 4000)),
+    ('fire5', 0x418, 'setMonsterVal', ('reddragon', 4, 4000)),
+    ('fire5', 0x454, 'setMonsterVal', ('reddragon', 5, 4000)),
+    ('fire5', 0x6BC, 'addDeferedCall', ('shardCheck',)),
+    ('fire5', 0x6F0, 'addDeferedCall', ('shardCheck',)),
+    ('fire5', 0x7B8, 'setv', ('killedDragon', 1)),
+    ('fire5', 0x7E4, 'setSaveInhibit', (0,)),
+    ('obsfor1', 0x02C, 'callScript', ('steppedOnTrigger',)),
+)
+
+# Entry starts the doc names: (level, entry, code offset in scr.parse internals).
+ENTRIES = (
+    ('swamp1', 'newWorldda5d', 0x0), ('swamp1', 'start', 0x44), ('swamp1', 'steppedOnTrigger', 0x194),
+    ('swamp2', 'newWorldda5d', 0x0), ('swamp2', 'start', 0x44),
+    ('dis2', 'setv7c05', 0xF8), ('dis2', 'setv7df7', 0x28C), ('dis2', 'prestart', 0x37C),
+    ('dis2', 'start', 0x444), ('dis2', 'absorb', 0x934), ('dis2', 'initLevel', 0x9A4),
+    ('dis2', 'everyFrame', 0xA74), ('dis2', 'portalTrig', 0xD38), ('dis2', 'gotAllPortals', 0xD64),
+    ('dis2', 'talkedToBert', 0xF70), ('dis2', 'receivedShard', 0x1110), ('dis2', 'pause', 0x1190),
+    ('valor', 'startDiaff8', 0x220), ('valor', 'setMissi1bb4', 0x4F4), ('valor', 'setv6151', 0x600),
+    ('valor', 'setMissie47a', 0x6FC), ('valor', 'setv3d8c', 0x834), ('valor', 'setv7ac2', 0x9F8),
+    ('valor', 'newWorldf844', 0xB84), ('valor', 'newWorld511b', 0xD20), ('valor', 'start', 0xDC4),
+    ('valor', 'absorb', 0x172C), ('valor', 'valorIntro', 0x1770), ('valor', 'steppedOnTrigger', 0x1820),
+    ('valor', 'gatewaytrigger', 0x20B8), ('valor', 'marrPortal', 0x2244),
+    ('honor', 'start', 0x2F8), ('honor', 'particleEffects', 0x554), ('honor', 'shardCheck', 0x1120),
+    ('fire1', 'start', 0x44),
+    ('fire5', 'start', 0xD0), ('fire5', 'absorb', 0x1EC), ('fire5', 'firsaved', 0x2FC),
+    ('fire5', 'setminiboss', 0x364), ('fire5', 'shardCheck', 0x46C), ('fire5', 'deadDragon', 0x784),
 )
 
 
@@ -283,6 +352,7 @@ def check_sites(disc):
         (('swamp1', 0x1F4, 1), ('valor', 0x1880, 1)),
         (('dis2', 0xF58, 0), ('dis2', 0x1280, 0)),
         (('fire3', 0x08C, 0), ('fire3', 0x130, 0)),
+        (('dis2', 0xC90, 1), ('dis2', 0xD20, 1)),
     )
     for group in same:
         values = {disc.text(*key) for key in group}
@@ -303,7 +373,10 @@ def check_sites(disc):
                         ('fire5', 'deadDragon'), ('valor', 'swordKeyCheck')):
         require(disc.pool0(level) == name, (level, disc.pool0(level)))
         checks += 1
-    return checks
+    for level, name, offset in ENTRIES:
+        internals = dict((entry, off) for off, entry in scr.parse(disc.image(level))['internals'])
+        require(internals.get(name) == offset, (level, name, internals.get(name)))
+    return checks + 1
 
 
 def objects(blob):
@@ -361,15 +434,17 @@ def check_links(disc):
                        if prop.startswith('action1='))
     require(evil_init == sorted(DIS_EVIL_INIT), evil_init)
     require(len(evil) == 8, len(evil))
-    exits = {}
+    exits, exit_count = {}, {}
     for cls, props in rows:
         if cls != 'PushTrigger':
             continue
         action = [p.split('=', 1)[1] for p in props if p.startswith('action=')]
         name = [p.split('=', 1)[1] for p in props if p.startswith('name=')]
         exits.setdefault(action[0], set()).update(name)
+        exit_count[action[0]] = exit_count.get(action[0], 0) + 1
     require(exits == {'setEntra9e0f': set(), 'setEntrae2b1': set(), 'newWorld3914': {'goodexit'},
                       'newWorld5a4f': {'evilexit'}}, exits)
+    require(exit_count == DIS_EXIT_COUNT, exit_count)
     trig = sorted(p for cls, props in rows if cls == 'Trigger' for p in props if p.startswith('t='))
     require(trig == ['t=if18fc', 't=if69ee'], trig)
     checks += 3
@@ -421,8 +496,9 @@ def check_links(disc):
     rows = objects(lv['obsfor1']['objects.ob'])
     require([p for cls, props in rows for p in props if p.startswith('t=')] == ['t=callScri7351'], 'obsfor1')
     rows = objects(lv['fire3']['objects.ob'])
-    keyed = [props for cls, props in rows if cls == 'PushTrigger' and 'key=return7da1' in props]
-    require(len(keyed) == 1 and 'action=setEntrabca8' in keyed[0], keyed)
+    keyed = [(cls, props) for cls, props in rows if any(p.startswith('key=') for p in props)]
+    require(len(keyed) == 1 and keyed[0][0] == 'PushTrigger' and 'key=return7da1' in keyed[0][1]
+            and 'action=setEntrabca8' in keyed[0][1], keyed)
     valves = sorted(p for cls, props in rows if cls == 'pipevalveswitch' for p in props if p.startswith('action1='))
     require(valves == ['action1=hideMons7bb4', 'action1=hideMonsc5f1'], valves)
     checks += 6
@@ -437,6 +513,92 @@ def check_links(disc):
             natasla_bak[15])
     checks += 4
     return checks
+
+
+DIS_EXIT_COUNT = {'setEntra9e0f': 1, 'setEntrae2b1': 1, 'newWorld3914': 4, 'newWorld5a4f': 4}
+NAME_CALLS = ('callScript', 'postAction', 'addDeferedCall')
+
+
+def check_unlinked(disc, elf):
+    """swamp1 and valor steppedOnTrigger: nothing on the disc or in the executable names them."""
+    checks = 0
+    require(b'steppedOnTrigger' not in elf, 'executable names steppedOnTrigger')
+    checks += 1
+    for level in ('swamp1', 'valor'):
+        image = disc.image(level)
+        parsed = scr.parse(image)
+        pool = dict(scr.strings(image, *parsed['strings']))
+        require('steppedOnTrigger' in {name for _off, name in parsed['internals']}, level)
+        # No pool string can name the entry, so no immediate argument can.
+        require('steppedOnTrigger' not in pool.values(), (level, 'pool'))
+        # Every call that runs a script by name takes an immediate pool string.
+        named = [(off, native, args) for off, native, args in disc.rows[level] if native in NAME_CALLS]
+        require(len(named) == NAME_CALL_COUNT[level], (level, len(named)))
+        require(all(args and args[0] is not None and args[0][1] is not None
+                    for _off, _native, args in named), (level, named))
+        dialogs = sorted(name for name in disc.levels[level] if name.endswith('.dbin'))
+        require(dialogs == UNLINKED_DIALOGS[level], (level, dialogs))
+        for name in dialogs:
+            actions = {action for _cond, choices in M.dbin_rows(disc.levels[level][name])
+                       for _a, action, _t in choices}
+            require('steppedOnTrigger' not in actions, (level, name))
+        checks += 1
+    # The wrapper pattern this rules out is obsfor1's: Trigger t=callScri7351 calls
+    # callScript at 0x2c with pool string 0, steppedOnTrigger (SITES).
+    return checks
+
+
+UNLINKED_DIALOGS = {'swamp1': [], 'valor': ['mattmar.dbin']}
+NAME_CALL_COUNT = {'swamp1': 0, 'valor': 9}
+
+# Level requests whose name argument is valor2 or honor, over every archive.
+REQUEST_NATIVES = ('newWorld', 'newWorldAlways', 'simpleNewWorld', 'newWorldPost', 'newWorldParameter')
+REACH = {
+    ('honor', 0x02C, 'newWorld', 'valor2'),
+    ('valor', 0xBB0, 'newWorldPost', 'valor2'),
+    ('valor', 0xD4C, 'newWorldPost', 'valor2'),
+    ('valor2', 0x02C, 'newWorld', 'honor'),
+}
+# Object properties whose value is valor2 or honor: only the arrival markers.
+REACH_PROPS = [('honor', 'Player1', 'from=valor2'), ('valor2', 'Player1', 'from=honor')]
+HONOR_QUEST_ADDS = [('valor', 0xC10), ('valor', 0xDAC)]
+
+
+def check_reach(data):
+    """What can request valor2 or honor, and what adds the honor quest, over every archive."""
+    found, computed, props, adds, scripts = set(), [], [], [], 0
+    for name in sorted(os.listdir(data)):
+        if not name.upper().endswith('.GOB'):
+            continue
+        level = name[:-4].lower()
+        try:
+            parts = M.lump_map(os.path.join(data, name))
+        except AssertionError:
+            continue
+        scripts += 1
+        for site, native, args in site_rows(parts['script.scr']):
+            if native in REQUEST_NATIVES:
+                if native == 'newWorldParameter' or not args or args[0] is None or args[0][1] is None:
+                    computed.append((level, site, native))
+                elif args[0][1] in ('valor2', 'honor'):
+                    found.add((level, site, native, args[0][1]))
+            if (native == 'addQuest' and args and args[0] is not None and args[0][1] is not None
+                    and nid(args[0][1]) == TEXT[('valor', 0xC10, 0)]):
+                adds.append((level, site))
+        if 'objects.ob' in parts:
+            for cls, plist in objects(parts['objects.ob']):
+                props.extend((level, cls, p) for p in plist
+                             if '=' in p and p.split('=', 1)[1].lower() in ('valor2', 'honor'))
+    require(found == REACH, sorted(found ^ REACH))
+    # No level request in any archive takes a computed name, and none uses newWorldParameter.
+    require(computed == [], computed)
+    require(props == REACH_PROPS, props)
+    require(adds == HONOR_QUEST_ADDS, adds)
+    require(scripts == SCRIPT_ARCHIVES, scripts)
+    # The menu's story rows (asserted against the executable in difftest_story_beats.py).
+    menu = {name for row in BEATS.TABLE_FROM_MINUS_ONE for name in row[:2]}
+    require('valor2' not in menu and 'honor' not in menu, sorted(menu))
+    return 5
 
 
 DIS_EVIL_INIT = ('callScri7956', 'callScri5b57', 'callScria6fd', 'callScri3067',
@@ -763,6 +925,61 @@ def check_dis_portals(run):
             run.requests()
             run.seed_kept()
             checks += 1
+    # prestart restores the counter from dis_portalCount: 5 carried + 3 hits grants,
+    # 5 + 2 does not.
+    for hits, grants in ((3, True), (2, False)):
+        run.prepare('dis2')
+        run.var('dis_sawScene', 1)
+        run.var('dis_portalCount', 5)
+        run.quest(swamp_title, swamp_body)
+        require(run.entry('prestart') == 0, 'prestart')
+        portal_hits(run, 0, hits)
+        M.clear_defer(run.mem)
+        require(run.entry('everyFrame') == 0, 'everyFrame')
+        run.stored('dis_portalCount', 5 + hits)
+        if grants:
+            run.held({6: (DONE,) * 4})
+            require(run.quests() == (0, []) and run.deferred() == 'pause', (run.quests(), run.deferred()))
+        else:
+            run.held()
+            require(run.quests()[0] == 1 and run.deferred() == 'everyFrame', (run.quests(), run.deferred()))
+        checks += 1
+    return checks
+
+
+# (evil, dis_sawScene, dis_talkedToBertoxx) -> whether everyFrame shows the bust
+BUST_CASES = (
+    (0, 1, None, True), (0, None, None, False), (0, 0, None, False),
+    (1, 1, 1, True), (1, None, 1, True), (1, 1, None, False),
+)
+
+
+def check_dis_bust(run):
+    bust = run.disc.text('dis2', 0xC90, 1)
+    checks = 0
+    for evil, saw, talked, shows in BUST_CASES:
+        for hits in (1, 5, 6, 7):
+            run.prepare('dis2', evil=evil)
+            if saw is not None:
+                run.var('dis_sawScene', saw)
+            if talked is not None:
+                run.var('dis_talkedToBertoxx', talked)
+            require(run.entry('prestart') == 0, 'prestart')
+            portal_hits(run, evil, hits)
+            M.clear_defer(run.mem)
+            require(run.entry('everyFrame') == 0, 'everyFrame')
+            run.stored('dis_portalCount', hits)
+            natives = ['getv', 'setv', 'addDeferedCall', 'getv', 'getEvil', 'getv']
+            if shows:
+                natives.append('showBust')
+            require(run.natives() == natives, (evil, saw, talked, hits, run.natives()))
+            # The bust's count argument is 8 minus the hits. text_lookup returns 0.
+            want = [('text_lookup', (bust.encode('latin1'),)),
+                    ('hud_setBust', (b'bust_portal.tex', 0, 8 - hits, 0xFFFFFFFF))] if shows else []
+            require(run.stubs() == want, (evil, saw, talked, hits, run.stubs()))
+            require(run.deferred() == 'everyFrame', run.deferred())
+            run.held()
+            checks += 1
     return checks
 
 
@@ -927,6 +1144,11 @@ VALOR_START_FRESH = [
 ]
 
 
+# Fresh valor start with the first-visit wave stores (getv numberOfWaves, setv 1,
+# setv skelPopulation) replaced by the set-wave reads.
+VALOR_START_WAVES_SET = VALOR_START_FRESH[:8] + ['getv', 'getv', 'setv'] + VALOR_START_FRESH[10:]
+
+
 def check_valor_start(run):
     disc = run.disc
     fire = (disc.text('valor', 0xE7C, 0), disc.text('valor', 0xE7C, 1))
@@ -972,6 +1194,19 @@ def check_valor_start(run):
     require(run.entry('start') == 0, 'return visit')
     require(run.posted() == '' and 'postAction' not in run.natives(), run.natives())
     checks += 1
+    # numberOfWaves 0 (absent) is the first visit: start stores it 1. Once set, the
+    # wave branch reads it and skelPopulation and writes no numberOfWaves.
+    for waves in (1, 2):
+        run.prepare('valor')
+        run.var('numberOfWaves', waves)
+        require(run.entry('start') == 0, 'waves set')
+        require(run.natives() == VALOR_START_WAVES_SET, run.natives())
+        require(run.vars()['numberofwaves'] == waves, run.vars())
+        addr = M.var_addr(run.mem, 'numberofwaves')
+        require(not any(wrote == addr for _pc, wrote, _size, _got in run.rig.emu.writes), 'numberOfWaves write')
+        require(run.deferred() == 'checkperiodicSpawn', run.deferred())
+        run.held({7: (AVAIL, SENTINEL, SENTINEL, SENTINEL)})
+        checks += 1
     run.prepare('valor')
     run.entry('start')
     require(run.post() == 0, 'absorb')
@@ -997,32 +1232,53 @@ def check_valor_start(run):
 
 
 MARR_CONDITIONS = ('if2a2e', 'if84f0', 'ifa054', 'if7275', 'ife995', 'if4ffe', 'if550a')
+MARR_BYTES = (SENTINEL, AVAIL, DONE, BOTH)
+MARR_READS = {'getMissionAvailable', 'getMissionComplete', 'getv', 'getEvil'}
+
+
+def marr_model(m8, m9, done, evil):
+    """The returns the original conditions gave over the 64 states (bit 0 available, bit 1 complete)."""
+    a8, c8, a9, c9 = m8 & 1, (m8 >> 1) & 1, m9 & 1, (m9 >> 1) & 1
+    both9 = a9 and c9
+    return (
+        int(not a8),                                  # node 0
+        int(a8 and not c8),                           # node 1
+        int(not a9),                                  # node 2
+        int(a9 and not c9),                           # node 3
+        int(both9 and not evil and done is None),     # node 4
+        int(both9 and not evil and done == 1),        # node 5
+        int(both9 and bool(evil)),                    # node 6
+    )
 
 
 def check_marr(run):
     disc = run.disc
     checks = 0
-    # (mission 8 byte, mission 9 byte, MarrDone, evil) -> the seven node conditions
-    states = (
-        (SENTINEL, SENTINEL, None, 0, (1, 0, 1, 0, 0, 0, 0)),
-        (AVAIL, SENTINEL, None, 0, (0, 1, 1, 0, 0, 0, 0)),
-        (BOTH, SENTINEL, None, 0, (0, 0, 1, 0, 0, 0, 0)),
-        (BOTH, AVAIL, None, 0, (0, 0, 0, 1, 0, 0, 0)),
-        (BOTH, BOTH, None, 0, (0, 0, 0, 0, 1, 0, 0)),
-        (BOTH, BOTH, 1, 0, (0, 0, 0, 0, 0, 1, 0)),
-        (BOTH, BOTH, None, 1, (0, 0, 0, 0, 0, 0, 1)),
-        (BOTH, BOTH, 1, 1, (0, 0, 0, 0, 0, 0, 1)),
-    )
-    for m8, m9, done, evil, want in states:
-        got = []
-        for entry in MARR_CONDITIONS:
-            run.prepare('valor', evil=evil, bytes0={8: m8, 9: m9})
-            if done is not None:
-                run.var('MarrDone', done)
-            got.append(run.entry(entry))
-            require(run.stubs() == [], run.stubs())
-        require(tuple(got) == want, (hex(m8), hex(m9), done, evil, got))
-        checks += 1
+    # Every byte-8 x byte-9 state (available and complete bits), MarrDone absent or 1,
+    # good and evil: 64 rows, each run for all seven conditions.
+    late = []
+    for m8 in MARR_BYTES:
+        for m9 in MARR_BYTES:
+            for done in (None, 1):
+                for evil in (0, 1):
+                    got = []
+                    for entry in MARR_CONDITIONS:
+                        run.prepare('valor', evil=evil, bytes0={8: m8, 9: m9})
+                        if done is not None:
+                            run.var('MarrDone', done)
+                        got.append(run.entry(entry))
+                        require(set(run.natives()) <= MARR_READS and run.stubs() == [], (entry, run.natives()))
+                        run.held({8: (m8, SENTINEL, SENTINEL, SENTINEL), 9: (m9, SENTINEL, SENTINEL, SENTINEL)})
+                    want = marr_model(m8, m9, done, evil)
+                    require(tuple(got) == want, (hex(m8), hex(m9), done, evil, got, want))
+                    first = R.dialog_start_node(got)
+                    if first in (5, 6):
+                        late.append((m8, m9, done, evil, first))
+                    checks += 1
+    # Under the first-true rule, nodes 5 and 6 come first only with both missions
+    # available and complete: node 5 for a good player with MarrDone, node 6 for evil.
+    require(late == [(BOTH, BOTH, None, 1, 6), (BOTH, BOTH, 1, 0, 5), (BOTH, BOTH, 1, 1, 6)], late)
+    checks += 1
     fire_title, fire_body = disc.text('valor', 0x668, 0), disc.text('valor', 0x668, 1)
     storm_title, storm_body = disc.text('valor', 0x89C, 0), disc.text('valor', 0x89C, 1)
     run.prepare('valor')
@@ -1104,23 +1360,31 @@ def check_valor_doors(run):
     run.prepare('valor')
     require(run.entry('return25eb') == 0 and run.natives() == [], run.natives())
     checks += 1
-    for fire, gate, natives in ((None, None, ['getv', 'getv']),
-                                (1, None, ['getv', 'getv', 'trigger', 'setv']),
-                                (1, 1, ['getv', 'getv'])):
+    # mar_fire short-circuits the mar_storm read; mar_storm alone also opens the gate.
+    for fire, storm, gate, natives in ((None, None, None, ['getv', 'getv']),
+                                       (1, None, None, ['getv', 'getv', 'trigger', 'setv']),
+                                       (1, None, 1, ['getv', 'getv']),
+                                       (None, 1, None, ['getv', 'getv', 'getv', 'trigger', 'setv']),
+                                       (None, 1, 1, ['getv', 'getv', 'getv'])):
         run.prepare('valor')
         if fire:
             run.var('mar_fire', fire)
+        if storm:
+            run.var('mar_storm', storm)
         if gate:
             run.var('gateon', gate)
         require(run.entry('callScri1ef1') == 0, 'gate')
-        require(run.natives() == ['callScript'] + natives, (fire, gate, run.natives()))
+        require(run.natives() == ['callScript'] + natives, (fire, storm, gate, run.natives()))
         # No object named portal is planted, so trigger makes no virtual call.
         require(run.stubs() == [], run.stubs())
-        if fire and not gate:
+        if 'trigger' in natives:
             run.stored('gateon', 1)
         run.held()
         checks += 1
     return checks
+
+
+COMPARE_CASES = ((1, 1, False), (2, 1, False), (1, 0, False), (0, -1, False), (1, 2, True), (-1, 0, True))
 
 
 def check_honor(run):
@@ -1135,11 +1399,13 @@ def check_honor(run):
     grant_stubs = ([('inventory_countItemByName', (b'shardofvalor', 0))] * 2
                    + help_calls(disc.text('honor', 0x1200, 0), disc.text('honor', 0x1200, 1)) + SOUND_CALLS)
 
-    def ticks(count, shells, paused=0):
+    def ticks(count, shells, paused=0, each=None):
         run.rig.responder.shells = shells
         run.mem.w32(G_PAUSED, paused)
         for _ in range(count):
             require(run.entry('shardCheck') == 0, 'shardCheck')
+            if each is not None:
+                require(run.natives() == each and run.stubs() == [], (run.natives(), run.stubs()))
 
     for before, after0 in ((SENTINEL, DONE), (AVAIL, BOTH)):
         run.prepare('honor', shells=0, bytes0={7: before})
@@ -1149,8 +1415,8 @@ def check_honor(run):
         # particle_define is a stub that returns 0; its first argument is a pointer.
         require([name for name, _args in run.stubs()] == ['particle_define', 'inventory_countItemByName']
                 and run.stubs()[1] == ('inventory_countItemByName', (b'shardofvalor', 0)), run.stubs())
-        ticks(25, 0)
-        require(run.natives() == ['gamePaused'] and run.stubs() == [], run.natives())
+        # Calls 1-25: the only native is gamePaused, and nothing is granted.
+        ticks(25, 0, each=['gamePaused'])
         run.held({7: (before, SENTINEL, SENTINEL, SENTINEL)})
         ticks(1, 1)
         require(run.natives() == grant_natives, run.natives())
@@ -1159,15 +1425,23 @@ def check_honor(run):
         require(run.quests() == (0, []) and run.mem.cstr(PLAYERS + QUEST, 32) == 'NoQuests', run.quests())
         run.seed_kept()
         checks += 1
-    # The count read at start must grow: equal counts do not grant.
-    run.prepare('honor', shells=1)
-    run.quest(title)
-    run.entry('start')
-    ticks(26, 1)
-    require(run.natives() == ['playerHasItem', 'gamePaused'], run.natives())
-    run.held()
-    require(run.quests()[0] == 1, run.quests())
-    checks += 1
+    # (count at start, count at the check): a signed greater-than. Equal, falling
+    # and below-zero counts do not grant; -1 then 0 does.
+    for first, second, grants in COMPARE_CASES:
+        run.prepare('honor', shells=first)
+        run.quest(title)
+        run.entry('start')
+        ticks(25, first, each=['gamePaused'])
+        ticks(1, second)
+        if grants:
+            require(run.natives() == grant_natives, (first, second, run.natives()))
+            run.held({7: (DONE,) * 4})
+            require(run.quests() == (0, []), run.quests())
+        else:
+            require(run.natives() == ['playerHasItem', 'gamePaused'], (first, second, run.natives()))
+            run.held()
+            require(run.quests()[0] == 1, run.quests())
+        checks += 1
     # A paused call does not advance the counter: the check moves one call later.
     run.prepare('honor', shells=0)
     run.entry('start')
@@ -1261,15 +1535,19 @@ def check_fire5(run):
     checks = 0
     fire_title = disc.text('fire1', 0x0B0, 0)
     count_call = [('inventory_countItemByName', (b'shardoffire', 0))]
-    for killed, natives in ((None, ['playerHasItem', 'addDeferedCall', 'getv', 'setSaveInhibit', 'postAction']),
-                            (1, ['playerHasItem', 'addDeferedCall', 'getv', 'postAction'])):
+    inhibit = ['playerHasItem', 'addDeferedCall', 'getv', 'setSaveInhibit', 'postAction']
+    plain = ['playerHasItem', 'addDeferedCall', 'getv', 'postAction']
+    for killed, natives in ((None, inhibit), (0, inhibit), (1, plain), (0x5A, plain)):
         run.prepare('fire5')
-        if killed:
+        run.mem.w32(G_SAVE_INHIBIT, 0x5A5A5A5A)
+        if killed is not None:
             run.var('killedDragon', killed)
         require(run.entry('start') == 0, 'fire5 start')
         require(run.natives() == natives, (killed, run.natives()))
         require(run.stubs() == count_call, run.stubs())
         require(run.deferred() == 'shardCheck' and run.posted() == 'absorb', (run.deferred(), run.posted()))
+        inhibits = 'setSaveInhibit' in natives
+        require(run.mem.u32(G_SAVE_INHIBIT) == (1 if inhibits else 0x5A5A5A5A), hex(run.mem.u32(G_SAVE_INHIBIT)))
         if killed is None:
             run.stored('killedDragon', 0)
         run.held()
@@ -1300,21 +1578,23 @@ def check_fire5(run):
     grant_stubs = (count_call + help_calls(disc.text('fire5', 0x52C, 0), disc.text('fire5', 0x52C, 1))
                    + SOUND_CALLS)
 
-    def ticks(count, shells, paused=0):
+    def ticks(count, shells, paused=0, each=None):
         run.rig.responder.shells = shells
         run.mem.w32(G_PAUSED, paused)
         for _ in range(count):
             M.clear_defer(run.mem)
             require(run.entry('shardCheck') == 0, 'shardCheck')
+            if each is not None:
+                require(run.natives() == each and run.stubs() == [] and run.deferred() == 'shardCheck',
+                        (run.natives(), run.stubs(), run.deferred()))
 
     for before, after0, paused in ((SENTINEL, DONE, 0), (AVAIL, BOTH, 0), (SENTINEL, DONE, 1)):
         run.prepare('fire5', shells=0, bytes0={8: before})
         run.quest(fire_title)
         run.var('fire_gotShard', 0x5A)
         run.entry('start')
-        ticks(24, 1, paused)
-        require(run.natives() == ['addDeferedCall'] and run.stubs() == [], run.natives())
-        require(run.deferred() == 'shardCheck', run.deferred())
+        # Calls 1-24 each only queue shardCheck again.
+        ticks(24, 1, paused, each=['addDeferedCall'])
         run.held({8: (before, SENTINEL, SENTINEL, SENTINEL)})
         require(run.vars()['fire_gotshard'] == 0x5A, run.vars())
         ticks(1, 1, paused)
@@ -1328,18 +1608,31 @@ def check_fire5(run):
         require(run.quests() == (1, [(fire_title, 'plant-body')]), run.quests())
         run.seed_kept()
         checks += 1
-    run.prepare('fire5', shells=1)
-    run.entry('start')
-    ticks(25, 1)
-    require(run.natives() == ['playerHasItem', 'addDeferedCall'] and run.stubs() == count_call, run.natives())
-    require(run.deferred() == 'shardCheck', run.deferred())
-    run.held()
-    checks += 1
+    for first, second, grants in COMPARE_CASES:
+        run.prepare('fire5', shells=first)
+        run.var('fire_gotShard', 0x5A)
+        run.entry('start')
+        ticks(24, first, each=['addDeferedCall'])
+        ticks(1, second)
+        if grants:
+            require(run.natives() == grant_natives, (first, second, run.natives()))
+            run.held({8: (DONE,) * 4})
+            run.stored('fire_gotShard', 1)
+            require(run.deferred() == '', run.deferred())
+        else:
+            require(run.natives() == ['playerHasItem', 'addDeferedCall'], (first, second, run.natives()))
+            require(run.stubs() == [('inventory_countItemByName', (b'shardoffire', 0))], run.stubs())
+            require(run.deferred() == 'shardCheck', run.deferred())
+            require(run.vars()['fire_gotshard'] == 0x5A, run.vars())
+            run.held()
+        checks += 1
     run.prepare('fire5')
+    run.mem.w32(G_SAVE_INHIBIT, 1)
     run.var('killedDragon', 0x5A)
     require(run.entry('callScri3971') == 0, 'death')
     require(run.natives() == ['callScript', 'setv', 'setSaveInhibit'] and run.stubs() == [], run.natives())
     run.stored('killedDragon', 1)
+    require(run.mem.u32(G_SAVE_INHIBIT) == 0, hex(run.mem.u32(G_SAVE_INHIBIT)))
     run.held()
     checks += 1
     for planted, expect in ((None, 0), (1, 1), (0x5A, 0)):
@@ -1450,6 +1743,29 @@ COMPUTED_WRITERS = []
 SCRIPT_ARCHIVES = 119
 
 
+def check_text_untracked(disc):
+    """No tracked file holds a TEXT key, or any word whose SHA-256 prefix is a TEXT id."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    listed = subprocess.run(['git', '-C', root, 'ls-files', '-z'], capture_output=True, check=True)
+    files = [name for name in listed.stdout.decode('utf-8').split('\0') if name]
+    require(len(files) > 100, len(files))
+    keys = {disc.text(*where) for where in TEXT}
+    ids = set(TEXT.values())
+    require(len(keys) == len(ids), (len(keys), len(ids)))
+    hits = []
+    for name in files:
+        path = os.path.join(root, name)
+        if not os.path.isfile(path):
+            continue
+        body = open(path, 'rb').read().decode('latin1')
+        hits.extend((name, key) for key in keys if key in body)
+        for word in set(re.findall(r'[A-Za-z0-9_]{3,64}', body)):
+            if nid(word) in ids:
+                hits.append((name, nid(word)))
+    require(hits == [], [name for name, _ in hits])
+    return 2
+
+
 def check_seed(rig, disc, seed):
     run = Run(rig, disc, seed)
     checks = check_sites(disc)
@@ -1457,6 +1773,7 @@ def check_seed(rig, disc, seed):
     checks += check_swamp(run)
     checks += check_dis_start(run)
     checks += check_dis_portals(run)
+    checks += check_dis_bust(run)
     checks += check_dis_pause(run)
     checks += check_dis_bert(run)
     checks += check_dis_travel(run)
@@ -1482,7 +1799,8 @@ def main():
     if hashlib.sha256(blob).hexdigest() != ELF_SHA256:
         raise SystemExit('unexpected executable')
     disc = Disc(args.data)
-    writers = check_writers(args.data)
+    writers = check_writers(args.data) + check_reach(args.data) + check_unlinked(disc, blob)
+    writers += check_text_untracked(disc)
     for seed in (args.seeds or [20973, 7]):
         rig = N.Rig(args.elf)
         rig.checkpoint()
