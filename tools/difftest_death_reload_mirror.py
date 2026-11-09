@@ -108,8 +108,8 @@ def run_boot(elf):
     return e
 
 
-def reload_after(elf, rng, qualified):
-    e = run_boot(elf)
+def reload_after(elf, rng, qualified, boot=run_boot):
+    e = boot(elf)
     e.install_terminate_thread()
     e._heap, e.HEAP_HI = OUTSIDE_RAM, OUTSIDE_RAM + 0x700000
     e.r[29] = e.stack_hi - 0x100

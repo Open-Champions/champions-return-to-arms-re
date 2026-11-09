@@ -960,6 +960,86 @@ class ControlTests(unittest.TestCase):
         with self.assertRaises(MemoryFault):
             narrow.call(BASE)
 
+    def sif_machine(self, words, regs=None, ra=None):
+        emu = machine(words, regs, run=False)
+        emu.install_modelled_boot()
+        emu.install_ram_mirrors()
+        emu.install_modelled_sif()
+        if ra is not None:
+            emu.hook(BASE + 4, lambda e: e.set_reg('ra', ra))
+            emu.hook(BASE + 8, lambda e: e.set_reg('ra', EE.RETURN_ADDR))
+        return emu
+
+    def test_sif_handshake_is_opt_in_and_only_at_read_callers(self):
+        bare = machine([NOP], run=False)
+        with self.assertRaises(EmuError):
+            bare.install_modelled_sif()
+        bare.install_modelled_boot()
+        with self.assertRaises(EmuError):
+            bare.install_modelled_sif()
+        for addr in (0x1000E010, 0x1000C000):
+            fault = machine([I(0x23, V0, A0, 0)], {A0: addr}, run=False)
+            with self.assertRaises(MemoryFault):
+                fault.call(BASE)
+            model = self.sif_machine([I(0x23, V0, A0, 0)], {A0: addr})
+            self.assertEqual(model.call(BASE), 0)
+        beside = self.sif_machine([I(0x23, V0, A0, 0)], {A0: 0x1000E014})
+        with self.assertRaises(MemoryFault):
+            beside.call(BASE)
+        getreg = [addiu(V1, ZERO, 0x7A), R(0x0C)]
+        flag = self.sif_machine(getreg, {A0: 4}, ra=0x355808)
+        with self.assertRaises(EmuError):
+            flag.install_modelled_sif()
+        self.assertEqual(flag.call(BASE), 0x20000)
+        sub = self.sif_machine(getreg, {A0: 2}, ra=0x35581c)
+        self.assertEqual(sub.call(BASE), EE.SIF_SUBADDR_PLACEHOLDER)
+        self.assertFalse(sub.mem.is_mapped(EE.SIF_SUBADDR_PLACEHOLDER, 4))
+        for regs, ra in (({A0: 4}, 0x355810), ({A0: 2}, 0x355808)):
+            wrong = self.sif_machine(getreg, regs, ra=ra)
+            with self.assertRaises(CpuTrap):
+                wrong.call(BASE)
+        setreg = self.sif_machine([addiu(V1, ZERO, 0x79), R(0x0C)],
+                                  {A0: 0x80000000, A1: 0x1234}, ra=0x35582c)
+        self.assertEqual(setreg.call(BASE), 0)
+        self.assertEqual(setreg.sif_reg_writes, [(0x35582c, 0x80000000, 0x1234)])
+        setreg.load_words(BASE, getreg + [JR_RA, NOP])
+        setreg.hooks.clear()
+        setreg.hook(BASE + 4, lambda e: e.set_reg('ra', 0x3557b4))
+        setreg.hook(BASE + 8, lambda e: e.set_reg('ra', EE.RETURN_ADDR))
+        setreg.r[A0] = 0x80000000
+        self.assertEqual(setreg.call(BASE), 0x1234)
+        setdma = self.sif_machine([addiu(V1, ZERO, 0x77), R(0x0C)], {A0: DATA, A1: 1}, ra=0x355ad0)
+        with self.assertRaises(CpuTrap):
+            setdma.call(BASE)
+
+    def test_sif_reply_is_gated_on_status(self):
+        # A handler that stores 1 at DATA, then the packet buffer pointer word.
+        handler = BASE + 0x100
+        words = [addiu(V0, ZERO, 1), I(0x2B, V0, A1, 0), JR_RA, NOP]
+        for status, flag, runs in ((0, False, False), (0x10000, False, False),
+                                   (0x10001, False, True), (0x10000, True, True)):
+            emu = machine([NOP], {A1: DATA}, run=False)
+            emu.load_words(handler, words)
+            emu.mem.map(0x8ef000, 0x400)
+            emu.mem.w32(0x8ef118, 0x208ef040)
+            emu.install_modelled_boot()
+            emu.install_ram_mirrors()
+            emu.install_modelled_sif(while_disabled=flag)
+            emu._dmac.append({'id': 1, 'cause': 5, 'fn': handler, 'next': 0, 'enabled': True})
+            emu.cop0[12] = status
+            if runs:
+                emu._deliver_modelled_set_sreg(0, 1)
+                self.assertEqual(emu.sif_deliveries, [(5, handler, 0x80000001, 0, 1, status)])
+                self.assertEqual(emu.mem.u32(0x8ef048), 0x80000001)
+                self.assertEqual(emu.mem.u32(DATA), 1)
+                self.assertEqual(emu.cop0[12], status)
+            else:
+                with self.assertRaises(CpuTrap) as refused:
+                    emu._deliver_modelled_set_sreg(0, 1)
+                self.assertIn('Status 0x%08x' % status, str(refused.exception))
+                self.assertEqual(emu.sif_deliveries, [])
+                self.assertEqual(emu.mem.u32(0x8ef048), 0)
+
     def test_vpu_stat_cfc2_is_opt_in_and_only_register_29(self):
         cfc2 = (0x12 << 26) | (2 << 21) | (V0 << 16) | (29 << 11)
         other = (0x12 << 26) | (2 << 21) | (V0 << 16) | (1 << 11)

@@ -63,7 +63,11 @@ register 29 return 0.  install_modelled_flush_cache and
 install_modelled_end_of_heap accept FlushCache and EndOfHeap only at the
 callers named on those methods.  install_modelled_gs_privileged accepts 8-byte
 stores to the named GS privileged registers and reads CSR as 0; that is a
-model, not a GS.  Every value these handlers write in v0 is modelled, not a recovered kernel
+model, not a GS.  install_modelled_sif models the EE half of the SIF command
+handshake read from 0x355608 and 0x355d68: the SIF syscalls at their read
+callers, D_STAT and D5_CHCR as storage, and one modelled IOP command packet,
+delivered through the game's own DMAC handler, where a poll waits for the
+IOP.  It has no IOP.  Every value these handlers write in v0 is modelled, not a recovered kernel
 result.  Every other number still raises CpuTrap.  The opt-ins compose; none
 is installed by default.
 
@@ -624,6 +628,14 @@ class EE:
         self._vpu_stat = False
         self._flush_cache = False
         self._end_of_heap = False
+        self._sif = False
+        self._sif_while_disabled = False
+        self._sif_regs = {}
+        self._dmac = []
+        self.sif_transfers = []         # (ra, src, dest, size, attr, packet bytes)
+        self.sif_deliveries = []        # (channel, handler, command, index, value, Status)
+        self.sif_reg_writes = []        # (ra, register, value)
+        self._next_dma_id = 1
         self._gs_privileged = False
         self.gs_writes = []             # (pc, address, value) of modelled GS register stores
         self.gs_reads = []              # (pc, address, value) of modelled GS register loads
@@ -1019,6 +1031,194 @@ class EE:
             raise EmuError('modelled VPU status is already installed')
         self._vpu_stat = True
 
+    # The IOP buffer address returned by GetReg(2).  Unmapped, and outside the
+    # main-RAM mirrors, so any EE load or store through it faults.
+    SIF_SUBADDR_PLACEHOLDER = 0x0BAD0000
+
+    # GetReg (syscall 0x7a) return addresses whose callers were read.
+    _SIF_GETREG_RA = {
+        0x3557b4: 0x80000000,   # sceSifInitCmd: v0 nonzero takes the re-init path
+        0x355808: 4,            # sceSifInitCmd poll: v0 & 0x20000
+        0x35581c: 2,            # sceSifInitCmd: stored at 0x8ef120, passed to SetReg
+        0x355e90: 0x80000002,   # sceSifInitRpc: v0 nonzero returns at once
+    }
+    # SetReg (syscall 0x79) return addresses whose callers do not read v0.
+    _SIF_SETREG_RA = {
+        0x35582c: 0x80000000,
+        0x35583c: 0x80000001,
+        0x19bab0: 0x80000002,   # tail call from sceSifInitRpc 0x355ee8, caller iop_loadModules
+    }
+
+    def install_modelled_sif(self, while_disabled=False):
+        """Opt in to the EE half of the SIF command handshake.  There is no IOP.
+
+        Observed callers, in the order the boot reaches them from
+        iop_loadModules 0x19ba98 -> sceSifInitRpc 0x355d68 (jal at 0x19baa8)
+        -> sceSifInitCmd 0x355608 (jal at 0x355db0):
+
+        * 0x35574c reads D_STAT 0x1000e010 and, when bit 0x20 is set, writes
+          0x20 back at 0x355760.  0x35576c reads D5_CHCR 0x1000c000 and calls
+          SetDChain 0x352dc0 (syscall 0x78) when bit 0x100 is clear.  Both
+          words are storage that starts at 0 here: no pending channel-5
+          status and channel 5 not running.  That 0 is modelled.
+        * SetDChain at ra 0x355784 and iSetDChain (syscall -0x78) at ra
+          0x355bec: neither caller reads v0.  v0 = 0.
+        * AddDmacHandler (syscall 0x12) at ra 0x355798 with channel 5 and
+          handler 0x355b70.  v0, stored at 0x8ef114, is a modelled id.
+        * EnableDmac (syscall 0x16) at ra 0x353630, inside wrapper 0x3535f8
+          called from 0x3557a0 (saved ra 0x3557a8, which does not read v0).
+          v0 = 0.
+        * GetReg (syscall 0x7a), accepted only at the four return addresses
+          in _SIF_GETREG_RA.  Software registers 0x80000000 and 0x80000002
+          return the last SetReg value, 0 before any.  Register 4 is the
+          main-flag word: the loop at 0x355800-0x35580c repeats until bit
+          0x20000 is set.  The model returns 0x20000, the one bit that loop
+          tests.  That bit stands for the IOP side; it is not a recovered
+          flag value.  Register 2 is the IOP's command buffer address.  The
+          EE stores it at 0x8ef120, passes it to SetReg 0x80000000 and uses
+          it as the destination word of every SetDma descriptor that
+          _SifSendCmd 0x3559b8 builds (0x355a5c).  The model returns
+          SIF_SUBADDR_PLACEHOLDER, an unmapped address, so an EE access
+          through it would fault.  It is not an IOP address.
+        * SetReg (syscall 0x79), accepted only at the return addresses in
+          _SIF_SETREG_RA.  None of those callers reads v0.  v0 = 0.  The
+          value is kept for GetReg and recorded in sif_reg_writes.
+        * SetDma (syscall 0x77) at ra 0x355acc, the single call in
+          _SifSendCmd.  a0 holds a1 descriptors of 16 bytes: source, IOP
+          destination, size, attribute.  Each is recorded in sif_transfers
+          with the source bytes.  Nothing is transferred.  v0 is a nonzero
+          modelled id: sceSifBindRpc 0x356510 tests it at 0x3565cc and treats
+          0 as a failed send.
+        * After sceSifInitRpc sends command 0x80000002 with word +0xc = 1
+          (0x355e98-0x355eb4), it polls sceSifGetSreg(0) 0x3555c0 at
+          0x355ec0-0x355ec8 until the word at 0x8ef2c0 is nonzero.  Only
+          the IOP's set-register command writes it, through the game's own
+          handler: DMAC channel-5 handler 0x355b70 reads the packet pointer
+          at 0x8ef118, takes the size byte at +0, copies the packet, clears
+          the byte, and for a command word at +8 with bit 31 set calls system
+          handler (word & 0x7fffffff); entry 1 is 0x355590, which stores
+          word +0x14 at sregs[word +0x10].  The model writes one packet into
+          that buffer when that send is recorded: size 0x18, command
+          0x80000001, index 0, value 1, and runs the registered, enabled
+          channel-5 handler once, as a nested call whose registers are then
+          restored.  The packet, its value 1 and its timing are modelled;
+          the layout is the one 0x355b70 and 0x355590 read.  Recorded in
+          sif_deliveries.
+
+        Status gate (as install_modelled_intc, audit R7-2): the packet is
+        delivered only when interrupts_enabled() is true; otherwise the send
+        raises CpuTrap naming Status.  while_disabled=True delivers anyway,
+        a disclosed modelled exception.  The COP0 Status at the delivery is
+        the last field of each sif_deliveries entry.  In the round-8 boot it
+        is 0x10000: the game's EI at 0x355e7c set EIE, and IE was never set.
+
+        Not modelled: the IOP, the bind and call replies (command 0x80000008,
+        handled by 0x356068), any RPC result data, the reset and boot-end
+        bits, and any other SIF caller.  Those still raise CpuTrap.
+        Requires install_modelled_boot and install_ram_mirrors.
+        """
+        if self._sif:
+            raise EmuError('modelled SIF handshake is already installed')
+        if not self._modelled_boot or not self._ram_mirrors:
+            raise EmuError('install_modelled_sif needs install_modelled_boot and install_ram_mirrors')
+        self._sif = True
+        self._sif_while_disabled = bool(while_disabled)
+        self._sif_regs = {}
+        self._dmac = []
+        self.sif_transfers = []
+        self.sif_deliveries = []
+        self.sif_reg_writes = []
+        self._next_dma_id = 1
+
+    def _modelled_sif_syscall(self, number):
+        """Handle one opted-in SIF syscall.  Return False if this caller is not in the model."""
+        ra = self.r[31] & M32
+        a0 = self.r[4] & M32
+        a1 = self.r[5] & M32
+        if number == 0x78:
+            if ra != 0x355784:
+                return False
+            self._set_v0(0)
+            return True
+        if number == -0x78:
+            if ra != 0x355bec or not self._in_intc:
+                return False
+            self._set_v0(0)
+            return True
+        if number == 0x12:
+            if ra != 0x355798 or a0 != 5:
+                return False
+            handler_id = self._next_handler
+            self._next_handler = handler_id + 1
+            self._dmac.append({'id': handler_id, 'cause': a0, 'fn': a1,
+                               'next': self.r[6] & M32, 'enabled': False})
+            self._set_v0(handler_id)
+            return True
+        if number == 0x16:
+            sp = self.r[29] & M32
+            if ra != 0x353630 or a0 != 5 or self.mem.u32(sp + 0x20) != 0x3557a8:
+                return False
+            for handler in self._dmac:
+                if handler['cause'] == a0:
+                    handler['enabled'] = True
+            self._set_v0(0)
+            return True
+        if number == 0x7a:
+            reg = self._SIF_GETREG_RA.get(ra)
+            if reg is None or reg != a0:
+                return False
+            if reg == 4:
+                self._set_v0(0x20000)
+            elif reg == 2:
+                self._set_v0(self.SIF_SUBADDR_PLACEHOLDER)
+            else:
+                self._set_v0(self._sif_regs.get(reg, 0))
+            return True
+        if number == 0x79:
+            reg = self._SIF_SETREG_RA.get(ra)
+            if reg is None or reg != a0:
+                return False
+            self._sif_regs[reg] = a1
+            self.sif_reg_writes.append((ra, reg, a1))
+            self._set_v0(0)
+            return True
+        if number == 0x77:
+            if ra != 0x355acc or not 1 <= a1 <= 2:
+                return False
+            reply = False
+            for index in range(a1):
+                src, dest, size, attr = (self.mem.u32(a0 + index * 16 + k) for k in (0, 4, 8, 12))
+                phys = self._mirror_phys(src)
+                data = self.mem.read(src if phys is None else phys, size)
+                self.sif_transfers.append((ra, src, dest, size, attr, data))
+                if (size >= 0x10 and struct.unpack_from('<I', data, 8)[0] == 0x80000002
+                        and struct.unpack_from('<I', data, 12)[0] == 1):
+                    reply = True
+            dma_id = self._next_dma_id
+            self._next_dma_id = dma_id + 1
+            self._set_v0(dma_id)
+            if reply:
+                self._deliver_modelled_set_sreg(0, 1)
+            return True
+        return False
+
+    def _deliver_modelled_set_sreg(self, index, value):
+        handler = next((h for h in self._dmac if h['cause'] == 5 and h['enabled']), None)
+        if handler is None:
+            raise CpuTrap('modelled SIF reply has no enabled channel-5 DMAC handler')
+        buf = self.mem.u32(0x8ef118)
+        phys = self._mirror_phys(buf)
+        target = buf if phys is None else phys
+        status = self.cop0[12] & M32
+        if not self.interrupts_enabled() and not self._sif_while_disabled:
+            raise CpuTrap('modelled SIF reply refused at 0x%08x: Status 0x%08x disables the '
+                          'channel-5 DMAC handler 0x%08x' % (self.cur, status, handler['fn']))
+        packet = struct.pack('<IIIIII', 0x18, 0, 0x80000001, 0, index, value)
+        self.mem.write(target, packet)
+        self.sif_deliveries.append((5, handler['fn'], 0x80000001, index, value, status))
+        self._run_intc_handler(handler)
+
+
     # FlushCache callers whose following instructions do not read v0.
     _FLUSH_IGNORED_RA = frozenset((0x19d628, 0x355744))
 
@@ -1035,6 +1235,8 @@ class EE:
             return
         if number == 37 and self._terminate_thread:
             self.terminate_thread()
+            return
+        if self._sif and self._modelled_sif_syscall(number):
             return
         if number == 100 and self._flush_cache and (self.r[31] & M32) in self._FLUSH_IGNORED_RA:
             self._set_v0(0)
@@ -1538,6 +1740,8 @@ class EE:
 
     def _hw_key(self, addr, size):
         """Modelled 4-byte hardware word, or None so the access uses memory."""
+        if self._sif and size == 4 and addr in (0x1000e010, 0x1000c000):
+            return addr
         if not self._dma_idle or size != 4 or addr & 3:
             return None
         if self._dma_reg_off(addr) is not None or addr in (0x10003c00, 0x10003020):
