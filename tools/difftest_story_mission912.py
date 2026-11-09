@@ -1102,8 +1102,9 @@ def check_hub_offers(rig, levels, keys, seed):
     return checks
 
 
-# Every setMissionAvailable / grantMission site for missions 9..12 on the disc,
-# by level, native and script offset (the raw immediate, not the census text).
+# Every script call site of setMissionAvailable / grantMission for missions
+# 9..12 on the disc, by level, native and script offset (the raw immediate, not
+# the census text). Executable callers outside the natives are not surveyed.
 CENSUS = {
     (9, 'setMissionAvailable'): {('valor', 0x730), ('storm1', 0x24C)},
     (9, 'grantMission'): {('storm2', 0xF70)},
