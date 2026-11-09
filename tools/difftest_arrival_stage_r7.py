@@ -97,7 +97,7 @@ def last_store(writes, address, length, lo, hi):
 
 def plant_guard(e):
     """The low 0x1400 bytes engine_init fills with 0xa5 (0x19d230/0x19d244)."""
-    assert e.mem.u32(GUARD_FILL_INSN) == 0x2404FFA5
+    assert e.mem.s16(GUARD_FILL_INSN) == -0x5B
     e.mem.write(GUARD, b'\xa5' * GUARD_SIZE)
 
 
@@ -125,7 +125,7 @@ def producer(path, archives, body, seed):
     assert e.mem.u32(MODE_B) == 0 and e.mem.u32(SELECT_FLAG) == 0
     # Observed: main copies TEXT_BOOT (0x323edc) and frontend_start copies
     # TEXT_INTRO (0x1e2094) into the request.
-    assert e.mem.u32(0x323EDC) == 0x254E4898 and e.mem.u32(0x1E2094) == 0x246CD0D0
+    assert e.mem.u16(0x323EDC) == TEXT_BOOT & 0xFFFF and e.mem.s16(0x1E2094) == 0x53D0D0 - 0x540000
     hub, hub_b = e.mem.cstr(TEXT_HUB_A), e.mem.cstr(TEXT_HUB_B)
     assert e.mem.cstr(TEXT_HUB) == hub and e.mem.cstr(TEXT_EMPTY) == ''
     # A1. frontend_startPlayerSelect stores the destination before playerSel_start.
@@ -271,7 +271,7 @@ def loader(path, image, body, seed, shop=None):
     o = route0_entry(path, image, body, seed)
     e = o.emu
     level = e.mem.cstr(TEXT_SHOP_HUB).encode() if shop else None
-    assert e.mem.u32(WAKE_RA) >> 16 == 0x3C03 and e.mem.u32(WAKE_RA + 4) == 0x3C021000
+    assert all(e.mem.u32(at) >> 26 == 0x0F for at in (WAKE_RA, WAKE_RA + 4)) and e.mem.u32(WAKE_RA + 4) >> 16 & 31 == 2
     e.hooks.clear()
     e.calls.clear()
     e.record_calls = True

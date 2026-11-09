@@ -22,7 +22,8 @@ Each fixture is disclosed where the test makes it:
   are `0xa5`. Otherwise it prints and stores to address 0 (`0x19da4c`).
   **Observed:** `engine_init` fills that range at boot. The fill value is set at
   `0x19d230` and stored at `0x19d244`. These fixtures never run `engine_init`, so
-  the test plants the low `0x1400` bytes. It asserts the `0x19d230` word first
+  the test plants the low `0x1400` bytes. It first asserts that the immediate
+  at `0x19d230` is `-0x5b`
   ([lines 98–101](../tools/difftest_arrival_stage_r7.py#L98)).
 - **Camera.** A sealed camera block at `0x4f8450`, as in round 5. `0x1e2168`,
   reached from `playerSel_finish`, stores through it.
@@ -37,8 +38,9 @@ Each fixture is disclosed where the test makes it:
 - **WakeupThread, one return.** `0x17fce0` calls syscall 51 (`0x352910`) with the
   id word `0x7cfd04`. The death-reload handlers do not model 51. The test
   answers 51 only when the return address is `0x17fd20`, and writes v0 = 0.
-  **Observed:** the instruction at `0x17fd24` overwrites v0 before any read. The
-  test asserts that word ([lines 111–118 and 274](../tools/difftest_arrival_stage_r7.py#L111)).
+  **Observed:** the instruction at `0x17fd24` is a `lui` of v0, so v0 is
+  overwritten before any read. The test asserts the opcode and target register
+  ([lines 111–118 and 274](../tools/difftest_arrival_stage_r7.py#L111)).
   The retail result is **Unknown**. Every other syscall goes to the
   death-reload dispatcher, which still raises `CpuTrap` for unmodelled numbers.
 - **Registers.** The loader stage jumps into `mainloop_runSession` at
@@ -133,9 +135,10 @@ The route-0 entry of round 6 runs first, with the same model comparison. The
 run then starts at `0x322e58`.
 
 `mainloop_startWarmup` `0x322934` stores 10 at `g_warmupFrames` `0x506048`.
-`dbg_printf` prints `b` and returns, and so does every later call. The loader's
+`dbg_printf` with the format at `0x554668` (`b`) returns, and so does every
+later call. The loader's
 one `0x1eda24` call promotes the queue to front 2, back 0, parity 1. It runs no
-native and no `0x145690`. `dbg_printf` then prints `c`, the stack check
+native and no `0x145690`. `dbg_printf` then prints `c` (`0x554670`), the stack check
 `0x19d9f8` returns, and the net byte `0x402791` is 0.
 
 Each of the ten warm-up passes calls these, in this order:
@@ -155,9 +158,9 @@ called because the cut byte `0x44fcd0` is 0. `0x1a30b0` is not called because
 the player pointer `0x4dcec8` is 0. Each of the four `dbg_printf` calls reaches
 Deci2 once.
 
-After the loop, `dbg_printf` prints `d` and the shop test compares the level
+After the loop, `dbg_printf` prints `d` (`0x554580`) and the shop test compares the level
 name with four executable strings. The fixture level name is empty, so no shop
-runs. `dbg_printf` prints `e`. `loadscreen_stop` `0x3224d8` stores 1 at
+runs. `dbg_printf` prints `e` (`0x5546a8`). `loadscreen_stop` `0x3224d8` stores 1 at
 `0x5060a0` from `0x3224ec`. It then calls `ReferThreadStatus` with the id word
 `0x506090`, which is `0xffffffff`, and repeats until the status is `0x10`. That
 syscall is the stop ([line 312](../tools/difftest_arrival_stage_r7.py#L312)).
@@ -324,7 +327,7 @@ Under these fixtures, for every body 0–11:
 - **`setState` with a clip.** Push one entry when the stack has room, with mode
   3 or 6 from bit `0x2`. Add clip `+4` + 1 to `+0x17c`. With a slot-19 value of
   1, set `+0xc` bit 0. Refuse when `+0x11c` bit 0 needs the collision world.
-- **Delete.** Remove each `name=` value from the name table, clear the three
+- **Delete.** Remove the `name=` value from the name table, clear the three
   handles, and **free the block**. Round 6's "do not free" is withdrawn.
 - **The cut.** With the level's `.cut`, `.bin` and `.dbin` resident: run setup
   on the first warm-up frame and advance one clock step per task frame. When
@@ -340,7 +343,8 @@ Under these fixtures, for every body 0–11:
 - the cut's `.world`, `.ob` and `.scr` entries;
 - what the actors draw;
 - the mission-menu copy for mission 1, which is not executed here;
-- the level-name bytes the loader stores, which round 6 also listed.
+- the level-name bytes `game_loadLevel` stores after the split. Round 6 listed
+  the loader's level-name bytes; the split itself now runs.
 
 Run: `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_arrival_stage_r7.py local/SLUS_209.73 local/arrival-route-r4.json`.
 Result: bodies 0–11, seeds 7 and 20973, all stages PASS. Log: `local/arrival-stage-r7.log` (untracked).
