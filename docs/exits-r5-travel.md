@@ -1,6 +1,6 @@
 # Level-to-level travel, round five: arrival
 
-Verified 2026-11-08 against the read-only US v2.00 executable, SHA-256
+Verified 2026-11-09 against the read-only US v2.00 executable, SHA-256
 `292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675`, and a
 read-only copy of the disc's files (`BG/DATA`, 925 files). Labels are those of
 `docs/exits-r4-travel.md`: **Observed** is addressed original code,
