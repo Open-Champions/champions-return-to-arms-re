@@ -3,7 +3,9 @@
 The class run (and the object generator 0x1509d0) execute in ee_emu. Every
 other callee is a recording stub. Selected boolean/count/pointer queries are
 answered from an explicit answer list so that a caller can walk the decision
-tree. Nothing here loads a level, an animation or a live actor.
+tree. Creature_run 0x112948 and Creature_updateActive 0x10c0f0 answer from the
+context (base / active), so both early exits of the class tick can be run.
+Nothing here loads a level, an animation or a live actor.
 """
 from ee_emu import EE, float_to_raw, raw_to_float
 
@@ -52,8 +54,10 @@ QUERY_DOMAIN = {
     "allyInLineOfFire": BOOL, "inGuardSpot": BOOL, "allySeesTarget": BOOL,
     "moveToDest": BOOL, "canSeeObj": BOOL, "seeEdge": BOOL,
     "inArcRange": BOOL, "hitAtReach": BOOL,
-    "alliesNearTarget": (0, 1, 3), "countAlliesNear": (0, 1, 3),
-    "countInBox": (0, 5), "corpse": "ptr", "wounded": "ptr",
+    # Counts: every value at and around the thresholds the classes test
+    # (> 0, > 1, > 2, == 0, < 2, >= 1 for allies; < 3 for the box count).
+    "alliesNearTarget": (0, 1, 2, 3), "countAlliesNear": (0, 1, 2, 3),
+    "countInBox": (0, 2, 3, 4), "corpse": "ptr", "wounded": "ptr",
     "hasShield": BOOL, "canBlock": BOOL,
 }
 
@@ -67,7 +71,7 @@ class Rig:
 
     def __init__(self, executable, cls, state, seed, target=True, ev=0,
                  anim=0, clock=100, deadline=0, fields=(), answers=(),
-                 queries=None, ally=False):
+                 queries=None, ally=False, hp=(100.0, 100.0), base=0, active=1):
         self.emu = emu = EE(executable)
         self.cls = cls
         self.obj = emu.alloc(cls["size"] + 0x40)
@@ -94,8 +98,8 @@ class Rig:
         mem.wf32(self.target + 0x1C, 20.0)
         mem.wf32(self.target + 0x20, 72.0)
         mem.wf32(self.target + 0x10, 50.0)
-        mem.wf32(self.obj + 0x22C, 100.0)
-        mem.wf32(self.obj + 0x228, 100.0)
+        mem.wf32(self.obj + 0x228, float(hp[0]))      # hit points
+        mem.wf32(self.obj + 0x22C, float(hp[1]))      # maximum hit points
         mem.w32(self.target + 0x48, cls["vtable"])
         mem.w32(self.ally + 0x48, cls["vtable"])
         mem.w32(self.extra + 0x48, cls["vtable"])
@@ -123,8 +127,8 @@ class Rig:
         self.asked = []
         self.queries = QUERY_DOMAIN if queries is None else queries
         emu.stub(POOL_NEW, function=lambda e: e.alloc(0x600), name="poolNew")
-        emu.stub(ACTIVE, ret=1)
-        emu.stub(BASE_RUN, ret=0)
+        emu.stub(ACTIVE, ret=active)
+        emu.stub(BASE_RUN, ret=base)
         emu.stub(STEP, ret=ev)
         for address, name in NAMES.items():
             if name in self.queries:

@@ -44,6 +44,15 @@ RECORDS = {"blood1": 363, "strife": 283, "drundar": 270, "drunare": 39,
            "drunarm": 302, "innovat1": 297, "inmine1": 213, "inmine2": 118,
            "innovat2": 71, "islc1": 262, "islc2": 255}
 
+# Records of (level, type) whose property keys include every key in `with`
+# and none in `without` (key names only; no values are kept).
+KEY_COUNTS = (
+    ("drundar", "Ogre", ("miniboss",), (), 1),
+    ("islc2", "SeaMonster", ("miniboss",), (), 2),
+    ("drunarm", "RalosZek", ("visualarc", "dropitem"), ("wait",), 1),
+    ("drunarm", "RalosZek", ("wait",), ("visualarc", "dropitem"), 1),
+)
+
 # Class run/setState entry points and the synthetic layout the rig needs.
 CLASSES = {
     "Kobold": dict(run=0x27F52C, set=0x27FF6C, vtable=0x515EF0, size=0x3D0,
@@ -141,3 +150,8 @@ class M:
     @property
     def deadline(self):
         return self.c["deadline"]
+
+    @property
+    def hp(self):
+        """(hit points +0x228, maximum +0x22c); the rig default is 100/100."""
+        return tuple(self.c.get("hp") or (100.0, 100.0))

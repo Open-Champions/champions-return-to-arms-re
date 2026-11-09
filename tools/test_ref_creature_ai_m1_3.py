@@ -40,6 +40,8 @@ class Models(unittest.TestCase):
         self.assertEqual(events[0], ("hitAll", 0.0, 60.0, 0, 6000, 1, 5, 33, 0x100001))
 
     def test_wraith_drain_is_offered_once_clock_passes(self):
+        # Model only. The executable boundary is walked by the difftest
+        # (WarWraith variants with +0x3cc at 99, 100 and 101 against clock 100).
         self.assertEqual(run("WarWraith", [1], state=3, fields={0x3CC: 99})[-1], ("set", 7))
         self.assertEqual(run("WarWraith", [1], state=3, fields={0x3CC: 100})[-1], ("set", 6))
 

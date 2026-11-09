@@ -6,10 +6,24 @@ synthetic probe: m.target / m.ev / m.anim / m.clock / m.deadline / fields.
 X = 0x7FFF
 
 
-def head(m, knock, holder=False, ally=False, step=1.0):
+class TickEnd(Exception):
+    """A model raises this where the class run returns early."""
+
+
+def entry(m):
+    """processDamage, then Creature_run 0x112948 (a nonzero result ends the
+    tick), then Creature_updateActive 0x10c0f0 (a zero result ends it)."""
     m.act("processDamage")
     m.act("baseRun")
+    if m.c.get("base", 0):
+        raise TickEnd
     m.act("updateActive")
+    if not m.c.get("active", 1):
+        raise TickEnd
+
+
+def head(m, knock, holder=False, ally=False, step=1.0):
+    entry(m)
     m.act("stepAnim", step)
     m.act("knockback", knock)
     m.act("pickTarget", 0)
@@ -148,9 +162,7 @@ SPECS = {
 def warwraith(m):
     fade = m.field(0x3C8)
     s = m.state
-    m.act("processDamage")
-    m.act("baseRun")
-    m.act("updateActive")
+    entry(m)
     m.act("stepAnim", 1.0)
     if s != 0x14:
         m.act("pickTarget", 0)
@@ -203,9 +215,10 @@ def warwraith(m):
         if m.q("notStunned"):
             m.set(0)
     elif s == 0x14:
-        # fade + 1; at 100 the object deletes itself, otherwise one particle:
-        # an angle draw and a unit-ball rejection point (three draws a try).
-        if fade + 1 >= 100:
+        # A tick that starts with fade >= 100 deletes the object (99 does not:
+        # executed at 98/99/100), otherwise one particle: an angle draw and a
+        # unit-ball rejection point (three draws a try).
+        if fade >= 100:
             m.act("objDelete")
         else:
             m.rand()
@@ -344,6 +357,10 @@ def orc(m):
                 m.set(3)
             elif m.see(0, 30, 6000):
                 m.set(7)
+            elif m.see(0, 6000, X):
+                # 2026-11-09, executed with +0x47c at the clock: an any-angle
+                # sight within 6000 adds a turn before the common one.
+                m.act("turn")
         elif v == 4:
             pass
         elif v in (1, 2, 3):
@@ -957,8 +974,8 @@ def amphian(m):
             m.act("moveToTarget")
     elif s == 5:
         if m.see(0, 36, 8000):
-            low = m.c["hp"] is not None and m.c["hp"] < 50
-            if low and m.rand() & 3 == 0:
+            hp, top = m.hp
+            if hp < top * 0.5 and m.rand() & 3 == 0:
                 m.set(0x17)
             else:
                 m.set(6 + m.rand() % 3)
@@ -1070,15 +1087,25 @@ def _states(*excluded):
     return tuple(s for s in range(0x19) if s not in excluded)
 
 
+# Field values at the clock (100) and one either side, so that > / >= and
+# < / <= read differently; "states" limits a boundary variant to the states
+# that read the field.
+EDGE = (99, 100, 101)
+
 SPECS.update({
     "WarWraith": dict(model=warwraith, states=_states(),
                       variants=({0x3C8: (8, 0), 0x3CC: (32, 0)},
-                                {0x3C8: (8, 100), 0x3CC: (32, 500)})),
+                                {0x3C8: (8, 100), 0x3CC: (32, 500)})
+                      + tuple({0x3C8: (8, 0), 0x3CC: (32, c), "states": (3, 5)} for c in EDGE)
+                      # fade >= 99 turns; fade >= 100 deletes in 0x14
+                      + tuple({0x3C8: (8, fade), 0x3CC: (32, 500)} for fade in (98, 99))),
     "Orc": dict(model=orc, states=_states(),
-                variants=tuple({0x478: (32, v)} for v in range(6)),
-                deadlines=(0, 1, 2, 50, 150)),
+                variants=tuple({0x478: (32, v)} for v in range(6))
+                + tuple({0x478: (32, 5), 0x47C: (32, c), "states": (0x17,)} for c in EDGE),
+                deadlines=(0, 1, 2, 50, 99, 100, 101, 150)),
     "Goblin": dict(model=goblin, states=_states(7, 8),
-                   variants=tuple({0x3D4: (32, v)} for v in range(6))),
+                   variants=tuple({0x3D4: (32, v)} for v in range(6))
+                   + tuple({0x3D4: (32, 5), 0x3D8: (32, c), "states": (0x17,)} for c in EDGE)),
     "Ogre": dict(model=ogre, states=_states(), evs=(0, 1, 2, 4, 5),
                  variants=tuple({0x460: (32, v)} for v in (0, 7, 8))),
     "Warrior": dict(model=warrior, states=_states(),
@@ -1091,13 +1118,21 @@ SPECS.update({
                                 {0x3C8: (8, 1), 0x3AE: (16, 500)},
                                 {0x3C8: (8, 1), 0x3CC: (32, 6), 0x3AE: (16, 500)})),
     "Droid": dict(model=droid, states=_states(), evs=(0, 1, 0x40),
-                  variants=({0x3CC: (32, 3600)}, {0x3CC: (32, 50)})),
+                  variants=({0x3CC: (32, 3600)}, {0x3CC: (32, 50)})
+                  + tuple({0x3CC: (32, c)} for c in EDGE)),
     "IronGuardian": dict(model=ironguardian, states=_states(),
                          variants=({0x3CC: (32, 0)}, {0x3CC: (32, 120)},
-                                   {0x3CC: (32, 700)})),
+                                   {0x3CC: (32, 700)})
+                         + tuple({0x3CC: (32, c), "states": (3, 5)} for c in EDGE)
+                         + tuple({0x3CC: (32, c), "states": (0,)} for c in (119, 121))
+                         # alive-player count 0x4f8420 = 1: the 7/8 turn
+                         + ({0x3CC: (32, 0), "alive": 1, "states": (7, 8)},)),
     "Froglock": dict(model=froglock, states=_states(7, 8),
                      variants=({"holder": {0x7C: 0x12}}, {"holder": {0x7C: 0x10}})),
-    "Amphian": dict(model=amphian, states=_states(), hp=None),
+    # (hit points, maximum): below, at and above half, at two maxima.
+    "Amphian": dict(model=amphian, states=_states(),
+                    hps=((100.0, 100.0), (10.0, 100.0), (49.0, 100.0), (50.0, 100.0),
+                         (51.0, 100.0), (99.0, 200.0), (100.0, 200.0), (101.0, 200.0))),
     "SeaMonster": dict(model=seamonster, states=_states()),
 })
 
@@ -1106,9 +1141,10 @@ SPECS.update({
 # Authored from docs/monsters-2.md class notes. land: state stored at +0x232
 # (default: the request). fields: offset -> exact value, or (base, mod) for
 # clock + base + (own draw % mod), or ("abs", base, mod) without the clock.
-# calls: names that must be called.
-def _e(land=None, calls=(), **fields):
-    return dict(land=land, calls=calls,
+# calls: names that must be called; absent: names that must not be called;
+# unwritten: object offsets that must not be stored.
+def _e(land=None, calls=(), absent=(), unwritten=(), **fields):
+    return dict(land=land, calls=calls, absent=absent, unwritten=unwritten,
                 fields={int(k[1:], 16): v for k, v in fields.items()})
 
 
@@ -1138,14 +1174,15 @@ SET_ENTRY = {
                   4: _e(0), 0xA: _e(0), 0x11: _e(0), 0x17: _e(0),
                   0x14: _e(calls=DEATH)},
     "Droid": {0x10: _e(x318=60), 4: _e(0), 6: _e(0), 0xA: _e(0), 0x11: _e(0),
-              0x14: _e(calls=("onDeath",)), 0x17: _e(calls=("onDeath",))},
+              0x14: _e(calls=("onDeath",), absent=("dropLoot", "lootGenerate")),
+              0x17: _e(calls=("onDeath",), absent=("dropLoot", "lootGenerate"))},
     "IronGuardian": {9: _e(x3C8=0), 10: _e(x3C8=0), 0x10: _e(x318=60),
                      4: _e(0), 0x11: _e(0), 0x17: _e(0), 0x14: _e(calls=DEATH)},
     "Froglock": {0: _e(xF4=(0, 120)), 7: _e(xF4=("abs", 0, 15)), 8: _e(xF4=("abs", 0, 15)),
                  0x10: _e(x318=60), 0x14: _e(calls=DEATH)},
     "Amphian": {0x10: _e(x318=60), 0x17: _e(xF4=(60, 120), xA8=0x200),
                 4: _e(0), 0xA: _e(0), 0x11: _e(0), 0x14: _e(calls=DEATH)},
-    "SeaMonster": {0x14: _e(calls=DEATH)},
+    "SeaMonster": {0x14: _e(calls=DEATH), 0x10: _e(unwritten=(0x318,))},
 }
 
 

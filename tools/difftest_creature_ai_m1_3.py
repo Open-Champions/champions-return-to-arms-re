@@ -7,7 +7,12 @@
 Executed: each class run function (and GameObject_rand 0x1509d0) runs in
 ee_emu on a synthetic object. Every other callee is a recording stub; the
 queries listed in creature_ai_rig.QUERY_DOMAIN are answered from an answer
-list, and the probe walks every answer path depth-first. The emitted events
+list, and the probe walks every answer path depth-first over the full context
+grid (target, ev, animation flags, deadline, ally, variant fields at and
+around the clock), an HP pass (hit points below, at and above half of the
+maximum) and the two tick exits (Creature_run nonzero, updateActive zero).
+Model line coverage is printed per class and an unmarked unreached line
+fails. The emitted events
 (query arguments, slot-27 requests, hit-helper arguments, movement calls)
 and the final own-generator state are compared with ref_creature_ai_m1_3.
 The hit helpers 0x119938 / 0x1196e8 / 0x119b58 are then executed with sight
@@ -31,13 +36,16 @@ except ImportError:
     pass
 sys.path[:] = _SAVED
 import hashlib
+import itertools
 import os
 import random
+import re
 from collections import Counter
 
 from creature_ai_rig import NAMES, QUERY_DOMAIN, Rig, f
 from dump_tables import objects_from_file
 from ee_emu import EE
+from ref_core import Lcg
 import ref_creature_ai_m1_3 as R
 import models_creature_ai_m1_3 as MODELS
 
@@ -92,88 +100,216 @@ def domain(name):
     return (0, 1) if values == "ptr" else values
 
 
-def walk(executable, name, ctx, model, limit=4000):
-    """Every answer path of one synthetic tick; returns the path count."""
+class Coverage:
+    """Line hit counts inside the model functions, taken while the walk
+    compares them with the executable (so a hit line is a compared branch)."""
+
+    def __init__(self):
+        self.file = MODELS.entry.__code__.co_filename
+        self.hits = Counter()
+
+    def _local(self, frame, event, _arg):
+        if event == "line":
+            self.hits[frame.f_lineno] += 1
+        return self._local
+
+    def _global(self, frame, _event, _arg):
+        return self._local if frame.f_code.co_filename == self.file else None
+
+    def run(self, model, m):
+        sys.settrace(self._global)
+        try:
+            model(m)
+        except MODELS.TickEnd:
+            pass
+        finally:
+            sys.settrace(None)
+
+    @staticmethod
+    def lines(function):
+        code = function.__code__
+        return sorted({line for _s, _e, line in code.co_lines()
+                       if line is not None and line != code.co_firstlineno})
+
+    def report(self, label, functions):
+        """(lines, min hits, unreached lines without a 'not walked' marker)."""
+        source = Path(self.file).read_text().splitlines()
+        lines = [n for fn in functions for n in self.lines(fn)]
+        counts = [self.hits[n] for n in lines]
+        zero = [n for n in lines if not self.hits[n]]
+        allowed = [n for n in zero if "not walked" in source[n - 1]]
+        bad = [n for n in zero if n not in allowed]
+        hit = [c for c in counts if c]
+        print("COVER %-12s %3d model lines, %3d hit, min %d / max %d hits, %d marked not walked%s"
+              % (label, len(lines), len(hit), min(hit) if hit else 0, max(hit) if hit else 0,
+                 len(allowed), "" if not bad else ", UNREACHED %s" % bad))
+        return bad
+
+
+def mismatch(name, ctx, used, got, want, seed, model_seed):
+    same = 0
+    while same < min(len(got), len(want)) and got[same] == want[same]:
+        same += 1
+    if not os.environ.get("AI_FULL"):
+        got, want = got[same:], want[same:]
+    return AssertionError("%s %s answers=%s\n emu  =%s\n model=%s\n seed emu %08x model %08x"
+                          % (name, {k: v for k, v in ctx.items() if k not in ("raw_fields", "fields")}
+                             | {"fields": {hex(k): v for k, v in ctx["fields"].items()}},
+                             used, got, want, seed, model_seed))
+
+
+# Object fields the grid varies that a run can only see by reading them.
+VARIED = {"anim": (0x11A, 2), "deadline": (0xF4, 4)}
+ALIVE = 0x4F8420                 # alive-player count (0 unless a variant sets it)
+
+
+def walk(executable, name, ctx, model, cover, limit=4000):
+    """Every answer path of one synthetic tick. Returns (paths, the VARIED
+    fields the executable read on any path, the recorded paths)."""
     cls = R.CLASSES[name]
-    stack, paths = [()], 0
+    stack, trace, read = [()], [], set()
     while stack:
         prefix = stack.pop()
         rig = Rig(executable, cls, ctx["state"], ctx["seed"], target=ctx["target"],
                   ev=ctx["ev"], anim=ctx["anim"], clock=ctx["clock"],
                   deadline=ctx["deadline"], ally=ctx["ally"],
-                  fields=ctx["raw_fields"], answers=prefix)
+                  fields=ctx["raw_fields"], answers=prefix, hp=ctx["hp"],
+                  base=ctx["base"], active=ctx["active"])
         for offset, value in ctx["holder"].items():
             rig.entry_returns("holder", offset, value)
+        if ctx["alive"]:
+            rig.emu.mem.w32(ALIVE, ctx["alive"])
         for offset, value in zip((0xD0, 0xD2, 0xD4), R.DMG):
             rig.emu.mem.w16(rig.obj + offset, value)
-        if ctx.get("hp") is not None:
-            rig.emu.mem.wf32(rig.obj + 0x228, ctx["hp"])
+        rig.emu.reads = []
         calls = rig.run()
+        for dim, (offset, size) in VARIED.items():
+            lo = rig.obj + offset
+            if dim not in read and any(a < lo + size and lo < a + s
+                                       for _pc, a, s, _v in rig.emu.reads):
+                read.add(dim)
         used = [prefix[i] if i < len(prefix) else 0 for i in range(len(rig.asked))]
         got = events(rig, calls)
         m = R.M(ctx, used)
-        model(m)
-        want = m.events
+        cover.run(model, m)
         seed = rig.emu.mem.u32(rig.obj + 0x44)
-        if got != want or seed != m.rng.state:
-            same = 0
-            while same < min(len(got), len(want)) and got[same] == want[same]:
-                same += 1
-            if not os.environ.get("AI_FULL"):
-                got, want = got[same:], want[same:]
-            raise AssertionError("%s %s answers=%s\n emu  =%s\n model=%s\n seed emu %08x model %08x"
-                                 % (name, {k: v for k, v in ctx.items() if k not in ("raw_fields", "fields")}
-                       | {"fields": {hex(k): v for k, v in ctx["fields"].items()}},
-                                    used, got, want, seed, m.rng.state))
-        paths += 1
-        assert paths <= limit, (name, ctx)
+        if got != m.events or seed != m.rng.state:
+            raise mismatch(name, ctx, used, got, m.events, seed, m.rng.state)
+        trace.append((tuple(used), got, seed))
+        assert len(trace) <= limit, (name, ctx)
         for j in range(len(prefix), len(used)):
             for alt in domain(rig.asked[j]):
                 if alt != 0:
                     stack.append(tuple(used[:j]) + (alt,))
-    return paths
+    return len(trace), read, trace
+
+
+def replay(name, ctx, model, cover, trace):
+    """The model on a context whose executable run is already recorded."""
+    for used, got, seed in trace:
+        m = R.M(ctx, used)
+        cover.run(model, m)
+        if got != m.events or seed != m.rng.state:
+            raise mismatch(name, ctx, list(used), got, m.events, seed, m.rng.state)
+    return len(trace)
+
+
+FULL_HP = (100.0, 100.0)
+# Every class: hit points below, at and above half of the maximum (and far
+# below), so a low-HP branch would show as a mismatch with the model.
+HP_PASS = ((10.0, 100.0), (49.0, 100.0), (50.0, 100.0), (51.0, 100.0))
+DEADLINES = (50, 99, 100, 101, 150)     # clock is 100
+
+
+def lucky_seed(rng, draws):
+    """A seed whose first `draws` own draws are all multiples of 60, so every
+    first-draw test of the form % n == 0 or & 3 == 0 passes (the rare branches)."""
+    while True:
+        seed = rng.getrandbits(32)
+        g = Lcg(seed)
+        if all(g.draw() % 60 == 0 for _ in range(draws)):
+            return seed
 
 
 def contexts(name, spec, seed):
+    """The full context grid of every variant and state (no sampling), then
+    an HP pass and the two early-exit contexts. Yields (kind, group, context);
+    contexts of one group differ only in VARIED fields and share a seed."""
     rng = random.Random("%s:%d" % (name, seed))
-    for variant in spec.get("variants", ({},)):
-        for state in spec["states"]:
-            grid = [(t, ev, anim, dl, al)
-                    for t in (1, 0) for ev in spec.get("evs", (0, 1, 2))
-                    for anim in spec.get("anims", (0, 8, 0x10, 0x80))
-                    for dl in spec.get("deadlines", (50, 150))
-                    for al in spec.get("allies", (0,))]
-            picks = [grid[0]] + rng.sample(grid[1:], min(spec.get("sample", 10), len(grid) - 1))
-            for t, ev, anim, dl, al in picks:
-                fields = {k: v for k, v in variant.items() if k != "holder"}
-                raw = tuple((size, off, val) for off, (size, val) in fields.items())
-                yield dict(state=state, target=t, ev=ev, anim=anim, clock=100,
-                           deadline=dl, ally=al, seed=rng.getrandbits(32),
-                           fields={off: val for off, (size, val) in fields.items()},
-                           raw_fields=raw, hp=spec.get("hp"),
-                           holder=variant.get("holder", {}))
+    allies = spec.get("allies", (0,))
+    for index, variant in enumerate(spec.get("variants", ({},))):
+        fields = {k: v for k, v in variant.items() if isinstance(k, int)}
+        raw = tuple((size, off, val) for off, (size, val) in fields.items())
+
+        def make(state, t, ev, anim, dl, al, gseed, hp=FULL_HP, base=0, active=1):
+            return dict(state=state, target=t, ev=ev, anim=anim, clock=100,
+                        deadline=dl, ally=al, seed=gseed,
+                        fields={off: val for off, (size, val) in fields.items()},
+                        raw_fields=raw, hp=hp, base=base, active=active,
+                        holder=variant.get("holder", {}), alive=variant.get("alive", 0))
+        for state in variant.get("states", spec["states"]):
+            for t, ev, al in itertools.product((1, 0), spec.get("evs", (0, 1, 2)), allies):
+                gseed = rng.getrandbits(32)
+                for anim, dl in itertools.product(spec.get("anims", (0, 8, 0x10, 0x80)),
+                                                  spec.get("deadlines", DEADLINES)):
+                    yield "grid", (index, state, t, ev, al), make(state, t, ev, anim, dl, al, gseed)
+            for draws in (1, 2):
+                for t, ev, al in itertools.product((1, 0), spec.get("evs", (0, 1, 2)), allies):
+                    gseed = lucky_seed(rng, draws)
+                    for anim, dl in itertools.product(spec.get("anims", (0, 8, 0x10, 0x80)),
+                                                      spec.get("deadlines", DEADLINES)):
+                        yield "draw", (index, state, t, ev, al, draws), make(
+                            state, t, ev, anim, dl, al, gseed)
+            for hp in spec.get("hps", HP_PASS):
+                if hp == FULL_HP:
+                    continue
+                for t, ev, anim in ((1, 0, 0), (1, 1, 8), (0, 1, 0)):
+                    yield "hp", None, make(state, t, ev, anim, 50, allies[-1],
+                                           rng.getrandbits(32), hp=hp)
+            for exits in (dict(base=1), dict(active=0)):
+                yield "exit", None, make(state, 1, 1, 8, 50, allies[-1],
+                                         rng.getrandbits(32), **exits)
 
 
 def check_class(executable, name, seed, keep_going=False):
+    """Returns (context counts by kind, emulator paths, replayed paths,
+    emulator walks, coverage)."""
     spec = MODELS.SPECS[name]
-    count = paths = 0
+    kinds, paths, replayed, walks = Counter(), 0, 0, 0
     failed = set()
-    for ctx in contexts(name, spec, seed):
+    cover = Coverage()
+    cache = {}
+    for kind, group, ctx in contexts(name, spec, seed):
         tag = (tuple(sorted(ctx["fields"].items())), tuple(sorted(ctx["holder"].items())),
                ctx["state"])
         if tag in failed:
             continue
         try:
-            paths += walk(executable, name, ctx, spec["model"])
+            # A recorded run of the same group whose context agrees on every
+            # VARIED field the executable read is the same executable run.
+            hit = None
+            for values, read, trace in cache.get(group, ()) if group else ():
+                if all(ctx[dim] == values[dim] for dim in read):
+                    hit = trace
+                    break
+            if hit is not None:
+                replayed += replay(name, ctx, spec["model"], cover, hit)
+            else:
+                count, read, trace = walk(executable, name, ctx, spec["model"], cover)
+                paths += count
+                walks += 1
+                if group:
+                    cache.setdefault(group, []).append(
+                        ({dim: ctx[dim] for dim in VARIED}, read, trace))
         except AssertionError as exc:
             if not keep_going:
                 raise
             failed.add(tag)
             if len(failed) <= 4:
-                print("FAIL", exc)
-        count += 1
+                print("FAIL", exc, flush=True)
+        kinds[kind] += 1
     assert not failed, "%d failing variant/state pairs" % len(failed)
-    return count, paths
+    return kinds, paths, replayed, walks, cover
 
 
 COS, SIN = 0x166630, 0x1666E0
@@ -227,6 +363,10 @@ def check_setstate(executable, seed):
                 names = [rig.name(c) for c in rig.emu.calls]
                 for wanted in entry["calls"]:
                     assert wanted in names, (name, state, wanted, names)
+                for unwanted in entry["absent"]:
+                    assert unwanted not in names, (name, state, unwanted, "called")
+                for offset in entry["unwritten"]:
+                    assert offset not in w, (name, state, hex(offset), "written")
                 count += 1
     return count
 
@@ -262,14 +402,16 @@ def check_filter(executable, seed):
 
 
 def check_slots(executable, seed):
-    """Which function each run reaches through slots 23/24/25 (vtable words)."""
+    """Vtable words of slots 2, 20, 21, 23, 24 and 25 read from the loaded
+    image (no code runs here; the walk confirms the called targets)."""
     count = 0
     for name, cls in R.CLASSES.items():
         table = cls["vtable"]
         rig = Rig(executable, cls, 0, seed)
         mem = rig.emu.mem
         for slot, want in ((20, MODELS.SLOTS[name][0]), (21, MODELS.SLOTS[name][1]),
-                           (23, 0x10DED0), (25, 0x10E658), (2, MODELS.SLOTS[name][2])):
+                           (23, 0x10DED0), (24, 0x10E2C0), (25, 0x10E658),
+                           (2, MODELS.SLOTS[name][2])):
             got = mem.u32(table + 8 * slot + 4)
             assert got == want, (name, slot, hex(got), hex(want))
             count += 1
@@ -331,26 +473,61 @@ def check_hits(executable, seed):
                     assert (a[2], a[3], a[4], a[5], a[6]) == (rating, 0, 0, flags, desc)
                     assert (f(call.fargs[0]), f(call.fargs[1])) == (float(lo), float(hi))
                 count += 1
-    # hitAtReach: 3-D distance of the target centre from position + facing x
-    # reach, strictly below 60; radii do not enter; object flag 8 refuses.
-    for reach, x, z, radius, oflags, expect in (
-            (36.0, 95.9, 0.0, 20.0, 0, 1), (36.0, 96.0, 0.0, 20.0, 0, 0),
-            (36.0, -23.9, 0.0, 20.0, 0, 1), (36.0, -24.0, 0.0, 20.0, 0, 0),
-            (36.0, 36.0, 59.9, 5.0, 0, 1), (36.0, 36.0, 60.0, 40.0, 0, 0),
-            (60.0, 119.9, 0.0, 20.0, 0, 1), (60.0, 120.0, 0.0, 20.0, 0, 0),
-            (36.0, 36.0, 0.0, 20.0, 8, 0), (36.0, 36.0, 0.0, 20.0, 0x40, 1)):
+    # hitAtReach: distance of the target centre (+0x10/+0x14/+0x18) from the
+    # attacker position + facing x reach, strictly below 60, on each axis
+    # alone and on two and three axes together; the target radius and the
+    # attacker radius (+0x1c) do not enter; object flag 8 refuses.
+    # reach, target x, y, z, target radius, attacker radius, attacker y,
+    # object flags, expected damage_apply calls.
+    for row in (
+            (36.0, 95.9, 0.0, 0.0, 20.0, 20.0, 0.0, 0, 1),
+            (36.0, 96.0, 0.0, 0.0, 20.0, 20.0, 0.0, 0, 0),
+            (36.0, -23.9, 0.0, 0.0, 20.0, 20.0, 0.0, 0, 1),
+            (36.0, -24.0, 0.0, 0.0, 20.0, 20.0, 0.0, 0, 0),
+            (36.0, 36.0, 0.0, 59.9, 5.0, 20.0, 0.0, 0, 1),
+            (36.0, 36.0, 0.0, 60.0, 40.0, 20.0, 0.0, 0, 0),
+            (60.0, 119.9, 0.0, 0.0, 20.0, 20.0, 0.0, 0, 1),
+            (60.0, 120.0, 0.0, 0.0, 20.0, 20.0, 0.0, 0, 0),
+            (36.0, 36.0, 0.0, 0.0, 20.0, 20.0, 0.0, 8, 0),
+            (36.0, 36.0, 0.0, 0.0, 20.0, 20.0, 0.0, 0x40, 1),
+            # y alone (+ and -), then x+y (59.40 / 60.10), then x+y+z (59.93 / 60.10).
+            # y is asserted at 59.9 / 60.1: exactly 60.0 along +y or -y still
+            # hits (the reach point is not exactly on the x axis at facing 0).
+            (36.0, 36.0, 59.9, 0.0, 20.0, 20.0, 0.0, 0, 1),
+            (36.0, 36.0, 60.1, 0.0, 20.0, 20.0, 0.0, 0, 0),
+            (36.0, 36.0, -59.9, 0.0, 20.0, 20.0, 0.0, 0, 1),
+            (36.0, 36.0, -60.1, 0.0, 20.0, 20.0, 0.0, 0, 0),
+            (36.0, 78.0, 42.0, 0.0, 20.0, 20.0, 0.0, 0, 1),
+            (36.0, 78.5, 42.5, 0.0, 20.0, 20.0, 0.0, 0, 0),
+            (36.0, 70.6, 34.6, 34.6, 20.0, 20.0, 0.0, 0, 1),
+            (36.0, 70.7, 34.7, 34.7, 20.0, 20.0, 0.0, 0, 0),
+            # attacker radius 5 and 60
+            (36.0, 95.9, 0.0, 0.0, 20.0, 5.0, 0.0, 0, 1),
+            (36.0, 96.0, 0.0, 0.0, 20.0, 5.0, 0.0, 0, 0),
+            (36.0, 95.9, 0.0, 0.0, 20.0, 60.0, 0.0, 0, 1),
+            (36.0, 96.0, 0.0, 0.0, 20.0, 60.0, 0.0, 0, 0),
+            # attacker raised by 10: the offset is relative
+            (36.0, 36.0, 69.9, 0.0, 20.0, 20.0, 10.0, 0, 1),
+            (36.0, 36.0, 70.1, 0.0, 20.0, 20.0, 10.0, 0, 0),
+            (36.0, 36.0, -49.9, 0.0, 20.0, 20.0, 10.0, 0, 1),
+            (36.0, 36.0, -50.1, 0.0, 20.0, 20.0, 10.0, 0, 0),
+            (36.0, 36.0, 10.0, 0.0, 20.0, 20.0, 10.0, 0, 1)):
+        reach, x, y, z, radius, own_radius, own_y, oflags, expect = row
         rig = Rig(executable, cls, 6, seed)
         emu = rig.emu
         emu.unhook(0x1196E8)
         emu.follow = {0x1196E8, COS, SIN}
         emu.mem.wf32(rig.target + 0x10, x)
+        emu.mem.wf32(rig.target + 0x14, y)
         emu.mem.wf32(rig.target + 0x18, z)
         emu.mem.wf32(rig.target + 0x1C, radius)
+        emu.mem.wf32(rig.obj + 0x1C, own_radius)
+        emu.mem.wf32(rig.obj + 0x14, own_y)
         emu.mem.w32(rig.target + 0xC, oflags)
         emu.reset_log()
         emu.call(0x1196E8, rig.obj, 11, 22, 33, 8, 0, fargs=(reach,), max_steps=300000)
         got = len([c for c in emu.calls if c.target == 0x1E8230])
-        assert got == expect, (reach, x, z, radius, oflags, got)
+        assert got == expect, (row, got)
         count += 1
     return count
 
@@ -379,7 +556,7 @@ def check_levels(executable, levels, seed):
     block = emu.alloc(0x1000)
     emu.mem.w32(0x44FDC8, emu.alloc(0x100))
     emu.stub(FACTORY_ALLOC, ret=block)
-    selected = 0
+    selected = keyed = 0
     for level in R.LEVELS:
         path = Path(levels, level.upper() + ".GOB")
         rows = objects_from_file(str(path), path.read_bytes())
@@ -387,6 +564,18 @@ def check_levels(executable, levels, seed):
         counts = Counter(row["class"] for row in rows)
         for kind, (count, _size, _ctor) in R.CREATURES[level].items():
             assert counts[kind] == count, (level, kind, counts[kind])
+        for lv, kind, have, lack, want in R.KEY_COUNTS:
+            if lv != level:
+                continue
+            got = 0
+            for row in rows:
+                if row["class"] != kind:
+                    continue
+                keys = {re.split(r"[\s=]", x.strip(), maxsplit=1)[0].lower()
+                        for x in row["properties"].split(";") if x.strip()}
+                got += set(have) <= keys and not set(lack) & keys
+            assert got == want, (level, kind, have, lack, got, want)
+            keyed += 1
         wanted = [row for row in rows if row["class"] in R.CREATURES[level]]
         random.Random("%s:%d" % (level, seed)).shuffle(wanted)
         for row in wanted:
@@ -404,7 +593,7 @@ def check_levels(executable, levels, seed):
             assert len(alloc) == 1 and alloc[0].args[0] == size, (level, row["class"])
             assert ctors and ctors[-1] == ctor and result == block, (level, row["class"])
             selected += 1
-    return selected
+    return selected, keyed
 
 
 def main():
@@ -420,29 +609,41 @@ def main():
     assert hashlib.sha256(data).hexdigest() == SHA256, "unexpected executable"
     total = 0
     bad = []
+    unreached = []
+    shared = Coverage()
     for name in MODELS.SPECS:
         if (args.k and name not in args.k) or args.skip_walk:
             continue
         try:
-            cases, paths = check_class(args.executable, name, args.seed, args.keep_going)
+            kinds, paths, replayed, walks, cover = check_class(
+                args.executable, name, args.seed, args.keep_going)
         except AssertionError as exc:
             if not args.keep_going:
                 raise
             print("FAIL %s: %s" % (name, str(exc).splitlines()[0]))
             bad.append(name)
             continue
-        print("PASS %-12s %4d contexts %6d answer paths" % (name, cases, paths))
+        print("PASS %-12s %6d contexts (%d grid, %d draw, %d hp, %d exit), %d executed walks, "
+              "%d executed answer paths, %d replayed model paths"
+              % (name, sum(kinds.values()), kinds["grid"], kinds["draw"], kinds["hp"], kinds["exit"],
+                 walks, paths, replayed), flush=True)
+        unreached += [(name, n) for n in cover.report(name, [MODELS.SPECS[name]["model"]])]
+        shared.hits.update(cover.hits)
         total += paths
+    if total and not args.k:
+        unreached += [("shared", n) for n in shared.report("head/entry", [MODELS.head, MODELS.entry])]
     assert not bad, "failing classes: %s" % bad
+    assert not unreached, "unreached model lines: %s" % unreached
     if not args.k or args.skip_walk:
         print("PASS setState entries %d" % check_setstate(args.executable, args.seed))
         print("PASS filterState redirects %d" % check_filter(args.executable, args.seed))
         print("PASS vtable slots %d" % check_slots(args.executable, args.seed))
         print("PASS hit helpers %d" % check_hits(args.executable, args.seed))
     if args.levels:
-        print("PASS level census and factory selections %d"
-              % check_levels(args.executable, args.levels, args.seed))
-    print("PASS all classes, %d answer paths, seed %d" % (total, args.seed))
+        selected, keyed = check_levels(args.executable, args.levels, args.seed)
+        print("PASS level census and factory selections %d, property-key counts %d"
+              % (selected, keyed))
+    print("PASS all classes, %d executed answer paths, seed %d" % (total, args.seed))
 
 
 if __name__ == "__main__":
