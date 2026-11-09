@@ -8,6 +8,7 @@ Runs original functions in tools/ee_emu.py on synthetic memory:
   * Creature_loadState 0x116920, a seed-varied cross-check of the stub-free
     t3/research-death-reload probe (difftest_death_reload_creature.py);
   * JumpGate_loadState 0x27d998 with the original light_link2 0x148bc8;
+  * the act table through g_actCount 0x4f8e7c (counts and sizes asserted);
   * save_game 0x218128 checkpoint decisions with the original act table;
   * a multi-level travel sequence through the original save_storeLevelState
     0x21777c, save_writeLevelState 0x218600, save_levelStateStored 0x2182d4,
@@ -56,6 +57,7 @@ G_SKIP = 0x4F8B58
 G_ACT = 0x88D3D4
 G_ACT_COUNT = 0x4F8E10
 G_ACT_TABLE = 0x4F8E48
+G_NUM_ACTS = 0x4F8E7C         # g_actCount, symbols/entry.tsv
 G_LEVEL_NAME = 0x41B721
 G_SUBNAME = 0x41B771
 G_CARD = 0x88D3A0
@@ -64,7 +66,7 @@ G_BIG_SAVE = 0x4F85C5
 G_CLEAR_BLOCK = 0x4F8F2A
 G_CLEAR_WORD = 0x4F9234
 G_STRTAB = 0x5F8704
-G_PLAYERS = 0x4D8AE0
+G_PLAYERS = 0x4D8AE0          # g_numPlayers
 G_RECORDS = 0x4D8AF0
 RECORD_SIZE = 0x4C30
 G_SAVE_GAME_WORD = 0x4F8F30
@@ -249,16 +251,31 @@ def check_creature(elf, rng):
 
 def check_jumpgate(elf, rng):
     """JumpGate_loadState 0x27d998 with the original light_link2 0x148bc8."""
-    checked = 0
-    for case in range(12):
+    # 12 seed-varied cases, then fixed light positions: grid edge indexes 0, 89
+    # and 90 on both axes, y outside with x inside, and non-integral floats
+    # (-0.5 separates truncate-then-add from add-then-truncate).
+    positions = [None] * 12 + [
+        (-0x2d00, 0.0), (0x2cff, 0.0), (0x2d00, 0.0), (-0x2d01, 0.0),
+        (0.0, -0x2d00), (0.0, 0x2cff), (0.0, 0x2d00), (0.0, -0x2d01),
+        (0.0, 0x3000), (0.0, -0x3000), (-0x2d00 - 0.5, 0x2cff + 0.75),
+        (-0.5, 0.0), (-1.5, 5.5), (0x2d00 - 0.25, -0x2d00 + 0.25)]
+    seen = dict(grid=0, overflow=0, y_outside=0, non_integral=0, non_empty=0, unlinked=0)
+    edges = set()
+    for case, pos in enumerate(positions):
         ee = fixture(elf)
         obj = ee.alloc(0x200)
-        state = (rng.randrange(1, 256), 0 if case % 3 == 0 else rng.randrange(1, 128))
+        if pos is None:
+            state = (rng.randrange(1, 256), 0 if case % 3 == 0 else rng.randrange(1, 128))
+            inside = case % 2 == 0
+            x = float(rng.randrange(-0x2c00, 0x2c00) if inside else rng.choice((-0x3000, 0x3000)))
+            y = float(rng.randrange(-0x2c00, 0x2c00))
+        else:
+            state = (rng.randrange(1, 256), rng.randrange(1, 128))
+            x, y = (struct.unpack('<f', struct.pack('<f', v))[0] for v in pos)
         buf = ee.alloc(8)
         ee.mem.write(buf, bytes(state))
-        inside = case % 2 == 0
-        x = float(rng.randrange(-0x2c00, 0x2c00) if inside else rng.choice((-0x3000, 0x3000)))
-        y = float(rng.randrange(-0x2c00, 0x2c00))
+        ee.mem.w8(obj + 0x4d, 0xA5)               # sentinels: both bytes are stored
+        ee.mem.w8(obj + 0x4e, 0x5A)
         ee.mem.write(obj + 0x130, struct.pack('<ff', x, y))
         # Pre-link the node into a synthetic two-entry list to test the unlink.
         head = ee.alloc(8)
@@ -269,7 +286,15 @@ def check_jumpgate(elf, rng):
         ee.mem.w32(node + 4, head)
         ee.mem.w32(other + 4, node)
         cell = R.light_grid_cell(x, y)
+        # Half the cases put an existing node at the destination head, so the
+        # back-link update of the old head runs.
+        prior = None
+        if case % 4 >= 2:
+            prior = ee.alloc(16)
+            ee.mem.w32(cell, prior)
+            ee.mem.w32(prior + 4, cell)
         old_cell_head = ee.mem.u32(cell)
+        assert old_cell_head == (prior or 0), case
         clip = ee.alloc(16)
         events = []
         ee.stub(0x17365C, function=lambda e: events.append(('res_find', e.r[4] & 0xFFFFFFFF,
@@ -286,21 +311,71 @@ def check_jumpgate(elf, rng):
             assert ee.mem.u32(head) == other and ee.mem.u32(other + 4) == head
             assert ee.mem.u32(cell) == node and ee.mem.u32(node + 4) == cell
             assert ee.mem.u32(node) == old_cell_head
+            if prior:
+                assert ee.mem.u32(prior + 4) == node, case
+                assert ee.mem.u32(prior) == 0, case
+                seen['non_empty'] += 1
+            ix, iy = (int(x) + 0x2d00) >> 8, (int(y) + 0x2d00) >> 8
+            edges.update((axis, i) for axis, i in (('x', ix), ('y', iy)) if i in (-1, 0, 89, 90))
+            if cell == R.LIGHT_OVERFLOW:
+                seen['overflow'] += 1
+                seen['y_outside'] += 0 <= ix < 90 and not 0 <= iy < 90
+            else:
+                seen['grid'] += 1
+            seen['non_integral'] += x != int(x) or y != int(y)
         else:
             assert ee.mem.u32(head) == node and ee.mem.u32(node + 4) == head
+            assert ee.mem.u32(cell) == old_cell_head
+            seen['unlinked'] += 1
         want.append(('run_every_frame', obj))
         assert events == want, (case, events, want)
-        checked += 1
-    print('PASS JumpGate_loadState %d cases (light_link2 original)' % checked)
+    assert all(seen.values()), seen
+    assert edges == {(a, i) for a in 'xy' for i in (-1, 0, 89, 90)}, sorted(edges)
+    print('PASS JumpGate_loadState %d cases (light_link2 original; %d grid, %d overflow of which '
+          '%d y-outside, %d non-integral, %d onto a non-empty head, %d inactive; edge indexes '
+          '-1/0/89/90 on both axes)' % (len(positions), seen['grid'], seen['overflow'],
+                                        seen['y_outside'], seen['non_integral'],
+                                        seen['non_empty'], seen['unlinked']))
 
 
 def act_rows(ee):
     acts = []
-    for act in range(13):
+    for act in range(ee.mem.u32(G_NUM_ACTS)):
         count = ee.mem.u32(G_ACT_COUNT + 4 * act)
         table = ee.mem.u32(G_ACT_TABLE + 4 * act)
         acts.append([(cstr(ee, ee.mem.u32(table + 8 * i)), ee.mem.u16(table + 8 * i + 4))
                      for i in range(count)])
+    return acts
+
+
+CAPACITY = SAVE_SIZE - 0x16118     # level bodies after the directory
+READABLE_SLOTS = 10
+
+
+def check_act_table(elf):
+    """The executable's act table, read through g_actCount 0x4f8e7c."""
+    ee = fixture(elf)
+    acts = act_rows(ee)
+    assert len(acts) == 13, len(acts)
+    for index, rows in enumerate(acts):
+        assert rows[0] == (b'hub', 15000), (index, rows[0][1])
+        assert 1 <= len(rows) <= READABLE_SLOTS, (index, len(rows))
+    assert acts[0][1] == (b'blood1', 25000), acts[0][1][1]
+    counts = [len(rows) for rows in acts]
+    sums = [sum(size for _, size in rows) for rows in acts]
+    assert (min(counts), max(counts)) == (1, 10), counts
+    assert CAPACITY == 220000
+    assert max(sums) == 153000, sums
+    assert all(total <= CAPACITY for total in sums), sums
+    ten = [i for i, n in enumerate(counts) if n == READABLE_SLOTS]
+    assert ten == [2, 8], ten
+    # Derived: ten rows plus one hub* sub-area need an eleventh key, and its
+    # 15000 bytes still fit, so only the slot limit stops it (see check_travel).
+    assert all(sums[i] + acts[i][0][1] <= CAPACITY for i in ten)
+    print('PASS act table %d acts (g_actCount); row 0 hub 15000 bytes in every act; row counts %s; '
+          'totals %s of %d; act 0 row 1 %d bytes; ten-row acts %s, plus a hub sub-area %s' %
+          (len(acts), counts, sums, CAPACITY, acts[0][1][1], ten,
+           [sums[i] + acts[i][0][1] for i in ten]))
     return acts
 
 
@@ -321,9 +396,18 @@ def check_save_game(elf, rng):
                 (0, b'blood1', b'', False, False, 0), (0, b'blood1', b'', False, False, 1),
                 (-1, b'blood1', b'', False, False, 0), (0, b'blood1', b'', True, False, 0),
                 (0, b'zzz', b'', False, False, 0), (2, b'hub', b'', False, False, 0)):
-            cases.append((living, act, base, sub, menu, stored, quiet))
+            cases.append((living, act, base, sub, menu, stored, quiet, None))
+    # The daemon's call save_game(0, 1) for a level in no act, and a living
+    # record at slot g_numPlayers behind a dead party ('beyond': not counted).
+    cases += [(True, 0, b'zzz', b'', False, False, 1, 0),
+              (True, 2, b'zzz', b'', False, False, 1, 0),
+              ('beyond', 0, b'zzz', b'', False, False, 1, 0),
+              ('beyond', 0, b'blood1', b'', False, False, 1, 0),
+              ('beyond', 0, b'blood1', b'', False, False, 0, None),
+              ('beyond', -1, b'blood1', b'', False, False, 0, None)]
     dead_kinds = ('hp', 'flag', 'null')
-    for index, (living, act, base, sub, menu, stored, quiet) in enumerate(cases):
+    daemon_missing = beyond = 0
+    for index, (living, act, base, sub, menu, stored, quiet, a0) in enumerate(cases):
         ee = fixture(elf)
         acts = act_rows(ee)
         ee.mem.write(G_SAVE_DIR, bytes(11 * 0x18))
@@ -333,14 +417,16 @@ def check_save_game(elf, rng):
         if stored:
             ee.mem.write(G_SAVE_DIR, qualified + b'\0')
             ee.mem.w32(G_SAVE_DIR + 0x14, 0x3a98)
-        players = rng.randrange(1, 5)
+        beyond_case = living == 'beyond'
+        players = rng.randrange(1, 4 if beyond_case else 5)
         ee.mem.w32(G_PLAYERS, players)
-        living_slot = rng.randrange(players)
-        for slot in range(players):
+        living_slot = players if beyond_case else rng.randrange(players)
+        living = living is True
+        for slot in range(players + beyond_case):
             rec = G_RECORDS + slot * RECORD_SIZE
             objp = ee.alloc(0x40)
             hp, flags, ptr = 0.0, 0, objp
-            if living and slot == living_slot:
+            if slot == living_slot and (living or beyond_case):
                 hp = 10.0
             else:
                 kind = dead_kinds[(index + slot) % 3]
@@ -362,7 +448,7 @@ def check_save_game(elf, rng):
                                                             e.r[6] & 0xFFFFFFFF, e.r[7])) or 0)
         ee.stub(0x221914, function=lambda e: events.append(('save_build', e.r[4], e.r[5])) or 0)
         ee.stub(0x1EB5C8, function=lambda e: events.append(('to_lobby', e.r[4] & 0xFFFFFFFF)) or 0)
-        slot_arg = rng.randrange(4)
+        slot_arg = rng.randrange(4) if a0 is None else a0
         ee.call(SAVE_GAME, slot_arg, quiet)
 
         found = act != -1 and any(qualified.startswith(row[0]) for rows in acts for row in rows)
@@ -379,12 +465,20 @@ def check_save_game(elf, rng):
             want += [('save_build', slot_arg, 0), ('to_lobby', 0xFFFFFFFF)]
         assert events == want, (index, events, want)
         assert ee.mem.u32(G_SAVE_GAME_WORD) == (0 if build else 0xA5A5A5A5), index
+        if living and not found and act != -1 and (slot_arg, quiet) == (0, 1):
+            assert want[-1][0] == 'message' and not build, index
+            daemon_missing += 1
+        if beyond_case:
+            assert events == [], index
+            beyond += 1
         tally['build' if build and message else 'silent_build' if build else
               'message_only' if message else 'nothing'] += 1
         checked += 1
     assert all(tally.values()), tally
-    print('PASS save_game %d checkpoint cases (%s)' % (
-        checked, ', '.join('%s %d' % kv for kv in tally.items())))
+    assert daemon_missing == 2 and beyond == 4, (daemon_missing, beyond)
+    print('PASS save_game %d checkpoint cases (%s; save_game(0, 1) on a missing level %d, '
+          'living record at slot g_numPlayers %d)' % (
+              checked, ', '.join('%s %d' % kv for kv in tally.items()), daemon_missing, beyond))
 
 
 class Travel:
@@ -489,13 +583,14 @@ class Travel:
         return self.ee.mem.read(G_SAVE_BUF, SAVE_SIZE)
 
 
-def check_travel(elf, rng):
+def check_travel(elf, rng, acts):
     """Leave, revisit, suppress, act change: what one level remembers."""
     t = Travel(elf, rng)
     ee = t.ee
-    acts = act_rows(ee)
+    assert act_rows(ee) == acts
     ee.mem.w32(G_ACT, 2)
     rows = dict(acts[2])
+    assert rows[b'hub'] == 15000
     a, b, c = acts[2][1][0], acts[2][2][0], acts[2][3][0]
     steps = 0
 
@@ -562,6 +657,7 @@ def check_travel(elf, rng):
     t2 = Travel(elf, rng)
     t2.ee.mem.w32(G_ACT, 0)
     first, second = acts[0][1][0], acts[0][2][0]
+    assert (first, acts[0][1][1], acts[0][0][1]) == (b'blood1', 25000, 15000)
     body1 = t2.store(first, 5)
     t2.store(b'hub', 6)
     t2.store(second, 7)
@@ -571,13 +667,35 @@ def check_travel(elf, rng):
     t2.load(first, body1)
     steps += 2
 
-    capacity = SAVE_SIZE - 0x16118
-    sums = [sum(size for _, size in rows_) for rows_ in acts]
-    over = [i for i, total in enumerate(sums) if total > capacity]
-    print('PASS travel sequence %d steps; act rows %d..%d, row 0 hub %d bytes in every act, '
-          'largest act total %d of %d, acts over capacity %s' %
-          (steps, min(map(len, acts)), max(map(len, acts)), acts[0][0][1], max(sums),
-           capacity, over or 'none'))
+    # Every row of ten-row act 2 departed, then one hub sub-area: the eleventh
+    # key goes to the gap slot 10.  save_levelStateStored reports it absent,
+    # but the loader's hit test reads the first name byte of the slot where its
+    # ten-slot search stopped, so with the gap written every miss loads the gap
+    # body.  b'zzz' and b'hub_zz' are synthetic names (no act row needed to load).
+    t3 = Travel(elf, rng)
+    t3.ee.mem.w32(G_ACT, 2)
+    for tag, (name, _) in enumerate(acts[2], 0x20):
+        assert t3.store(name, tag) is not None, name
+    assert [size for _, size in t3.directory()[:10]] == [size for _, size in acts[2]]
+    t3.load(b'zzz', None)                         # ten full, gap empty: a miss is fresh
+    west3 = t3.store(b'hub_west', 0x40)
+    assert west3 is not None
+    assert t3.directory()[10] == (b'hub_west', 15000)
+    at = G_SAVE_DATA + t3.offset(10)
+    assert t3.offset(10) == sum(size for _, size in acts[2]) == 128000
+    assert t3.ee.mem.read(at, 8 + len(west3[0]))[8:] == west3[0]
+    assert t3.stored(b'hub', b'west') == 0 and t3.stored(acts[2][9][0]) == 1
+    assert t3.stored(acts[2][4][0]) == 1
+    t3.load(b'hub_west', west3)                   # the gap body comes back ...
+    t3.load(b'zzz', west3)                        # ... for any name that misses
+    zz = t3.store(b'hub_zz', 0x41)                # a second miss rewrites the gap body
+    assert zz is not None and t3.directory()[10] == (b'hub_west', 15000)
+    t3.load(b'hub_west', zz)
+    steps += 6
+    print('PASS travel sequence %d steps; act 2 row 0 hub %d bytes; act 0 first non-hub row '
+          '%d bytes, cleared to %d; act 2 all %d rows plus hub_west: gap slot 10 at body '
+          'offset %d, lookup 0, but every loader miss loads the gap body' %
+          (steps, rows[b'hub'], acts[0][1][1], acts[0][0][1], len(acts[2]), t3.offset(10)))
 
 
 def main():
@@ -591,8 +709,9 @@ def main():
     rng = random.Random(args.seed)
     check_creature(args.elf, rng)
     check_jumpgate(args.elf, rng)
+    acts = check_act_table(args.elf)
     check_save_game(args.elf, rng)
-    check_travel(args.elf, rng)
+    check_travel(args.elf, rng, acts)
     for probe, stubs in STUBS.items():
         print('STUBS %s: %s' % (probe, ', '.join(
             ('0x%x %s' % (k, v)) if isinstance(k, int) else '%s %s' % (k, v)

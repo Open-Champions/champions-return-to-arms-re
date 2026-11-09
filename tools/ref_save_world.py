@@ -192,7 +192,7 @@ LIGHT_GRID_SIDE = 90
 
 
 def light_grid_cell(x, y):
-    """light_link2 0x148bc8: light-grid cell for integral x/y, or the overflow list."""
+    """light_link2 0x148bc8: light-grid cell for x/y truncated toward zero, or the overflow list."""
     ix, iy = (int(x) + 0x2d00) >> 8, (int(y) + 0x2d00) >> 8
     if 0 <= ix < LIGHT_GRID_SIDE and 0 <= iy < LIGHT_GRID_SIDE:
         return LIGHT_GRID_AT + 4 * (iy * LIGHT_GRID_SIDE + ix)
