@@ -1040,6 +1040,26 @@ class ControlTests(unittest.TestCase):
                 self.assertEqual(emu.sif_deliveries, [])
                 self.assertEqual(emu.mem.u32(0x8ef048), 0)
 
+    def test_sif_dma_words_read_zero_and_stores_trap(self):
+        # Audit R8-4: D_STAT and D5_CHCR read as a modelled 0; no store is kept.
+        sw = [I(0x2B, V0, A0, 0)]
+        for addr, name in ((0x1000E010, 'D_STAT'), (0x1000C000, 'D5_CHCR')):
+            bare = machine(sw, {A0: addr, V0: 0x100}, run=False)
+            with self.assertRaises(MemoryFault):
+                bare.call(BASE)
+            model = self.sif_machine(sw, {A0: addr, V0: 0x100})
+            with self.assertRaises(CpuTrap) as trap:
+                model.call(BASE)
+            self.assertIn(name, str(trap.exception))
+            self.assertIn('pc 0x%08x' % BASE, str(trap.exception))
+            self.assertNotIn(addr, model._hw_words)
+            # A load afterwards still reads the modelled 0, not the stored 0x100.
+            again = self.sif_machine([I(0x23, V0, A0, 0)], {A0: addr})
+            self.assertEqual(again.call(BASE), 0)
+        beside = self.sif_machine(sw, {A0: 0x1000E014, V0: 0x100})
+        with self.assertRaises(MemoryFault):
+            beside.call(BASE)
+
     def test_vpu_stat_cfc2_is_opt_in_and_only_register_29(self):
         cfc2 = (0x12 << 26) | (2 << 21) | (V0 << 16) | (29 << 11)
         other = (0x12 << 26) | (2 << 21) | (V0 << 16) | (1 << 11)

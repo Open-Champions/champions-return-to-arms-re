@@ -65,9 +65,9 @@ callers named on those methods.  install_modelled_gs_privileged accepts 8-byte
 stores to the named GS privileged registers and reads CSR as 0; that is a
 model, not a GS.  install_modelled_sif models the EE half of the SIF command
 handshake read from 0x355608 and 0x355d68: the SIF syscalls at their read
-callers, D_STAT and D5_CHCR as storage, and one modelled IOP command packet,
-delivered through the game's own DMAC handler, where a poll waits for the
-IOP.  It has no IOP.  Every value these handlers write in v0 is modelled, not a recovered kernel
+callers, D_STAT and D5_CHCR read as a modelled 0 (any store traps), and one
+modelled IOP command packet, delivered through the game's own DMAC handler,
+where a poll waits for the IOP.  It has no IOP.  Every value these handlers write in v0 is modelled, not a recovered kernel
 result.  Every other number still raises CpuTrap.  The opt-ins compose; none
 is installed by default.
 
@@ -1049,6 +1049,9 @@ class EE:
         0x19bab0: 0x80000002,   # tail call from sceSifInitRpc 0x355ee8, caller iop_loadModules
     }
 
+    # DMAC words read by sceSifInitCmd.  Loads return a modelled 0; stores trap (audit R8-4).
+    _SIF_DMA_WORDS = {0x1000e010: 'D_STAT', 0x1000c000: 'D5_CHCR'}
+
     def install_modelled_sif(self, while_disabled=False):
         """Opt in to the EE half of the SIF command handshake.  There is no IOP.
 
@@ -1058,9 +1061,15 @@ class EE:
 
         * 0x35574c reads D_STAT 0x1000e010 and, when bit 0x20 is set, writes
           0x20 back at 0x355760.  0x35576c reads D5_CHCR 0x1000c000 and calls
-          SetDChain 0x352dc0 (syscall 0x78) when bit 0x100 is clear.  Both
-          words are storage that starts at 0 here: no pending channel-5
-          status and channel 5 not running.  That 0 is modelled.
+          SetDChain 0x352dc0 (syscall 0x78) when bit 0x100 is clear.  A
+          4-byte load of either word returns 0 at any pc: no pending
+          channel-5 status and channel 5 not running.  That 0 is modelled,
+          and loads are not limited to those callers.  Every store to either
+          word raises CpuTrap (audit R8-4): D_STAT is write-one-to-clear (the
+          game's channel-8 clear at 0x17c8b0 stores 0x100 and then polls that
+          bit at 0x17c920-0x17c93c), and neither that nor any status bit is
+          modelled, so the words never behave as RAM.  The write-back at
+          0x355760 is not reached because bit 0x20 reads 0.
         * SetDChain at ra 0x355784 and iSetDChain (syscall -0x78) at ra
           0x355bec: neither caller reads v0.  v0 = 0.
         * AddDmacHandler (syscall 0x12) at ra 0x355798 with channel 5 and
@@ -1070,14 +1079,25 @@ class EE:
           v0 = 0.
         * GetReg (syscall 0x7a), accepted only at the four return addresses
           in _SIF_GETREG_RA.  Software registers 0x80000000 and 0x80000002
-          return the last SetReg value, 0 before any.  Register 4 is the
+          return the last SetReg value, 0 before any.  In the round-8 boot
+          both are read before any SetReg, so both reads return a modelled 0,
+          and both zeros are modelled branch selectors (audit R8-5): at
+          0x3557b4 beqz takes the zero path 0x3557fc (the GetReg(4) loop,
+          GetReg(2), both SetRegs and the 0x14-byte 0x80000002 send), where
+          nonzero would send command 0x80000000 and return
+          (0x3557bc-0x3557f4); at 0x355e90 a nonzero value (bnez) would skip
+          the second send, the sceSifGetSreg poll and the modelled packet.
+          Their retail values are IOP-side or boot-loader state and are
+          unknown.  Register 4 is the
           main-flag word: the loop at 0x355800-0x35580c repeats until bit
           0x20000 is set.  The model returns 0x20000, the one bit that loop
           tests.  That bit stands for the IOP side; it is not a recovered
           flag value.  Register 2 is the IOP's command buffer address.  The
           EE stores it at 0x8ef120, passes it to SetReg 0x80000000 and uses
           it as the destination word of every SetDma descriptor that
-          _SifSendCmd 0x3559b8 builds (0x355a5c).  The model returns
+          _SifSendCmd 0x3559b8 builds (0x355a5c).  (sceSifInitCmd,
+          sceSifGetSreg, sceSifSyncIop and _SifSendCmd are SDK names inferred
+          from behaviour; no symbol file names those addresses.)  The model returns
           SIF_SUBADDR_PLACEHOLDER, an unmapped address, so an EE access
           through it would fault.  It is not an IOP address.
         * SetReg (syscall 0x79), accepted only at the return addresses in
@@ -1110,7 +1130,8 @@ class EE:
         raises CpuTrap naming Status.  while_disabled=True delivers anyway,
         a disclosed modelled exception.  The COP0 Status at the delivery is
         the last field of each sif_deliveries entry.  In the round-8 boot it
-        is 0x10000: the game's EI at 0x355e7c set EIE, and IE was never set.
+        is 0x10000: the EI at 0x35c044, reached from the call at 0x355e7c
+        (the last of three EI/DI pairs), set EIE, and IE was never set.
 
         Not modelled: the IOP, the bind and call replies (command 0x80000008,
         handled by 0x356068), any RPC result data, the reset and boot-end
@@ -1793,6 +1814,11 @@ class EE:
         elif self._gs_access(addr, size, True):
             self.gs_writes.append((self.cur, addr, kept))
         else:
+            if self._sif and addr in self._SIF_DMA_WORDS:
+                raise CpuTrap('%d-byte store of 0x%x to %s 0x%08x at pc 0x%08x: the '
+                              'modelled SIF DMA words read as 0 and are not writable '
+                              '(write-one-to-clear and status bits are not modelled)'
+                              % (size, kept, self._SIF_DMA_WORDS[addr], addr, self.cur))
             key = self._hw_key(addr, size)
             if key is not None:
                 self._hw_words[key] = kept & M32
