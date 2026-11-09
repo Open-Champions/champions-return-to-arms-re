@@ -177,12 +177,12 @@ the frame counter. **Observed.**
 | 1 | flags 0x9; second timers clamped to 1; burn / disintegrate / ice / gib branches (docs/creatures.md C6, arena-desync.md) | 0x111478–0x111d5c |
 | 2 | knock-back speed from the damage flags | 0x111d5c–0x111dd4 |
 | 3 | virtual slot 27 with state 0x14 → the class's set-state (below) | 0x111de8 |
-| 4 | flag 0x2000; stop here for the `Dead` property or creature flag 0x100000000 | 0x111e08 |
+| 4 | flag 0x2000; stop here for the `Dead` property or creature flag 0x100000000 | store 0x111e04, `Dead` query call 0x111e08 (2026-11-09: this row gave only 0x111e08; the store pc is executed in `docs/spec/combat-r6.md` section 4) |
 | 5 | sum of the players' levels (+0x59, slots below `g_numPlayers`); `xp = int(int(pow(expValue / sum, 1.4)) × 0.75)` | 0x111e40–0x111ea0 |
 | 6 | killer slot: the object behind +0x2e4 compared with each record's object pointer; −1 when no player | 0x111ec4 onward |
 | 7 | if a player killed: rank of skill 0x3b → a fraction; one draw from the **creature's own** generator; on success `pool_new(0xb8)` and `OniBall_ctor` (which draws the shared seed once) | 0x111f30–0x111fcc |
-| 8 | one player: if alive, `player_giveExp(slot, min(xp, table[level+1] − table[level]))`; class 0 gains mana = monster max hit points / 30 — in this one-player branch whoever or whatever made the kill; no killer is needed (`docs/spec/combat.md` section 5, executed) | 0x1120e4 |
-| 9 | several: share 0.6 for the killer, 0.4 for the others, 0.5 for all when nobody is the killer; halved for a player whose record hit points are ≤ 0; same cap; class-0 mana for the killer only | 0x1121e8 |
+| 8 | one player: if alive, `player_giveExp(slot, min(xp, table[level+1] − table[level]))`; class 0 gains mana = monster max hit points / 30 — in this one-player branch whoever or whatever made the kill; no killer is needed (`docs/spec/combat.md` section 5, executed) | 0x1121e8 (2026-11-09: this row said 0x1120e4; the call sites of steps 8 and 9 were swapped, executed in `docs/spec/combat-r6.md` section 3) |
+| 9 | several: share 0.6 for the killer, 0.4 for the others, 0.5 for all when nobody is the killer; halved for a player whose record hit points are ≤ 0; same cap; class-0 mana for the killer only | 0x1120e4 (2026-11-09: this row said 0x1121e8) |
 
 Nothing in steps 5–9 reads the local slot, a camera, an option or the alive list: only
 `g_numPlayers`, record hit points, level and class, the level-step table behind the cap of
