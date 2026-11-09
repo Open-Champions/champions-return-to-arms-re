@@ -336,32 +336,46 @@ Bit `0x08` of that halfword selects the format at `0x53ff58`; otherwise
 the format is `0x53ff68`. Both are a leading `%s` plus a fixed suffix.
 The `%s` is the descriptor name at `0x4fbbf8 + row*0x26c`, unless that
 name is the literal at `0x53fd38`. Only carousel row 0 has that literal.
-The signed byte at `0x8e2c91` plus one then selects one of the thirteen
-short names, and only results 0..12 are in range. Bytes −1 through 11
-were executed, so slot 4 (byte 3) is one of those thirteen. `anim_start`
+The signed byte at `0x8e2c91` plus one then selects one of thirteen
+slots, and only results 0..12 are in range. The thirteen slots hold twelve
+addresses: bytes −1 and 0 (slots 0 and 1) both copy `0x53fdc0`. Bytes −1
+through 11 were all executed, each through the full restart. `anim_start`
 is called with the `addiu` immediate 3 at `0x225580`, and the new cell's
 flag halfword reads back as 3. Before that call the cell's time and weight
 are nonzero sentinels; both words are stored as 0. On an empty state the
 0.2 blend loaded at `0x225584` is forced to 0, so the rate is 1. When the
 count is already 1 the new cell keeps that blend and the rate is
 `0x3daaaaab`. Evidence:
-[creation rows](../../tools/difftest_char_picture.py#L310)
-and the [direct-call census](../../tools/difftest_char_picture.py#L152).
+[creation rows](../../tools/difftest_char_picture.py#L435)
+and the [direct-call census](../../tools/difftest_char_picture.py#L252).
 
 **Observed** direct calls in `playerSel_task` `0x225478` through
-`0x22e700`. This is not a run of the task. The probe records every `jal`
-and `j` target in that span, and every linking branch and `jalr`. The
-span is 569 `jal` instructions and 107 targets, with no `j`, linking
-branch, or `jalr`. None of those targets is `anim_advance` `0x16d748`,
-`anim_advanceUnitSpeed` `0x1709d8`, `anim_syncToSimFrame` `0x1709f8`,
-`anim_randomizeTopTime` `0x16d0b8`, `anim_jumpTopToEnd` `0x170bc8`, or
-`anim_snapTopToEnd` `0x170c80`. Across the executable, `anim_advance` is the target of `jal` sites
-`0x1163a4`, `0x189910` and `0x1b95e4`, and of one `j` at `0x1709ec`.
-There is no linking branch, composed address, or aligned data word.
-None of those four sites is in this span. The executed restart and
+`0x22e700`. This paragraph is a static census. The run of the task is in
+the next section. In the span, the probe records every `jal` and `j`
+target, every linking branch with REGIMM rt 16 to 19 (`bltzal`, `bgezal`,
+`bltzall`, `bgezall`), every `jalr`, and every `jr` through a register
+other than `$ra`. The span has 569 `jal` instructions and 107 targets. It
+has no `j`, no linking branch and no `jalr`. It has three `jr $2` jump
+tables, at `0x225950`, `0x22d300` and `0x22defc`. None of the 107 targets
+is a time writer: `anim_advance` `0x16d748`, `anim_advanceUnitSpeed`
+`0x1709d8`, `anim_syncToSimFrame` `0x1709f8`, `anim_randomizeTopTime`
+`0x16d0b8`, `anim_jumpTopToEnd` `0x170bc8` or `anim_snapTopToEnd`
+`0x170c80`. None is one of the four functions that hold an `anim_advance`
+site: `0x1162b0`, `0x189870`, `0x1b9520` and `0x1709d8`. Across the
+executable, `anim_advance` is the target of `jal` sites `0x1163a4`,
+`0x189910` and `0x1b95e4`, and of one `j` at `0x1709ec`. The probe finds
+no linking branch to it. It also finds no lui-pair site under either
+register rule (the `Elf.analyze` reset at heuristic function starts, and
+no reset at all). Every allocated section with file data was scanned for
+an aligned word, and none holds the address; the sections are listed in
+the log. None of those sites is in the span. The closure follows `jal`,
+linking branches, and every `j` that leaves its own function, over the
+exact bodies in `ghidra_funcs.tsv`. It reaches 568 functions from the
+span and none of the time writers or the four holders. It counts 85
+`jalr`/`jr` sites that it does not follow. The executed restart and
 transition slices call `0x16cfe0`, `0x17365c`, `0x22d2b4`, `0x3b7ef0`,
-`0x3b8534` and `0x3b868c`, and not `anim_advance`. Indirect `jalr` inside
-a callee is not followed. Which task steps that preview is **Unknown**.
+`0x3b8534` and `0x3b868c`. Evidence:
+[the census](../../tools/difftest_char_picture.py#L252).
 
 **Observed; Executed** three transition setups. Each cell's time and
 weight start as nonzero sentinels and are stored as 0; the rate is 1:
@@ -384,7 +398,7 @@ inventory draw then calls `anim_advance` at speed 1 from `0x1c0a10`,
 before `model_draw`. One such step from that fresh cell stores time
 `0x3f7fffff` and weight 1 (`0x3f800000`). That is the first frame the
 inventory stand draws. Evidence:
-[inventory and play rows](../../tools/difftest_char_picture.py#L402).
+[inventory and play rows](../../tools/difftest_char_picture.py#L528).
 
 **Observed; Executed** `player_resetIdleAnim` `0x1b2470`. No player at
 `+0x43d8`, or hit points `+0xac` not greater than 0, leaves a prefilled
@@ -416,7 +430,7 @@ from `0x1c0c20` with layer 6, mesh object `+0x544` and texture object
 empty mesh. The body picture therefore uses the mask stored by the
 previous `Player_drawEquipped`, not the update that follows the body draw
 in the same call. Evidence:
-[mask rows](../../tools/difftest_char_picture.py#L518).
+[mask rows](../../tools/difftest_char_picture.py#L644).
 
 **Observed; Executed** `model_emitShellPasses` `0x174e78`. Flag `0x20`
 clear leaves a prefilled packet unchanged. Flag set walks table 0: the
@@ -431,7 +445,165 @@ the `0x44` setup word; the callers pass 1, which selects `0x48`. The
 trailer stores `0x6001c000`, `0x1400002a` and a zero word, then the qword
 at model `+0x18` and test word `0x507f5`. The byte image is
 [shell_packet](../../tools/ref_char_attachment.py#L398). Joint matrices
-and the GS rasterizer remain **Unknown**.
+are executed in the next section. The GS rasterizer remains **Unknown**.
+
+## Whole frames: who steps the preview, the restart, and the preview mask
+
+`tools/difftest_char_frame.py` runs the original functions over whole
+frames. The disclosed stubs and planted state are listed in its docstring
+([lines 1–46](../../tools/difftest_char_frame.py#L1)). Its three disc
+inputs are read at run time from a private folder and are never printed.
+
+**Observed** (private disc, `INTRO.GOB` `objects.ob`): the intro level holds
+exactly 13 `NPC` records. Each has a `name` equal to one of the 13
+descriptor names at `0x4fbbf8 + row*0x26c`, `lumpname` select, and a body
+mesh and texture name. **Executed:** `handle_initPool` `0x1a17d0`,
+`pool_init` `0x14fcd8`, `anim_init` `0x16f9a8` and `world_init` `0x14c370`
+run first. `NPC_ctor` `0x29df04` then runs on each record's property text
+and position. Each object gets vtable `0x50f590` at `+0x48`, lump name
+`select.lmp` at `+0x3c8`, and handles at `+0x428/+0x42c`. Its `name`
+value is stored without the quotes it has in the file. With the archive
+membership used here, construction reaches none of the six time writers.
+`playerSel_initCache` `0x2243f8` then finds those objects for real through
+`world_findObjectByName` at `0x229ed0`, stores them at
+`scratch + 0x1558 + 4*row`, and calls `anim_push(obj+0x114, standing, 3)` at
+`0x229f38`. `playerSel_start` `0x2245b8` registers `playerSelection`.
+
+**Executed: the run pass steps the preview.** Each frame is
+`tasks_call(1, −1)` and then `tasks_call(0, 1)` through `0x19e798`, the
+main loop's run pass and draw pass (`docs/mainloop.md` section 3, steps 5
+and 7). Every call is recorded, including `jalr`, and arrival hooks sit on
+all six time writers. In the run pass, `runObjects` `0x14b910` calls
+`NPC_run` `0x29ea40` through `jalr` in its walk `0x14bb44–0x14bcc0`.
+`NPC_run` calls `Creature_updateActive` `0x10c0f0` and then
+`Creature_stepAnim` `0x1162b0`. That calls `anim_advance` from `0x1163a4`
+on `obj+0x114` at speed 1. No other time writer is reached in either pass.
+Only previews with bit 63 of `+0xa8` set advance. The others drop to the
+15- and 60-frame lists (`docs/objects.md`, run lists). Each run pass is one
+unit step of the standing loop: time adds `0x3f7fffff` (`unit_advance`,
+flags 3). The draw pass leaves the time unchanged.
+[frames, lines 278–346](../../tools/difftest_char_frame.py#L278).
+
+**Executed:** `playerSel_task`'s own calls inside the draw pass (352 calls
+over 3 frames, 22 targets, no `jalr` on those paths; 175,494 calls and 89
+`jalr` in all passes together) reach no time writer.
+Neither do `playerSel_initCache` or `playerSel_start`. **Observed:**
+`game_isFrozen` `0x1ebdf8` tests the `playerSelection` task by name. While
+that task runs and `g_simFrame` is under 60 it returns 0. After that the
+normal pause and warm-up rules apply (`0x1ebe38–0x1ebe58`). So the run pass,
+and with it the preview step, keeps going during selection.
+
+**Inferred**, not executed: which previews are active in a real session.
+The rig runs neither the selection camera (`0x22a6f8/0x22a83c/0x22a968`)
+nor `drawWorld`, so `g_cameraFocus` stays at the origin. In the rig, rows
+0–2 are active and the rest are not. In the game, `camera_updateFocus`
+`0x18a520` (called from `drawWorld`) places the focus 600 units ahead of
+the camera.
+
+**Executed: intro, end, purge, restart.** The intro4 slice
+`0x226dd8–0x226e44` runs between a draw pass and the next run pass. The
+controller branch that enters it is not executed. The slice starts flags 6
+(REPORT_END and PURGE_BELOW) with blend 0.3. The new cell has time 0,
+weight 0, life 1 and rate `0x3d638e3a`. From then on:
+
+| Seed | Row | Clip length (synthetic) | Intro ends, status `0x80` (E) | `min(weight, life) ≥ 1` (P) | Restart frame |
+|---:|---:|---:|---:|---:|---:|
+| 20973 | 1 | 15 | run pass 16 | run pass 19 | 19 (draw pass) |
+| 7 | 2 | 15 | run pass 16 | run pass 19 | 19 (draw pass) |
+
+Both seeds happen to draw length 15; their rows, masks and VU1 cases
+differ. Both E and P are predicted with `unit_advance` from the cell's own rate,
+and the observed passes match. At the end, the intro holds time = length
+and raises `0x80` on every pass. The standing loop below it stays until
+PURGE_BELOW removes it on pass P. Only then is the count below 2, and
+`playerSel_task`'s restart `0x2254bc–0x2255b4` runs in that frame's draw
+pass. The restart is on that row only, at time 0 with flags 3. Its name
+uses the format that status bit `0x08` selects. The `restart` gate needs
+both conditions, so an intro shorter than its blend-in stays visible,
+frozen at its last frame, until P.
+[transition, lines 349–417](../../tools/difftest_char_frame.py#L349).
+
+**Executed: the preview body mask is written in the same frame, just
+before the body draw.** `world_drawObjects` `0x14b168` reaches `NPC_draw`
+`0x29e3ec` (slot 5). `0x2248f4` decides visibility. It maps the `name`
+property to its row. It requires the row's equipment-preview records to
+have both handles wherever their `+0x60` flag is set (`0x22e61c`). While
+the ramp at `0x8e2c44` is strictly between 0 and 1, it shows only the
+current carousel row (menu byte `+0x20`); only that row's `Creature_draw`
+ran. The object must also be in front of the camera (`vec3_dotDelta`
+`0x1667d8`) and within 85.0 of the camera's side plane (`0x53ff18`).
+Within 240 units, `+0x220` is first set to `0x179550(+0x428, +0xe8)` at
+`0x29e750`. Because the lump name contains `select`, `0x224d80` then
+overwrites it at `0x29e800`:
+
+```text
+mask = all 64 bits
+if hair  != -1 and *(D + 0x1c + 4*hair):  mask &= ~**(D + 0x1c + 4*hair)
+if beard != -1 and *(D + 0x3c + 4*beard): mask &= ~**(D + 0x3c + 4*beard)
+for k in 0..7 of the row's preview group (scratch + 0xfa0 + 8*g == row):
+    record = scratch + g*0x320 + k*0x64
+    if record+0x60 and record+0 and record+4: mask &= ~*(record+0)
+```
+
+`D` is the row's descriptor. Hair and beard come from `0x8e2bc0[row]` and
+`0x8e2be0[row]`, because NPC records have no `pnum` property. With
+`pnum`, the menu row of that player (`+0x21`, `+0x24`) is read instead
+(`0x224e58–0x224ed4`, **Observed**, not executed). `Creature_draw`
+`0x10b048` is then called with `(obj, +0x428, +0x42c, 0)` and passes that
+same `+0x220` to `model_draw` as `r10`. The hide qwords, the item records
+and the camera are planted; the rest runs. The far path (`0x29e53c–0x29e5a4`,
+over 240 units) is **Observed** only.
+[draw_mask, lines 435–509](../../tools/difftest_char_frame.py#L435);
+[preview_body_mask](../../tools/ref_char_attachment.py#L541).
+
+So the preview and the player use different frame orders. The preview
+body uses the mask `NPC_draw` stored a few instructions earlier in the same
+call. A player body uses the mask the previous frame's
+`Player_drawEquipped` stored (pose section above). **Observed** for the
+player: `Player_animStep` `0x1b9520` steps it in the run pass
+(`0x1b95e4`), and the draw pass draws it through `drawObjects`. That chain
+was not run this round.
+
+### Joint matrices and the attach slot (VU1)
+
+**Executed.** The probe calls the real `model_draw` `0x1779b0` on a
+synthetic body. Its state carries a pooled pose buffer, so
+`anim_emitPose` `0x16f880` runs without building. It then calls the real
+`model_drawPart` `0x178c28` for a part on one of the body's attach records.
+The queued chains go through `tools/vu1_emu.py`, which runs the game's own
+VU1 microcode loaded from the packet at `0x3e5ec0`. `tools/vu1_emu.py` is
+byte-identical to the copy on `main`. The comparison is exact per lane
+under that tool's arithmetic ("chop"). Console rounding is not established.
+
+- Entry `0x02` loads `T` (four rows) from the `UNPACK V4-32 ×4`
+  (`0x6c04c000`) that `model_emitDrawSetup` writes. `T` is the model matrix
+  times the view-projection at `0x44f1c0`.
+- Entry `0x3a` turns the pose buffer (`UNPACK V4-16`, count 3n+1) into
+  floats. Joint j's three rows `q_c = (R0[c], R1[c], R2[c], t[c])` become
+  xyz / 4096 and w / 64, at VU qwords `4j+c`. The joint count goes to
+  `0x3ff.z`.
+- Entry `0x0c` writes joint j at qwords `4j..4j+3`:
+  `row c = T0·q0[c] + T1·q1[c] + T2·q2[c]`, and row 3 adds `T3`.
+  [pose_qwords and vu_joint](../../tools/ref_char_attachment.py#L571).
+- `model_emitPartSetup` uploads `UNPACK S-32` (`0x6001c000`) of
+  `joint*4`, then `UNPACK V4-32 ×3` (`0x6c03c001`) of the attach rows
+  `A_k = (v[k], v[3+k], v[6+k], v[9+k])`. Here `v` is the record's 12 floats
+  after its joint word, and mirroring negates `v[0..2]`. Entry `0x1a`
+  reads the joint at qword `joint*4` and writes slot 0:
+  `row c = J0·A0[c] + J1·A1[c] + J2·A2[c]`, and row 3 adds `J3`.
+  [attach_qwords and vu_attach](../../tools/ref_char_attachment.py#L608).
+
+In row-vector form (a point is `p·M`), slot 0 is `V · P_j · T`:
+
+- `V` is the attach record as a 4×4: rows `(v0 v1 v2 0)`, `(v3 v4 v5 0)`,
+  `(v6 v7 v8 0)`, `(v9 v10 v11 1)`, with row 0 negated when mirrored.
+- `P_j` is joint j's pose as `anim_getJointMatrix` returns it
+  (`docs/spec/animation.md` 8.4), with translation as row 3.
+- `T` is the parent's model × view-projection.
+
+The pose itself, from tracks, blending and the VU0 hierarchy, is the
+executed `anim_buildPose` of `docs/spec/animation.md` 8.1–8.3.
+[vu_matrices, lines 524–617](../../tools/difftest_char_frame.py#L524).
 
 ## Remaining boundaries and client handoff
 
@@ -441,60 +613,61 @@ and the GS rasterizer remain **Unknown**.
   Original optional-layer gates, hide-mask changes and attachment-packet
   selection are documented within the synthetic boundaries above. The shield
   variant bit for each body model, the draw arguments of the published
-  starting pointer slots, and the flag-33 shell block are documented in the
-  equipment section. The creation, inventory and in-play clip installs,
-  the show-mask argument of the body `model_draw`, and the shell packet are
-  in the pose section.
-- **Partial:** the test joins bounded slices and full helper functions with
-  constructed entry state. Resource lookup proves archive membership and
-  returned-handle propagation, not actual loading/relocation or GPU use.
-  Starting item identity and metadata offsets are reused from round 4; this
-  note does not re-execute that loader. The draw argument's projection inputs
-  are not named. The creation preview stores time 0 and weight 0 over a
-  nonzero sentinel. No direct call in `0x225478`–`0x22e700` targets
-  `anim_advance`. The task that would step the preview was not run.
-  In-play time is not rewritten by the idle reset, and `Player_move` was
-  not re-executed. `anim_releaseCaches` stays stubbed.
-- **Unknown:** input reachability of every option combination, the full menu
-  confirmation/cancellation lifecycle, live preview/camera parity, which
-  task advances the creation preview, animated joint matrices, and a
-  continuous created-character-to-rendered-player run. No native refusal
-  was removed and no client files were changed.
+  starting pointer slots, and the flag-33 shell block are in the equipment
+  section. The clip installs, the body show-mask argument and the shell
+  packet are in the pose section. The previews' identity and construction,
+  the task that steps them, the intro-to-restart chain, the preview mask,
+  and the VU1 joint and attach matrices are in the frames section.
+- **Partial:** constructed entry state and disclosed stubs throughout.
+  Resource lookup is archive membership with synthetic clip lengths, not
+  loaded data. The selection camera, `drawWorld`, the controller branch
+  into the transition, and the equipment-preview loader with disc data
+  were not run. Their results (camera, focus, row byte, item records) are
+  planted or absent. The far LOD path of `NPC_draw`, the `pnum` branch of
+  `0x224d80`, and the player's own frame chain are **Observed** only.
+- **Unknown:** which previews are active in a real session, live preview
+  and camera parity, console VU rounding, the GS rasterizer, and a
+  continuous run from character creation to a rendered player. No native
+  refusal was removed and no client files were changed.
 
 The client can implement these pieces without inventing values:
 
-1. Appearance gates and handle pairs, lines 193–208. Keep a null optional
-   pair when lookup fails.
-2. Attachment packets, lines 210–227: header `+0x13` of −1 selects nothing,
-   including when the override is nonnegative; otherwise the override
-   replaces −1 only. Copy the 3×4 matrix, mirroring the first row when the
-   draw flag says so.
-3. Starting visuals by body: use the round-4 class, weapon slot, armor slots
-   4/10/12, and metadata deltas. Draw those parts with show mask all ones,
-   attach index from the part header, and the hide-bit clear. Do not switch
-   that path on the class word. A worn shield (definition slot 3) instead
-   uses the body-model bit table in this section.
-4. Shell parameters: flag bit 33 clear means count 0; set means count 2 and
-   the four block fields above. Draw `0x174e78` only when the part flag
-   `0x20` is set and that count is positive. Each record is one pass over
-   every nonempty table-0 mesh, then the restore pass. The byte image is
-   `shell_packet`.
-5. Creation pose: the restart rules and the three transition formats above.
-   Install time 0 and weight 0. The selection span has no direct call to
-   `anim_advance`. Do not add one, and do not invent a step from a task
-   this note did not run.
-6. Inventory pose: the model lump and the class idle filename, flags `0x43`.
-   The first drawn frame is one fixed step later: time `0x3f7fffff`, weight
-   1. A repeated draw keeps stepping; do not restart a clip that is already
-   playing.
-7. In-play pose: the four definition clips, or the idled name when object
-   `+0x462` is set. Leave the current time in place across a reset.
-8. Body meshes: pass object `+0x220` as the show mask of `model_draw`.
-   Use the mask from the previous equipment pass. The runs are `mesh_runs`.
+1. Appearance gates and handle pairs (handle-gates section). Keep a null
+   optional pair when lookup fails.
+2. Attachment selection: header `+0x13` of −1 selects nothing, even with a
+   nonnegative override. Otherwise the override replaces −1 only.
+3. Starting visuals by body: the round-4 class, weapon slot, armor slots
+   4/10/12 and metadata deltas, drawn with show mask all ones, the part
+   header's attach index, and the hide-bit clear. A shield (definition
+   slot 3) uses the body-model bit table. Do not switch on the class word.
+4. Shell parameters: bit 33 clear means count 0. Set means count 2 and the
+   block fields. Draw the shell only when part flag `0x20` is set and the
+   count is positive. The bytes are `shell_packet`.
+5. Selection previews: one object per descriptor row, each with the
+   standing loop pushed at flags 3. Step a preview once per simulation tick
+   (speed 1, `unit_advance`) while it is active, never from the menu code.
+   Install an intro at time 0 with its flags and blend. Restart the standing
+   loop only when status `0x80` is set and one track is left, which is
+   after both the intro's end and its purge. Use the format chosen by bit
+   `0x08`.
+6. Preview visibility: mid-ramp, draw only the current carousel row, and
+   require that row's loaded preview items to have both handles.
+7. Preview body mask: compute `preview_body_mask` (hair, beard, loaded
+   preview items) every frame, just before the body draw, and pass it as
+   the body's show mask.
+8. Inventory pose: the model lump and class idle name, flags `0x43`. The
+   first drawn frame is time `0x3f7fffff`, weight 1. Do not restart a clip
+   that is already playing.
+9. In-play pose: the four definition clips, or the idled name when object
+   `+0x462` is set. Leave the current time in place across a reset. A
+   player's body uses the mask from the previous frame's equipment pass.
+10. Body meshes: the show mask selects runs as `mesh_runs`.
+11. Joint matrices: `J_j = P_j · T` per joint, with `P_j` from the executed
+    pose builder. A part on an attach point draws with `V · J_j`, with row 0
+    of `V` negated when mirrored. Mesh weights address joints as `index*4`.
 
 Preserve explicit unknown appearance for records lacking the four choice
-bytes. Leave animated joint matrices and the creation-preview step refused
-until they have their own executed evidence.
+bytes.
 
 ## Reproduction
 
@@ -535,5 +708,14 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_char_picture.py \
 ```
 
 The picture probe passes 7 creation rows, 211 pose rows and 16 draw rows on
-each seed. The repository analysis suite stays 652 tests. These results are
+each seed, after the widened census lines.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_char_frame.py \
+  local/SLUS_209.73 --data local/char-frame --seeds 20973 7
+```
+
+`local/char-frame` holds the private `INTRO.GOB`, `SELECT.LMP` and
+`SELECT2.LMP`. Each seed prints FRAMES, TASK, CHAIN, MASK and VU1 lines,
+then PASS. The repository analysis suite stays 652 tests. These results are
 executed evidence, not screenshots.
