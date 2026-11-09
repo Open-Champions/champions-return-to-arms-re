@@ -48,6 +48,42 @@ class FrontendFlowReference(unittest.TestCase):
         self.assertEqual(R.name_phase_result(1, 0, 2), (R.PHASE_NAME, R.PHASE_NEXT_PLAYER))
         self.assertEqual(R.name_phase_result(-1, 0, 2), (R.PHASE_NAME, R.PHASE_STATS))
 
+    def test_players_rows_latch_from_slot_one(self):
+        k = R.players_row_kinds_present
+        self.assertEqual(k(0b0101), (0, 5, 5, 5))     # slot 2 present but past slot 1
+        self.assertEqual(k(0b1011), (0, 0, 5, 5))     # slot 3 present but past slot 2
+        self.assertEqual(k(0b1110), (0, 0, 0, 0))     # slot 0 is not read
+        self.assertEqual(k(0b1111, row0_kind=5), (5, 0, 0, 0))
+        self.assertEqual([R.players_row_kinds(n) for n in range(1, 5)],
+                         [k((1 << n) - 1) for n in range(1, 5)])
+
+    def test_menu_input_pressed_pad_zero_only(self):
+        a = R.ACCEPT_MASK
+        self.assertEqual(R.menu_input([(0, a, 0)]), (True, False))
+        self.assertEqual(R.menu_input([(a, 0, a)]), (False, False))
+        self.assertEqual(R.menu_input([(0, 0, 0), (0, a, 0)]), (False, False))
+        self.assertEqual(R.menu_input([(0, 4, 0)], accept_mask=4), (True, False))
+        self.assertEqual(R.menu_input([(0, 0x100, 0)]), (False, True))
+
+    def test_hub_chain(self):
+        self.assertFalse(R.hub_is_second(0, 1, 1))
+        self.assertTrue(R.hub_is_second(1, 1, 1))
+        self.assertEqual(R.hub_predicate_calls(0, 1, 3), [(R.HUB_DECIDED, None)])
+        self.assertEqual(R.hub_predicate_calls(1, 1, 3)[-1], (R.HUB_COMPLETE, (3, 1)))
+
+    def test_max_difficulty_single_bits(self):
+        self.assertEqual([R.max_difficulty(1 << b) for b in range(8)], [3, 1, 2, 2, 3, 4, 5, 1])
+
+    def test_warning_frames(self):
+        self.assertEqual(R.stat_warning_frame(120, 16, 1), (1, 126, -16))
+        self.assertEqual(R.stat_warning_frame(100, 16, 1), (1, 116, 16))
+        self.assertEqual(R.stat_warning_frame(120, 4, 1), (1, 124, 4))
+        self.assertEqual(R.stat_warning_frame(2, -2, 0), (0, 0, -2))
+
+    def test_appearance_copy_layout(self):
+        self.assertEqual(R.appearance_source(3, 12), R.APPEARANCE_VALUES + 0x3C)
+        self.assertEqual(sorted(R.APPEARANCE_ROW_BYTES), [0x21, 0x22, 0x23, 0x24])
+
     def test_no_text_in_reference(self):
         for name in dir(R):
             if not name.startswith('_'):

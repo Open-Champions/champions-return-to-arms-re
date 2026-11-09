@@ -58,6 +58,20 @@ PAD_PRESENT = 0x41BFDC        # pad slot word read by the players list
 PAD_STRIDE = 0x58
 ACCEPT_MASK = 0x40            # initial word at 0x41BFBC
 CANCEL_MASK = 0x120           # initial word at 0x41BFB8
+ACCEPT_MASK_WORD = 0x41BFBC
+CANCEL_MASK_WORD = 0x41BFB8
+PAD_BASE = 0x41BFD8           # slot s at PAD_BASE + s * PAD_STRIDE
+PAD_HELD, PAD_PRESSED, PAD_REPEAT = 0x8, 0xC, 0x10
+MENU_PADS_SCANNED = 1         # frontend_run reads pad slot 0 only
+
+
+def menu_input(pads, accept_mask=ACCEPT_MASK, cancel_mask=CANCEL_MASK):
+    """frontend_run accept / cancel flags from per-slot (held, pressed, repeat)
+    words: only the pressed word of the scanned slots counts, masked by the
+    words at ACCEPT_MASK_WORD and CANCEL_MASK_WORD."""
+    scanned = [pad[1] for pad in pads[:MENU_PADS_SCANNED]]
+    return (any(word & accept_mask for word in scanned),
+            any(word & cancel_mask for word in scanned))
 
 # Main-menu rows, by the order of the retail table at T_MAIN.
 MAIN_NEW, MAIN_LOAD, MAIN_OPTIONS, MAIN_CREDITS = range(4)
@@ -92,16 +106,25 @@ def max_difficulty(profile_word):
 
 
 def players_row_kinds(pads_present):
-    """Kind words the players list gets each pass: row 0 is left alone,
-    rows 1..3 are 0 (enabled) while every earlier pad slot is present and 5
-    (disabled) from the first absent slot on."""
-    kinds, stop = [0], False
+    """Kind words the players list gets each pass for pads_present contiguous
+    pad slots 0..n-1 (see players_row_kinds_present)."""
+    return players_row_kinds_present((1 << pads_present) - 1)
+
+
+ROW_ENABLED, ROW_DISABLED = 0, 5
+PLAYERS_ENABLE_SITE, PLAYERS_DISABLE_SITE = 0x1E0F74, 0x1E0F88
+
+
+def players_row_kinds_present(present_mask, row0_kind=0):
+    """Kind words after one pass, from a 4-bit pad-present mask (bit s = slot
+    s's word at PAD_PRESENT + s * PAD_STRIDE is nonzero).  Row 0 is never
+    written (row0_kind is whatever it held).  Row r (1..3) is 0 iff slots
+    1..r are all present; slot 0 is not read.  Once a row is disabled every
+    later row is too."""
+    kinds, latched = [row0_kind], False
     for slot in range(1, 4):
-        if stop or slot >= pads_present:
-            stop = True
-            kinds.append(5)
-        else:
-            kinds.append(0)
+        latched = latched or not present_mask >> slot & 1
+        kinds.append(ROW_DISABLED if latched else ROW_ENABLED)
     return tuple(kinds)
 
 
@@ -168,6 +191,27 @@ HUB_NAME_FN = 0x1EC300
 PHASE_IMPORT = 1
 FINISH_SITES = ((0x225D48, 1), (0x2287E4, 0))   # (call site, argument)
 LEVEL_ENTRY_APPLY_SITE = 0x321024
+PLAYER_SEL_APPLY_PENDING = 0x2247EC    # the call at LEVEL_ENTRY_APPLY_SITE
+HUB_DECIDED, HUB_SIDE, HUB_COMPLETE = 0x1BF960, 0x1BF8D8, 0x1BF730
+HUB_PREDICATE_SITES = {HUB_DECIDED: 0x1EC308, HUB_SIDE: 0x1EC318, HUB_COMPLETE: 0x1EC32C}
+HUB_MISSION = 1               # second argument of mission_isComplete
+
+
+def hub_predicate_calls(decided, side, difficulty):
+    """game_getHubName's short-circuit chain: [(predicate, args)] in call order
+    for the given predicate results (the third result does not change the
+    calls)."""
+    got = [(HUB_DECIDED, None)]
+    if decided:
+        got.append((HUB_SIDE, None))
+        if side:
+            got.append((HUB_COMPLETE, (difficulty, HUB_MISSION)))
+    return got
+
+
+def hub_is_second(decided, side, complete):
+    """True when game_getHubName returns the second hub name."""
+    return bool(decided and side and complete)
 
 
 def import_first(difficulty):
@@ -186,6 +230,15 @@ CLASS_STATS = (
     (26, 37, 24, 28),
 )
 STAT_POINTS = 20              # word 0x8E2BB0 after the appearance accept
+# Appearance accept copies byte appearance_source(i, carousel row) into
+# selection row byte APPEARANCE_ROW_BYTES[i] (the last two are swapped).
+APPEARANCE_VALUES = 0x8E2BC0  # four 16-byte arrays, one byte per carousel row
+APPEARANCE_STRIDE = 0x10
+APPEARANCE_ROW_BYTES = (0x21, 0x22, 0x24, 0x23)
+
+
+def appearance_source(index, carousel_row):
+    return APPEARANCE_VALUES + index * APPEARANCE_STRIDE + carousel_row
 STAT_MAX = 100                # an increment is allowed while the value is < 100
 POINTS = 0x8E2BB0
 STAT_CURSOR = 0x8E2BBC
@@ -222,6 +275,24 @@ def stat_input(stats, points, cursor, carousel_row, repeat):
 def stat_accept(points):
     """Accept in phase 3: unspent points open the warning, else the name phase."""
     return 'warn' if points else PHASE_NAME
+
+
+WARN_ALPHA_MAX = 126
+WARN_STEP_OPEN, WARN_STEP_CLOSE = 16, -16
+NEXT_PLAYER_STEP = 16         # 0x8E2BB8 when the next-player box opens
+
+
+def stat_warning_frame(alpha, step, accept):
+    """One phase-3 frame while the unspent-points warning is up:
+    (shown, alpha, step).  Alpha 0x8E2BB4 moves by step 0x8E2BB8 and clamps at
+    WARN_ALPHA_MAX; at or below 0 the warning clears.  Accept turns the step
+    to WARN_STEP_CLOSE only when this frame's alpha is WARN_ALPHA_MAX."""
+    alpha = min(alpha + step, WARN_ALPHA_MAX)
+    if alpha <= 0:
+        return 0, 0, step
+    if accept and alpha == WARN_ALPHA_MAX:
+        step = WARN_STEP_CLOSE
+    return 1, alpha, step
 
 
 NAME_MAX = 30
