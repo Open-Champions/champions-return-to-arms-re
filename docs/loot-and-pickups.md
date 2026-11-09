@@ -194,9 +194,9 @@ difficulty 1/5 and PvP A 0/1. What this comparison leaves out:
 - The pool refuses every item (`spawn_item` returns False on the reference
   side), and every non-roll service is an auto-stub (`emu.follow`).
 - The 576 PvP-A runs have no gold by construction, so they compare empty
-  lists. The non-PvP-A runs made 0, 56, 128 and 158 gold calls at chances 0,
-  0.25, 0.6 and 1.0 on seed 7 (`INFO goldChance` lines; the counts depend on
-  the seed).
+  lists. The 144 non-PvP-A runs per chance made 0, 54, 126 and 152 gold calls
+  at chances 0, 0.25, 0.6 and 1.0 on seed 20973, and 0, 56, 128 and 158 on
+  seed 7 (`INFO goldChance` lines).
 
 Results:
 
