@@ -680,3 +680,219 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_death_reload_mirror.py local/SL
 Each seed: two engine_init stops at the SIF status read, and two
 particle-reset faults. Each run executes the heap fill twice, about 340
 million instructions. No stubs. Success output reports counts only.
+
+## Round 8: the SIF wall, 2026-11-09
+
+`tools/difftest_death_reload_sif.py` adds one opt-in, `EE.install_modelled_sif`,
+to the round-7 machine. A companion note,
+[death-reload-client-path.md](death-reload-client-path.md), covers the
+reload steps a native client can do without this boot.
+
+**This machine is reached only through models.** Audit R7-1: GS privileged
+registers come from `install_modelled_gs_privileged`. Audit R7-2: the five
+INTC deliveries before the heap fill are taken while COP0 Status is 0
+(`install_modelled_intc(while_disabled=True)`), and the test asserts that
+Status. The set-register packet below is also delivered while Status
+disables interrupts. Status is `0x10000` there: the game's EI at `0x355e7c`
+set EIE, and IE was never set. So everything below the first delivery is
+conditional on those models. None of it is an executed retail result.
+
+### What the EE code expects (Observed)
+
+The order is the order of `iop_loadModules` `0x19ba98`.
+
+1. `sceSifInitRpc(0)` `0x355d68`, called at `0x19baa8`, returns at once if the
+   word at `0x50750c` is set. Otherwise it sets that word and calls
+   `sceSifInitCmd` `0x355608` (`0x355db0`).
+2. `sceSifInitCmd` returns if the word at `0x507508` is set. Otherwise it
+   sets it and fills the command data at `0x8ef118`:
+   - +0: receive buffer `0x208ef040`, the uncached alias of `0x8ef040`.
+   - +4: `0x208ef0c0`.
+   - +0xc and +0x10: system handler table `0x8ef140` with 32 entries.
+   - +0x1c: software registers at `0x8ef2c0`.
+
+   It clears 32 handler entries of 12 bytes and 32 register words. Handler 0
+   is `0x3555b0`, which copies packet +0x10 into command data +8. Handler 1 is
+   `0x355590`, which stores packet +0x14 at register index packet +0x10.
+3. FlushCache(0) at `0x35573c`. Then `0x35574c` reads D_STAT `0x1000e010`
+   and writes `0x20` back if bit `0x20` is set. `0x35576c` reads D5_CHCR
+   `0x1000c000`. If bit `0x100` is clear, it calls SetDChain (syscall
+   `0x78`).
+4. AddDmacHandler (syscall `0x12`) at `0x355790` registers channel 5,
+   handler `0x355b70`. The id is stored at `0x8ef114`. EnableDmac(5) follows,
+   through `0x3535f8` (syscall `0x16`).
+5. GetReg (syscall `0x7a`) with a0 = `0x80000000` at `0x3557ac`:
+   - Nonzero: store it at command data +8, send command `0x80000000` (size
+     `0x14`, packet `0x8ef100`, +0x10 = `0x8ef040`) and return.
+   - Zero: repeat GetReg(4) at `0x355800`-`0x35580c` until bit `0x20000` is
+     set. Then GetReg(2) is stored at +8 (`0x35581c`), followed by
+     SetReg(`0x80000000`, that value) and SetReg(`0x80000001`, `0x8ef118`)
+     (syscall `0x79`). Last, send command `0x80000002` (size `0x14`,
+     +0xc = 0, +0x10 = `0x8ef040`).
+6. The send `0x355af0` goes through `0x3559b8`. It accepts sizes `0x10` to
+   `0x70`. It writes the size into packet byte 0 and the command at +8. It
+   builds 16-byte descriptors {source, destination = command data +8, size,
+   attribute `0x44`}, writes the cache back (`0x355cb8`), and calls SetDma
+   (syscall `0x77`) at `0x355ac4`. SetDma's v0 is the send's result.
+7. Back in `sceSifInitRpc`, handlers are added for commands `0x80000008`
+   (`0x356068`, the end of a bind or call), `0x80000009` (`0x356440`),
+   `0x8000000a` (`0x356660`) and `0x8000000c` (`0x356178`). Then EI at
+   `0x355e7c`. If GetReg(`0x80000002`) is nonzero, it returns. Otherwise it
+   sends command `0x80000002` (size `0x10`, +0xc = 1), then repeats
+   `sceSifGetSreg(0)` `0x3555c0` at `0x355ec0`-`0x355ec8` until the word at
+   `0x8ef2c0` is nonzero. Last, it tail-calls SetReg(`0x80000002`, 1)
+   (`0x355ee8`).
+   - **Inferred:** only an IOP command makes that word nonzero, through
+     `0x355b70` and handler 1. `0x355b70` reads the packet pointer at
+     `0x8ef118`, the size byte, and the command at +8. A command with bit 31
+     set selects system handler (command & `0x7fffffff`).
+8. `sceCdInit(0)` `0x361bc8`, at `0x19bac0`, calls `sceSifInitRpc` again
+   (which returns). Then it loops on `sceSifBindRpc(0x8f8a68, 0x80000592, 0)`
+   `0x356510`, with a delay of `0x100000` iterations, while the result is
+   negative or client +0x24 is 0.
+   - `sceSifBindRpc` clears client +0x10 and +0x24 and takes a packet from
+     the pool at `0x8f0b40` (`0x355f30`). It stores the client at +0x1c and
+     the server number at +0x20. It creates a semaphore with count 0 and
+     max 1, sends command `0x80000009` (size `0x40`), and returns -2 if the
+     send returns 0 (`0x3565cc`). Otherwise it waits on the semaphore
+     (`0x3565ec`).
+   - `0x356068` signals that semaphore. For a reply whose +0x20 is
+     `0x80000009`, it copies reply +0x24 to client +0x24 (the server) and
+     reply +0x28 to client +0x14.
+   - After the bind, `sceCdInit` stores its mode at `0x8f8ac0` and calls
+     `sceSifCallRpc` `0x3566f0`: function 0, 4 bytes from `0x8f8ac0`, 16
+     bytes back at `0x509e40`. It reads words +4, +8 and +0xc of that buffer
+     through the uncached alias. Their values select a return of 1 or 2 and
+     set the flag `0x508c50` when +0xc is `0xfe`.
+9. Not reached, read only:
+   - `sceSifRebootIop` `0x35bed8`, repeated until nonzero. Its reset,
+     `0x35bd08`, does SetReg(4, `0x40000`), then SetDma of command
+     `0x80000003` (size `0x68`). On success it does SetReg(4, `0x10000`),
+     SetReg(4, `0x20000`), SetReg(`0x80000002`, 0) and SetReg(`0x80000000`, 0).
+   - `sceSifSyncIop` `0x35be88`, repeated until GetReg(4) has bit `0x40000`.
+   - `sceSifInitRpc` again, `0x35b138`, `0x3578c8`, `sceCdInit(0)` again,
+     and `0x362c30(2)`.
+   - The module loads through `0x19b9c8`. Each calls `0x35b9a8` and stores
+     the result at `0x8400fc`.
+
+### The model (`EE.install_modelled_sif`, opt-in)
+
+Each syscall is accepted only at the return addresses read above:
+
+| Syscall | Return addresses | Modelled result |
+|---|---|---|
+| SetDChain | `0x355784` | v0 = 0 |
+| iSetDChain | `0x355bec` | v0 = 0 |
+| AddDmacHandler | `0x355798` | an id |
+| EnableDmac | `0x353630`, with the saved return `0x3557a8` | v0 = 0 |
+| GetReg | `0x3557b4`, `0x355808`, `0x35581c`, `0x355e90` | see below |
+| SetReg | `0x35582c`, `0x35583c`, `0x19bab0` | v0 = 0 |
+| SetDma | `0x355acc` | a nonzero id |
+
+No caller in that table reads v0, except the GetReg calls and SetDma.
+`sceSifBindRpc` tests SetDma's id against 0.
+
+- **GetReg(4)** returns `0x20000`, the one bit the loop tests. It stands for
+  the IOP's flag.
+- **GetReg(2)** returns `SIF_SUBADDR_PLACEHOLDER` = `0x0bad0000`, an
+  unmapped address. The EE only stores it, passes it to SetReg and to the
+  kernel as a DMA destination. Any EE access through it would fault.
+- **The two software registers** return the last SetReg value, or 0.
+- **D_STAT and D5_CHCR** are storage that starts at 0.
+- **SetDma** records each descriptor with its source bytes. Nothing is
+  transferred.
+- **The reply.** When a recorded send is command `0x80000002` with +0xc = 1,
+  the model writes one packet into the receive buffer: size `0x18`, command
+  `0x80000001`, index 0, value 1. It then runs the registered, enabled
+  channel-5 handler once and restores the registers. The layout is the one
+  `0x355b70` and `0x355590` read. The value 1, the timing and the packet
+  itself are modelled. Status gates delivery as for INTC (R7-2). The boot
+  needs `while_disabled=True`.
+
+### Executed (both seeds and both fixture forms give the same result)
+
+- **Call order.** `sceSifInitRpc` (ra `0x19bab0`), then `sceSifInitCmd` (ra
+  `0x355db8`), then the channel-5 handler (a0 = 5), then handler `0x355590`
+  with data `0x8ef118`. One `sceSifGetSreg(0)` poll (ra `0x355ec8`) finds 1.
+  Then `sceCdInit(0)` (ra `0x19bac8`), the second `sceSifInitRpc` (ra
+  `0x361c14`, returns at once), and `sceSifBindRpc(0x8f8a68, 0x80000592)`.
+  Not called: `sceSifCallRpc`, `sceSifRebootIop`, `texcache_init`,
+  `particle_init` and the waiter call at `0x19d82c`.
+- **Three SetDma sends, all at ra `0x355acc`, all to the placeholder,
+  attribute `0x44`:**
+  - command `0x80000002` from `0x8ef100`, size `0x14`, +0xc = 0, +0x10 =
+    `0x8ef040`;
+  - command `0x80000002` from `0x8ef380`, size `0x10`, +0xc = 1;
+  - command `0x80000009` from `0x208ef340`, size `0x40`, with client
+    `0x8f8a68` and server `0x80000592`.
+- **SetReg writes**, in order: (`0x80000000`, placeholder), (`0x80000001`,
+  `0x8ef118`), (`0x80000002`, 1).
+- **One delivery**: (channel 5, `0x355b70`, `0x80000001`, 0, 1, Status
+  `0x10000`). The handler clears the size byte at `0x8ef040`.
+- **Recorded stores** after planting `0x5a5b5c5d` once startup has run, in
+  order:
+  - `0x3556ac` stores 0 to `0x8ef120`.
+  - `0x3556f0` stores 0 to `0x8ef2c0` (the register clear).
+  - `0x3557a4` stores id 2 to `0x8ef114`.
+  - `0x3557b8` stores 0 to `0x8ef120`.
+  - `0x35581c` stores the placeholder to `0x8ef120`.
+  - `0x3555a8` stores 1 to `0x8ef2c0` (handler 1).
+  - `0x356544` stores 0 to client +0x24.
+
+  The mode word `0x8f8ac0` and the 16 result bytes at `0x509e40` keep the
+  sentinel. D_STAT and D5_CHCR are read, never written. The ring and
+  particle words are still 0.
+- **Stop:** CpuTrap at the WaitSema syscall `0x352a24`, a0 = 5 (semaphore
+  count 0, max 1), ra `0x3565f4`. The INTC model does not deliver here: the
+  only INTC handler signals ids 3 and 4.
+- **Death sequence** on that machine, as in round 7: the fault writing
+  address 4 at `0x18ec10`, ra `0x1e502c`. Request byte 254. No
+  reconstruction, `Player_ctor`, `texcache_init` or `particle_init`. No
+  stubs.
+
+### What is missing (the IOP side), exactly
+
+1. **The bind reply for server `0x80000592`.** A command `0x80000008` packet
+   in the receive buffer, delivered through `0x355b70`. It needs +0x1c =
+   client `0x8f8a68`, +0x20 = `0x80000009`, +0x24 = a nonzero server address
+   and +0x28 = a buffer address, plus the DMA that puts it there. The EE
+   requires only that +0x24 is nonzero. Both addresses are the IOP's, and
+   the CD server is IOP code, not part of this executable. Modelling them would invent IOP
+   behaviour, so the run stops here.
+2. **The CD-init call result.** A second `0x80000008` reply, +0x20 =
+   `0x8000000a`, and 16 bytes DMA'd to `0x509e40`. Words +4, +8 and +0xc are
+   IOP data that select `sceCdInit`'s return and the flag `0x508c50`.
+3. **The IOP reboot.** After the reset command, bit `0x40000` of register 4
+   must be set by the rebooted IOP. The handshake then runs again.
+4. **The module loads.** Each needs a result from the IOP's loader, stored
+   at `0x8400fc`; a negative result prints an error.
+
+### Disc reads
+
+**Observed:** the EE makes no file read before this wall. The CDVD calls
+that are reached, `sceCdInit`'s bind and call, are control RPCs, not reads.
+The IRX modules named in `iop_loadModules` are read by the IOP from
+`cdrom0:`, not by the EE. Game file reads go through `cd_readBlocking`
+`0x172ad0` (`cd_readAsync` `0x1729e8`, then a vsync wait). That is above the
+CDVD RPC layer. The read-only adapter that round 4 of `t3/research-mission2-route`
+used (`Disc` in `tools/difftest_mission2_r4.py` at `d17b46f`) replaces
+`cd_readBlocking` at exactly that boundary, so it is the place to route later
+reads. It is not imported here, because no run reaches a read. It is also not
+on this branch, and it imports that branch's mission-2 references. No copy
+was made. That round's game-loader stop was a SetDma whose return address
+this model does not accept.
+
+**Unknown:** everything on the IOP side listed above. The retail value of
+D_STAT and D5_CHCR at `0x35574c`/`0x35576c`. The retail Status at each
+delivery. Every step past `sceCdInit`. Native `blocked_death_reload` stays.
+
+## Reproduce, round 8
+
+```
+PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_death_reload_sif.py local/SLUS_209.73 --seed 20973
+PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_death_reload_sif.py local/SLUS_209.73 --seed 7
+```
+
+Each seed: two `engine_init` runs to the bind wait, and two particle-reset
+faults. Each run executes the heap fill twice. No stubs. The success output
+reports counts only.

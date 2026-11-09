@@ -63,6 +63,19 @@ which is called from startup, not from `game_clearLevel`. World reconstruction
 and player construction are still not reached. Details are in
 [round 4 of the sequence note](death-reload-sequence.md#round-4-terminatethread-syscall-37-2026-11-03).
 
+## Round 8 evidence, 2026-11-09
+
+**Executed, bounded, on models only:** with `EE.install_modelled_sif`, the
+boot passes the EE half of the SIF command handshake and stops in WaitSema
+inside `sceSifBindRpc` for CD server `0x80000592`, called by `sceCdInit`.
+That is the first point where the EE needs IOP data. Every result past the
+GS model and the five INTC deliveries taken while Status is 0 (audit
+R7-1/R7-2) is conditional on those models. Details are in
+[round 8 of the sequence note](death-reload-sequence.md#round-8-the-sif-wall-2026-11-09).
+[death-reload-client-path.md](death-reload-client-path.md) lists the reload
+steps a native client can do with its own loader without the original boot,
+and the steps that stay Unknown.
+
 ## Automatic action after the countdown
 
 **Observed / Executed:** `game_checkAllDead` 0x1e7438 with one offline player,
