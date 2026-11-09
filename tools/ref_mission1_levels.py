@@ -175,6 +175,23 @@ SLOT3_KEYS = {
     "rallosintro": {}, "rallosruns": {}, "knights": {},
     "cazic": {(0, 3): 1, (0, 4): 1}, "bossdefeated": {(0, 3): 1, (0, 4): 1},
 }
+# cutscene -> actor -> its type-3/4 keys in key order: (type, key time to 0.01 or None).
+SLOT3_ORDER = {
+    "cazic": {0: ((3, 1.91), (4, 10.01))},
+    "bossdefeated": {0: ((3, None), (4, None))},
+}
+
+# C++ type name (leading digits skipped) of each constructor the four levels select,
+# from the original type-info functions (virtual-table slot +4).
+TYPE_NAMES = {
+    0x158928: "Player1", 0x158BCC: "charAmbient_Light", 0x158C6C: "charDirectional_Light",
+    0x158D0C: "charDirectional_LightD", 0x1D7778: "Weather", 0x1EC900: "PushTrigger",
+    0x1ECDF4: "Trigger", 0x23AD18: "AutoChest", 0x23C44C: "AutoProp", 0x23D93C: "AutoContainer",
+    0x243594: "HackDoor", 0x24A670: "Cazic", 0x24D440: "Catapult", 0x261DBC: "FireBomb",
+    0x26A624: "Goblin", 0x271C70: "Horsemen", 0x27C694: "JumpGate", 0x28CB90: "Savepoint",
+    0x28F15C: "Blocker", 0x290C24: "Container", 0x29DF04: "NPC", 0x29FAD0: "Ogre",
+    0x2A0954: "Orc", 0x2B1E80: "Torch", 0x2BAFB4: "Warrior", 0x2C1F94: "Zek",
+}
 
 # ---------------------------------------------------------------- record properties
 # (level, class, record name) -> ((key, value or None for presence only), ...), (absent keys)

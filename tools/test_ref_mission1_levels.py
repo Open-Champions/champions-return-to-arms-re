@@ -80,6 +80,20 @@ class Tables(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)), names)
         self.assertEqual(len(names), 9)
 
+    def test_slot3_order_matches_counts(self):
+        for cut, actors in R.SLOT3_ORDER.items():
+            for actor, keys in actors.items():
+                got = {(actor, kind): n for (a, kind), n in R.SLOT3_KEYS[cut].items() if a == actor}
+                want = {}
+                for kind, _t in keys:
+                    want[(actor, kind)] = want.get((actor, kind), 0) + 1
+                self.assertEqual(got, want, cut)
+
+    def test_type_names_identifiers(self):
+        self.assertEqual(len(R.TYPE_NAMES), 26)
+        self.assertEqual(R.TYPE_NAMES[0x29DF04], "NPC")
+        self.assertTrue(all(n.replace("_", "").isalnum() for n in R.TYPE_NAMES.values()))
+
     def test_text_arguments_are_placeholders(self):
         """Every model native call against the difftest's argument kinds (SIG), which the
         host also uses to decode the original's calls: a text-key argument is only ever

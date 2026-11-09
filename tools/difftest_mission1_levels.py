@@ -64,11 +64,19 @@ G_PREV_LEVEL, G_GATE_TRAVEL, G_ENTRANCE, G_START_RANK = 0x41B7C2, 0x41B51E, 0x4F
 G_WORLD = 0x44FDC8
 CREATURE_ON_DEATH, OBJECT_CTOR, OBJ_GET_PROP_STR = 0x10BEB8, 0x14CB10, 0x14F4C0
 LOOT_SPAWN_NAMED = 0x100BA0
-# cut_setup 0x19a6cc actor search: box half-extents (lui 0x4370 / 0x47c3_5000 at
-# 0x19b098-0x19b0ac), result capacity 0x40 (0x19b0f8), nearest-candidate start 600.0
-# (lui 0x4416 at 0x19b0fc).
+# cut_setup 0x19a6cc actor search, read from the ELF by bind_constants(): box
+# half-extents (lui at 0x19b098 for x and y; lui/ori at 0x19b0a4/0x19b0a8 for z), the
+# box query call (jal 0x14a928 at 0x19b148) with result capacity 0x40 (a3, 0x19b0f8),
+# the nearest-candidate start 600.0 (lui at 0x19b0fc), and the type-info call through
+# virtual-table slot +4 (loads at 0x19b1b8/0x19b1bc, jalr at 0x19b1c0).
 BIND_BOX = (240.0, 240.0, 100000.0)
 BIND_FIRST = 600.0
+BIND_CAPACITY = 0x40
+TYPEINFO_SLOT = 4
+# Live objects that are not records and can be on the grid when the search runs:
+# the player objects, g_players[4] (docs/script.md line 682). Created actors of the
+# same cutscene are added per cutscene. Objects spawned at run time are not counted.
+PLAYER_SLOTS = 4
 # A second matching record is excluded when it lies outside the box grown by this much
 # on x and y, i.e. for any object radius below it (world_collectObjectsInBox 0x14a928
 # tests x/y against the radius; the default radius is 24).
@@ -859,8 +867,9 @@ def type_names(elf, levels):
     The factory runs with only its own code, the selected constructor and the
     GameObject constructor 0x14cb10; the constructor stores its virtual table at +0x48
     (base constructors are stubbed, so a later fault on missing level data is ignored).
-    Entry 0 of the table is the type-info function; its result's first word is the
-    mangled name, whose leading digits cut_setup skips (0x19b1e0-0x19b1f8)."""
+    cut_setup calls the word at table + 4 (TYPEINFO_SLOT, loads at 0x19b1b8/0x19b1bc,
+    asserted by bind_constants); its result's first word is the length-prefixed
+    name, whose leading digits cut_setup skips (0x19b1e0-0x19b1f8)."""
     out = {}
     for name in sorted(levels):
         for row in levels[name].rows:
@@ -887,7 +896,7 @@ def type_names(elf, levels):
             table = ee.mem.u32(block + 0x48)
             if not 0x500000 <= table < 0x520000:
                 continue                     # faulted before the store; another record of this ctor
-            info = ee.call(ee.mem.u32(table + 4), max_steps=200000) & 0xFFFFFFFF
+            info = ee.call(ee.mem.u32(table + TYPEINFO_SLOT), max_steps=200000) & 0xFFFFFFFF
             out[ctor] = ee.mem.cstr(ee.mem.u32(info), 60).lstrip("0123456789")
     for name, lv in levels.items():
         for row in lv.rows:
@@ -900,16 +909,79 @@ def f32(x):
     return struct.unpack("<f", struct.pack("<f", x))[0]
 
 
-def bind_actor(lv, types, cls, at, taken):
+def bind_constants(elf):
+    """The search constants decoded from cut_setup's instruction fields (no copies of the words)."""
+    ee = EE(elf)
+    word = ee.mem.u32
+
+    def bits(a):
+        return struct.unpack("<f", struct.pack("<I", a))[0]
+
+    def lui(addr):
+        assert word(addr) >> 26 == 0x0F and (word(addr) >> 21) & 31 == 0, hex(addr)
+        return (word(addr) & 0xFFFF) << 16, (word(addr) >> 16) & 31
+
+    xy, reg = lui(0x19B098)
+    assert word(0x19B09C) >> 21 == 0x224 and (word(0x19B09C) >> 16) & 31 == reg   # mtc1 to the y register
+    z, reg = lui(0x19B0A4)
+    low = word(0x19B0A8)
+    assert low >> 26 == 0x0D and (low >> 21) & 31 == reg and (low >> 16) & 31 == reg
+    z |= low & 0xFFFF
+    assert word(0x19B0AC) >> 21 == 0x224 and (word(0x19B0AC) >> 16) & 31 == reg
+    move = word(0x19B0B8)                                          # mov.s: x half-extent = y's
+    assert move >> 21 == 0x230 and move & 63 == 6 and (move >> 16) & 31 == 0
+    assert (move >> 11) & 31 == (word(0x19B09C) >> 11) & 31
+    cap = word(0x19B0F8)
+    assert cap >> 26 == 0x09 and (cap >> 21) & 31 == 0 and (cap >> 16) & 31 == 7  # a3 = capacity
+    first, _reg = lui(0x19B0FC)
+    call = word(0x19B148)
+    assert call >> 26 == 0x03 and (call & 0x3FFFFFF) << 2 == 0x14A928
+    table, slot, jump = word(0x19B1B8), word(0x19B1BC), word(0x19B1C0)
+    assert table >> 26 == 0x23 and table & 0xFFFF == 0x48
+    reg = (table >> 16) & 31
+    assert slot >> 26 == 0x23 and (slot >> 21) & 31 == reg
+    reg = (slot >> 16) & 31
+    assert jump >> 26 == 0 and jump & 63 == 9 and (jump >> 21) & 31 == reg
+    got = ((bits(xy), bits(xy), bits(z)), bits(first), cap & 0xFFFF, slot & 0xFFFF)
+    assert got == (BIND_BOX, BIND_FIRST, BIND_CAPACITY, TYPEINFO_SLOT), got
+    return got
+
+
+def cell(c):
+    """Grid cell of one coordinate (docs/spec/object-system.md section 4.1)."""
+    return (int(c) + 0x3C00) >> 8
+
+
+def box_cells(lo, hi):
+    """Cell range world_collectObjectsInBox walks (object-system.md section 4.3)."""
+    return ((max((int(lo[0]) + 0x3BA0) >> 8, 0), min((int(hi[0]) + 0x3C60) >> 8, 119)),
+            (max((int(lo[1]) + 0x3BA0) >> 8, 0), min((int(hi[1]) + 0x3C60) >> 8, 119)))
+
+
+def bind_actor(lv, types, cls, at, taken, live):
     """cut_setup's search for one placed actor (0x19b098-0x19b324), over the records.
 
     Candidates are objects in the box at +-BIND_BOX whose class string (+0x34, the
     factory's class name) or C++ type name equals the actor's class, skipping objects
     already bound (flag 0x80000). The pick is the nearest in 2-D below 600; once a
     class-string match is held, type-only matches are skipped. Returns the one record
-    and asserts it is the only candidate even with a radius up to BIND_MARGIN."""
+    and asserts it is the only candidate even with a radius up to BIND_MARGIN.
+
+    Capacity: the query keeps at most BIND_CAPACITY - 1 objects in walk order. Every
+    object-making record of any class (bound ones too) whose centre cell lies in the
+    walked cell range is counted, whatever its radius, plus `live` (the player slots
+    and this cutscene's created actors); the total must be below BIND_CAPACITY - 1,
+    so the target is returned. Returns (record, total)."""
     lo = [f32(at[i] - BIND_BOX[i]) for i in range(3)]
     hi = [f32(at[i] + BIND_BOX[i]) for i in range(3)]
+    (c0, c1), (r0, r1) = box_cells(lo, hi)
+    walked = 0
+    for row in lv.rows:
+        if makes_object(row):
+            col, line = cell(float(row["x"])), cell(float(row["y"]))
+            walked += c0 <= col <= c1 and r0 <= line <= r1
+    total = walked + live
+    assert total < BIND_CAPACITY - 1, (lv.name, cls, walked, live)
     inner, outer = [], []
     for row in lv.rows:
         if not makes_object(row) or id(row) in taken:
@@ -928,7 +1000,7 @@ def bind_actor(lv, types, cls, at, taken):
     assert len(inner) == 1 and outer == inner, (lv.name, cls, len(inner), len(outer))
     row = inner[0]
     assert math.hypot(float(row["x"]) - at[0], float(row["y"]) - at[1]) < BIND_FIRST, (lv.name, cls)
-    return row
+    return row, total
 
 
 def cutscene_files(levels, types):
@@ -942,21 +1014,25 @@ def cutscene_files(levels, types):
     for row in R.CUTSCENES:
         want.setdefault(row[0], []).append(row[1:4])
     assert {k: sorted(v) for k, v in requested.items()} == {k: sorted(v) for k, v in want.items()}
-    bindings = 0
+    bindings, most = 0, 0
+    actor_classes = set()
     for level, entry, off, cut, flags, keys, actors, cast, shows in R.CUTSCENES:
         lv = levels[level]
         data = lv.files[cut + ".cut"]
         got_flags, key_off, key_count, actor_off, actor_count = struct.unpack_from("<5I", data, 0)
         assert (got_flags, key_count, actor_count) == (flags, keys, actors), (level, cut)
         bound, taken = [], set()
-        for k in range(actor_count):
-            rec = data[actor_off + 0x2C * k: actor_off + 0x2C * (k + 1)]
+        recs = [data[actor_off + 0x2C * k: actor_off + 0x2C * (k + 1)] for k in range(actor_count)]
+        live = PLAYER_SLOTS + sum(1 for rec in recs if rec[0x2B])
+        for rec in recs:
             cls = rec[8:0x1C].split(b"\0")[0].decode("latin1")
             at = struct.unpack_from("<3f", rec, 0x1C)
             if rec[0x2B]:
                 bound.append((cls, "create"))
                 continue
-            row = bind_actor(lv, types, cls, at, taken)
+            actor_classes.add(cls)
+            row, total = bind_actor(lv, types, cls, at, taken, live)
+            most = max(most, total)
             taken.add(id(row))
             bindings += 1
             names = [v for key, v in lv.props(row) if key == "name"]
@@ -967,6 +1043,19 @@ def cutscene_files(levels, types):
         assert got_shows == shows, (level, cut, got_shows)
         slot3 = Counter((a, kind) for _t, a, kind in keyset if kind in (3, 4) and a >= 0)
         assert sorted(slot3.items()) == sorted(R.SLOT3_KEYS[cut].items()), (level, cut, sorted(slot3.items()))
+        for actor, want in R.SLOT3_ORDER.get(cut, {}).items():
+            got = [(kind, t) for t, a, kind in keyset if kind in (3, 4) and a == actor]
+            assert [t for _k, t in got] == sorted(t for _k, t in got), (cut, actor)
+            assert [k for k, _t in got] == [k for k, _t in want], (cut, actor, got)
+            for (_k, t), (_w, wt) in zip(got, want):
+                assert wt is None or round(t, 2) == wt, (cut, actor, t)
+    # Only NPC is both an actor class and a type name, and the records of type NPC are
+    # the records of class NPC.
+    assert actor_classes & set(types.values()) == {"NPC"}, sorted(actor_classes & set(types.values()))
+    for name, lv in levels.items():
+        for row in lv.rows:
+            if makes_object(row) and types[CTORS[row["class"].lower()][1]] == "NPC":
+                assert row["class"] == "NPC", (name, row["class"])
     for name, lv in levels.items():
         cuts = {f[:-4] for f in lv.files if f.endswith(".cut")}
         auto = {c for c in cuts if c.startswith("autosave")}
@@ -979,7 +1068,7 @@ def cutscene_files(levels, types):
             classes = tuple(data[actor_off + 0x2C * k + 8: actor_off + 0x2C * k + 0x1C].split(b"\0")[0]
                             .decode("latin1") for k in range(actor_count))
             assert classes == R.UNREQUESTED_ACTORS[cut], (name, cut, classes)
-    return len(R.CUTSCENES), bindings
+    return len(R.CUTSCENES), bindings, most
 
 
 def record_facts(levels):
@@ -1180,8 +1269,10 @@ def main():
     levels = {name: Level(args.disc, name) for name in ("strife", "drundar", "drunarm", "drunare")}
     made = census(args.elf, levels, args.seed)
     linked = links(levels)
+    bind_constants(args.elf)
     types = type_names(args.elf, levels)
-    cuts, bindings = cutscene_files(levels, types)
+    assert types == R.TYPE_NAMES, sorted(set(types.items()) ^ set(R.TYPE_NAMES.items()))
+    cuts, bindings, most = cutscene_files(levels, types)
     facts = record_facts(levels)
     travel = travel_sites(levels)
     names = loader_names(args.elf)
@@ -1202,6 +1293,11 @@ def main():
     milestones = " ".join("%s:%s" % (n, ",".join("%s=%s" % kv for kv in sorted(
         (k, v) for k, v in r.items() if k not in ("steps", "frames")))) for n, r in results.items())
     digest = hashlib.sha256(open(__file__, "rb").read()).hexdigest()[:16]
+    print("type names (constructor=name): " + " ".join("%x=%s" % kv for kv in sorted(types.items())))
+    print("actor search (from the ELF): box +-%g +-%g +-%g, first %g, capacity 0x%x, type-info slot +%d; "
+          "at most %d objects in a walked cell range (records + %d player slots + created actors), "
+          "below %d" % (BIND_BOX + (BIND_FIRST, BIND_CAPACITY, TYPEINFO_SLOT, most, PLAYER_SLOTS,
+                                     BIND_CAPACITY - 1)))
     print("PASS seed %d: %d arena objects made, %d record links, %d cutscenes (%d actor bindings by the "
           "cut_setup box search, %d type names), %d record facts, %d travel sites, "
           "%d loader names, %d marker cases, %d death cases, %d hub cases, %d controls rejected, %d compared steps "
