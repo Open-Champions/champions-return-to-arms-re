@@ -95,6 +95,12 @@ class EntryAndTravel(unittest.TestCase):
         self.assertEqual(R.walk_in(raw, started, fired=0), 1)
         self.assertEqual(R.walk_in(raw, started, fired=1), 0)
 
+    def test_warning_poll_counts_unpaused_runs(self):
+        self.assertEqual(R.warn_poll_call((0,) * 10), 5)
+        self.assertEqual(R.warn_poll_call((0, 1, 1, 1) + (0,) * 8), 8)
+        self.assertIsNone(R.warn_poll_call((0,) * 5))
+        self.assertIsNone(R.warn_poll_call((1,) * 12))
+
     def test_mana_and_first_mission(self):
         self.assertEqual(R.entry_mana(1, 3, 9), (0, 9))
         self.assertEqual(R.entry_mana(2, 3, 9), (2, 3))

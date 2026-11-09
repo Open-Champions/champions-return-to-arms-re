@@ -340,6 +340,26 @@ def use_trigger(raw, started, dialog_open=0, recall=0):
     return {'warn': False, 'entrance': True, 'menu': not dialog_open and not recall}
 
 
+# K.use with a warning also runs K.help (help box) and queues K.poll.  K.poll re-queues
+# itself on every run and counts only the runs on which gamePaused() is 0; on the sixth
+# such run it calls activateMissionMenu (refused while a dialog is open or recall runs).
+# It writes no entrance.  Each warning restarts the count.
+WARN_POLL_RUNS = 6
+
+
+def warn_poll_call(paused):
+    """paused: gamePaused() per K.poll run after one warning -> index of the run that
+    calls activateMissionMenu, or None.  That call opens the menu only when no dialog is
+    open and recall is not counting (use_trigger's rule)."""
+    unpaused = 0
+    for index, flag in enumerate(paused):
+        if not flag:
+            unpaused += 1
+            if unpaused == WARN_POLL_RUNS:
+                return index
+    return None
+
+
 def walk_in(raw, started, fired):
     """K.walk: trigger(portal, 0) once, when no warning and the key is usable."""
     return int(not warning(raw, started) and key_usable(raw) and not fired)

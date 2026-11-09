@@ -16,10 +16,12 @@ scr_registerNatives 0x141310, script_runByName 0x1ed694 and the original
 built-in handlers (difftest_natives.Rig), and, for whole conversations, the
 original dialog_onMsg 0x22ee2c / dialog_showNode 0x230c74 composition pinned in
 t3/research-mission-unlocks 2ab82b2 (tools/difftest_mission_unlocks.py Probe,
-loaded from that Git object unchanged). Stubs (recording, named in the output
-groups below): every ref_natives.EXT service, among them dialog_isOpen,
-inventory_findItemBySubstring, inventory_countItemByName, inventory_removeItem,
-missionMenu_open, hud_showHelpMessage, text_lookup, cut_start, res_find.
+loaded from that Git object unchanged), with the Rig's stub hook at dialog_isOpen
+0x22fbc0 removed so that the real function reads g_dialogData 0x8e2d60. Stubs
+(recording, named in the output groups below): every other ref_natives.EXT
+service, among them dialog_isOpen in the plain rig, inventory_findItemBySubstring,
+inventory_countItemByName, inventory_removeItem, missionMenu_open,
+hud_showHelpMessage, text_lookup, cut_start, res_find.
 """
 import argparse
 import hashlib
@@ -50,13 +52,32 @@ G_PACKED_SWAP = 0x40335C         # g_scrPackedSwap, script machine bookkeeping
 G_STORE_INDEX, G_STORE_PENDING, G_SWOOP = 0x4F7150, 0x4FDD30, 0x4FDCE4
 G_QUEST_VARS, G_SAVE_INHIBIT = 0x86DA80, 0x50605C
 G_PLAYER_OBJ = 0x4DCEC8
+G_DIALOG_DATA, F_DIALOG_IS_OPEN = 0x8E2D60, 0x22FBC0
+G_PAUSED, G_JUMPGATE_TRAVEL, G_CUTSCENE_ACTIVE = 0x41B4F4, 0x500AE8, 0x44FCD0
 SCRIPT_SPAN = 0x40000
 NODE, CHOICE = 0x448, 0x54
 TOTAL = {'checks': 0}
+DIALOG_REACH = {}                # hub -> natives the live dialog's entries can reach
 # Built-ins a fee, healer, trainer or bank would need; neither hub script imports one.
 NO_SERVICE_NATIVES = {'givePlayerGold', 'takePlayerGold', 'checkPlayerGold', 'givePlayerExp',
                       'healPlayer', 'giveFullHealth', 'setHitPoints', 'playerAdjustStat',
                       'givePlayerItem', 'saveGame', 'saveCheckPoint', 'removeQuest'}
+# Every native a live-dialog action entry may reach (callScript, addDeferedCall,
+# postAction and internal calls followed).  No live-dialog entry may reach a native
+# whose name contains 'item' or 'gold' (item_or_gold).
+ACTION_NATIVES = {'setMissionAvailable', 'addQuest', 'setv', 'changeSwoop', 'activateStore'}
+SCRIPT_CALLERS = ('callScript', 'addDeferedCall', 'postAction')
+# Disc values of the two PushTrigger records (HSV-5), asserted in check_travel.
+PUSH_PROPS = {'hub': {'nethostonly': '1', 'radius': '79'}, 'hub2': {'nethostonly': '1', 'radius': '78'}}
+# Neutral-id callees, asserted from the scripts in check_travel.
+K_IDS = {'hub': {'K.lock': 0x3CB0, 'K.use': 0x49C0, 'K.warn': 0x4234, 'K.walk': 0x4C44,
+                 'K.help': 0x4A80, 'K.poll': 0x4B0C},
+         'hub2': {'K.lock': 0x1500, 'K.use': 0x2210, 'K.warn': 0x1A84, 'K.walk': 0x2494,
+                  'K.help': 0x22D0, 'K.poll': 0x235C}}
+
+
+def item_or_gold(names):
+    return sorted(n for n in names if 'item' in n.lower() or 'gold' in n.lower())
 
 
 def require(cond, detail):
@@ -101,11 +122,13 @@ def read_archives(data, iso):
     for label, blob in found.items():
         if label in ARCHIVE_SHA256:
             continue
-        for _name, lo, size in gob_entries(blob):
+        for lump_name, lo, size in gob_entries(blob):
             lump = blob[lo:lo + size]
             for inner, off, n in lmp_entries(lump):
                 if inner.lower() == 'script.scr':
-                    others[label] = lump[off:off + n]
+                    key = (label, lump_name)
+                    require(key not in others, 'one script per lump')
+                    others[key] = lump[off:off + n]
     return out, others
 
 
@@ -121,6 +144,8 @@ class Script:
         self.name_at = dict(self.entries)
         self.offset_of = {name: off for off, name in self.entries}
         self.sites = []
+        self.bounds = []          # (site, limit) of every 'check 0 <= A <= limit' (op 0x79)
+        self.internal = []        # (site, target) of every internal call (op 0x31)
         cs, ce = parsed['code']
         words = struct.unpack_from('<%dI' % ((ce - cs) // 4), image, cs)
         pending, i = [], 0
@@ -142,13 +167,54 @@ class Script:
                 pending = [] if op == 0x2C else pending + [('x', None)]
                 i += 2 if op in (0x28, 0x2C) else 1
                 continue
+            if op == 0x79:
+                self.bounds.append((i * 4, words[i + 1]))
+            if op == 0x31:
+                self.internal.append((i * 4, words[i + 1]))
             pending = []
             i += 1 + scr.OPS[op][1] if op in scr.OPS else (1 if op in scr.NO_OPERAND else 2)
 
-    def calls(self, offset):
+    def end_of(self, offset):
         later = [off for off, _ in self.entries if off > offset]
-        end = min(later) if later else 1 << 30
+        return min(later) if later else 1 << 30
+
+    def owner(self, site):
+        return max(off for off, _ in self.entries if off <= site)
+
+    def calls(self, offset):
+        end = self.end_of(offset)
         return [(site, name, args) for site, name, args in self.sites if offset <= site < end]
+
+    def internal_calls(self, offset):
+        end = self.end_of(offset)
+        return [target for site, target in self.internal if offset <= site < end]
+
+    def bounds_in(self, offset):
+        end = self.end_of(offset)
+        return [limit for site, limit in self.bounds if offset <= site < end]
+
+    def callees(self, offset):
+        """Entries named by a literal callScript / addDeferedCall / postAction, plus
+        internal call targets; a non-literal script caller fails the check."""
+        out = []
+        for _s, name, args in self.calls(offset):
+            if name in SCRIPT_CALLERS:
+                require(args and args[0] in self.pool and self.pool[args[0]] in self.offset_of,
+                        ('literal script caller', hex(offset), name))
+                out.append(self.offset_of[self.pool[args[0]]])
+        return out + [t for t in self.internal_calls(offset)]
+
+    def reach(self, offsets):
+        """Natives reachable from the given entries, following callees."""
+        seen, todo, natives = set(), list(offsets), set()
+        while todo:
+            offset = todo.pop()
+            if offset in seen:
+                continue
+            seen.add(offset)
+            natives |= {name for _s, name, _a in self.calls(offset)}
+            todo.extend(self.callees(offset))
+        return natives, seen
 
     def literal(self, value):
         return self.pool[value]
@@ -226,16 +292,57 @@ def check_structure(hubs, scripts):
                 require(sites == (pushed if effect['store'] else []), (hub, hex(offset), 'store arg'))
         unused = set(R.UNREFERENCED_WRITERS[hub])
         require(not unused & referenced, 'unreferenced writers')
-        in_backup = set()
+        in_backup, backups, cutscenes = set(), 0, []
         for name in dialogs:
             if name == live:
                 continue
-            for _cond, cs in dbin(files[name]):
+            other = dbin(files[name])
+            if len(other) == 1:
+                # one node, no condition, no choices: the cutscene line list (HSV-5)
+                require(other[0] == ('', []), (hub, 'cutscene dialog shape'))
+                cutscenes.append(name)
+                continue
+            require(len(other) > 1 and all(cond for cond, _cs in other), (hub, 'backup shape'))
+            backups += 1
+            for _cond, cs in other:
                 in_backup |= {script.offset_of.get(c[2]) for c in cs if c[2]}
+        require(backups == 1 and len(cutscenes) == (1 if hub == 'hub' else 0), (hub, 'other dialogs'))
+        require(unused <= in_backup, (hub, 'unreferenced writers named by the backup dialog'))
+        for name in cutscenes:
+            # the cutscene entry requests a cutscene of the same stem (the link is Inferred)
+            cut = [script.literal(a[0]).lower() for _s, n, a in script.calls(0x34A4)
+                   if n == 'cutScene' and a and a[0] in script.pool]
+            require(cut == [name[:-len('.dbin')]], (hub, 'cutscene entry stem'))
+        # HSV-1: what the live dialog can reach, statically and through every callee
+        conds = {script.offset_of[c] for c, _cs in nodes} | \
+                {script.offset_of[c[1]] for _c, cs in nodes for c in cs if c[1]}
+        act_natives, act_entries = script.reach(referenced)
+        cond_natives, cond_entries = script.reach(conds)
+        require(act_natives <= ACTION_NATIVES, (hub, sorted(act_natives - ACTION_NATIVES)))
+        require(not item_or_gold(act_natives | cond_natives), (hub, 'item/gold native reachable'))
+        removal = [script.owner(site) for site, n, _a in script.sites if n == 'removePlayerItem']
+        start = script.offset_of['start']
+        deferred = [script.offset_of[script.literal(a[0])] for _s, n, a in script.calls(start)
+                    if n == 'addDeferedCall']
+        require(len(deferred) == 2, (hub, 'two deferred checks'))
+        by_owner = [removal.count(start)] + [removal.count(d) for d in deferred]
+        require(len(removal) == 19 and by_owner == [17, 1, 1], (hub, 'removal sites', by_owner))
+        require(not ({start} | set(deferred)) & (act_entries | cond_entries), (hub, 'entry reached'))
+        DIALOG_REACH[hub] = act_natives | cond_natives
         print('%s: %d nodes, %d choices, %d distinct actions; roles more/end/shop by structure; '
-              '%d other dialog files; %d of %d unreferenced writers used only by a backup dialog PASS'
+              '%d other dialog files (%d backup%s); %d of %d unreferenced writers named by the '
+              'backup dialog PASS'
               % (hub, len(nodes), sum(len(cs) for _c, cs in nodes), len(referenced),
-                 len(dialogs) - 1, len(unused & in_backup), len(unused)))
+                 len(dialogs) - 1, backups,
+                 ', 1 one-node cutscene line list with no condition and no choices, whose stem '
+                 'public 0x34a4 requests' if cutscenes else '',
+                 len(unused & in_backup), len(unused)))
+        print('%s: dialog reach: %d action entries -> %d entries, natives {%s}; %d condition entries '
+              '-> %d entries, %d natives; no item or gold native; %d removePlayerItem sites = %d in '
+              'start %#x + %d + %d in the deferred checks %#x/%#x, none reached by the dialog PASS'
+              % (hub, len(referenced), len(act_entries), ', '.join(sorted(act_natives)), len(conds),
+                 len(cond_entries), len(cond_natives), len(removal), by_owner[0], start,
+                 by_owner[1], by_owner[2], deferred[0], deferred[1]))
 
 
 # ---------------------------------------------------------------------------------------
@@ -265,7 +372,7 @@ class Plain:
         # scr_load's own store; restore() would otherwise return it to the pre-load value
         self.swap = rig.emu.mem.u32(G_PACKED_SWAP)
         require(self.swap == 1, 'loader swap word')
-        self.natives = []
+        self.natives, self.argc = [], []
         rig.emu.hook(N.SCR_CALL_NATIVE, self._native)
         self.names = {}
 
@@ -274,6 +381,7 @@ class Plain:
         index = emu.r[5] & 0xFFFFFFFF
         cells = [emu.mem.u32(params + 4 * k) for k in range(1, 4)] if params else []
         self.natives.append((self.script.natives[index], cells))
+        self.argc.append(emu.mem.u32(params) // 4 if params else 0)   # cell 0 = argument bytes
 
     def reset(self, raw=None, players=1, difficulty=0):
         rig = self.rig
@@ -316,7 +424,7 @@ class Plain:
         self.rig.calls = []
         self.rig.emu.calls.clear()
         self.rig.emu.reset_log()
-        self.natives = []
+        self.natives, self.argc = [], []
         result = N.s32(self.rig.call(0x1ED694, self.cstr(self.script.name_at[offset]),
                                      max_steps=4000000))
         if keep_seed:
@@ -325,6 +433,11 @@ class Plain:
 
     def stubs(self):
         return [name for name, _args in self.rig.calls]
+
+    def named(self, native):
+        """Public offsets named by the first argument of each recorded call of native."""
+        return [self.script.offset_of.get(self.script.pool.get(c[0]), -1)
+                for n, c in self.natives if n == native]
 
     def written(self):
         out = set()
@@ -431,15 +544,23 @@ def check_actions(plain, hub):
     script = plain.script
     table = dict(R.ACTIONS[hub])
     table.update(R.UNREFERENCED_WRITERS[hub])
+    executed = 0
     for offset, effect in sorted(table.items()):
         for dialog_open in (1, 0):
             difficulty = offset % 5
             mem = plain.reset([0] * 13, difficulty=difficulty)
             plain.answers.open = dialog_open
+            # HSV-1: plant an item as found and held five times, so that any item removal
+            # would reach the recording inventory stubs
+            plain.answers.found, plain.answers.count = 0, 5
             mem.w16(G_STORE_INDEX, 0x5A5A)
             mem.w8(G_STORE_PENDING, 0)
             mem.w32(G_SWOOP, 0x5A5A5A5A)
             plain.run(offset)
+            natives = [n for n, _c in plain.natives]
+            require(set(natives) <= ACTION_NATIVES, (hub, hex(offset), sorted(set(natives) - ACTION_NATIVES)))
+            require(not [n for n in plain.stubs() if n.startswith('inventory_')], (hub, hex(offset), 'item'))
+            executed += len(natives)
             labels = regions(plain.written(), difficulty) - {'machine'}
             want = set()
             if effect['avail'] is not None:
@@ -469,8 +590,10 @@ def check_actions(plain, hub):
             require(labels == want, (hub, hex(offset), sorted(map(str, labels - want)),
                                      sorted(map(str, want - labels))))
     print('%s: %d action entries (%d dialog, %d unreferenced) x dialog open/closed; '
-          'mission bit, quest pair, variable and store request equal the model, no other write PASS'
-          % (hub, len(table), len(R.ACTIONS[hub]), len(R.UNREFERENCED_WRITERS[hub])))
+          'mission bit, quest pair, variable and store request equal the model, no other write; '
+          '%d executed native calls, all in {%s}; item planted as found, 0 inventory stub calls PASS'
+          % (hub, len(table), len(R.ACTIONS[hub]), len(R.UNREFERENCED_WRITERS[hub]), executed,
+             ', '.join(sorted(ACTION_NATIVES))))
 
 
 # ---------------------------------------------------------------------------------------
@@ -486,12 +609,20 @@ def load_probe_module():
     return module
 
 
-class DialogOpen:
+class ItemFound:
+    """Wraps the Probe's seeded responder: every item lookup finds an item (index 0, held
+    five times), so an item removal reached from the dialog would call the recording
+    inventory_removeItem stub.  All other answers are unchanged."""
+
     def __init__(self, inner):
         self.inner = inner
 
     def answer(self, name, args):
-        return 1 if name == 'dialog_isOpen' else self.inner.answer(name, args)
+        if name == 'inventory_findItemBySubstring':
+            return (0, 0)
+        if name == 'inventory_countItemByName':
+            return 5
+        return self.inner.answer(name, args)
 
 
 def progress_states(hub):
@@ -521,6 +652,7 @@ def check_conversations(mu, elf, hubs, scripts, hub, names, intro_name, seed):
     image, dialog = scripts[hub].image, files[live_dialog(scripts[hub])]
     count = 0
     table = []
+    totals = {'natives': 0, 'is_open': 0, 'stores': 0}
     for label, raw, started, intro in progress_states(hub):
         variables = [(names[k - 1].encode('latin1'), started[k]) for k in R.MISSIONS if started[k]]
         if intro:
@@ -531,22 +663,27 @@ def check_conversations(mu, elf, hubs, scripts, hub, names, intro_name, seed):
             probe = mu.Probe(elf, image, dialog, seed, raw[1], raw[2], difficulty,
                              1 if hub == 'hub2' else 0, 1 if hub == 'hub2' else 0,
                              variables, raw)
-            # A choice action runs inside the open dialog's message handler (docs/dialog.md
-            # section 5, msg 1). The pinned Probe answers the dialog_isOpen stub from its
-            # seeded responder, so answer it 1 here; all other answers are unchanged.
-            probe.rig.responder = DialogOpen(probe.rig.responder)
+            # HSV-2: the Probe follows dialog_isOpen 0x22fbc0 but N.Rig's EXT stub hook at
+            # the same address wins; remove it so the real function reads g_dialogData.
+            require(F_DIALOG_IS_OPEN in probe.rig.emu.follow.addresses, 'Probe follows dialog_isOpen')
+            probe.rig.emu.unhook(F_DIALOG_IS_OPEN)
             mem = probe.mem
+            reads = []        # g_dialogData at each entry of the real function (observer only)
+            probe.rig.emu.hook(F_DIALOG_IS_OPEN, lambda e: reads.append(e.mem.u32(G_DIALOG_DATA)))
+            probe.rig.responder = ItemFound(probe.rig.responder)
             mem.w8(G_STORE_PENDING, 0)
+            mem.w32(G_DIALOG_DATA, 0)                    # closed before the start message
             node = probe.open()
             require(node == expected_start, (hub, label, node, expected_start))
             require(not probe.writes, 'open writes nothing')
+            require(mem.u32(G_DIALOG_DATA) != 0, (hub, label, 'dialog data set by the open'))
             cur_raw, cur_intro = list(raw), intro
             quests = 0
             for step, (p_node, cursor, choice, action) in enumerate(path):
                 vis = R.visible(hub, p_node, cur_raw, started, cur_intro)
                 got_vis = [mem.s32(mu.D.A['visible'] + 4 * i) for i in range(mem.s32(mu.D.A['nvis']))]
                 require(got_vis == vis, (hub, label, p_node, got_vis, vis))
-                before = len(probe.writes)
+                before, reads_before = len(probe.writes), len(reads)
                 probe.entered.clear()
                 probe.confirm(cursor)
                 nxt = R.NODES[hub][p_node][3][choice][5]
@@ -558,21 +695,37 @@ def check_conversations(mu, elf, hubs, scripts, hub, names, intro_name, seed):
                     cur_raw, quests, cur_intro, _d = R.apply_action(effect, cur_raw, started, quests,
                                                                     cur_intro, 0)
                     if effect['store']:
+                        step_reads = reads[reads_before:]
+                        require(step_reads and all(step_reads), (hub, label, 'real dialog_isOpen, data set'))
+                        require(not [c for c in probe.rig.emu.calls if c.target == F_DIALOG_IS_OPEN
+                                     and c.stubbed], 'dialog_isOpen not stubbed')
                         require(mem.u8(G_STORE_PENDING) == 1, 'store deferred to dialog end')
                         require(not [1 for n, _a in probe.rig.calls if n == 'shop_openOrStock'],
                                 'not opened inside the dialog')
+                        totals['stores'] += 1
                 else:
                     require(probe.writes[before:] == [], 'no action, no write')
                 if nxt != -1:
                     require(mem.s32(mu.D.A['node_index']) == nxt, (hub, label, 'next'))
                 require(mem.u32(PLAYERS + QUEST_COUNT) == quests, (hub, label, 'quest count'))
+            # HSV-1: nothing the conversation ran asked for an item, with an item planted
+            require(not [n for n, _a in probe.rig.calls if n.startswith('inventory_')], (hub, label, 'item'))
+            require(set(probe.native_calls) <= DIALOG_REACH[hub], (hub, label, 'native outside reach'))
+            require(not item_or_gold(probe.native_calls), (hub, label, 'item/gold native'))
+            totals['natives'] += len(probe.native_calls)
+            totals['is_open'] += len(reads)
             last = path[-1][3] if path else None
             table.append((label, expected_start, len(path), last))
             count += 1
     starts = sorted({row[1] for row in table})
     print('seed %d %s: %d progress states, %d whole conversations through original dialog_onMsg; '
           'start node, visible choices, actions, mission writes and quest count equal the model; '
-          '%d distinct start nodes PASS' % (seed, hub, len(progress_states(hub)), count, len(starts)))
+          '%d distinct start nodes; real dialog_isOpen 0x22fbc0 (stub hook removed) ran %d times, '
+          'g_dialogData planted 0 before each open and non-zero after it; %d store actions deferred '
+          '(0x4fdd30 = 1, no shop_openOrStock); %d script native calls, none outside the dialog\'s '
+          'static reach, no item or gold native, 0 inventory stub calls with an item planted PASS'
+          % (seed, hub, len(progress_states(hub)), count, len(starts), totals['is_open'],
+             totals['stores'], totals['natives']))
     return table
 
 
@@ -684,6 +837,11 @@ def check_dedupe(plain, hub):
     start = script.offset_of['start']
     deferred = [script.literal(a[0]) for _s, n, a in script.calls(start) if n == 'addDeferedCall']
     shard, blood = (script.offset_of[name] for name in deferred)
+    # HSV-3: the table sizes come from the bytecode: every bounds check in each deferred
+    # check (op 0x79, 'check 0 <= index <= limit') has limit = size - 1
+    limits = [sorted(set(script.bounds_in(entry))) for entry in (shard, blood)]
+    require(limits == [[R.SHARD_TABLE - 1], [R.BLOOD_TABLE - 1]], (hub, 'table bounds', limits))
+    checks = [len(script.bounds_in(entry)) for entry in (shard, blood)]
     cases = 0
     for players in (1, 2, 4):
         for count in (0, 1, 2, 5):
@@ -707,9 +865,11 @@ def check_dedupe(plain, hub):
                 want = R.dedupe_removals([[count] * size] * players)
                 require(removes == want, (hub, 'dedupe', entry == shard, players, count, removes))
                 cases += 1
-    print('%s: deferred duplicate checks (%d of %d and %d of %d table cells visited) %d cases: '
-          'one removal per visited item whose count is above 1 PASS'
-          % (hub, R.SHARD_LIST, R.SHARD_TABLE, R.BLOOD_LIST, R.BLOOD_TABLE, cases))
+    print('%s: deferred duplicate checks %#x/%#x: bytecode bounds checks 0..%d (%d sites) and '
+          '0..%d (%d sites) give %d- and %d-cell tables; executed asks visit %d and %d cells per '
+          'player; %d cases: one removal per visited item whose count is above 1 PASS'
+          % (hub, shard, blood, limits[0][0], checks[0], limits[1][0], checks[1],
+             limits[0][0] + 1, limits[1][0] + 1, R.SHARD_LIST, R.BLOOD_LIST, cases))
 
 
 # ---------------------------------------------------------------------------------------
@@ -737,6 +897,23 @@ def check_travel(plain, hub, files, names, rng):
     entrance_site = [a for _s, n, a in script.sites if n == 'setEntrance']
     require(len(entrance_site) == 1, 'one setEntrance')
     entrance = script.literal(entrance_site[0][0])
+    # HSV-5: the PushTrigger record's disc values and the K.* callees
+    require(len(objs['PushTrigger']) == 1 and len(objs['Trigger']) == 1, (hub, 'one of each'))
+    require({k: push.get(k) for k in PUSH_PROPS[hub]} == PUSH_PROPS[hub], (hub, 'PushTrigger props'))
+    require((key, action, rect) == (0x98, 0x54, 0xD8), (hub, 'object entries'))
+    k_ids = K_IDS[hub]
+    require(script.callees(key) == [k_ids['K.lock']], (hub, 'K.lock'))
+    # K.use is named by callScript; it calls K.warn internally and K.help by callScript
+    require(script.callees(action) == [k_ids['K.use']], (hub, 'K.use'))
+    require(script.callees(rect) == [k_ids['K.walk']], (hub, 'K.walk'))
+    require(script.internal_calls(k_ids['K.use']) == [k_ids['K.warn']], (hub, 'K.warn from K.use'))
+    require(sorted(script.internal_calls(k_ids['K.walk'])) == sorted([k_ids['K.warn'], k_ids['K.lock']]),
+            (hub, 'K.walk calls K.warn and K.lock'))
+    require([o for _s, n, a in script.calls(k_ids['K.use']) if n == 'callScript'
+             for o in [script.offset_of[script.literal(a[0])]]] == [k_ids['K.help']], (hub, 'K.help'))
+    require(script.callees(k_ids['K.help']) == [k_ids['K.poll']], (hub, 'K.help queues K.poll'))
+    require(script.callees(k_ids['K.poll']) == [k_ids['K.poll']], (hub, 'K.poll re-queues itself'))
+    poll_cases = 0
     states = []
     for n in R.MISSIONS:
         for raw_n in range(4):
@@ -768,22 +945,66 @@ def check_travel(plain, hub, files, names, rng):
             require(got_entrance == want['entrance'], ('entrance', raw, started))
             require(('missionMenu_open' in plain.stubs()) == want['menu'], ('menu', raw, started, dialog_open))
             require(('hud_showHelpMessage' in plain.stubs()) == want['warn'], ('warn', raw, started))
+            # HSV-4a: the warning queues exactly one deferred call, to K.poll
+            require(plain.named('addDeferedCall') == ([k_ids['K.poll']] if want['warn'] else []),
+                    ('deferred', raw, started))
             require(not [r for r in regions(plain.written()) if isinstance(r, tuple) and r[0] in ('mission', 'quest', 'record')],
                     'trigger leaves the player record')
             cases += 1
+            if want['warn']:
+                # run the queued K.poll on the same loaded script, as the Script task would
+                for paused in ((0,) * 10, (0, 1, 1, 1) + (0,) * 8):
+                    mem = plain.mem
+                    for address in (G_PAUSED, G_JUMPGATE_TRAVEL):
+                        mem.w32(address, 0)
+                    mem.w8(G_CUTSCENE_ACTIVE, 0)
+                    calls = []
+                    for flag in paused:
+                        mem.w32(G_PAUSED, flag)
+                        plain.run(k_ids['K.poll'])
+                        natives = [n for n, _c in plain.natives]
+                        require(plain.named('addDeferedCall') == [k_ids['K.poll']], 'K.poll re-queues')
+                        require(natives.count('gamePaused') == 1, 'K.poll tests the pause')
+                        calls.append(('activateMissionMenu' in natives, 'missionMenu_open' in plain.stubs()))
+                        require(not [r for r in regions(plain.written()) if isinstance(r, tuple)
+                                     and r[0] in ('mission', 'quest', 'record')],
+                                'K.poll leaves the player record')
+                    at = R.warn_poll_call(paused)
+                    opens = not dialog_open and not recall
+                    require([c[0] for c in calls] == [i == at for i in range(len(paused))],
+                            ('poll call', raw, started, paused))
+                    require([c[1] for c in calls] == [i == at and opens for i in range(len(paused))],
+                            ('poll menu', raw, started, paused, dialog_open, recall))
+                    require(mem.cstr(N.N.G_ENTRANCE_NAME, 32) == 'ENTRANCE-SENTINEL', 'K.poll: no entrance')
+                    mem.w32(G_PAUSED, 0)
+                    plain.run(action)                    # a new warning restarts the count
+                    poll_cases += 1
         prime()
         fired = 0
         for _repeat in range(2):
             plain.run(rect)
             got = sum(1 for n, c in plain.natives if n == 'trigger')
             require(got == R.walk_in(raw, started, fired), ('walk-in', raw, started, fired))
+            if got:
+                # HSV-4b: trigger(ring record's name, 0), two argument cells
+                (cells, argc), = [(c, k) for (n, c), k in zip(plain.natives, plain.argc) if n == 'trigger']
+                require(argc == 2 and script.pool.get(cells[0]) == rings['name'] and cells[1] == 0,
+                        ('trigger args', argc, cells[1]))
             fired = fired or got
             cases += 1
     plain.reset([0] * 13)
     plain.run(ring)
     require([c[1] for n, c in plain.natives if n == 'autoPropSetState'] == [2], 'ring loop state')
+    print('%s: PushTrigger nethostonly=%s radius=%s; key %#x -> K.lock %#x, action %#x -> K.use %#x '
+          '(internal call K.warn %#x, callScript K.help %#x, which queues K.poll %#x), rect %#x -> '
+          'K.walk %#x (internal calls K.warn, K.lock) PASS'
+          % (hub, push['nethostonly'], push['radius'], key, k_ids['K.lock'], action, k_ids['K.use'],
+             k_ids['K.warn'], k_ids['K.help'], k_ids['K.poll'], rect, k_ids['K.walk']))
     print('%s: PushTrigger key, use (x dialog open / recall) and walk-in one-shot over %d states, '
-          '%d cases; ring action state 2 PASS' % (hub, len(states), cases + 1))
+          '%d cases; warning: one addDeferedCall to K.poll, which re-queues itself and calls '
+          'activateMissionMenu on its %dth unpaused run (%d sequences of 10 or 12 runs, no entrance '
+          'write); walk-in trigger(ring name, 0); ring action state 2 PASS'
+          % (hub, len(states), cases + 1, R.WARN_POLL_RUNS, poll_cases))
 
 
 # ---------------------------------------------------------------------------------------
@@ -794,12 +1015,14 @@ def check_inn(elf, scripts, others):
     _start, _current, _store, mana, _first, _items = start_sites(hub)
     require(start_sites(scripts['hub2'])[3] == mana, 'same flag in both hubs')
     writers = []
-    for label, image in sorted(others.items()):
+    for key, image in sorted(others.items()):           # every script lump of every other GOB
         script = Script(image)
         if mana in script.pool.values():
             writers.append(script)
-    require(len(writers) == 1, ('one other archive names the flag', len(writers)))
+    gobs = {label for label, _lump in others}
+    require(len(writers) == 1, ('one other script names the flag', len(writers)))
     inn = writers[0]
+    gold = sorted(n for n in set(inn.natives) if 'gold' in n.lower())
     sets = [(site, args) for site, n, args in inn.sites
             if n == 'setv' and args and inn.pool.get(args[0]) == mana]
     require(len(sets) == 1 and sets[0][1][1] == 1, 'one literal set to 1')
@@ -816,10 +1039,11 @@ def check_inn(elf, scripts, others):
         plain.run(owner, keep_seed=False)          # this entry draws the shared seed
         require(plain.getv(mana) == 1, 'the entry sets the flag')
         drew = plain.mem.u32(N.N.G_RAND_SEED) != seed
-    print('L-INN: the only other archive naming the hubs\' mana flag; one literal store of 1 '
-          'at site %#x in public %#x, executed at both seeds; zeroPlayerMana present, refill '
-          'absent; newWorld to both hubs; entry draws the shared seed: %s PASS'
-          % (sets[0][0], owner, drew))
+    print('L-INN: %d script lumps in %d other archives scanned; the only one naming the hubs\' '
+          'mana flag; one literal store of 1 at site %#x in public %#x, executed at both seeds; '
+          'zeroPlayerMana present, refill absent; newWorld to both hubs; entry draws the shared '
+          'seed: %s; gold natives imported: %s PASS'
+          % (len(others), len(gobs), sets[0][0], owner, drew, ', '.join(gold) or 'none'))
 
 
 def main():
