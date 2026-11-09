@@ -693,13 +693,23 @@ registers come from `install_modelled_gs_privileged`. Audit R7-2: the five
 INTC deliveries before the heap fill are taken while COP0 Status is 0
 (`install_modelled_intc(while_disabled=True)`), and the test asserts that
 Status. The set-register packet below is also delivered while Status
-disables interrupts. Status is `0x10000` there: the game's EI at `0x355e7c`
-set EIE, and IE was never set. So everything below the first delivery is
+disables interrupts. Status is `0x10000` there: the EI at `0x35c044`,
+reached from the call at `0x355e7c` (the last of three EI/DI pairs), set
+EIE, and IE was never set. So everything below the first delivery is
 conditional on those models. None of it is an executed retail result.
 
 ### What the EE code expects (Observed)
 
 The order is the order of `iop_loadModules` `0x19ba98`.
+
+**Names (audit R8-7).** `iop_loadModules`, `sceSifInitRpc`,
+`sceSifBindRpc`, `sceSifCallRpc`, `sceSifRebootIop`, `sceCdInit` and
+`cd_readBlocking` trace to `symbols/` or earlier notes. `sceSifInitCmd`
+`0x355608`, `sceSifGetSreg` `0x3555c0`, `sceSifSyncIop` `0x35be88` and
+`_SifSendCmd` `0x3559b8` have no symbol in this repository
+(`ghidra_funcs.tsv` gives `FUN_00355608`, and `docs/netlib.md` names only
+the range `0x355608`-`0x356e20` as SIF command/RPC). Those four are SDK names
+**Inferred** from behaviour. The addresses are the evidence.
 
 1. `sceSifInitRpc(0)` `0x355d68`, called at `0x19baa8`, returns at once if the
    word at `0x50750c` is set. Otherwise it sets that word and calls
@@ -736,8 +746,12 @@ The order is the order of `iop_loadModules` `0x19ba98`.
    (syscall `0x77`) at `0x355ac4`. SetDma's v0 is the send's result.
 7. Back in `sceSifInitRpc`, handlers are added for commands `0x80000008`
    (`0x356068`, the end of a bind or call), `0x80000009` (`0x356440`),
-   `0x8000000a` (`0x356660`) and `0x8000000c` (`0x356178`). Then EI at
-   `0x355e7c`. If GetReg(`0x80000002`) is nonzero, it returns. Otherwise it
+   `0x8000000a` (`0x356660`) and `0x8000000c` (`0x356178`). Then the call at
+   `0x355e7c` to the wrapper `0x35c038`, whose EI is at `0x35c044`. The same
+   wrapper runs earlier from `0x355da8` and `0x355734`, each after the DI
+   wrapper `0x35bfe8` (called at `0x355d78` and `0x355620`, and again at
+   `0x355db8`; it executes DI at `0x35c000` only when Status bit 16 is
+   set). If GetReg(`0x80000002`) is nonzero, it returns. Otherwise it
    sends command `0x80000002` (size `0x10`, +0xc = 1), then repeats
    `sceSifGetSreg(0)` `0x3555c0` at `0x355ec0`-`0x355ec8` until the word at
    `0x8ef2c0` is nonzero. Last, it tail-calls SetReg(`0x80000002`, 1)
@@ -797,8 +811,31 @@ No caller in that table reads v0, except the GetReg calls and SetDma.
 - **GetReg(2)** returns `SIF_SUBADDR_PLACEHOLDER` = `0x0bad0000`, an
   unmapped address. The EE only stores it, passes it to SetReg and to the
   kernel as a DMA destination. Any EE access through it would fault.
-- **The two software registers** return the last SetReg value, or 0.
-- **D_STAT and D5_CHCR** are storage that starts at 0.
+- **Software registers `0x80000000` and `0x80000002`** return the last
+  SetReg value, or 0 before any. Both are read before any SetReg, so both
+  reads return a modelled 0, and both zeros are **modelled branch
+  selectors** (audit R8-5):
+  - GetReg(`0x80000000`) at ra `0x3557b4`: `beqz` takes the zero path to
+    `0x3557fc`, which runs the GetReg(4) loop, GetReg(2), both SetRegs and
+    the `0x14`-byte `0x80000002` send. A nonzero value would instead send
+    command `0x80000000` and return (`0x3557bc`-`0x3557f4`), and none of
+    that would run.
+  - GetReg(`0x80000002`) at ra `0x355e90`: a nonzero value (`bnez`) would
+    skip the second send, the `sceSifGetSreg` poll and the modelled packet.
+
+  The three sends, three SetReg writes, one delivery and seven recorded
+  stores below all follow from these two zeros. Their retail values are
+  IOP-side or boot-loader state, not values the EE code determines
+  (**Unknown**, listed below).
+- **D_STAT and D5_CHCR** (audit R8-4): a 4-byte load of either word returns
+  a modelled 0 at any pc: no pending channel-5 status and channel 5 not
+  running. Loads are not limited to the SIF callers `0x35574c` and
+  `0x35576c`. Every store to either word raises CpuTrap. That includes the
+  SIF write-back at `0x355760`, which the run does not reach because bit
+  `0x20` reads 0, and the game's own channel-8 clear at `0x17c8b0` (it
+  stores `0x100` to D_STAT and then polls that bit at
+  `0x17c920`-`0x17c93c`). D_STAT's write-one-to-clear and its status bits
+  are not modelled, so neither word behaves as RAM.
 - **SetDma** records each descriptor with its source bytes. Nothing is
   transferred.
 - **The reply.** When a recorded send is command `0x80000002` with +0xc = 1,
@@ -856,8 +893,9 @@ No caller in that table reads v0, except the GetReg calls and SetDma.
    in the receive buffer, delivered through `0x355b70`. It needs +0x1c =
    client `0x8f8a68`, +0x20 = `0x80000009`, +0x24 = a nonzero server address
    and +0x28 = a buffer address, plus the DMA that puts it there. The EE
-   requires only that +0x24 is nonzero. Both addresses are the IOP's, and
-   the CD server is IOP code, not part of this executable. Modelling them would invent IOP
+   requires only that +0x24 is nonzero (**Observed** at `0x356068`).
+   **Inferred:** both addresses are the IOP's, and the CD server is IOP
+   code, not part of this executable. Modelling them would invent IOP
    behaviour, so the run stops here.
 2. **The CD-init call result.** A second `0x80000008` reply, +0x20 =
    `0x8000000a`, and 16 bytes DMA'd to `0x509e40`. Words +4, +8 and +0xc are
@@ -869,12 +907,20 @@ No caller in that table reads v0, except the GetReg calls and SetDma.
 
 ### Disc reads
 
-**Observed:** the EE makes no file read before this wall. The CDVD calls
-that are reached, `sceCdInit`'s bind and call, are control RPCs, not reads.
-The IRX modules named in `iop_loadModules` are read by the IOP from
-`cdrom0:`, not by the EE. Game file reads go through `cd_readBlocking`
-`0x172ad0` (`cd_readAsync` `0x1729e8`, then a vsync wait). That is above the
-CDVD RPC layer. The read-only adapter that round 4 of `t3/research-mission2-route`
+**Executed:** the asserted run makes no EE file read before this wall:
+`sceSifCallRpc` is never called, the three-entry transfer list is exact,
+and SetDma at any other return address traps. The CDVD call that is
+reached is `sceCdInit`'s bind; its `sceSifCallRpc` is read, not reached.
+**Inferred:** both are control RPCs (function 0 with a 4-byte mode), not
+reads. **Observed:** each module load through `0x19b9c8` (for example
+`sio2man.irx` at `0x534e70`, from `0x19bb44`) builds its path at `0x19b934`
+(called at `0x19b9ec`): `libc_sprintf` `0x3b7ef0` formats
+`cdrom0:\BG\0MOD\%s;1` (`0x534d50`) into `0x83d1d0` and upper-cases it after
+the device prefix. **Inferred:** the IOP, not the EE, reads those modules
+from that path. What the IOP does is not in this executable.
+**Observed:** game file reads go through `cd_readBlocking` `0x172ad0`
+(`cd_readAsync` `0x1729e8`, then a vsync wait). **Inferred:** that is above
+the CDVD RPC layer. The read-only adapter that round 4 of `t3/research-mission2-route`
 used (`Disc` in `tools/difftest_mission2_r4.py` at `d17b46f`) replaces
 `cd_readBlocking` at exactly that boundary, so it is the place to route later
 reads. It is not imported here, because no run reaches a read. It is also not
@@ -883,8 +929,10 @@ was made. That round's game-loader stop was a SetDma whose return address
 this model does not accept.
 
 **Unknown:** everything on the IOP side listed above. The retail value of
-D_STAT and D5_CHCR at `0x35574c`/`0x35576c`. The retail Status at each
-delivery. Every step past `sceCdInit`. Native `blocked_death_reload` stays.
+D_STAT and D5_CHCR at `0x35574c`/`0x35576c`. The retail values of software
+registers `0x80000000` (GetReg at ra `0x3557b4`) and `0x80000002` (GetReg
+at ra `0x355e90`) at entry; the model reads 0 for both. The retail Status at
+each delivery. Every step past `sceCdInit`. Native `blocked_death_reload` stays.
 
 ## Reproduce, round 8
 
@@ -896,3 +944,16 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_death_reload_sif.py local/SLUS_
 Each seed: two `engine_init` runs to the bind wait, and two particle-reset
 faults. Each run executes the heap fill twice. No stubs. The success output
 reports counts only.
+
+Audit R8-8: the boot runs with `record_calls` off, so "no stubs" is checked
+on the machine by `assert_unstubbed` (no follow set, no named stub, and the
+hooks are exactly the test's call recorders). Every run first checks that
+four in-process mutants fail that check: an unnamed stub at the unreached
+IOP reset `0x35bd08`, a stub replacing the `sceSifInitCmd` recorder, a named
+stub, and an empty follow set. The full-boot control runs the whole boot
+with a stub at `0x35bd08`. The boot reaches the same bind wait and fails
+only the no-stubs check:
+
+```
+PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_death_reload_sif.py local/SLUS_209.73 --seed 20973 --mutate-boot
+```
