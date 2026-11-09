@@ -30,7 +30,7 @@ round 5. Nothing here selects which one a campaign loads.
 Evidence: [route 0 bag words, the loader promote, and the 48 v0 values, lines 202–275](../tools/difftest_arrival_stage_r6.py#L202),
 [null-model sentinel and the planted mask, lines 282–327](../tools/difftest_arrival_stage_r6.py#L282),
 [show, hide, and the planted grid bits, lines 330–386](../tools/difftest_arrival_stage_r6.py#L330),
-[delete, the vtable store, and the first frame, lines 424–505](../tools/difftest_arrival_stage_r6.py#L424).
+[delete, the vtable store, and the first frame, lines 424–509](../tools/difftest_arrival_stage_r6.py#L424).
 
 ## `removePlayerItem` `0x14598c`
 
