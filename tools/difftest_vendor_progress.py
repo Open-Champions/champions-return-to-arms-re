@@ -157,6 +157,15 @@ def entry_of(blob):
     return lookup
 
 
+def public_proc(blob, name):
+    """Code offset of the public entry ``name``; asserts a PROC is decoded there."""
+    machine = ref_amx.Machine(blob)
+    assert machine.load() == 0
+    offsets = [off for entry, off in machine.publics() if entry.decode('latin1') == name]
+    assert len(offsets) == 1 and machine._decoded[offsets[0]][0] == PROC, (name, offsets)
+    return offsets[0]
+
+
 def native_calls(blob, native):
     """(offset, args) for every sysreq.c of ``native``. args are the pushes before the
     call in argument order (the argument-size push dropped): ('c', value) for push.c,
@@ -242,9 +251,12 @@ def store_level_cases(elf, disc):
                  for off, args in native_calls(scripts[name], native) if entry(off) == 'start']
         assert sorted(tests) == [('getMissionAvailable', (('c', 8),)), ('getMissionAvailable', (('c', 9),)),
                                  ('getMissionComplete', (('c', 9),))], (name, tests)
-        print('PASS storeLevel %s setv=%s computed@0x%x = getv(currentMission)@0x%x - 1; all in start; '
-              'start tests %s' % (name, ','.join('0x%x' % row[0] for row in rows), offset, getv[-1][0],
-                                  ' '.join('%s(%d)' % (n, a[0][1]) for n, a in sorted(tests))), flush=True)
+        start = public_proc(scripts[name], 'start')
+        assert start == {'hub': 0x2838, 'hub2': 0x134}[name] and start < min(row[0] for row in rows), name
+        print('PASS storeLevel %s start PROC@0x%x setv=%s computed@0x%x = getv(currentMission)@0x%x - 1; '
+              'all in start; start tests %s' % (name, start, ','.join('0x%x' % row[0] for row in rows), offset,
+                                                getv[-1][0], ' '.join('%s(%d)' % (n, a[0][1])
+                                                                      for n, a in sorted(tests))), flush=True)
         cases += 1
     # Who stores currentMission: one literal per mission level, all in `start`.
     census = {}
@@ -363,6 +375,25 @@ def act_cases(elf):
             prefix[probe] = s32(e.call(FIND_ACT, text))
             assert prefix[probe] == want, (probe, prefix[probe])
             cases += 1
+    # Executed call sites: strlen 0x3b8dc4 then strncmp 0x3b91d8 at 0x217db0 / 0x217dd4 for the
+    # current act's table, and at 0x217e4c / 0x217e64 for the scan from act 0. Each strncmp
+    # compares the name with a table entry over that entry's length.
+    sites = set()
+    for probe, current in (('valorzz', 0), ('valorzz', 6), ('blood1zz', 0xFFFFFFFF)):
+        e.mem.write(text, probe.encode() + b'\0')
+        e.mem.w32(ACT, current)
+        e.reset_log()
+        e.call(FIND_ACT, text)
+        for c in e.calls:
+            sites.add((c.target, c.site))
+            if c.target == 0x3B91D8:
+                pair = [e.mem.cstr(a & 0xFFFFFFFF, 64) for a in c.args[:2]]
+                assert probe in pair, (probe, pair)
+                entry = pair[1 - pair.index(probe)]
+                assert c.args[2] & 0xFFFFFFFF == len(entry), (probe, entry, c.args[2])
+        cases += 1
+    assert sites == {(0x3B8DC4, 0x217DB0), (0x3B91D8, 0x217DD4), (0x3B8DC4, 0x217E4C),
+                     (0x3B91D8, 0x217E64)}, sorted(sites)
     print('PASS actChanged %d names x %d acts; prefix %s' % (
         len(homes), acts + 1, ' '.join('%s=%d' % row for row in sorted(prefix.items()))), flush=True)
     print('PASS acts=%d hub/hub2 resolve to the current act; mission homes %s; found in another current act %s' % (
@@ -464,10 +495,16 @@ def fit_cases(elf):
                 misses = run = longest = 0
                 # Non-advancing in the original loop (stock_plan): a failed call, a weapon with
                 # record flag bit 40, or a duplicate while fewer than six retries were spent.
-                # Category 0 scans its own accepted records; residue bytes are packed as zero,
-                # so every equal pair counts (the worst case for advancing). Category 1 scans the
-                # previous third list (other-category definitions), modelled as no duplicate.
+                # Category 0 scans its whole list from the base, so the scan starts with the
+                # four fixed weapon records (FIXED_WEAPONS, parsed first with the same seed, as
+                # stock_plan does) and then its accepted records; residue bytes are packed as
+                # zero. Category 1 scans the previous third list (other-category definitions),
+                # modelled as no duplicate.
                 accepted, retries, still, longest_still = [], 0, 0, 0
+                if category == 0:
+                    accepted = [I.parse_descriptor(tables, tables.exe.cstr(descriptor), -1, False, rng).pack()
+                                for descriptor in S.FIXED_WEAPONS]
+                fixed = len(accepted)
                 for _ in range(20):
                     item = I.generate_with_affixes(tables, game, rng, budget, category, -1, cap)
                     advance = item is not None
@@ -491,13 +528,23 @@ def fit_cases(elf):
                     else:
                         still += 1
                         longest_still = max(longest_still, still)
-                assert misses < 20 and len(accepted) > 0, ('no advance', level, difficulty, category)
+                assert misses < 20 and len(accepted) > fixed, ('no advance', level, difficulty, category)
                 key = (longest, level, difficulty, category, seed)
                 worst = key if worst is None or key > worst else worst
                 key = (longest_still, level, difficulty, category, seed)
                 stall = key if stall is None or key > stall else stall
                 total += 1
     executed = 0
+    # The four fixed weapon records: original parser 0x1069b8 against the reference, both seeds.
+    for seed in SEEDS:
+        o = Original(elf, fast=True)
+        o.set_game(I.Game(num_players=1), seed)
+        rng = I.Rng(seed)
+        for descriptor in S.FIXED_WEAPONS:
+            want = I.parse_descriptor(tables, tables.exe.cstr(descriptor), -1, False, rng).pack()
+            o.call(PARSE, descriptor, o.rec, -1 & 0xFFFFFFFFFFFFFFFF, 0)
+            assert o.mem.read(o.rec, S.ITEM_SIZE) == want and o.seed() == rng.seed, hex(descriptor)
+            executed += 1
     for (level, difficulty), seed in itertools.product(((0, 1), (11, 5)), SEEDS):
         for category, budget, cap in first_budgets(level, difficulty):
             o = Original(elf, fast=True)
@@ -512,7 +559,8 @@ def fit_cases(elf):
     print('PASS fit contexts=%d longest_failure_run=%d at storeLevel=%d difficulty=%d category=%d seed=%d '
           'executed=%d' % ((total,) + worst + (executed,)), flush=True)
     print('PASS fit longest_non_advancing_run=%d at storeLevel=%d difficulty=%d category=%d seed=%d '
-          'bit40_rejects=%d duplicate_rejects=%d (one player, seeds %s, difficulty 1..5)' % (
+          'bit40_rejects=%d duplicate_rejects=%d (one player, seeds %s, difficulty 1..5; '
+          'category-0 scan seeded with the 4 fixed weapons)' % (
               stall + (rejected['bit40'], rejected['duplicate'], '/'.join(map(str, SEEDS)))), flush=True)
     return total + executed
 
@@ -530,7 +578,7 @@ class Shop:
     to chosen returns; with region set, game_initCamera runs first (callees stubbed).
     """
 
-    def __init__(self, elf, seed, players=1, list_mask=0x80, region=None):
+    def __init__(self, elf, seed, players=1, list_mask=0x80, region=None, opener=0):
         e = self.e = EE(elf)
         m = self.m = e.mem
         m.auto_map = True
@@ -547,7 +595,7 @@ class Shop:
             e.call(0x1E6B68, max_steps=100000)
             list_mask = None
         e.stub(0x13E150, ret=1)
-        e.call(STOCK_FN, 0, 0, 1, max_steps=500000)
+        e.call(STOCK_FN, opener, 0, 1, max_steps=500000)
         tex = e.alloc(0x40)
         m.w16(tex, 32)
         m.w16(tex + 2, 32)
@@ -626,6 +674,47 @@ def buy_outcome(shop, calls):
     return 'full'
 
 
+def sale_message(elf, seed, opener, slot, panel):
+    """One unequipped sale (0x1c41d8 stubbed to 0) from ``slot`` on ``panel`` in a two-player
+    shop opened by ``opener``; returns the 13 message bytes sent through 0x13db38."""
+    shop = Shop(elf, seed, players=2, opener=opener)
+    m = shop.m
+    if panel == 1:
+        shop.tick(press=shop.confirm, slot=slot)
+    assert m.s32(S.PANELS + panel * S.PANEL_STRIDE + 0x34) == slot
+    base = PLAYERS + slot * REC
+    m.w32(base + 0x130, shop.definition)
+    m.w16(base + 0x134, 1)
+    m.w32(base + 0x1330, 1)
+    player_object = shop.e.alloc(0x500)
+    m.w32(base + OBJECT_PTR, player_object)
+    for ticks in range(40):
+        if shop.panel(panel)[1] == 1:
+            break
+        shop.tick(held=0x4000 if ticks == 0 else 0, slot=slot)
+    calls = shop.tick(press=shop.confirm, slot=slot)
+    view = [c for c in calls if c.target == BAGS_VIEW]
+    assert shop.panel(panel)[0] == S.MENU_SELL and len(view) == 1 and view[0].args[:3] == (slot, panel, 0)
+    shop.build(slot, panel, 0)                   # itemGrid_build(slot, panel, stock), as the join calls it
+    m.wf32(BAG_PANEL + panel * 0x74 + 0x44, 16.0)
+    m.wf32(BAG_PANEL + panel * 0x74 + 0x48, 96.0)
+    shop.e.stub(0x1C41D8, ret=0)
+    fill = []
+
+    def prefill(emu):
+        address = (emu.r[29] & 0xFFFFFFFF) + 0x10
+        emu.mem.write(address, b'\xa5' * 13)
+        fill.append(address)
+    shop.e.hook(SALE_STORES, prefill)
+    calls = shop.tick(press=0x80, slot=slot)
+    sent = [c for c in calls if c.target == NET_SEND]
+    assert len(sent) == 1 and sent[0].args[2] == 0xD and fill == [sent[0].args[1] & 0xFFFFFFFF]
+    assert m.u8(player_object + LATCH) == 1
+    message = m.read(sent[0].args[1] & 0xFFFFFFFF, 13)
+    assert 0xA5 not in message, message.hex()
+    return message
+
+
 def menu_cases(elf):
     cases = 0
     for seed in SEEDS:
@@ -638,6 +727,18 @@ def menu_cases(elf):
         assert m.u32(SHOP_OPEN) == 1 and m.u32(PAUSE) == 1
         shop.tick()
         assert shop.panel() == (3, 0, 0, 0)
+        # Executed reads: the choice reads pad +0x8 only at 0x1c6454 (helper 0x1c6438) and
+        # +0xc; never +0x10. Every choice tick stores +0x18 into +0x54 at 0x1c6c3c.
+        shop.e.reads = []
+        m.w32(S.PANELS + 0x54, 7)
+        shop.tick(held=0, held10=0x4000)
+        pad_reads = {(pc, address - S.PAD) for pc, address, _size, _value in shop.e.reads
+                     if S.PAD <= address < S.PAD + 0x58}
+        shop.e.reads = None
+        assert (0x1C6454, 0x8) in pad_reads and not any(off == 0x10 for _pc, off in pad_reads), pad_reads
+        assert [(pc, value) for pc, address, _size, value in shop.e.writes
+                if address == S.PANELS + 0x54] == [(0x1C6C3C, 0)] and m.u32(S.PANELS + 0x54) == 0
+        cases += 2
         shop.tick(held=0x1000)                       # up at the top row
         assert shop.panel() == (3, 0, 0, 0)
         shop.tick(held=0, held10=0x4000)             # down on +0x10 alone: the cursor reads +0x8
@@ -651,6 +752,11 @@ def menu_cases(elf):
             shop.tick()
             ticks += 1
         assert ticks == S.CURSOR_TICKS and shop.panel() == (3, 1, 0, 0)
+        m.w32(S.PANELS + 0x54, 7)
+        shop.tick()
+        assert [(pc, value) for pc, address, _size, value in shop.e.writes
+                if address == S.PANELS + 0x54] == [(0x1C6C3C, 1)] and m.u32(S.PANELS + 0x54) == 1
+        cases += 1
         shop.tick(held=0x4000)                       # down at the last row
         assert shop.panel() == (3, 1, 0, 0)
         # The analogue bits, each alone on +0x8: 0x100000 up, 0x200000 down.
@@ -702,9 +808,21 @@ def menu_cases(elf):
         m.w32(PLAYERS + 0xE4, 1000)
         m.w32(PLAYERS + 0x1330, 0)
         m.wf32(PLAYERS + 0x120, 0.0)
+        # Over the stock cell, itemList_input reads pad +0x10 at 0x1cdfcc (and +0xc at 0x1cdfa0);
+        # the list confirm mask held on +0x10 alone does not buy, and the list writes no +0x54.
+        shop.e.reads = []
+        calls = shop.tick(held=0, held10=0x80)
+        pad_reads = {(pc, address - S.PAD) for pc, address, _size, _value in shop.e.reads
+                     if S.PAD <= address < S.PAD + 0x58}
+        shop.e.reads = None
+        assert {(0x1CDFCC, 0x10), (0x1CDFA0, 0xC)} <= pad_reads, pad_reads
+        assert SEND_BUY not in shop.targets(calls) and shop.panel()[0] == S.MENU_BUY
+        assert not any(address == S.PANELS + 0x54 for _pc, address, _size, _value in shop.e.writes)
+        cases += 2
         # Confirm (0x40) is not the list mask: no buy.
         assert SEND_BUY not in shop.targets(shop.tick(press=confirm))
         # Input lockout, state 0: the real pad is ignored and the list reads 0x86a6b0.
+        assert all(EE(elf).mem.u32(ZERO_PAD + off) == 0 for off in range(0, 0x58, 4)), 'loaded image'
         m.w32(LOCKOUT, 60)
         shop.tick(press=cancel)
         assert shop.panel()[0] == S.MENU_BUY
@@ -829,7 +947,10 @@ def menu_cases(elf):
         for first, last, same_tick in ((0, 1, True), (1, 0, False)):
             shop = Shop(elf, seed, players=2)
             m = shop.m
+            runs = []
+            shop.e.hook(0x1C74C0, lambda emu: runs.append((s32(emu.r[4]), (emu.r[31] - 8) & 0xFFFFFFFF)))
             calls = shop.tick(press=shop.confirm, slot=1)
+            assert runs == [(1, 0x1C61AC), (0, 0x1C61B4)], runs
             assert shop.panel(1)[0] == S.MENU_CHOICE and m.s32(S.PANELS + S.PANEL_STRIDE + 0x34) == 1
             assert any(c.target == GRID for c in calls)
             names = shop.targets(shop.tick(press=shop.cancel, slot=first))
@@ -839,10 +960,31 @@ def menu_cases(elf):
             assert shop.panel(last)[0] == S.MENU_IDLE and (SHOP_CLOSE in names) == same_tick
             if not same_tick:
                 assert m.u32(SHOP_OPEN) == 1
-                names = shop.targets(shop.tick())
+                del runs[:]
+                calls = shop.tick()
+                names = shop.targets(calls)
+                assert runs == [(1, 0x1C61AC), (0, 0x1C61B4)], runs
             assert SHOP_CLOSE in names and HUD_MENU_STATE in names and m.u32(SHOP_OPEN) == 0
-            cases += 2
-        # Sentinel masks: the choice and the lists read 0x41bfbc / 0x41bfb8, not constants.
+            assert all(c.site == 0x1C7690 and c.args[:3] == (0, 0, 0)
+                       for c in shop.e.calls if c.target == HUD_MENU_STATE)
+            shop.e.unhook(0x1C74C0)
+            cases += 3
+        # A sale from other slots and panels: byte 1 is the selling slot, byte 0xb the panel.
+        for opener, slot, panel in ((1, 1, 0), (0, 1, 1), (1, 0, 1)):
+            message = sale_message(elf, seed, opener, slot, panel)
+            assert message[0] == 1 and message[1] == slot and message[0xB] == panel and message[0xC] == 1, (
+                opener, slot, panel, message.hex())
+            cases += 1
+        # A shop opened by slot 1 closes with the same 0x1de0dc(0, 0, 0) at 0x1c7690.
+        shop = Shop(elf, seed, players=2, opener=1)
+        assert shop.m.s32(S.PANELS + 0x34) == 1
+        shop.tick(press=shop.cancel, slot=1)
+        calls = shop.tick()
+        menu_state = [c for c in calls if c.target == HUD_MENU_STATE]
+        assert menu_state and all(c.site == 0x1C7690 and c.args[:3] == (0, 0, 0) for c in menu_state)
+        assert shop.m.u32(SHOP_OPEN) == 0
+        cases += 1
+        # Sentinel masks: the choice confirms with 0x41bfbc; the choice and both lists cancel with 0x41bfb8.
         shop = Shop(elf, seed)
         m = shop.m
         others = (m.u32(S.LIST_CONFIRM_MASK), m.u32(0x41B960), m.u32(0x41B968))
@@ -853,7 +995,14 @@ def menu_cases(elf):
         shop.tick()
         for press, want in ((0x40, S.MENU_CHOICE), (0x120, S.MENU_CHOICE), (new_confirm, S.MENU_BUY),
                             (0x120, S.MENU_BUY), (0x40, S.MENU_BUY), (new_cancel, S.MENU_CHOICE),
-                            (0x120, S.MENU_CHOICE), (new_cancel, S.MENU_IDLE)):
+                            (0x120, S.MENU_CHOICE)):
+            shop.tick(press=press)
+            assert shop.panel()[0] == want, (hex(press), shop.panel())
+            cases += 1
+        # The own-bags list (state 1) also cancels only with the planted 0x41bfb8 bits.
+        assert shop.move(0x4000) == S.CURSOR_TICKS and shop.panel()[:2] == (S.MENU_CHOICE, 1)
+        for press, want in ((new_confirm, S.MENU_SELL), (0x120, S.MENU_SELL), (0x40, S.MENU_SELL),
+                            (new_cancel, S.MENU_CHOICE), (new_cancel, S.MENU_IDLE)):
             shop.tick(press=press)
             assert shop.panel()[0] == want, (hex(press), shop.panel())
             cases += 1
@@ -863,7 +1012,14 @@ def menu_cases(elf):
         assert (shop.confirm, shop.cancel, m.u32(S.LIST_CONFIRM_MASK)) == (0x40, 0x20, 0x80)
         shop.tick()
         for press, want in ((0x100, S.MENU_CHOICE), (0x40, S.MENU_BUY), (0x100, S.MENU_BUY),
-                            (0x20, S.MENU_CHOICE), (0x100, S.MENU_CHOICE), (0x20, S.MENU_IDLE)):
+                            (0x20, S.MENU_CHOICE), (0x100, S.MENU_CHOICE)):
+            shop.tick(press=press)
+            assert shop.panel()[0] == want, (hex(press), shop.panel())
+            cases += 1
+        # Region 1, own-bags list: a lone 0x20 cancels it, 0x100 does not.
+        assert shop.move(0x4000) == S.CURSOR_TICKS and shop.panel()[:2] == (S.MENU_CHOICE, 1)
+        for press, want in ((0x40, S.MENU_SELL), (0x100, S.MENU_SELL), (0x20, S.MENU_CHOICE),
+                            (0x20, S.MENU_IDLE)):
             shop.tick(press=press)
             assert shop.panel()[0] == want, (hex(press), shop.panel())
             cases += 1
@@ -882,6 +1038,12 @@ def menu_cases(elf):
         assert len(sends) == net
         if net:
             assert sends[0].args[2] == 4 and e.mem.read(sends[0].args[1] & 0xFFFFFFFF, 4) == bytes((2, 0, 0, 0))
+    for args in ((1, 0, 0), (0, 1, 0), (0, 0, 1), (3, 5, 7)):
+        e.reset_log()
+        e.call(HUD_MENU_STATE, *args, max_steps=10000)
+        sends = [c for c in e.calls if c.target == NET_SEND]
+        assert len(sends) == 1 and e.mem.read(sends[0].args[1] & 0xFFFFFFFF, 4) == bytes((2,) + args), args
+        cases += 1
     # Region masks from game_initCamera 0x1e6b68, every byte value. The .data byte is 1.
     assert EE(elf).mem.u8(REGION) == 1
     masks = {}
