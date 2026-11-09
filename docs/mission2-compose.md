@@ -209,6 +209,14 @@ definition's own address at its `+0x28`. Claiming that definition takes slot
 definition `+4`, 0 at `+8`, and `-1` into the slot word.
 Evidence: [helper effects](../tools/difftest_mission2_compose.py#L498-L535).
 
+Fixture stubs for that boot (added 2026-11-09): `boot_particles` replaces
+`task_add` `0x19e4a0` and `0x173768` with "return 0" before
+`particle_staticInit` and `particle_init` run
+([boot](../tools/difftest_mission2_compose.py#L486-L494)). Neither body is
+entered, so no task is registered and that resource call has no effect. The
+reset results above hold under those two stubs. The menu-image fault above
+does not use this boot.
+
 ## Loader body through the archive lookup
 
 **Observed / Executed:** `game_loadLevel` `0x1e55c0` for `innovat1` sets the
@@ -235,7 +243,11 @@ returns `0x4d8af0 + 0x4c30`. Both returns replace a sentinel in the return
 register. The argument is `0x580` bytes, so those two words are inside it.
 
 **Observed / Executed:** with the free-list head `0x864ea8` still 0,
-`pool_init` `0x14fcd8` and `pool_new` leave that head 0. `GameObject_ctor`
+`pool_init` `0x14fcd8` and `pool_new` record no store to that word, and it
+reads 0 after `pool_new`. In a separate run, sentinel `0xa5a5a5a5` planted
+before `pool_init` and `0x5a5a5a5a` planted before `pool_new` both survive
+([sentinels](../tools/difftest_mission2_compose.py#L796-L816), added
+2026-11-09). `GameObject_ctor`
 `0x14cb10` then faults on a 4-byte write at address 0 (pc `0x001a1780`).
 That is the null link-head store. Round 4 writes `0x847268` there from
 `handle_initPool` and the constructor returns

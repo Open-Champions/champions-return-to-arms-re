@@ -793,6 +793,29 @@ def hub2_play(executable, iso, seed):
     return cases, entrance
 
 
+def free_head_untouched(executable):
+    """Neither pool_init nor pool_new stores the free-list head 0x864ea8."""
+    from ee_emu import EE
+    planted = EE(executable)
+    planted.record_writes = False
+    planted.mem.w32(FREE_HEAD, 0xA5A5A5A5)
+    planted.call(POOL_INIT)
+    assert planted.mem.u32(FREE_HEAD) == 0xA5A5A5A5
+    planted.mem.w32(FREE_HEAD, 0x5A5A5A5A)
+    assert planted.call(POOL_NEW, 0x80) & 0xFFFFFFFF
+    assert planted.mem.u32(FREE_HEAD) == 0x5A5A5A5A
+    emu = EE(executable)
+    emu.record_writes = True
+    emu.write_watch = ((FREE_HEAD, 4),)
+    emu.reset_log()
+    assert emu.mem.u32(FREE_HEAD) == 0
+    emu.call(POOL_INIT)
+    assert emu.writes == [] and emu.mem.u32(FREE_HEAD) == 0
+    assert emu.call(POOL_NEW, 0x80) & 0xFFFFFFFF
+    assert emu.writes == [] and emu.mem.u32(FREE_HEAD) == 0
+    return True
+
+
 def run(executable, source, iso, seed):
     assert hashlib.sha256(Path(executable).read_bytes()).hexdigest() == SHA256
     fixtures = T.inputs(Path(source))
@@ -805,6 +828,7 @@ def run(executable, source, iso, seed):
     sites = loader_prefix(executable, seed)
     interact_without_player(executable)
     ctor_null_head(executable)
+    free_head_untouched(executable)
     key_cases, entrance = hub2_play(executable, iso, seed)
     hub_records = hub2_boundary(iso) if seed == 20973 else 0
     print('PASS seed=%d route-list cases=%d portal returns=%d counter comparisons=%d' % (
@@ -812,6 +836,8 @@ def run(executable, source, iso, seed):
     print('PASS seed=%d same-session offer, menu request, load stop, and counter-0 admission' % seed)
     print('PASS seed=%d helper reset, loader sites=%d, hub2 key cases=%d' % (
         seed, sites, key_cases))
+    print('PASS seed=%d free-list head 0x864ea8: no store from pool_init or pool_new, '
+          'planted sentinels kept' % seed)
     if hub_records:
         print('PASS hub2 records=%d; ordinary-hub offer entries are absent' % hub_records)
     print('LIMIT in-range physical use, the loader body after the stubbed archive lookup, '
