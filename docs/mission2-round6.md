@@ -203,9 +203,9 @@ and these synthetic inputs:
 
 The real `task_add` registers the menu tasks. The tests then call the run
 task once per frame and write the pad word before each call. The draw task
-is not run. See [menu_open](../tools/difftest_mission2_r6.py#L419-L443),
-[frame](../tools/difftest_mission2_r6.py#L446-L453), and
-[menu_select](../tools/difftest_mission2_r6.py#L466-L542).
+is not run. See [menu_open](../tools/difftest_mission2_r6.py#L420-L444),
+[frame](../tools/difftest_mission2_r6.py#L447-L454), and
+[menu_select](../tools/difftest_mission2_r6.py#L467-L543).
 
 **Opening and fade-in:**
 
@@ -217,7 +217,7 @@ is not run. See [menu_open](../tools/difftest_mission2_r6.py#L419-L443),
 
 **Selection.** A seeded sequence of up and down presses (8 or 5) ends at the
 index an independent model predicts
-([model_select](../tools/difftest_mission2_r6.py#L456-L463)).
+([model_select](../tools/difftest_mission2_r6.py#L457-L464)).
 
 - Seed 20973 lands on the current level. Confirm is refused there, and
   travel stays 0. One more up press, then confirm.
@@ -240,7 +240,7 @@ index an independent model predicts
   `0x41b720` from `0x27e210`.
 - State 6 → 7 keeps travel at 181. State 7 clears travel and calls
   `task_remove(0x27dd74)` and `task_remove(0x27e2d0)` from `0x27e298` and
-  `0x27e2a4` ([lines 537–541](../tools/difftest_mission2_r6.py#L537-L541)).
+  `0x27e2a4` ([lines 538–542](../tools/difftest_mission2_r6.py#L538-L542)).
 
 **Cancel:**
 
@@ -251,7 +251,7 @@ index an independent model predicts
   frame. It and the orientation sentinel are unchanged, and writes over
   `0x41b6d0`..`0x41b7e2` are recorded in every frame from the opening to the
   last fade frame: there are none
-  ([menu_cancel](../tools/difftest_mission2_r6.py#L545-L568)).
+  ([menu_cancel](../tools/difftest_mission2_r6.py#L546-L569)).
 
 ### Saving and loading the destination list
 
@@ -282,7 +282,7 @@ comparisons in `docs/exits-r3-gate-lifecycle.md` on `t3/research-exits-r3`
 - Fill bytes after the block are untouched.
 - The list and count are then overwritten. The load returns `0x1e4` and
   restores both exactly
-  ([destinations_round_trip](../tools/difftest_mission2_r6.py#L571-L584)).
+  ([destinations_round_trip](../tools/difftest_mission2_r6.py#L572-L585)).
 
 The memory card, the checksums, and the rest of the save builder are not
 run.
@@ -299,7 +299,7 @@ that order by construction.
 executed that function: it removes both gate tasks only when travel is 0.
 So the menu tasks survive a gate load.
 
-**Executed** ([arrival_chain](../tools/difftest_mission2_r6.py#L589-L665)):
+**Executed** ([arrival_chain](../tools/difftest_mission2_r6.py#L590-L666)):
 the chain lists `hub` before the current `innovat1` and confirms index 0.
 After state 5, the original `mainloop_loadRequestedWorld` `0x320edc` runs
 and returns 0. The test asserts:
@@ -360,7 +360,7 @@ runs, and the spawn slots keep earlier values.
   load, then 3 at `0x27ca84`.
 - `Player_ctor` `0x1a1d28` is called once and returns. It receives slot 0,
   the spawn slot's 12 bytes as its position, and the sign-extended facing
-  halfword ([lines 646–658](../tools/difftest_mission2_r6.py#L646-L658)).
+  halfword ([lines 647–659](../tools/difftest_mission2_r6.py#L647-L659)).
 
 | Seed | Spawn position | Heading |
 |---|---|---|
@@ -376,11 +376,11 @@ the facing draw use `g_randSeed`.
 level's post-action script (its name is level data and is not committed).
 `world_loadRecords` builds 297 objects through the factory, asserted.
 `Player_ctor` is not called, because placement belongs to the caller
-([arrival_load](../tools/difftest_mission2_r6.py#L393-L414)).
+([arrival_load](../tools/difftest_mission2_r6.py#L394-L415)).
 
 ## 5. Track B: each stop past `0x14877c`
 
-[loader_snapshot](../tools/difftest_mission2_r6.py#L262-L284) runs
+[loader_snapshot](../tools/difftest_mission2_r6.py#L263-L285) runs
 `game_loadLevel("innovat1")` to the entry of `light_writeVuConstants`, with
 everything in section 6 supplied. At that point it asserts round 5's counts:
 
@@ -391,10 +391,10 @@ everything in section 6 supplied. At that point it asserts round 5's counts:
 
 The run is copied there.
 
-[loader_chain](../tools/difftest_mission2_r6.py#L317-L345) then installs the
+[loader_chain](../tools/difftest_mission2_r6.py#L318-L346) then installs the
 hardware models one more at a time, in the order of
-[HARDWARE](../tools/difftest_mission2_r6.py#L231-L243). It asserts each stop
-in [HARDWARE_STOPS](../tools/difftest_mission2_r6.py#L288-L301):
+[HARDWARE](../tools/difftest_mission2_r6.py#L232-L244). It asserts each stop
+in [HARDWARE_STOPS](../tools/difftest_mission2_r6.py#L289-L302):
 
 | # | Added | Next stop (Executed) | What it is (Observed) |
 |---|---|---|---|
@@ -415,7 +415,7 @@ The nine VU1 stores in step 1 all come from `0x14877c`–`0x1487c0`. All nine
 addresses, `0x1100ffac` included, are asserted to read back what was stored.
 (Before the audit fix `0x1100ffac`, the single store at `0x1487c0`, was left
 out of that check for no reason.) In every step `vu1_reads` is asserted empty
-([lines 337–344](../tools/difftest_mission2_r6.py#L337-L344)).
+([lines 338–345](../tools/difftest_mission2_r6.py#L338-L345)).
 
 On steps 8 and 9 (**Observed**): `world_prepare` passes `mem_largestFree`'s
 result only to a print (`0x18256c`–`0x18259c`). It then always calls
@@ -427,14 +427,14 @@ to return 0.
 ## 6. What boot and `engine_init` would have supplied
 
 Death-reload's `engine_init` stops at the SIF IOP wait (`0x35574c`), before
-`0x19d6a8`. [supply_engine_state](../tools/difftest_mission2_r6.py#L188-L207)
+`0x19d6a8`. [supply_engine_state](../tools/difftest_mission2_r6.py#L189-L208)
 makes the same stores with the original callees. In
-[ablations](../tools/difftest_mission2_r6.py#L348-L390), each stored word is
+[ablations](../tools/difftest_mission2_r6.py#L349-L391), each stored word is
 removed again from a copy of the full fixture at the snapshot.
 
 | Supplied | How the fixture makes it | Stop when removed (Executed) |
 |---|---|---|
-| static constructors | the 124 entries after the -1 at `0x3e9980`, last first, as runner `0x3ad250` does (`0x3ad2d0`–`0x3ad2ec`); [run_constructors](../tools/difftest_mission2_r6.py#L142-L152) | not ablated in the loader. [armor_probe](../tools/difftest_mission2_r6.py#L668-L685) runs `player_recalcArmor` `0x1b5790` on the round-5 player: without them it calls skill 63's `0x308a7c` with the skill at `0x6e2e08`, whose vtable word is 0, and faults reading `0x70` at `0x308a98`; with them it returns. Both asserted |
+| static constructors | the 124 entries after the -1 at `0x3e9980`, last first, as runner `0x3ad250` does (`0x3ad2d0`–`0x3ad2ec`); [run_constructors](../tools/difftest_mission2_r6.py#L143-L153) | not ablated in the loader. [armor_probe](../tools/difftest_mission2_r6.py#L669-L686) runs `player_recalcArmor` `0x1b5790` on the round-5 player: without them it calls skill 63's `0x308a7c` with the skill at `0x6e2e08`, whose vtable word is 0, and faults reading `0x70` at `0x308a98`; with them it returns. Both asserted |
 | GIF channel `0x8400d0` | `sceDmaGetChan(2)` = `0x1000a000`, the call and store at `0x19bd84`/`0x19bd94` | read address 0 at `0x3501ac`, in the DMA wait called from `sceDmaSend` at `0x350638` (return address `0x350640`) |
 | gfx semaphore `0x6e4060` | CreateSema with max `0x186a0` and count 0, as `0x16c66c`–`0x16c69c` | SignalSema id 0 at `0x352a04`, called at `0x16c454` (return address `0x16c45c`) |
 | texture cache | `texcache_setRange(0x359000, 0xa7000)`, the `engine_init` call at `0x19d6f8` (`0x83d298` = `0x359000` from `0x19d31c`/`0x19d338`); ring word `0x7cfe00` | 2-byte write `0x18` at `0x179b30`, round 4's and death-reload's `texcache_reset` stop, called at `0x17fb04` (return address `0x17fb0c`) |
@@ -446,7 +446,7 @@ removed again from a copy of the full fixture at the snapshot.
 | libc semaphores `0x5075d0`, `0x5075d4` | `0x35c050`, the startup call at `0x35c2a8` | both words removed: WaitSema id 0 at `0x352a24`, called at `0x3b61c8` (return address `0x3b61d0`); **Inferred:** that call is `malloc`'s lock |
 
 Every return address in the last column is asserted
-([EXPECT](../tools/difftest_mission2_r6.py#L65-L86)). Before the audit fix, the vsync
+([EXPECT](../tools/difftest_mission2_r6.py#L87-L108)). Before the audit fix, the vsync
 and libc rows removed only the first word of each pair; both words are now
 removed, and the stops are the same.
 
@@ -532,13 +532,13 @@ steps of the same pass before it do not run:
 - **Stubs (fixture):** `cd_readBlocking`, `mem_allocTagged`, `mem_realloc`,
   `mem_free`, `FlushCache`, `dbg_checkStack` (round 5), `game_clearLevel`,
   `mem_largestFree`, and `mem_dumpHeap`, all listed in
-  [FIXTURE_STUBS](../tools/difftest_mission2_r6.py#L104).
+  [FIXTURE_STUBS](../tools/difftest_mission2_r6.py#L81).
 - **Models (opt-in, labelled):**
   - from death-reload: the boot, INTC, GS, mirror, main-RAM, DMA-idle,
     VPU-stat, and EndOfHeap models;
   - from round 5: the SIF DMA model;
   - this round: VU1 data, tag address, and timer 0
-    ([OPT_INS](../tools/difftest_mission2_r6.py#L98-L103)).
+    ([OPT_INS](../tools/difftest_mission2_r6.py#L75-L80)).
   - The timer count `0x2626` is chosen. Every INTC delivery runs with
     Status 0 under `while_disabled=True`.
 - **Supplied state (fixture):** section 6. The constructors run once at

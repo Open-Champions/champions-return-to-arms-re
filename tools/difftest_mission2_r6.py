@@ -61,6 +61,28 @@ FIND_FILE = 0x1724FC                              # cd_findFile
 ARMOR, SKILL_FRACTION = 0x1B5790, 0x308A7C        # player_recalcArmor, skill 63's getStat0Fraction
 CUT_SCENE = 0x143F1C
 
+
+# Words engine_init and boot would have written. Each entry: label, what is stored.
+GIF_CHANNEL = 0x8400D0             # engine_init -> 0x19bd7c, store at 0x19bd94
+GFX_SEMA = 0x6E4060                # 0x16c4b8 (engine_init 0x19d700), store at 0x16c69c
+VSYNC_SEMAS = (0x8400F0, 0x8400F4)  # engine_init stores at 0x19d2d4, 0x19d348
+INTC_ID = 0x44FD4C                 # AddIntcHandler result, store at 0x19d390
+TEXCACHE_RING = 0x7CFD40           # texcache_init via texcache_setRange (0x19d6f8)
+CAMERA, CAMERA_OBJ = 0x4F8450, 0x86AD68   # game_initCamera 0x1e6b8c, 0x1e6bb0
+LIBC_SEMAS = (0x5075D0, 0x5075D4)  # 0x35c050 (startup 0x35c2a8), stores 0x35c098, 0x35c0a4
+SUPPLIED = ('constructors', 'g_levelName', 'gif-channel', 'gfx-semaphore', 'texcache',
+            'vsync-semaphores', 'intc-handler', 'camera', 'object-factory', 'libc-semaphores')
+OPT_INS = ('install_deci2_kputs', 'install_terminate_thread', 'install_modelled_sif_dma',
+           'install_modelled_boot', 'install_vu1_data_memory', 'install_ram_mirrors',
+           'install_modelled_dma_idle', 'install_modelled_dma_tag_address',
+           'install_modelled_vpu_stat', 'install_modelled_intc(while_disabled=True)',
+           'install_modelled_gs_privileged', 'install_modelled_timer0_count(0x2626)',
+           'install_modelled_end_of_heap', 'install_modelled_main_ram')
+FIXTURE_STUBS = r5.FIXTURE_STUBS + ('game_clearLevel', 'mem_largestFree', 'mem_dumpHeap')
+TIMER_COUNT = 0x2626               # the divisor at 0x19dccc: one frame's count, chosen
+HIGH_HEAP = (0x04000000, 0x08000000)
+LEVEL = b'innovat1'
+
 # Values read once from a --discover run, then asserted.
 EXPECT = {
     # Return address at each ablation's stop: the call that led to it.
@@ -84,27 +106,6 @@ EXPECT = {
     # Every cd_findFile call site reached in the round-6 runs.
     'find-sites': [0x1001D4, 0x173584, 0x1A26DC, 0x1A2780, 0x321F28],
 }
-
-# Words engine_init and boot would have written. Each entry: label, what is stored.
-GIF_CHANNEL = 0x8400D0             # engine_init -> 0x19bd7c, store at 0x19bd94
-GFX_SEMA = 0x6E4060                # 0x16c4b8 (engine_init 0x19d700), store at 0x16c69c
-VSYNC_SEMAS = (0x8400F0, 0x8400F4)  # engine_init stores at 0x19d2d4, 0x19d348
-INTC_ID = 0x44FD4C                 # AddIntcHandler result, store at 0x19d390
-TEXCACHE_RING = 0x7CFD40           # texcache_init via texcache_setRange (0x19d6f8)
-CAMERA, CAMERA_OBJ = 0x4F8450, 0x86AD68   # game_initCamera 0x1e6b8c, 0x1e6bb0
-LIBC_SEMAS = (0x5075D0, 0x5075D4)  # 0x35c050 (startup 0x35c2a8), stores 0x35c098, 0x35c0a4
-SUPPLIED = ('constructors', 'g_levelName', 'gif-channel', 'gfx-semaphore', 'texcache',
-            'vsync-semaphores', 'intc-handler', 'camera', 'object-factory', 'libc-semaphores')
-OPT_INS = ('install_deci2_kputs', 'install_terminate_thread', 'install_modelled_sif_dma',
-           'install_modelled_boot', 'install_vu1_data_memory', 'install_ram_mirrors',
-           'install_modelled_dma_idle', 'install_modelled_dma_tag_address',
-           'install_modelled_vpu_stat', 'install_modelled_intc(while_disabled=True)',
-           'install_modelled_gs_privileged', 'install_modelled_timer0_count(0x2626)',
-           'install_modelled_end_of_heap', 'install_modelled_main_ram')
-FIXTURE_STUBS = r5.FIXTURE_STUBS + ('game_clearLevel', 'mem_largestFree', 'mem_dumpHeap')
-TIMER_COUNT = 0x2626               # the divisor at 0x19dccc: one frame's count, chosen
-HIGH_HEAP = (0x04000000, 0x08000000)
-LEVEL = b'innovat1'
 
 
 class Disc6(Disc):
