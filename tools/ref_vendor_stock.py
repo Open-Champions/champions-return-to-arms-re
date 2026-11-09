@@ -246,9 +246,10 @@ def restock_calls(gold):
 
 
 # ---- Round 3 (2026-11-09): storeLevel progression, failure, shop menu ----
-# hub `start` script offsets 0x29bc-0x2d1c; hub2 `start` 0x028c-0x05ec. The
-# last store pushes getv(currentMission) - 1 (move.alt, const.pri 1, sub.alt,
-# push.pri), not a constant. Mission bytes: bit 0 available, bit 1 complete,
+# hub `start` (PROC 0x2838) stores at 0x29fc..0x2d1c; hub2 `start` (PROC 0x134)
+# at 0x2cc..0x5ec (asserted in difftest_vendor_progress). The last store
+# pushes getv(currentMission) - 1 (move.alt, const.pri 1, sub.alt, push.pri),
+# not a constant. Mission bytes: bit 0 available, bit 1 complete,
 # at the player record +0x4bbf + 13*difficulty_index + mission.
 STORE_LEVEL_LITERAL = {'stobonus': 7, 'islgnome': 3}
 MISSION_AVAILABLE, MISSION_COMPLETE = 1, 2
@@ -259,7 +260,13 @@ def hub_store_level(current_mission, mission_bytes=None):
 
     ``current_mission`` is the quest variable (0 when absent or cleared).
     ``mission_bytes`` maps mission number to the player's mission byte.
+    Executed only for 0..13 (the census stores 1..12); other inputs are refused.
     """
+    if isinstance(current_mission, bool) or not isinstance(current_mission, int) \
+            or not 0 <= current_mission <= 13:
+        raise ValueError("unestablished currentMission")
+    if mission_bytes is not None and not isinstance(mission_bytes, dict):
+        raise ValueError("mission_bytes must be a dict")
     rows = mission_bytes or {}
     if current_mission == 0:
         return 0

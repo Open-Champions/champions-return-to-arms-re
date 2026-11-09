@@ -55,6 +55,21 @@ CURRENT_MISSION = {
 # Opcodes of the non-literal store: stack, move.alt, const.pri 1, sub.alt, push.pri,
 # push.c name, push.c 8, sysreq.c setv.
 EXPRESSION = (0x2C, 0x22, 0x0B, 0x50, 0x24, 0x27, 0x27, 0x7B)
+PROC = [name for name, _kind, _addr in ref_amx.OPCODES].index('PROC')
+# Round 4 (fix of r3): menu sites and addresses the probe now asserts.
+MENU_RESET, BUY_TAIL, HUD_MENU_STATE, TASK_REMOVE = 0x1D1380, 0x1BEC10, 0x1DE0DC, 0x19E664
+ZERO_PAD, NET_FLAG, REGION = 0x86A6B0, 0x402791, 0x41B69C
+OBJECT_PTR, LATCH = 0x43D8, 0x47A
+SALE_STORES = 0x1CE4E0          # first instruction after the latch store, before the msg bytes
+# (gold, bag count, carried weight, outcome): price 59 (value 100), item weight 1.0, capacity 100.0.
+BUY_ROWS = ((1000, 0, 0.0, 'send'), (59, 0, 0.0, 'send'), (58, 0, 0.0, 'gold'),
+            (10, 0, 0.0, 'gold'), (-1, 0, 0.0, 'gold'), (-0x80000000, 0, 0.0, 'gold'),
+            (1000, 63, 0.0, 'send'), (1000, 64, 0.0, 'full'), (1000, 65, 0.0, 'full'),
+            (1000, -1, 0.0, 'send'), (1000, 0, 99.0, 'send'), (1000, 0, 99.5, 'weight'),
+            (1000, 0, 100.0, 'weight'))
+# Mission bytes for the hub matrix: every mission 8/9 pair, plus every mission byte set.
+BYTE_ROWS = tuple(((8, a), (9, b)) for a, b in itertools.product(range(4), range(4))) + (
+    tuple((n, 3) for n in range(13)),)
 
 
 def sha(path):
@@ -129,12 +144,52 @@ def variable_calls(blob, variable):
     return rows
 
 
-def run_start(elf, blob, seed, current=None, missions=(), difficulty=0, row=None):
+def entry_of(blob):
+    """offset -> name of the public entry whose PROC contains that code offset (or None)."""
+    machine = ref_amx.Machine(blob)
+    assert machine.load() == 0
+    procs = sorted(off for off, (opcode, _operand, _end) in machine._decoded.items() if opcode == PROC)
+    publics = {off: name.decode('latin1') for name, off in machine.publics()}
+
+    def lookup(offset):
+        heads = [p for p in procs if p <= offset]
+        return publics.get(heads[-1]) if heads else None
+    return lookup
+
+
+def native_calls(blob, native):
+    """(offset, args) for every sysreq.c of ``native``. args are the pushes before the
+    call in argument order (the argument-size push dropped): ('c', value) for push.c,
+    ('var', address) for push, ('expr', None) for push.pri / push.alt / push.r / push.s."""
+    machine = ref_amx.Machine(blob)
+    assert machine.load() == 0
+    names = [machine.native_name(i).decode('latin1') for i in range(machine.num_natives)]
+    rows, pending = [], []
+    for start in sorted(machine._decoded):
+        opcode, operand, _end = machine._decoded[start]
+        if opcode == 0x7B:
+            if isinstance(operand, int) and 0 <= operand < len(names) and names[operand] == native:
+                rows.append((start, tuple(pending[:-1][::-1])))
+            pending = []
+        elif opcode == 0x27:
+            pending.append(('c', operand))
+        elif opcode == 0x28:
+            pending.append(('var', operand))
+        elif opcode in (0x24, 0x25, 0x26, 0x29):
+            pending.append(('expr', None))
+        else:
+            pending = []
+    return rows
+
+
+def run_start(elf, blob, seed, current=None, missions=(), difficulty=0, row=None, variable=b'storeLevel'):
     """Run a shipped `start` through scr_load / scr_interpret with recorded vars_set calls.
 
     Stubs: difftest_natives.Rig engine services (named there) and its Responder.
     The quest variable table starts zeroed; ``current`` is planted with the
-    original vars_set before the entry runs.
+    original vars_set before the entry runs. Returns (result, readback, stored values,
+    script offsets of the storing sysreq.c). The offset is the machine's cip, which the
+    interpreter writes to the machine structure +0x0c before every native call, minus 8.
     """
     rig = N.Rig(elf)
     rig.checkpoint()
@@ -157,18 +212,21 @@ def run_start(elf, blob, seed, current=None, missions=(), difficulty=0, row=None
         rig.call(N.A['vars_set'], scene.cstring(b'currentMission'), current)
     sets = []
     rig.emu.hook(N.A['vars_set'], lambda e: sets.append(
-        (mem.cstr(e.r[4] & 0xFFFFFFFF, 40).lower(), s32(e.r[5]))))
+        (mem.cstr(e.r[4] & 0xFFFFFFFF, 40).lower(), s32(e.r[5]), mem.s32(rig.base + 0x0C) - 8)))
     result = s32(rig.call(N.A['script_runByName'], scene.cstring(b'start'), max_steps=40000000))
     rig.emu.unhook(N.A['vars_set'])
-    level = s32(rig.call(N.A['vars_get'], scene.cstring(b'storeLevel')))
-    return result, level, [value for name, value in sets if name == 'storelevel']
+    level = s32(rig.call(N.A['vars_get'], scene.cstring(variable)))
+    mine = [(value, cip) for name, value, cip in sets if name == variable.decode().lower()]
+    return result, level, [value for value, _ in mine], [cip for _, cip in mine]
 
 
 def store_level_cases(elf, disc):
     scripts = disc_scripts(disc)
     cases = 0
+    sites = {}
     # Static decode: both hubs, literal order, and the one computed store.
     for name in ('hub', 'hub2'):
+        entry = entry_of(scripts[name])
         rows = [row for row in variable_calls(scripts[name], 'storeLevel') if row[1] == 'setv']
         values = [row[2] for row in rows]
         assert values[:7] == [0, 8, 7, 6, 5, 7, 6] and len(values) == 8, name
@@ -176,8 +234,17 @@ def store_level_cases(elf, disc):
         assert expr[0] == 'expr' and expr[1][-len(EXPRESSION):] == EXPRESSION and expr[2] == (1,), name
         getv = [row for row in variable_calls(scripts[name], 'currentMission') if row[0] < offset]
         assert getv and getv[-1][1] == 'getv' and offset - getv[-1][0] == 0x34, name
-        print('PASS storeLevel %s setv=%s computed@0x%x = getv(currentMission)@0x%x - 1' % (
-            name, ','.join('0x%x' % row[0] for row in rows), offset, getv[-1][0]), flush=True)
+        # Every store and the getv lie inside the PROC of the public entry `start`.
+        assert {entry(row[0]) for row in rows} == {'start'} and entry(getv[-1][0]) == 'start', name
+        sites[name] = {row[0]: row[2] for row in rows}
+        # The mission tests of the mission-7 branch push constants 9, 9 and 8 (argument order).
+        tests = [(native, args) for native in ('getMissionComplete', 'getMissionAvailable')
+                 for off, args in native_calls(scripts[name], native) if entry(off) == 'start']
+        assert sorted(tests) == [('getMissionAvailable', (('c', 8),)), ('getMissionAvailable', (('c', 9),)),
+                                 ('getMissionComplete', (('c', 9),))], (name, tests)
+        print('PASS storeLevel %s setv=%s computed@0x%x = getv(currentMission)@0x%x - 1; all in start; '
+              'start tests %s' % (name, ','.join('0x%x' % row[0] for row in rows), offset, getv[-1][0],
+                                  ' '.join('%s(%d)' % (n, a[0][1]) for n, a in sorted(tests))), flush=True)
         cases += 1
     # Who stores currentMission: one literal per mission level, all in `start`.
     census = {}
@@ -186,36 +253,58 @@ def store_level_cases(elf, disc):
         stores = [(row[2], row[0]) for row in rows if row[1] == 'setv']
         if stores:
             assert len(stores) == 1 and isinstance(stores[0][0], int), name
+            assert entry_of(blob)(stores[0][1]) == 'start', name
             census[name] = stores[0]
         elif rows:
             assert name in ('hub', 'hub2') and all(row[1] == 'getv' for row in rows), name
     assert census == CURRENT_MISSION, census
-    print('PASS currentMission stores=%d missions=%s' % (
+    print('PASS currentMission stores=%d missions=%s, each inside start' % (
         len(census), ','.join(str(n) for n in sorted({v for v, _ in census.values()}))), flush=True)
     cases += 1
-    # Executed: every hub branch, both hubs, both seeds, two difficulty rows.
+    # Executed: each mission level's `start` from zeroed quest variables stores its literal
+    # once, from the census offset.
+    for name, seed in itertools.product(sorted(CURRENT_MISSION), SEEDS):
+        mission, offset = CURRENT_MISSION[name]
+        result, value, stores, offsets = run_start(elf, scripts[name], seed, variable=b'currentMission')
+        assert result == 0 and value == mission and stores == [mission] and offsets == [offset], (
+            name, result, value, stores, offsets)
+        cases += 1
+    print('PASS currentMission executed: %d mission-level starts store their literal once at the '
+          'census offset' % len(CURRENT_MISSION), flush=True)
+    # Executed: every hub branch, both hubs, both seeds; every c with all 17 byte rows.
     for name, seed in itertools.product(('hub', 'hub2'), SEEDS):
-        for current in (None, 0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13):
-            result, level, stores = run_start(elf, scripts[name], seed, current)
-            want = S.hub_store_level(current or 0)
-            assert result == 0 and level == want and stores == [want], (name, current, level)
+        seen = set()
+        for current, bytes_row in itertools.product((None, 0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13), BYTE_ROWS):
+            result, level, stores, offsets = run_start(elf, scripts[name], seed, current, bytes_row)
+            want = S.hub_store_level(current or 0, dict(bytes_row))
+            assert want == S.hub_store_level(current or 0), 'only c = 7 reads mission bytes'
+            assert result == 0 and level == want and stores == [want], (name, current, bytes_row, level)
+            assert len(offsets) == 1 and offsets[0] in sites[name], (name, current, offsets)
+            site = sites[name][offsets[0]]
+            assert site == want if isinstance(site, int) else want == (current or 0) - 1, (name, current)
+            seen.update(offsets)
             cases += 1
         for difficulty, eight, nine in itertools.product((0, 2), range(4), range(4)):
             rows = {8: eight, 9: nine}
-            result, level, stores = run_start(elf, scripts[name], seed, 7, rows.items(), difficulty)
+            result, level, stores, offsets = run_start(elf, scripts[name], seed, 7, rows.items(), difficulty)
             want = S.hub_store_level(7, rows)
             assert result == 0 and level == want and stores == [want], (name, difficulty, rows)
+            assert len(offsets) == 1 and sites[name][offsets[0]] == want, (name, rows, offsets)
+            seen.update(offsets)
             cases += 1
         # Another difficulty row does not count.
-        result, level, _ = run_start(elf, scripts[name], seed, 7, ((9, 3), (8, 3)), 2, row=0)
+        result, level, _, _ = run_start(elf, scripts[name], seed, 7, ((9, 3), (8, 3)), 2, row=0)
         assert result == 0 and level == 5
         cases += 1
+        # All eight store sites run, each from inside `start`.
+        assert seen == set(sites[name]), (name, sorted(seen))
     for name, seed in itertools.product(('stobonus', 'islgnome'), SEEDS):
         for current in (None, 3, 9):
-            result, level, stores = run_start(elf, scripts[name], seed, current)
+            result, level, stores, _ = run_start(elf, scripts[name], seed, current)
             assert result == 0 and level == stores[-1] == S.STORE_LEVEL_LITERAL[name], name
             cases += 1
-    print('PASS storeLevel executed hub/hub2 matrix and stobonus/islgnome literals', flush=True)
+    print('PASS storeLevel executed hub/hub2 matrix (14 c x 17 byte rows, mission-7 x 2 rows), '
+          'all 8 sites per hub run; stobonus/islgnome literals', flush=True)
     return cases
 
 
@@ -255,6 +344,27 @@ def act_cases(elf):
     # Mission levels: blood1 shares act 0 with the hubs; the others are their own act or none.
     assert homes['blood1'] == 0 and homes['innovat1'] == 1 and homes['valor'] == 6
     assert {name for name, home in homes.items() if home == -1} == {'islcave1', 'nitmar1', 'obsfor1', 'water1'}
+    # save_actChanged for every mission level from every current act: a change (and the
+    # act write) only for a listed level entered from another act; -1 is never a change.
+    for name, home in homes.items():
+        e.mem.write(text, name.encode() + b'\0')
+        for current in range(-1, acts):
+            e.mem.w32(ACT, current & 0xFFFFFFFF)
+            changed = e.call(ACT_CHANGED, text)
+            want = int(home not in (-1, current))
+            assert changed == want and e.mem.s32(ACT) == (home if want else current), (name, current, changed)
+            cases += 1
+    # The table entry is a prefix of the name (strncmp over the entry's strlen, 0x217db0/0x217dd4).
+    prefix = {}
+    for name in ('blood1', 'innovat1', 'valor'):
+        for probe, want in ((name + 'zz', homes[name]), (name[:-1], -1)):
+            e.mem.write(text, probe.encode() + b'\0')
+            e.mem.w32(ACT, 0xFFFFFFFF)
+            prefix[probe] = s32(e.call(FIND_ACT, text))
+            assert prefix[probe] == want, (probe, prefix[probe])
+            cases += 1
+    print('PASS actChanged %d names x %d acts; prefix %s' % (
+        len(homes), acts + 1, ' '.join('%s=%d' % row for row in sorted(prefix.items()))), flush=True)
     print('PASS acts=%d hub/hub2 resolve to the current act; mission homes %s; found in another current act %s' % (
         acts, ' '.join('%s=%d' % (n, homes[n]) for n in sorted(homes)),
         ' '.join('%s@%d' % row for row in sorted(local)) or '-'), flush=True)
@@ -343,6 +453,8 @@ def fit_cases(elf):
     """
     tables = I.Tables(elf)
     worst = None
+    stall = None
+    rejected = {'bit40': 0, 'duplicate': 0}
     total = 0
     for level, difficulty in itertools.product(range(12), range(1, 6)):
         for category, budget, cap in first_budgets(level, difficulty):
@@ -350,17 +462,40 @@ def fit_cases(elf):
                 game = I.Game(num_players=1, difficulty=difficulty)
                 rng = I.Rng(seed)
                 misses = run = longest = 0
+                # Non-advancing in the original loop (stock_plan): a failed call, a weapon with
+                # record flag bit 40, or a duplicate while fewer than six retries were spent.
+                # Category 0 scans its own accepted records; residue bytes are packed as zero,
+                # so every equal pair counts (the worst case for advancing). Category 1 scans the
+                # previous third list (other-category definitions), modelled as no duplicate.
+                accepted, retries, still, longest_still = [], 0, 0, 0
                 for _ in range(20):
                     item = I.generate_with_affixes(tables, game, rng, budget, category, -1, cap)
+                    advance = item is not None
                     if item is None:
                         misses += 1
                         run += 1
                         longest = max(longest, run)
                     else:
                         run = 0
-                assert misses < 20, ('no success', level, difficulty, category)
+                        raw = item.pack()
+                        if category == 0 and any(S.same_raw(prev, raw) for prev in accepted) and retries < 6:
+                            retries += 1
+                            advance = False
+                            rejected['duplicate'] += 1
+                        if category == 0 and item.flags & (1 << 40):
+                            advance = False
+                            rejected['bit40'] += 1
+                    if advance:
+                        accepted.append(raw)
+                        retries = still = 0
+                    else:
+                        still += 1
+                        longest_still = max(longest_still, still)
+                assert misses < 20 and len(accepted) > 0, ('no advance', level, difficulty, category)
                 key = (longest, level, difficulty, category, seed)
                 worst = key if worst is None or key > worst else worst
+                key = (longest_still, level, difficulty, category, seed)
+                stall = key if stall is None or key > stall else stall
                 total += 1
     executed = 0
     for (level, difficulty), seed in itertools.product(((0, 1), (11, 5)), SEEDS):
@@ -376,6 +511,9 @@ def fit_cases(elf):
                 executed += 1
     print('PASS fit contexts=%d longest_failure_run=%d at storeLevel=%d difficulty=%d category=%d seed=%d '
           'executed=%d' % ((total,) + worst + (executed,)), flush=True)
+    print('PASS fit longest_non_advancing_run=%d at storeLevel=%d difficulty=%d category=%d seed=%d '
+          'bit40_rejects=%d duplicate_rejects=%d (one player, seeds %s, difficulty 1..5)' % (
+              stall + (rejected['bit40'], rejected['duplicate'], '/'.join(map(str, SEEDS)))), flush=True)
     return total + executed
 
 
@@ -387,10 +525,12 @@ class Shop:
     texture lookup 0x17365c -> a 32x32 header, item value 0x1024a8 -> 100,
     item weight 0x1b6338 -> 1.0, item picture size 0x1083a4 -> one cell; every
     other callee outside MENU_FOLLOW returns 0 and is recorded (drawing, text,
-    sound, network, menu-state message, task registration).
+    sound, network, menu-state message, task registration). The sale cases in
+    menu_cases also stub inventory_isEquipped 0x1c41d8 and hud_confirmBox 0x1dadc0
+    to chosen returns; with region set, game_initCamera runs first (callees stubbed).
     """
 
-    def __init__(self, elf, seed, players=1, list_mask=0x80):
+    def __init__(self, elf, seed, players=1, list_mask=0x80, region=None):
         e = self.e = EE(elf)
         m = self.m = e.mem
         m.auto_map = True
@@ -401,6 +541,11 @@ class Shop:
             m.w32(PLAYERS + slot * REC + 0xE4, 1000)
             m.wf32(PLAYERS + slot * REC + 0x124, 100.0)
         e.follow = set()
+        if region is not None:
+            # game_initCamera 0x1e6b68 with its callees stubbed writes the three masks.
+            m.w8(REGION, region)
+            e.call(0x1E6B68, max_steps=100000)
+            list_mask = None
         e.stub(0x13E150, ret=1)
         e.call(STOCK_FN, 0, 0, 1, max_steps=500000)
         tex = e.alloc(0x40)
@@ -416,7 +561,8 @@ class Shop:
         self.grid = e.alloc(0xBDD8 * 4)
         m.w32(CELLS, self.cells)        # what inventory_pollResources points it at
         m.w32(STOCK_CELLS, self.grid)
-        m.w32(S.LIST_CONFIRM_MASK, list_mask)
+        if list_mask is not None:
+            m.w32(S.LIST_CONFIRM_MASK, list_mask)
         self.definition = e.alloc(0x80)
         m.w8(self.definition + 0x1C, 1)
         for index in range(3):
@@ -438,13 +584,16 @@ class Shop:
         m = self.m
         return (m.s32(base + 0x4C), m.s32(base + 0x18), m.s32(base + 0x14), m.u32(base + 0x3C))
 
-    def tick(self, press=0, held=0, slot=0):
+    def tick(self, press=0, held=0, slot=0, held10=None):
+        """One shop_task call. ``held`` goes to pad +0x8 and, unless ``held10`` is given,
+        also to +0x10."""
         m = self.m
+        held10 = held if held10 is None else held10
         for other in range(4):
             pad = S.PAD + other * S.PAD_STRIDE
             m.w32(pad + 0xC, press if other == slot else 0)
             m.w32(pad + 0x8, held if other == slot else 0)
-            m.w32(pad + 0x10, held if other == slot else 0)
+            m.w32(pad + 0x10, held10 if other == slot else 0)
         self.e.reset_log()
         self.e.call(SHOP_TASK, max_steps=5000000)
         return [c for c in self.e.calls]
@@ -452,13 +601,29 @@ class Shop:
     def targets(self, calls):
         return [c.target for c in calls]
 
-    def move(self, held):
+    def move(self, held, held10=None):
         ticks = 0
         start = self.panel()[1]
         while self.panel()[1] == start and ticks < 40:
-            self.tick(held=held if ticks == 0 else 0)
+            self.tick(held=held if ticks == 0 else 0, held10=(held10 if ticks == 0 else 0)
+                      if held10 is not None else None)
             ticks += 1
         return ticks
+
+
+def buy_outcome(shop, calls):
+    """Classify one list confirm over a stock cell by the calls it made."""
+    names = shop.targets(calls)
+    sites = {(c.target, c.site) for c in calls}
+    if SEND_BUY in names:
+        assert (SOUND, 0x1CE19C) in sites and (BUY_TAIL, 0x1CE1B4) in sites
+        assert names.index(SEND_BUY) < names.index(BUY_TAIL)
+        return 'send'
+    assert BUY_TAIL not in names
+    if POPUP in names:
+        return 'weight' if 0x1B7BA8 in names else 'gold'
+    assert (SOUND, 0x1CE148) in sites, 'a full bag plays the sound at 0x1ce148'
+    return 'full'
 
 
 def menu_cases(elf):
@@ -475,7 +640,9 @@ def menu_cases(elf):
         assert shop.panel() == (3, 0, 0, 0)
         shop.tick(held=0x1000)                       # up at the top row
         assert shop.panel() == (3, 0, 0, 0)
-        shop.tick(held=0x4000)                       # down starts the animation
+        shop.tick(held=0, held10=0x4000)             # down on +0x10 alone: the cursor reads +0x8
+        assert shop.panel() == (3, 0, 0, 0)
+        shop.tick(held=0x4000, held10=0)             # down on +0x8 alone starts the animation
         assert shop.panel() == (3, 0, 1, S.CURSOR_STEP)
         shop.tick(press=confirm)                     # confirm mid-animation is ignored
         assert shop.panel()[0] == 3
@@ -486,34 +653,45 @@ def menu_cases(elf):
         assert ticks == S.CURSOR_TICKS and shop.panel() == (3, 1, 0, 0)
         shop.tick(held=0x4000)                       # down at the last row
         assert shop.panel() == (3, 1, 0, 0)
+        # The analogue bits, each alone on +0x8: 0x100000 up, 0x200000 down.
+        assert shop.move(0x100000, held10=0) == S.CURSOR_TICKS and shop.panel() == (3, 0, 0, 0)
+        shop.tick(held=0x100000, held10=0)
+        assert shop.panel() == (3, 0, 0, 0)
+        assert shop.move(0x200000, held10=0) == S.CURSOR_TICKS and shop.panel() == (3, 1, 0, 0)
+        shop.tick(held=0x200000, held10=0)
+        assert shop.panel() == (3, 1, 0, 0)
         calls = shop.tick(press=confirm)
         assert shop.panel()[0] == S.MENU_SELL and BAGS_VIEW in shop.targets(calls)
+        assert any(c.target == MENU_RESET and c.site == 0x1C6E50 for c in calls)
         bag_view = next(c for c in calls if c.target == BAGS_VIEW)
         assert bag_view.args[:3] == (0, 0, 0) and m.s32(S.PANELS + 0x54) == 1
+        # Saved row sentinel: +0x18 is 1, +0x54 planted 0; cancel restores 0 and its offset.
+        m.w32(S.PANELS + 0x54, 0)
         calls = shop.tick(press=cancel)
-        assert shop.panel()[:2] == (S.MENU_CHOICE, 1)
+        assert shop.panel()[:2] == (S.MENU_CHOICE, 0) and m.s32(S.PANELS + 0x24) == 0
         assert any(c.target == SOUND and c.site == 0x1CDB34 for c in calls)
+        assert shop.move(0x4000) == S.CURSOR_TICKS and shop.panel() == (3, 1, 0, 0)
         assert shop.move(0x1000) == S.CURSOR_TICKS and shop.panel() == (3, 0, 0, 0)
         calls = shop.tick(press=confirm)
         assert shop.panel()[0] == S.MENU_BUY and BAGS_VIEW not in shop.targets(calls)
-        cases += 9
-        # Buy: list confirm mask 0x41b970 over a stock cell.
+        assert any(c.target == MENU_RESET and c.site == 0x1C6D70 for c in calls)
+        cases += 17
+        # Buy: list confirm mask 0x41b970 over a stock cell; boundary rows.
         shop.build(0, 0, 1)
         m.wf32(S.PANELS + 0x44, 48.0)
         m.wf32(S.PANELS + 0x48, 96.0)
+        price = S.buy_price(100, 0, 0, 0)
+        assert price == 59
         outcomes = []
-        for gold, count, carried in ((1000, 0, 0.0), (10, 0, 0.0), (1000, 64, 0.0), (1000, 0, 100.0)):
-            m.w32(PLAYERS + 0xE4, gold)
-            m.w32(PLAYERS + 0x1330, count)
+        for gold, count, carried, expected in BUY_ROWS:
+            m.w32(PLAYERS + 0xE4, gold & 0xFFFFFFFF)
+            m.w32(PLAYERS + 0x1330, count & 0xFFFFFFFF)
             m.wf32(PLAYERS + 0x120, carried)
             calls = shop.tick(press=0x80)
+            got = buy_outcome(shop, calls)
+            want = S.buy_allowed(gold, price, count, I.f_bits(carried), I.F_ONE, I.f_bits(100.0))
+            assert got == want == expected, (gold, count, carried, got, want, expected)
             sent = [c for c in calls if c.target == SEND_BUY]
-            popup = POPUP in shop.targets(calls)
-            want = S.buy_allowed(gold, S.buy_price(100, 0, 0, 0), count, I.f_bits(carried),
-                                 I.F_ONE, I.f_bits(100.0))
-            got = 'send' if sent else 'gold' if popup and 0x1B7BA8 not in shop.targets(calls) \
-                else 'weight' if popup else 'full'
-            assert got == want, (gold, count, carried, got, want)
             if sent:
                 cell = sent[0].args[1] & 0xFFFFFFFF
                 assert sent[0].args[0] == 0 and shop.grid <= cell < shop.grid + 0xBDD8
@@ -521,40 +699,62 @@ def menu_cases(elf):
             assert m.s32(PLAYERS + 0xE4) == gold, 'the sender does not debit'
             outcomes.append(got)
             cases += 1
-        assert outcomes == ['send', 'gold', 'full', 'weight']
+        m.w32(PLAYERS + 0xE4, 1000)
         m.w32(PLAYERS + 0x1330, 0)
         m.wf32(PLAYERS + 0x120, 0.0)
         # Confirm (0x40) is not the list mask: no buy.
         assert SEND_BUY not in shop.targets(shop.tick(press=confirm))
-        # Input lockout swaps in an empty pad: cancel ignored.
+        # Input lockout, state 0: the real pad is ignored and the list reads 0x86a6b0.
         m.w32(LOCKOUT, 60)
         shop.tick(press=cancel)
         assert shop.panel()[0] == S.MENU_BUY
+        m.w32(S.PANELS + 0x18, 0)
+        m.w32(S.PANELS + 0x54, 1)                    # saved row sentinel (+0x18 is 0)
+        m.w32(ZERO_PAD + 0xC, cancel)
+        shop.tick()
+        assert shop.panel()[:2] == (S.MENU_CHOICE, 1) and m.s32(S.PANELS + 0x24) == 39
+        m.w32(ZERO_PAD + 0xC, 0)
         m.w32(LOCKOUT, 0)
-        shop.tick(press=cancel)
+        assert shop.move(0x1000) == S.CURSOR_TICKS and shop.panel() == (3, 0, 0, 0)
+        shop.tick(press=confirm)
+        assert shop.panel()[0] == S.MENU_BUY
+        shop.tick(press=cancel)                      # cancel works again after the lockout
         assert shop.panel()[:2] == (S.MENU_CHOICE, 0)
-        cases += 3
-        # Sell: one item in bag 0, cursor in the bag panel.
+        cases += 4
+        # Sell: one item in bag 0, cursor in the bag panel, a player object at +0x43d8.
         record = PLAYERS + 0x130
         m.w32(record, shop.definition)
         m.w16(record + 4, 1)
         m.w32(PLAYERS + 0x1330, 1)
+        player_object = shop.e.alloc(0x500)
+        m.w32(PLAYERS + OBJECT_PTR, player_object)
+        m.w8(LATCH, 0x5A)                            # absolute 0x47a: must stay untouched
         shop.build(0, 0, 0)
         shop.move(0x4000)
         shop.tick(press=confirm)
         assert shop.panel()[0] == S.MENU_SELL
         m.wf32(BAG_PANEL + 0x44, 16.0)
         m.wf32(BAG_PANEL + 0x48, 96.0)
-        # (unsellable flag, equipped, prompt result) -> sent? 0x1dadc0 returns 0 while open,
-        # 1 for no and 2 for yes; 0x1c41d8 is the equipped-item test.
+        fill = []
+
+        def prefill(emu):
+            # The 13 message bytes at sp+0x10 get 0xa5 before the stores at 0x1ce4fc-0x1ce524.
+            base = (emu.r[29] & 0xFFFFFFFF) + 0x10
+            emu.mem.write(base, b'\xa5' * 13)
+            fill.append(base)
+        shop.e.hook(SALE_STORES, prefill)
+        # (unsellable flag, equipped, prompt result) -> sent? STUBBED inputs: 0x1c41d8
+        # (equipped-item test) returns `equipped`, and 0x1dadc0 (yes/no prompt) returns
+        # `answer` (0 while open, 1 no, 2 yes); neither function runs.
         for flags, equipped, answer, want in ((1 << 38, 0, 0, 'refused'), (0, 1, 0, 'waiting'),
                                               (0, 1, 1, 'declined'), (0, 1, 2, 'sent'), (0, 0, 0, 'sent')):
             m.w64(record + 8, flags)
             shop.build(0, 0, 0)                       # the list shows a copy of the bag record
-            m.w8(0x47A, 0)                            # sent latch of the (null) player object
+            m.w8(player_object + LATCH, 0)
             m.w32(SELL_PENDING, 0)
             m.w32(BLOCK_B, 0)
             m.w32(LIST_STATE, 0)
+            del fill[:]
             shop.e.stub(0x1C41D8, ret=equipped)
             shop.e.stub(CONFIRM_DIALOG, ret=answer)
             calls = shop.tick(press=0x80)
@@ -573,15 +773,26 @@ def menu_cases(elf):
                 assert m.u32(LIST_STATE) == 3
             else:
                 assert len(sent) == 1 and m.u32(SELL_PENDING) == 0 and m.u32(LIST_STATE) == 3
-                assert m.u8(0x47A) == 1 and sent[0].args[2] == 0xD
+                assert m.u8(player_object + LATCH) == 1 and m.u8(LATCH) == 0x5A and sent[0].args[2] == 0xD
                 message = m.read(sent[0].args[1] & 0xFFFFFFFF, 13)
-                assert message[0] == 1 and message[1] == 0 and message[0xC] == 1
+                assert fill == [sent[0].args[1] & 0xFFFFFFFF] and 0xA5 not in message, message.hex()
+                assert message[0] == 1 and message[1] == 0 and message[0xB] == 0 and message[0xC] == 1
+                assert any(c.target == BUY_TAIL and c.site == 0x1CE528 for c in calls)
                 assert NET_SEND not in shop.targets(shop.tick(press=0x80)), 'latch holds a second sale'
             cases += 1
+        shop.e.unhook(SALE_STORES)
         m.w32(SELL_PENDING, 0)
         m.w32(BLOCK_B, 0)
+        # Input lockout, state 1: the real pad is ignored and the list reads 0x86a6b0.
+        m.w32(LOCKOUT, 60)
         shop.tick(press=cancel)
+        assert shop.panel()[0] == S.MENU_SELL
+        m.w32(ZERO_PAD + 0xC, cancel)
+        shop.tick()
         assert shop.panel()[0] == S.MENU_CHOICE
+        m.w32(ZERO_PAD + 0xC, 0)
+        m.w32(LOCKOUT, 0)
+        cases += 2
         # A nonzero panel word at 0x4f4878 or 0x4f4880 blocks the choice cancel.
         for block in (BLOCK_A, BLOCK_B):
             m.w32(block, 1)
@@ -589,16 +800,19 @@ def menu_cases(elf):
             assert shop.panel()[0] == S.MENU_CHOICE
             m.w32(block, 0)
             cases += 1
-        # Cancel at the choice: idle, then one player closes the shop.
-        calls = shop.tick(press=cancel)
+        # Cancel at the choice: state 2 on this tick, the close on the next.
+        names = shop.targets(shop.tick(press=cancel))
+        assert shop.panel()[0] == S.MENU_IDLE and SHOP_CLOSE not in names and HUD_MENU_STATE not in names
+        assert m.u32(SHOP_OPEN) == 1
+        calls = shop.tick()
         names = shop.targets(calls)
-        assert shop.panel()[0] in (S.MENU_IDLE,) or SHOP_CLOSE in names
-        if SHOP_CLOSE not in names:
-            names = shop.targets(shop.tick())
-        assert SHOP_CLOSE in names and 0x19E664 in names
+        menu_state = [c for c in calls if c.target == HUD_MENU_STATE]
+        assert len(menu_state) == 1 and menu_state[0].site == 0x1C7690 and menu_state[0].args[:3] == (0, 0, 0)
+        assert names.index(HUD_MENU_STATE) < names.index(SHOP_CLOSE)
+        assert any(c.target == TASK_REMOVE and (c.args[0] & 0xFFFFFFFF) == SHOP_TASK for c in calls)
         assert m.u32(SHOP_OPEN) == 0 and m.u32(LOCKOUT) == 60 and m.u32(PAUSE) == 0
         assert m.u32(S.SHARED) == seed
-        cases += 1
+        cases += 2
         # Death: shop_task tests HP only on the offline two-player path.
         shop = Shop(elf, seed)
         shop.m.wf32(PLAYERS + 0xAC, 0.0)
@@ -610,30 +824,80 @@ def menu_cases(elf):
         assert SHOP_CLOSE in names and shop.m.u32(SHOP_OPEN) == 0
         cases += 2
         # Two players: the second joins on confirm; the shop closes only when both are idle.
-        shop = Shop(elf, seed, players=2)
+        # The offline two-player tick runs shop_run(1) then shop_run(0) (0x1c61ac, 0x1c61b4),
+        # and a run closes when its own panel starts in state 2 with both panels at 2.
+        for first, last, same_tick in ((0, 1, True), (1, 0, False)):
+            shop = Shop(elf, seed, players=2)
+            m = shop.m
+            calls = shop.tick(press=shop.confirm, slot=1)
+            assert shop.panel(1)[0] == S.MENU_CHOICE and m.s32(S.PANELS + S.PANEL_STRIDE + 0x34) == 1
+            assert any(c.target == GRID for c in calls)
+            names = shop.targets(shop.tick(press=shop.cancel, slot=first))
+            assert shop.panel(first)[0] == S.MENU_IDLE and SHOP_CLOSE not in names
+            assert SHOP_CLOSE not in shop.targets(shop.tick()) and m.u32(SHOP_OPEN) == 1
+            names = shop.targets(shop.tick(press=shop.cancel, slot=last))
+            assert shop.panel(last)[0] == S.MENU_IDLE and (SHOP_CLOSE in names) == same_tick
+            if not same_tick:
+                assert m.u32(SHOP_OPEN) == 1
+                names = shop.targets(shop.tick())
+            assert SHOP_CLOSE in names and HUD_MENU_STATE in names and m.u32(SHOP_OPEN) == 0
+            cases += 2
+        # Sentinel masks: the choice and the lists read 0x41bfbc / 0x41bfb8, not constants.
+        shop = Shop(elf, seed)
         m = shop.m
-        calls = shop.tick(press=shop.confirm, slot=1)
-        assert shop.panel(1)[0] == S.MENU_CHOICE and m.s32(S.PANELS + S.PANEL_STRIDE + 0x34) == 1
-        assert any(c.target == GRID for c in calls)
-        names = shop.targets(shop.tick(press=shop.cancel, slot=0)) + shop.targets(shop.tick())
-        assert shop.panel(0)[0] == S.MENU_IDLE and SHOP_CLOSE not in names
-        names = shop.targets(shop.tick(press=shop.cancel, slot=1)) + shop.targets(shop.tick())
-        assert SHOP_CLOSE in names and m.u32(SHOP_OPEN) == 0
-        cases += 2
-    # Region masks from game_initCamera 0x1e6b68. The shipped .data byte selects region 1.
-    assert EE(elf).mem.u8(0x41B69C) == 1
+        others = (m.u32(S.LIST_CONFIRM_MASK), m.u32(0x41B960), m.u32(0x41B968))
+        new_confirm, new_cancel = 0x10000, 0x20000
+        assert not any(value & (new_confirm | new_cancel) for value in others)
+        m.w32(S.CONFIRM_MASK, new_confirm)
+        m.w32(S.CANCEL_MASK, new_cancel)
+        shop.tick()
+        for press, want in ((0x40, S.MENU_CHOICE), (0x120, S.MENU_CHOICE), (new_confirm, S.MENU_BUY),
+                            (0x120, S.MENU_BUY), (0x40, S.MENU_BUY), (new_cancel, S.MENU_CHOICE),
+                            (0x120, S.MENU_CHOICE), (new_cancel, S.MENU_IDLE)):
+            shop.tick(press=press)
+            assert shop.panel()[0] == want, (hex(press), shop.panel())
+            cases += 1
+        # Region 1 masks from game_initCamera in the same machine: a lone 0x20 cancels.
+        shop = Shop(elf, seed, region=1)
+        m = shop.m
+        assert (shop.confirm, shop.cancel, m.u32(S.LIST_CONFIRM_MASK)) == (0x40, 0x20, 0x80)
+        shop.tick()
+        for press, want in ((0x100, S.MENU_CHOICE), (0x40, S.MENU_BUY), (0x100, S.MENU_BUY),
+                            (0x20, S.MENU_CHOICE), (0x100, S.MENU_CHOICE), (0x20, S.MENU_IDLE)):
+            shop.tick(press=press)
+            assert shop.panel()[0] == want, (hex(press), shop.panel())
+            cases += 1
+        assert SHOP_CLOSE in shop.targets(shop.tick()) and m.u32(SHOP_OPEN) == 0
+        cases += 1
+    # hudmsg_sendMenuState 0x1de0dc run live: offline (0x402791 = 0) it sends nothing; a
+    # net game sends one 4-byte message of type 2 (docs/ui.md:87).
+    e = EE(elf)
+    e.mem.auto_map = True
+    e.follow = set()
+    for net in (0, 1):
+        e.mem.w8(NET_FLAG, net)
+        e.reset_log()
+        e.call(HUD_MENU_STATE, 0, 0, 0, max_steps=10000)
+        sends = [c for c in e.calls if c.target == NET_SEND]
+        assert len(sends) == net
+        if net:
+            assert sends[0].args[2] == 4 and e.mem.read(sends[0].args[1] & 0xFFFFFFFF, 4) == bytes((2, 0, 0, 0))
+    # Region masks from game_initCamera 0x1e6b68, every byte value. The .data byte is 1.
+    assert EE(elf).mem.u8(REGION) == 1
     masks = {}
-    for region in (0, 1, 2):
+    for region in range(256):
         e = EE(elf)
         e.mem.auto_map = True
         e.follow = set()
-        e.mem.w8(0x41B69C, region)
+        e.mem.w8(REGION, region)
         e.call(0x1E6B68, max_steps=100000)
         masks[region] = tuple(e.mem.u32(a) for a in (S.CONFIRM_MASK, S.CANCEL_MASK, S.LIST_CONFIRM_MASK))
-    assert masks == {0: (0x20, 0x140, 0), 1: (0x40, 0x20, 0x80), 2: (0x40, 0x120, 0)}, masks
-    print('PASS menu cases=%d masks region0=%s region1=%s other=%s' % (
-        cases, *(','.join('0x%x' % v for v in masks[r]) for r in (0, 1, 2))), flush=True)
-    return cases + 3
+    static = (0x40, 0x120, 0)
+    assert masks[0] == (0x20, 0x140, 0) and masks[1] == (0x40, 0x20, 0x80), masks
+    assert all(masks[r] == static for r in range(2, 256)), {r: v for r, v in masks.items() if r > 1 and v != static}
+    print('PASS menu cases=%d masks region0=%s region1=%s bytes2..255=%s (static)' % (
+        cases, *(','.join('0x%x' % v for v in row) for row in (masks[0], masks[1], static))), flush=True)
+    return cases + 256 + 2
 
 
 def main():

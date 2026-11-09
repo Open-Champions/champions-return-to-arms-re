@@ -67,5 +67,32 @@ class Round3(unittest.TestCase):
         self.assertEqual(S.buy_allowed(100, 59, 0, ten, one, ten), 'weight')
 
 
+class Round4(unittest.TestCase):
+    # The rows difftest_vendor_progress.BUY_ROWS runs against the original itemList_input.
+    BUY_ROWS = ((1000, 0, 0.0, 'send'), (59, 0, 0.0, 'send'), (58, 0, 0.0, 'gold'),
+                (10, 0, 0.0, 'gold'), (-1, 0, 0.0, 'gold'), (-0x80000000, 0, 0.0, 'gold'),
+                (1000, 63, 0.0, 'send'), (1000, 64, 0.0, 'full'), (1000, 65, 0.0, 'full'),
+                (1000, -1, 0.0, 'send'), (1000, 0, 99.0, 'send'), (1000, 0, 99.5, 'weight'),
+                (1000, 0, 100.0, 'weight'))
+
+    def test_buy_boundaries(self):
+        one, hundred = 0x3F800000, 0x42C80000
+        for gold, count, carried, want in self.BUY_ROWS:
+            carried_bits = S.I.f_bits(carried)
+            self.assertEqual(S.buy_allowed(gold, 59, count, carried_bits, one, hundred), want,
+                             (gold, count, carried))
+
+    def test_hub_store_level_refuses(self):
+        for bad in (-1, 14, 100, None, 7.0, True):
+            with self.assertRaises(ValueError):
+                S.hub_store_level(bad)
+        with self.assertRaises(ValueError):
+            S.hub_store_level(7, [(9, 2)])
+        self.assertEqual(S.hub_store_level(13), 12)
+        self.assertEqual(S.hub_store_level(8, {8: 3, 9: 3}), 6)
+        self.assertEqual(S.hub_store_level(9, {8: 3, 9: 3}), 7)
+        self.assertEqual(S.hub_store_level(3, {n: 3 for n in range(13)}), 2)
+
+
 if __name__ == '__main__':
     unittest.main()
