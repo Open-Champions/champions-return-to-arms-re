@@ -4,7 +4,8 @@
 The menu requests that write wat1 and tormenta stay in difftest_story_beats.py.
 Mission 3's grant, and the hub entries that make mission 4 available, stay in
 difftest_story_mission3.py. This file runs the water and tormenta entries.
-No dialogue text is written.
+No dialogue text is written. Text keys (quest titles and bodies, help ids)
+are read from the script call sites named in KEY_SITES, never written here.
 
   PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; \
   sys.path.insert(0,"tools"); \
@@ -18,7 +19,7 @@ import struct
 import sys
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from ee_emu import EmuError  # noqa: E402
+from ee_emu import EmuError, MemoryFault  # noqa: E402
 from gob import gob_entries, lmp_entries  # noqa: E402
 import difftest_natives as N  # noqa: E402
 import ref_story_route as R  # noqa: E402
@@ -38,6 +39,42 @@ G_PAUSED = 0x41B4F4
 G_GATE = 0x500AE8
 G_CUT = 0x44FCD0
 SHARD_TICKS = 25
+# research-quest-log names.tsv: builtin starts. The next builtin after
+# addParticleOnObject starts at 0x146f58.
+ADD_PARTICLE = 0x146E20
+ADD_PARTICLE_END = 0x146F58
+CHANGE_SWOOP = 0x1438B0
+ACTIVATE_STORE = 0x144010
+SHARD_LEVELS = ('wate2a', 'wate2b', 'wate2c', 'watg2a', 'watg2b', 'watg2c')
+# Script call sites that carry each text key: (level, offset, argument index).
+KEY_SITES = {
+    'good_title': ('wat1', 0x2E0, 0),
+    'good_body': ('wat1', 0x2E0, 1),
+    'evil_title': ('wat1', 0x2A4, 0),
+    'evil_body': ('wat1', 0x2A4, 1),
+    'water1_help_title': ('water1', 0x158, 0),
+    'water1_help_body': ('water1', 0x158, 1),
+    'gol_title': ('tormenta', 0x748, 0),
+    'gol_body': ('tormenta', 0x748, 1),
+    'endtor_title': ('tormenta', 0x1E20, 0),
+    'hub_title': ('hub', 0x2410, 0),
+    'hub_body': ('hub', 0x2410, 1),
+}
+# Per shard level: the shardCheck counter, the variable its playerHasItem
+# return is compared with, the addHelpMessage site, and the watg removeQuest.
+SHARD_VARS = {
+    'wate2a': (0xA0, 0xA4, 0x1474, None),
+    'wate2b': (0x84, 0x88, 0x13FC, None),
+    'wate2c': (0x84, 0x88, 0x13FC, None),
+    'watg2a': (0x80, 0x84, 0xD88, 0xDE8),
+    'watg2b': (0x80, 0x84, 0xD88, 0xDE8),
+    'watg2c': (0x80, 0x84, 0xD88, 0xDE8),
+}
+# Code offset in each level's start that stores into the compared variable.
+SHARD_BASE_STORE = {
+    'wate2a': 0x55C, 'wate2b': 0x4E4, 'wate2c': 0x4E4,
+    'watg2a': 0x398, 'watg2b': 0x398, 'watg2c': 0x398,
+}
 
 
 class Quiet:
@@ -167,6 +204,68 @@ def arg_at(found, site, index):
     raise AssertionError(hex(site))
 
 
+def entry_span(image, entry):
+    parsed = scr.parse(image)
+    entries = sorted(parsed['internals'])
+    start = {name: off for off, name in entries}[entry]
+    later = [off for off, _name in entries if off > start]
+    return start, (min(later) if later else (parsed['code'][1] - parsed['code'][0]))
+
+
+def calls_of(image, entry):
+    start, end = entry_span(image, entry)
+    _publics, found, _pool = calls_in(image)
+    return [(off, name, args) for off, name, args in found if start <= off < end]
+
+
+def var_writes(image, offset):
+    """Code offsets of direct stores to script variable `offset`."""
+    parsed = scr.parse(image)
+    cs, ce = parsed['code']
+    words = struct.unpack_from('<%dI' % ((ce - cs) // 4), image, cs)
+    found, i = [], 0
+    while i < len(words):
+        op = words[i]
+        if op in (0x0F, 0x5B, 0x6D, 0x72) and words[i + 1] == offset:
+            found.append(i * 4)
+        if op == 0x7D:
+            i += 3
+            continue
+        if op == 0x7B:
+            i += 2
+            continue
+        if op in scr.OPS:
+            _text, n = scr.OPS[op]
+            i += 1 + n
+        else:
+            i += 1 if op in scr.NO_OPERAND else 2
+    return found
+
+
+def data_addr(rig, image, offset):
+    """Emulator address of script variable `offset` (data-relative)."""
+    dat, = struct.unpack_from('<i', image, 0x60 + 0x10)
+    return rig.base + 0x60 + dat + offset
+
+
+def text_keys(levels):
+    keys = {}
+    for key, (level, site, index) in KEY_SITES.items():
+        _publics, found, _pool = calls_in(levels[level]['script.scr'])
+        value = arg_at(found, site, index)
+        require(isinstance(value, str) and value, (key, level, hex(site)))
+        keys[key] = value
+    for level in SHARD_LEVELS:
+        _publics, found, _pool = calls_in(levels[level]['script.scr'])
+        help_site = SHARD_VARS[level][2]
+        for index, key in ((0, 'shard_help_title'), (1, 'shard_help_body')):
+            value = arg_at(found, help_site, index)
+            require(keys.setdefault(key, value) == value, (level, key))
+    require(len(set(keys.values())) == len(keys), 'text keys are not distinct')
+    require(len(keys['endtor_title']) == 17, len(keys['endtor_title']))
+    return keys
+
+
 def ident(text):
     if not text or len(text) > 32:
         return ''
@@ -255,9 +354,11 @@ def run_entry(rig, name):
     rig.calls = []
     rig.emu.calls.clear()
     rig.emu.writes.clear()
+    rig.last_error = None
     try:
         return N.s32(rig.call(N.A['script_runByName'], pointer, max_steps=4000000)), ''
     except EmuError as exc:
+        rig.last_error = exc
         return None, str(exc)
 
 
@@ -327,15 +428,25 @@ def cut_calls(name):
     ]
 
 
-SHARD_GRANT_CALLS = [
-    ('inventory_countItemByName', (b'shardofwater', 0)),
-    ('text_lookup', (b'ashard57b1',)),
-    ('text_lookup', (b'youfounf7ae',)),
-    ('hud_showHelpMessage', (0xFFFFFFFF, 0, 0)),
+SHARD_COUNT_CALL = ('inventory_countItemByName', (b'shardofwater', 0))
+COMPLETION_SOUND_CALLS = [
     ('res_find', (b'fx.lmp', b'quest_complete.anm')),
     ('sound_playOnObject', (0, 0, 1065353216)),
     ('sound_setPlaysWhileFrozen', (0,)),
 ]
+
+
+def help_calls(title, body):
+    return [
+        ('text_lookup', (title.encode('latin1'),)),
+        ('text_lookup', (body.encode('latin1'),)),
+        ('hud_showHelpMessage', (0xFFFFFFFF, 0, 0)),
+    ]
+
+
+def shard_grant_calls(keys):
+    return ([SHARD_COUNT_CALL] + help_calls(keys['shard_help_title'], keys['shard_help_body'])
+            + COMPLETION_SOUND_CALLS)
 
 
 def bytes_are(mem, index, values):
@@ -355,11 +466,11 @@ def defer_name(mem):
     return mem.cstr(N.N.G_DEFER_NAMES + half * 64 * 0x50, 32)
 
 
-def check_wat_start(rig, image, seed):
+def check_wat_start(rig, image, seed, keys):
     checks = 0
     for evil, title, body in (
-            (0, 'stopthe5b99', 'plugthe653b'),
-            (1, 'floodth5019', 'penetrataf0d')):
+            (0, keys['good_title'], keys['good_body']),
+            (1, keys['evil_title'], keys['evil_body'])):
         mem = prepare(rig, image, seed, evil=evil)
         plant_mission_vars(rig, mem, (('startedMission4', 1), ('currentMission', 4)))
         require(run_entry(rig, 'start')[0] == 0, 'wat1 start')
@@ -455,7 +566,7 @@ def check_keys_and_travel(rig, levels, seed):
     return checks
 
 
-def check_water1(rig, image, seed):
+def check_water1(rig, image, seed, keys):
     mem = prepare(rig, image, seed)
     plant_mission_vars(rig, mem, (('startedMission4', 1), ('currentMission', 4)))
     require(run_entry(rig, 'start')[0] == 0, 'water1 start')
@@ -478,135 +589,186 @@ def check_water1(rig, image, seed):
     require(mem.u32(PLAYERS + QUEST_COUNT) == 0, 'water1 quest edited')
     require(mem.read(PLAYERS + QUEST, 0x40) == bytes([FILL]) * 0x40, 'water1 quest bytes')
     # text_lookup returns 0, so the help callee receives empty text ids.
-    require(rig.calls == [
-        ('text_lookup', (b'youcomp1861',)),
-        ('text_lookup', (b'goodfor8172',)),
-        ('hud_showHelpMessage', (0xFFFFFFFF, 0, 0)),
-    ], rig.calls)
+    require(rig.calls == help_calls(keys['water1_help_title'], keys['water1_help_body']), rig.calls)
     require('inventory_findItemBySubstring' not in stubs(rig), stubs(rig))
     require(mem.u32(N.N.G_RAND_SEED) == seed, 'seed')
     return 3
 
 
-def shard_ticks(rig, mem, count, shells, paused=0):
+def shard_ticks(rig, mem, count, shells, paused=0, each=None):
     rig.responder.shells = shells
     mem.w32(G_PAUSED, paused)
     last = None
-    for _ in range(count):
+    for n in range(count):
         clear_defer(mem)
         last = run_entry(rig, 'shardCheck')
+        if each is not None:
+            each(n + 1)
     return last
 
 
-def check_shards(rig, levels, seed):
+def check_shard_static(levels, level, keys):
+    image = levels[level]['script.scr']
+    _counter, compared, help_site, remove_site = SHARD_VARS[level]
+    calls = calls_of(image, 'shardCheck')
+    sites = {off: (name, args) for off, name, args in calls}
+    require(sites[help_site][0] == 'addHelpMessage', (level, sites.get(help_site)))
+    removes = [off for off, name, _args in calls if name == 'removeQuest']
+    # wate2 shardCheck has no removeQuest call site. watg has one, whose
+    # argument is the not-evil wat1 quest title.
+    require(removes == ([remove_site] if remove_site else []), (level, removes))
+    if remove_site:
+        require(sites[remove_site][1][0] == keys['good_title'], level)
+    # The compared variable has one direct store in the whole image: in
+    # start, 0x10 after that entry's playerHasItem call.
+    store = SHARD_BASE_STORE[level]
+    require(var_writes(image, compared) == [store], (level, var_writes(image, compared)))
+    start, end = entry_span(image, 'start')
+    require(start <= store < end, level)
+    require(any(off == store - 0x10 and name == 'playerHasItem'
+                for off, name, _args in calls_of(image, 'start')), (level, 'base store'))
+    want = struct.unpack_from('<i', image, 0x60 + struct.unpack_from('<i', image, 0x70)[0] + compared)[0]
+    require(want == 0, (level, want))
+
+
+def check_shards(rig, levels, seed, keys):
     checks = 0
     done = R.complete_byte(SENTINEL, -1)
     offered = R.complete_byte(R.available_byte(SENTINEL, 1), -1)
     require(done == 0xA2 and offered == 0xA3, (hex(done), hex(offered)))
-    # wate2 removes nothing in shardCheck. watg removes the plug quest.
     # Script offset of the `A == 25` compare inside shardCheck.
     compares = {
         'wate2a': 0x13EC, 'wate2b': 0x1374, 'wate2c': 0x1374,
         'watg2a': 0xD00, 'watg2b': 0xD00, 'watg2c': 0xD00,
     }
-    jobs = (
-        ('wate2a', None, True),
-        ('wate2b', None, False),
-        ('wate2c', None, False),
-        ('watg2a', 'stopthe5b99', False),
-        ('watg2b', 'stopthe5b99', False),
-        ('watg2c', 'stopthe5b99', False),
-    )
-    for level, title, offer in jobs:
+    grant_calls = shard_grant_calls(keys)
+    for level in SHARD_LEVELS:
         image = levels[level]['script.scr']
+        counter, compared, _help, remove_site = SHARD_VARS[level]
         require(compare_imm(image, 'shardCheck', SHARD_TICKS) == compares[level],
                 (level, compare_imm(image, 'shardCheck', SHARD_TICKS)))
-        mem = prepare(rig, image, seed, shells=0)
-        require(rig.image_pause == (0, 0, 0), rig.image_pause)
-        if offer:
-            mem.w8(PLAYERS + MISSION + 4, R.available_byte(SENTINEL, 1))
-        if title:
+        check_shard_static(levels, level, keys)
+        checks += 1
+        # The quest wat1 start adds on the route into this level.
+        title = keys['good_title'] if remove_site else keys['evil_title']
+
+        def fresh(shells, offer=False, base=None):
+            mem = prepare(rig, image, seed, shells=shells)
+            require(rig.image_pause == (0, 0, 0), rig.image_pause)
+            if offer:
+                mem.w8(PLAYERS + MISSION + 4, R.available_byte(SENTINEL, 1))
+            if base is not None:
+                mem.w32(data_addr(rig, image, compared), base & 0xFFFFFFFF)
             plant_quest(rig, title, 'plant-body')
             require(mem.cstr(PLAYERS + QUEST, 32) == title, level)
-        plant_var(rig, 'wat_gotShard', 0x5A)
-        shard_ticks(rig, mem, SHARD_TICKS - 1, 0)
-        require(bytes_are(mem, 4, (R.available_byte(SENTINEL, 1) if offer else SENTINEL,
-                                   SENTINEL, SENTINEL, SENTINEL)),
-                (level, 'early grant'))
-        require(dict(variables(mem))['wat_gotshard'] == 0x5A, (level, 'early shard'))
-        if title:
-            require(mem.cstr(PLAYERS + QUEST, 32) == title, (level, 'early remove'))
-        require(defer_name(mem) == 'shardCheck', (level, defer_name(mem)))
-        require(stubs(rig) == [], stubs(rig))
+            plant_var(rig, 'wat_gotShard', 0x5A)
+            return mem
+
+        def held(mem, n, offer=False):
+            first = R.available_byte(SENTINEL, 1) if offer else SENTINEL
+            require(bytes_are(mem, 4, (first, SENTINEL, SENTINEL, SENTINEL)), (level, n, 'grant'))
+            require(others_clear(mem, 4), (level, n))
+            require(dict(variables(mem))['wat_gotshard'] == 0x5A, (level, n, 'shard'))
+            require(mem.u32(PLAYERS + QUEST_COUNT) == 1, (level, n, 'count'))
+            require(mem.cstr(PLAYERS + QUEST, 32) == title, (level, n, 'removed'))
+            require(defer_name(mem) == 'shardCheck', (level, n, defer_name(mem)))
+
+        for shells in (0, 1, 2):
+            mem = fresh(shells)
+            cmp_addr = data_addr(rig, image, compared)
+            ctr_addr = data_addr(rig, image, counter)
+            require(mem.s32(cmp_addr) == 0, (level, 'compared'))
+
+            def early(n):
+                # Calls 1-24 at this stub value: no stub call, no grant.
+                require(rig.calls == [], (level, shells, n, rig.calls))
+                held(mem, n)
+                require(mem.s32(ctr_addr) == n, (level, n, mem.s32(ctr_addr)))
+                require(not any(w[1] == cmp_addr for w in rig.emu.writes), (level, n))
+            shard_ticks(rig, mem, SHARD_TICKS - 1, shells, each=early)
+            shard_ticks(rig, mem, 1, shells)
+            require(mem.s32(cmp_addr) == 0 and not any(w[1] == cmp_addr for w in rig.emu.writes),
+                    (level, 'compared written'))
+            require(mem.s32(ctr_addr) == 0, (level, 'counter reset', mem.s32(ctr_addr)))
+            if shells == 0:
+                require(rig.calls == [SHARD_COUNT_CALL], (level, rig.calls))
+                held(mem, SHARD_TICKS)
+            else:
+                require(bytes_are(mem, 4, (done,) * 4), (level, shells, 'grant'))
+                require(others_clear(mem, 4), level + ' next mission')
+                require_stored(rig, mem, 'wat_gotshard', 1)
+                # Count stub of shardofwater for player 0. text_lookup returns 0.
+                # res_find returns 0, so the sound callee receives resource 0.
+                # No player object, so onePlayerHasItem does not call the finder.
+                require(rig.calls == grant_calls, rig.calls)
+                require(defer_name(mem) == '', (level, 'queued on the grant'))
+                if remove_site:
+                    require(mem.u32(PLAYERS + QUEST_COUNT) == 0, (level, 'quest stayed'))
+                    require(mem.cstr(PLAYERS + QUEST, 32) == 'NoQuests', level)
+                else:
+                    # SR6-1: the granting call keeps the evil quest on wate2.
+                    require(mem.u32(PLAYERS + QUEST_COUNT) == 1, (level, 'quest removed'))
+                    require(mem.cstr(PLAYERS + QUEST, 32) == title, (level, 'slot'))
+            require(mem.u32(N.N.G_RAND_SEED) == seed, level)
+            checks += 1
+        mem = fresh(1, offer=True)
+        shard_ticks(rig, mem, SHARD_TICKS - 1, 1, each=lambda n: held(mem, n, offer=True))
         shard_ticks(rig, mem, 1, 1)
-        want0 = offered if offer else done
-        require(bytes_are(mem, 4, (want0, done, done, done)), (level, [hex(mission(mem, s, 4)) for s in range(4)]))
-        require(others_clear(mem, 4), level + ' next mission')
-        require_stored(rig, mem, 'wat_gotshard', 1)
-        # Count stub of shardofwater for player 0. text_lookup returns 0.
-        # res_find returns 0, so the sound callee receives resource 0.
-        # No player object, so onePlayerHasItem does not call the finder.
-        require(rig.calls == SHARD_GRANT_CALLS, rig.calls)
-        require('inventory_findItemBySubstring' not in stubs(rig), stubs(rig))
-        require(defer_name(mem) == '', (level, 'queued on the grant'))
-        if title:
-            require(mem.u32(PLAYERS + QUEST_COUNT) == 0, (level, 'quest stayed'))
-            require(mem.cstr(PLAYERS + QUEST, 32) == 'NoQuests', level)
-        require(mem.u32(N.N.G_RAND_SEED) == seed, level)
+        require(bytes_are(mem, 4, (offered, done, done, done)), (level, 'offered'))
         checks += 1
-    image = levels['wate2a']['script.scr']
-    mem = prepare(rig, image, seed)
-    plant_quest(rig, 'floodth5019', 'plant-body')
-    plant_var(rig, 'wat_gotShard', 0x5A)
-    shard_ticks(rig, mem, SHARD_TICKS, 0)
-    require(bytes_are(mem, 4, (SENTINEL, SENTINEL, SENTINEL, SENTINEL)), 'no item, no grant')
-    require(rig.calls == [('inventory_countItemByName', (b'shardofwater', 0))], rig.calls)
-    require(mem.u32(PLAYERS + QUEST_COUNT) == 1, 'wate2 removed the flood quest')
-    require(mem.cstr(PLAYERS + QUEST, 32) == 'floodth5019', 'flood title')
-    require(dict(variables(mem))['wat_gotshard'] == 0x5A, variables(mem))
-    checks += 1
-    mem = prepare(rig, image, seed)
-    plant_var(rig, 'wat_gotShard', 0x5A)
-    shard_ticks(rig, mem, SHARD_TICKS - 1, 0, paused=0)
-    shard_ticks(rig, mem, 1, 1, paused=1)
-    require(bytes_are(mem, 4, (SENTINEL, SENTINEL, SENTINEL, SENTINEL)), 'paused tick granted')
-    require(dict(variables(mem))['wat_gotshard'] == 0x5A, 'paused store')
-    require(stubs(rig) == [], stubs(rig))
-    shard_ticks(rig, mem, 1, 1, paused=0)
-    require(bytes_are(mem, 4, (done, done, done, done)), 'tick after the paused one')
-    require_stored(rig, mem, 'wat_gotshard', 1)
-    checks += 1
-    # The same 25th call grants when the stub returns 2. Local 0xa4 stays 0,
-    # and the script grants when that local is below the stub's sum.
-    mem = prepare(rig, image, seed, shells=2)
-    plant_var(rig, 'wat_gotShard', 0x5A)
-    shard_ticks(rig, mem, SHARD_TICKS, 2)
-    require(bytes_are(mem, 4, (done, done, done, done)), 'count 2 grants')
-    require_stored(rig, mem, 'wat_gotshard', 1)
-    require(rig.calls == SHARD_GRANT_CALLS, rig.calls)
-    checks += 1
+        mem = fresh(1)
+        shard_ticks(rig, mem, SHARD_TICKS - 1, 0)
+
+        def paused(n):
+            require(rig.calls == [], (level, 'paused', n, rig.calls))
+            held(mem, SHARD_TICKS - 1)
+            require(mem.s32(data_addr(rig, image, counter)) == SHARD_TICKS - 1, (level, 'paused count'))
+        shard_ticks(rig, mem, 5, 1, paused=1, each=paused)
+        shard_ticks(rig, mem, 1, 1, paused=0)
+        require(bytes_are(mem, 4, (done,) * 4), (level, 'tick after the paused ones'))
+        require_stored(rig, mem, 'wat_gotshard', 1)
+        require(rig.calls == grant_calls, rig.calls)
+        checks += 1
+        # The 25th call grants only when the count stub exceeds the compared
+        # variable. Planted values stand in for the start store.
+        for base, shells, grants in ((1, 1, False), (1, 2, True), (-1, 0, True)):
+            mem = fresh(shells, base=base)
+            shard_ticks(rig, mem, SHARD_TICKS, shells)
+            require(bytes_are(mem, 4, ((done,) * 4) if grants else ((SENTINEL,) * 4)),
+                    (level, base, shells))
+            require(rig.calls == (grant_calls if grants else [SHARD_COUNT_CALL]), (level, base, rig.calls))
+            checks += 1
     return checks
 
 
-def check_wall_and_hole(rig, levels, seed):
+def check_wall_and_hole(rig, levels, seed, keys):
     checks = 0
     for level in ('wate2a', 'wate2b', 'wate2c'):
         mem = prepare(rig, levels[level]['script.scr'], seed)
-        plant_quest(rig, 'floodth5019', 'plant-body')
+        plant_quest(rig, keys['evil_title'], 'plant-body')
         ret, err = run_entry(rig, 'brokeFinalWall')
-        require(ret is None and '00146ecc' in err, (level, ret, err))
+        exc = rig.last_error
+        require(ret is None and isinstance(exc, MemoryFault), (level, ret, err))
+        # A 4-byte read of address 0x10 at pc 0x146ecc, inside
+        # addParticleOnObject: that builtin was entered, the pc lies before
+        # the next builtin, and the return address of its last callee does too.
+        require((exc.pc, exc.addr, exc.size, exc.kind) == (0x146ECC, 0x10, 4, 'read'),
+                (level, hex(exc.pc), hex(exc.addr), exc.size, exc.kind))
+        require(ADD_PARTICLE <= exc.pc < ADD_PARTICLE_END, hex(exc.pc))
+        require(ADD_PARTICLE <= (rig.emu.r[31] & 0xFFFFFFFF) < ADD_PARTICLE_END, hex(rig.emu.r[31]))
+        require(ADD_PARTICLE in [c.target for c in rig.emu.calls], level)
         require(bytes_are(mem, 4, (SENTINEL, SENTINEL, SENTINEL, SENTINEL)), level)
         require(mem.u32(PLAYERS + QUEST_COUNT) == 1, level + ' removed the quest')
         require(defer_name(mem) == 'particleLoop', (level, defer_name(mem)))
         checks += 1
     for level in ('watg2a', 'watg2b', 'watg2c'):
         mem = prepare(rig, levels[level]['script.scr'], seed)
-        plant_quest(rig, 'stopthe5b99', 'plant-body')
+        plant_quest(rig, keys['good_title'], 'plant-body')
         require(run_entry(rig, 'holeCheck')[0] == 0, level)
         require(bytes_are(mem, 4, (SENTINEL, SENTINEL, SENTINEL, SENTINEL)), level)
         require(missions_held(mem), level)
         require(mem.u32(PLAYERS + QUEST_COUNT) == 1, level)
-        require(mem.cstr(PLAYERS + QUEST, 32) == 'stopthe5b99', level)
+        require(mem.cstr(PLAYERS + QUEST, 32) == keys['good_title'], level)
         require(mem.u8(N.N.G_POST_ACTION) == 0, level)
         require_stored(rig, mem, 'wat_complete', 0)
         require('hud_showHelpMessage' not in stubs(rig), stubs(rig))
@@ -744,39 +906,52 @@ def check_tor_cuts_and_dialog(rig, image, seed, found):
     return checks
 
 
-def check_endtor(rig, image, seed, found):
-    title = arg_at(found, 0x1E20, 0)
-    require(isinstance(title, str) and len(title) == 17, len(title) if isinstance(title, str) else title)
+def check_endtor(rig, image, seed, keys):
+    title = keys['endtor_title']
+    gol = keys['gol_title']
+    # The removed title is not the setv2725 (gol) title.
+    require(title != gol and len(title) == 17 and title != 'NoQuests', len(title))
     done = R.complete_byte(SENTINEL, -1)
     require(done == 0xA2, hex(done))
-    mem = prepare(rig, image, seed)
-    require(run_entry(rig, 'endtor')[0] == 0, 'endtor')
-    require(bytes_are(mem, 5, (done, done, done, done)), 'grant')
-    require(others_clear(mem, 5), 'endtor opened another mission')
-    require_stored(rig, mem, 'tor_finishedmission', 1)
-    require(mem.u32(PLAYERS + QUEST_COUNT) == 0, 'count')
-    require(mem.read(PLAYERS + QUEST, 0x40) == bytes([FILL]) * 0x40, 'empty slot changed')
-    require(rig.calls == [
-        ('res_find', (b'fx.lmp', b'quest_complete.anm')),
-        ('sound_playOnObject', (0, 0, 1065353216)),
-        ('sound_setPlaysWhileFrozen', (0,)),
-    ], rig.calls)
-    require(mem.u32(N.N.G_RAND_SEED) == seed, 'seed')
-    mem = prepare(rig, image, seed)
-    plant_quest(rig, title, 'plant-body')
-    require(mem.cstr(PLAYERS + QUEST, 32) == title, 'planted title')
-    require(title != 'NoQuests', title)
-    require(run_entry(rig, 'callScri8c36')[0] == 0, 'dialog action')
-    require(bytes_are(mem, 5, (done, done, done, done)), 'action grant')
-    require(mem.u32(PLAYERS + QUEST_COUNT) == 0, 'quest count')
-    require(rig.calls == [
-        ('res_find', (b'fx.lmp', b'quest_complete.anm')),
-        ('sound_playOnObject', (0, 0, 1065353216)),
-        ('sound_setPlaysWhileFrozen', (0,)),
-    ], rig.calls)
-    # Removing the last entry leaves the placeholder the quest log already
-    # documents. The 17-character title is not still in the slot.
-    require(mem.cstr(PLAYERS + QUEST, 32) == 'NoQuests', 'placeholder')
+    # callScri8c36's only call is callScript of endtor.
+    calls = calls_of(image, 'callScri8c36')
+    require([(name, args) for _off, name, args in calls] == [('callScript', ('endtor',))], calls)
+    removes = [off for off, name, _args in calls_of(image, 'endtor') if name == 'removeQuest']
+    require(removes == [0x1E20], [hex(off) for off in removes])
+    checks = 0
+    for entry in ('endtor', 'callScri8c36'):
+        mem = prepare(rig, image, seed)
+        require(run_entry(rig, entry)[0] == 0, entry)
+        require(bytes_are(mem, 5, (done, done, done, done)), (entry, 'grant'))
+        require(others_clear(mem, 5), (entry, 'opened another mission'))
+        require_stored(rig, mem, 'tor_finishedmission', 1)
+        require(mem.u32(PLAYERS + QUEST_COUNT) == 0, (entry, 'count'))
+        require(mem.read(PLAYERS + QUEST, 0x40) == bytes([FILL]) * 0x40, (entry, 'empty slot changed'))
+        require(rig.calls == COMPLETION_SOUND_CALLS, rig.calls)
+        require(mem.u32(N.N.G_RAND_SEED) == seed, (entry, 'seed'))
+        mem = prepare(rig, image, seed)
+        plant_quest(rig, title, 'plant-body')
+        require(mem.cstr(PLAYERS + QUEST, 32) == title, 'planted title')
+        require(run_entry(rig, entry)[0] == 0, entry)
+        require(bytes_are(mem, 5, (done, done, done, done)), (entry, 'planted grant'))
+        require(others_clear(mem, 5), (entry, 'planted others'))
+        require_stored(rig, mem, 'tor_finishedmission', 1)
+        require(mem.u32(PLAYERS + QUEST_COUNT) == 0, (entry, 'quest count'))
+        require(rig.calls == COMPLETION_SOUND_CALLS, rig.calls)
+        # Removing the last entry leaves the placeholder the quest log already
+        # documents. The 17-character title is not still in the slot.
+        require(mem.cstr(PLAYERS + QUEST, 32) == 'NoQuests', (entry, 'placeholder'))
+        # The gol quest is not removed, alone or with the 17-character one in
+        # either order.
+        for plants in ((gol,), (gol, title), (title, gol)):
+            mem = prepare(rig, image, seed)
+            for planted in plants:
+                plant_quest(rig, planted, 'plant-body')
+            require(run_entry(rig, entry)[0] == 0, (entry, 'gol'))
+            require(bytes_are(mem, 5, (done, done, done, done)), (entry, 'gol grant'))
+            require(mem.u32(PLAYERS + QUEST_COUNT) == 1, (entry, len(plants), 'gol count'))
+            require(mem.cstr(PLAYERS + QUEST, 32) == gol, (entry, len(plants), 'gol kept'))
+        checks += 3
     mem = prepare(rig, image, seed)
     plant_var(rig, 'tor_finishedMission', 1)
     plant_quest(rig, title, 'plant-body')
@@ -784,7 +959,7 @@ def check_endtor(rig, image, seed, found):
     require(bytes_are(mem, 5, (SENTINEL, SENTINEL, SENTINEL, SENTINEL)), 'second grant')
     require(mem.u32(PLAYERS + QUEST_COUNT) == 1, 'second remove')
     require(stubs(rig) == [], stubs(rig))
-    return 4
+    return checks + 1
 
 
 def check_tor_travel(rig, levels, seed):
@@ -814,7 +989,24 @@ def check_tor_travel(rig, levels, seed):
     return checks
 
 
-def check_next_mission(rig, levels, seed):
+def check_store_calls(rig, image, entry, opens):
+    """changeSwoop(0) then activateStore, by call site and by executed builtin."""
+    names = [(name, args) for _off, name, args in calls_of(image, entry)
+             if name in ('changeSwoop', 'activateStore')]
+    targets = [c.target for c in rig.emu.calls]
+    if opens:
+        require([name for name, _args in names] == ['changeSwoop', 'activateStore'], (entry, names))
+        require(names[0][1] == (0,), (entry, names[0]))
+        require(targets.count(CHANGE_SWOOP) == 1 and targets.count(ACTIVATE_STORE) == 1, entry)
+        require(targets.index(CHANGE_SWOOP) < targets.index(ACTIVATE_STORE), entry)
+        require(stubs(rig) == ['dialog_isOpen', 'shop_openOrStock'], (entry, stubs(rig)))
+    else:
+        require(names == [], (entry, names))
+        require(CHANGE_SWOOP not in targets and ACTIVATE_STORE not in targets, entry)
+        require(stubs(rig) == [], (entry, stubs(rig)))
+
+
+def check_next_mission(rig, levels, seed, keys):
     store = {'setMissibbbb', 'setMissi9389', 'setMissi4082', 'setMissi6d46'}
     quest = {'setMissicaba', 'setMissi6d46'}
     mission_of = {
@@ -823,13 +1015,10 @@ def check_next_mission(rig, levels, seed):
     }
     checks = 0
     image = levels['hub']['script.scr']
-    _publics, found, _pool = calls_in(image)
-    title = body = None
-    for off, name, args in found:
-        if name == 'addQuest' and args and args[0] == 'destroy8fcc':
-            title, body = args[0], args[1]
-            break
-    require(title == 'destroy8fcc' and body == 'traveltc3c3', (title, body))
+    title, body = keys['hub_title'], keys['hub_body']
+    for entry in sorted(quest):
+        adds = [args for _off, name, args in calls_of(image, entry) if name == 'addQuest']
+        require(adds == [(title, body)], (entry, len(adds)))
     for entry, index in mission_of.items():
         mem = prepare(rig, image, seed)
         require(run_entry(rig, entry)[0] == 0, entry)
@@ -844,10 +1033,7 @@ def check_next_mission(rig, levels, seed):
         else:
             require(mem.u32(PLAYERS + QUEST_COUNT) == 0, entry)
             require(mem.read(PLAYERS + QUEST, 0x40) == bytes([FILL]) * 0x40, entry)
-        if entry in store:
-            require(stubs(rig) == ['dialog_isOpen', 'shop_openOrStock'], (entry, stubs(rig)))
-        else:
-            require(stubs(rig) == [], (entry, stubs(rig)))
+        check_store_calls(rig, image, entry, entry in store)
         require(mem.cstr(N.N.G_PENDING_LEVEL, 32) == 'PENDING-SENTINEL', entry)
         checks += 1
     hub2_store = {'setMissibbbb', 'setMissi9389', 'setMissi4082', 'setMissic3ab'}
@@ -865,10 +1051,7 @@ def check_next_mission(rig, levels, seed):
                     or slot != 0), entry)
         require(mem.u32(PLAYERS + QUEST_COUNT) == 0, 'hub2 quest ' + entry)
         require(mem.read(PLAYERS + QUEST, 0x40) == bytes([FILL]) * 0x40, entry)
-        if entry in hub2_store:
-            require(stubs(rig) == ['dialog_isOpen', 'shop_openOrStock'], (entry, stubs(rig)))
-        else:
-            require(stubs(rig) == [], (entry, stubs(rig)))
+        check_store_calls(rig, image, entry, entry in hub2_store)
         checks += 1
     return checks
 
@@ -909,8 +1092,9 @@ def check_links(levels):
     require(gol[2] == ('', [('', 'setv2725', -1)]), gol[2])
     require(gol[3] == ('ifa33a', [('', '', -1)]), gol[3])
     require(gol[4] == ('if5184', [('', '', 5)]), gol[4])
-    require(gol[5][0] == 'if799d' and gol[6][0] == 'if799d' and gol[7][0] == 'if799d', gol[5:8])
-    require(gol[7][1] == [('', '', 8)], gol[7])
+    require(gol[5] == ('if799d', [('', '', 6)]), gol[5])
+    require(gol[6] == ('if799d', [('', '', 7)]), gol[6])
+    require(gol[7] == ('if799d', [('', '', 8)]), gol[7])
     require(gol[8] == ('if4fec', [('', 'callScri8c36', -1)]), gol[8])
     firiona = dbin_rows(levels['hub']['firiona.dbin'])
     bak = dbin_rows(levels['hub']['firiona_bak.dbin'])
@@ -940,7 +1124,12 @@ def check_sites(levels):
         ('tormenta', 0xD34, 'setMissionAvailable', (5, 1)),
         ('tormenta', 0xDC8, 'postAction', ('absorb',)),
         ('tormenta', 0x1D8C, 'grantMission', (5,)),
-        ('tormenta', 0x748, 'addQuest', ('findthe85aa', 'findtheaf23')),
+        ('tormenta', 0x748, 'addQuest', ()),
+        ('tormenta', 0x1E20, 'removeQuest', ()),
+        ('wat1', 0x2A4, 'addQuest', ()),
+        ('wat1', 0x2E0, 'addQuest', ()),
+        ('water1', 0x158, 'addHelpMessage', ()),
+        ('hub', 0x2410, 'addQuest', ()),
     )
     checks = 0
     for level, off, native, args in expect:
@@ -953,19 +1142,20 @@ def check_sites(levels):
 
 
 def check_seed(rig, levels, seed):
+    keys = text_keys(levels)
     checks = check_sites(levels)
     checks += check_links(levels)
-    checks += check_wat_start(rig, levels['wat1']['script.scr'], seed)
+    checks += check_wat_start(rig, levels['wat1']['script.scr'], seed, keys)
     checks += check_keys_and_travel(rig, levels, seed)
-    checks += check_water1(rig, levels['water1']['script.scr'], seed)
-    checks += check_shards(rig, levels, seed)
-    checks += check_wall_and_hole(rig, levels, seed)
+    checks += check_water1(rig, levels['water1']['script.scr'], seed, keys)
+    checks += check_shards(rig, levels, seed, keys)
+    checks += check_wall_and_hole(rig, levels, seed, keys)
     _publics, found, _pool = calls_in(levels['tormenta']['script.scr'])
     checks += check_tor_start(rig, levels['tormenta']['script.scr'], seed)
     checks += check_tor_cuts_and_dialog(rig, levels['tormenta']['script.scr'], seed, found)
-    checks += check_endtor(rig, levels['tormenta']['script.scr'], seed, found)
+    checks += check_endtor(rig, levels['tormenta']['script.scr'], seed, keys)
     checks += check_tor_travel(rig, levels, seed)
-    checks += check_next_mission(rig, levels, seed)
+    checks += check_next_mission(rig, levels, seed, keys)
     return checks
 
 
