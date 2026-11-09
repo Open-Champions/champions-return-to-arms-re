@@ -54,6 +54,36 @@ FACTORY_WORD, FACTORY = 0x5F76F4, 0x159C94
 PLAYER_CTOR, SPAWN, FACING, RANK = 0x1A1D28, 0x4F70D0, 0x4F8410, 0x4F7108
 PREV_LEVEL, SAVED_ORIENT, SUB_NAME = 0x41B7C2, 0x41B7C1, 0x41B771
 LARGEST_FREE, DUMP_HEAP = 0x150858, 0x150290
+ALLOC, SEGMENT_SITE, SEGMENT_BYTES = 0x14FF88, 0x1825B4, 0x760000   # world_prepare's cache
+STRCPY, COPY_SITE, ORIENT_STORE = 0x3B868C, 0x27E1F8, 0x27E210
+NEXT_WORLD = (PENDING, 0x41B7E2 - PENDING)       # g_pendingLevel .. end of g_prevLevelName
+FIND_FILE = 0x1724FC                              # cd_findFile
+ARMOR, SKILL_FRACTION = 0x1B5790, 0x308A7C        # player_recalcArmor, skill 63's getStat0Fraction
+CUT_SCENE = 0x143F1C
+
+# Values read once from a --discover run, then asserted.
+EXPECT = {
+    # Return address at each ablation's stop: the call that led to it.
+    'ablation-ra': {
+        'gif-channel': 0x350640,        # sceDmaSend's call of the DMA wait at 0x350638
+        'gfx-semaphore': 0x16C45C,      # SignalSema called at 0x16c454
+        'texcache': 0x17FB0C,           # texcache_reset called at 0x17fb04
+        'vsync-semaphores': 0x19DB8C,   # PollSema called at 0x19db84
+        'camera': 0x19B5B8,             # Camera_setMode called from cut_start at 0x19b5b0
+        'g_levelName': 0x17363C,        # the print at 0x173634 before the store to 0
+        'object-factory': EE.RETURN_ADDR,
+        'libc-semaphores': 0x3B61D0,    # WaitSema called from malloc's lock at 0x3b61c8
+    },
+    'lmp-ra': 0x173720,                 # lump_load called at 0x173718, inside res_find
+    # (pc, address, value) of each store the request makes to the watched bytes:
+    # the copy into g_prevLevelName, the subname cleared, 0xfe, the saved 0xff.
+    'request-writes': [(0x3B8784, PREV_LEVEL, LEVEL[0]), (0x3210E4, SUB_NAME, 0),
+                       (0x32112C, ORIENT, 0xFE), (0x321138, SAVED_ORIENT, 0xFF)],
+    # The load clears the rank byte, then the destination gate stores 3.
+    'rank-writes': [(0x217AB0, 0), (0x27CA84, 3)],
+    # Every cd_findFile call site reached in the round-6 runs.
+    'find-sites': [0x1001D4, 0x173584, 0x1A26DC, 0x1A2780, 0x321F28],
+}
 
 # Words engine_init and boot would have written. Each entry: label, what is stored.
 GIF_CHANNEL = 0x8400D0             # engine_init -> 0x19bd7c, store at 0x19bd94
@@ -75,6 +105,38 @@ FIXTURE_STUBS = r5.FIXTURE_STUBS + ('game_clearLevel', 'mem_largestFree', 'mem_d
 TIMER_COUNT = 0x2626               # the divisor at 0x19dccc: one frame's count, chosen
 HIGH_HEAP = (0x04000000, 0x08000000)
 LEVEL = b'innovat1'
+
+
+class Disc6(Disc):
+    """Round 5's disc fixture with a chosen synthetic sector numbering.
+
+    Base 0x1000 and step 1 plant exactly round 5's table.  Every call to
+    cd_findFile is recorded by its return address in find_sites.
+    """
+
+    def __init__(self, root, base=0x1000, step=1):
+        Disc.__init__(self, root)
+        self.base, self.step = base, step
+        self.find_sites = []
+
+    def install(self, emu):
+        Disc.install(self, emu)
+        sites = self.find_sites
+        emu.hook(FIND_FILE, lambda m: sites.append((m.r[31] & 0xFFFFFFFF) - 8))
+
+    def plant(self, emu):
+        table = Disc.plant(self, emu)
+        for index in range(len(self.directory)):
+            emu.mem.w32(table + 32 * index + 0x10, self.base + self.step * index)
+        return table
+
+
+def check(key, value, discover):
+    """Assert a value read once from a --discover run, or print it while discovering."""
+    if discover or EXPECT[key] is None:
+        print('DISCOVER', key, value)
+        return
+    assert value == EXPECT[key], (key, value)
 
 
 def run_constructors(emu):
@@ -188,7 +250,7 @@ def stop_of(emu, steps):
     except MemoryFault as fault:
         return ('fault', fault.pc, fault.addr, fault.size, fault.kind)
     except UnimplementedInstruction as error:
-        return ('unimplemented', str(error))
+        return ('unimplemented', error.pc)
     except CpuTrap as trap:
         return ('trap', str(trap))
     except EmuError as error:
@@ -228,7 +290,7 @@ HARDWARE_STOPS = (
     ('fault', 0x19C8A4, 0x3083FAD8, 8, 'write'),     # vu1-data: uncached-accelerated store
     ('fault', 0x3501AC, 0x1000A000, 4, 'read'),      # ram-mirrors: GIF channel control word
     ('fault', 0x350644, 0x1000A030, 4, 'read'),      # dma-idle: GIF tag address word
-    ('unimplemented', 'unimplemented instruction at 0x0034ff5c: word 0x4846e800'),  # CFC2
+    ('unimplemented', 0x34FF5C),                    # vpu-stat not yet: CFC2 at 0x34ff5c
     ('trap', 'SYSCALL at 0x00352a24 (v1 = 68, a0 = 2); modelled WaitSema count is 0'),
     ('fault', 0x19B6FC, 0x12000000, 8, 'write'),     # intc: the vsync handler's GS store
     ('fault', 0x19DCD0, 0x10000000, 4, 'read'),      # gs: timer 0 count in gfx_endFrame
@@ -266,6 +328,12 @@ def loader_chain(snapshot, disc, discover=False):
             continue
         expected = HARDWARE_STOPS[index]
         assert stop == expected, (index, stop)
+        assert emu.vu1_reads == [], emu.vu1_reads[:4]   # no load from the VU1 window
+        if index == 9:
+            # world_prepare's segment cache: the size is the segment count << 17.
+            asks = [c for c in emu.calls if c.site == SEGMENT_SITE]
+            assert [(c.target, c.args[0] & 0xFFFFFFFF) for c in asks] == [
+                (ALLOC, SEGMENT_BYTES)], asks
         if index == 1:
             # Store and readback only: nine stores, all from light_writeVuConstants.
             writes = emu.vu1_writes
@@ -273,8 +341,7 @@ def loader_chain(snapshot, disc, discover=False):
             assert sorted({addr for _pc, addr, _s, _v in writes}) == [0x1100FFAC] + list(
                 range(0x1100FFC0, 0x1100FFE0, 4))
             for _pc, addr, size, value in writes:
-                if addr != 0x1100FFAC:
-                    assert emu.mem.load(addr, size) == value
+                assert emu.mem.load(addr, size) == value
     return results
 
 
@@ -284,14 +351,15 @@ def ablations(full, discover=False):
         ('gif-channel', ((GIF_CHANNEL, 0),)),
         ('gfx-semaphore', ((GFX_SEMA, 0),)),
         ('texcache', ((TEXCACHE_RING, 0),)),
-        ('vsync-semaphores', ((VSYNC_SEMAS[0], 0),)),
+        ('vsync-semaphores', tuple((word, 0) for word in VSYNC_SEMAS)),
         ('camera', ((CAMERA, 0),)),
         ('g_levelName', ((LEVEL_NAME, 0),)),
         ('object-factory', ((FACTORY_WORD, 0),)),
-        ('libc-semaphores', ((LIBC_SEMAS[0], 0),)),
+        ('libc-semaphores', tuple((word, 0) for word in LIBC_SEMAS)),
     )
     out = {}
     lumps = []
+    callers = {}
     for label, words in cases:
         emu = copy.deepcopy(full)
         for addr, value in words:
@@ -299,9 +367,12 @@ def ablations(full, discover=False):
         emu.record_calls = True
         emu.reset_log()
         if label == 'g_levelName':
-            emu.hook(LUMP_LOAD, lambda m: lumps.append(cstr(m.mem, m.r[4])))
+            emu.hook(LUMP_LOAD, lambda m: lumps.append(
+                (cstr(m.mem, m.r[4]), m.r[31] & 0xFFFFFFFF)))
         stop = stop_of(emu, 40000000)
         out[label] = stop
+        assert emu.vu1_reads == [], (label, emu.vu1_reads[:4])
+        callers[label] = emu.r[31] & 0xFFFFFFFF   # the stop's return address
         if discover:
             print('DISCOVER ablation', label, stop)
             continue
@@ -310,11 +381,16 @@ def ablations(full, discover=False):
             assert not [c for c in emu.calls if c.site == FACTORY_SITE]
             assert [c.site for c in emu.calls if c.target == LOAD_RECORDS] == [0x217B94]
         if label == 'g_levelName':
-            assert lumps[-1] == b'.lmp', lumps[-3:]     # cutScene's "%s.lmp" at 0x143f58
+            assert lumps[-1][0] == b'.lmp', lumps[-3:]  # cutScene's "%s.lmp" at 0x143f58
+            assert CUT_SCENE in {c.target for c in emu.calls}
+            check('lmp-ra', lumps[-1][1], discover)
+            # cutScene asks res_find for the lump at 0x143f7c.
+            assert (RES_FIND, 0x143F7C) in {(c.target, c.site) for c in emu.calls}
+    check('ablation-ra', callers, discover)
     return out
 
 
-def arrival_load(full, seed):
+def arrival_load(full, seed, discover=False):
     """The innovat1 load to its return, with everything supplied."""
     emu = copy.deepcopy(full)
     emu.record_calls = True
@@ -329,6 +405,12 @@ def arrival_load(full, seed):
     built = [c for c in calls if c.site == FACTORY_SITE]
     assert built and all(c.target == FACTORY for c in built)
     assert PLAYER_CTOR not in {c.target for c in calls}
+    assert len(built) == 297, len(built)
+    assert emu.vu1_reads == [], emu.vu1_reads[:4]
+    # preStart, start, then a third script (the level's post-action script, whose
+    # name is level data and is not written here).
+    assert scripts[:2] == [b'preStart', b'start'] and len(scripts) == 3, len(scripts)
+    assert scripts[2] not in scripts[:2]
     return len(built), scripts
 
 
@@ -419,11 +501,36 @@ def menu_select(opened, seed):
     assert CLOSE_PAUSE in [c.target for c in emu.calls]
     assert emu.mem.u32(PAUSE_WORD) == 0 and emu.mem.u8(PAUSE_BYTE) == 0
     assert frame(emu) == 5 and BEGIN_TRAVEL in [c.target for c in emu.calls]
+    # Every write to g_pendingLevel .. g_prevLevelName during state 5, with the
+    # stretch of each frame's writes made inside the copy called at 0x27e1f8.
+    emu.write_watch = (NEXT_WORLD,)
+    emu.record_writes = True
+    copy_marks = []
+    emu.hook(STRCPY, lambda m: copy_marks.append(
+        ((m.r[31] & 0xFFFFFFFF) - 8, len(m.writes))))
+    emu.hook(COPY_SITE + 8, lambda m: copy_marks.append(('back', len(m.writes))))
+    state5 = []
     counted = 0
     while emu.mem.u8(STATE) == 5:
         counted += 1
+        copy_marks.clear()
         frame(emu)
+        state5.append((list(emu.writes), list(copy_marks)))
+    emu.unhook(STRCPY)
+    emu.unhook(COPY_SITE + 8)
+    emu.record_writes = False
+    emu.write_watch = None
     assert counted == 181 and emu.mem.u32(TRAVEL) == 181
+    assert all(not w and not marks for w, marks in state5[:-1]), 'state 5 wrote early'
+    writes, marks = state5[-1]
+    assert [m[0] for m in marks] == [COPY_SITE, 'back'], marks
+    start, end = marks[0][1], marks[1][1]
+    length = len(names[selected]) + 1
+    copied = writes[start:end]
+    covered = {a + i for _pc, a, size, _v in copied for i in range(size)}
+    assert covered == set(range(PENDING, PENDING + length)), sorted(covered)
+    assert all(pc != ORIENT_STORE for pc, *_r in copied)
+    assert writes[:start] == [] and writes[end:] == [(ORIENT_STORE, ORIENT, 1, 0xFF)], writes
     assert cstr(emu.mem, PENDING).decode() == names[selected]
     assert emu.mem.u8(ORIENT) == 0xFF and emu.mem.u8(STATE) == 6
     assert frame(emu) == 7 and emu.mem.u32(TRAVEL) == 181
@@ -437,16 +544,27 @@ def menu_select(opened, seed):
 
 def menu_cancel(opened):
     emu = copy.deepcopy(opened[0])
-    while frame(emu) != 2:
-        pass
+    pending = b'zcancel'.ljust(0x20, b'\0')
+    emu.mem.write(PENDING, pending)                  # nonzero sentinel
+    emu.write_watch = (NEXT_WORLD,)
+    emu.record_writes = True
+    block = []
+    while True:
+        state = frame(emu)
+        block += emu.writes
+        if state == 2:
+            break
     assert frame(emu, pressed=CANCEL_BIT) == 3 and emu.mem.u32(TRAVEL) == 0
+    block += emu.writes
     removed, locks = [], []
     emu.hook(TASK_REMOVE, lambda m: removed.append(m.r[4] & 0xFFFFFFFF))
     emu.hook(LOCK_INPUT, lambda m: locks.append((m.r[4] & 0xFF, m.r[5] & 0xFFFFFFFF)))
     for _ in range(8):
         assert frame(emu) == 3
+        block += emu.writes
     assert removed == [MENU_RUN, MENU_DRAW] and locks == [(0, 5)], (removed, locks)
-    assert emu.mem.read(PENDING, 1) == b'\0' and emu.mem.u8(ORIENT) == 0x5A
+    assert emu.mem.read(PENDING, 0x20) == pending and emu.mem.u8(ORIENT) == 0x5A
+    assert block == [], block[:4]                    # nothing written for a next world
     return len(removed)
 
 
@@ -468,7 +586,7 @@ def destinations_round_trip(emu, names):
 
 # ---- Track A + B: portal to arrival -------------------------------------------------------
 
-def arrival_chain(elf, disc, seed):
+def arrival_chain(elf, disc, seed, discover=False):
     emu = boot6(elf, disc)
     supply_engine_state(emu)
     for label, apply in HARDWARE:
@@ -495,7 +613,14 @@ def arrival_chain(elf, disc, seed):
     # tasks run (docs/mainloop.md section 7), so the load sees state 6.
     emu.stub(CLEAR, ret=0, name='clear')
     _high_heap(emu)
-    emu.write_watch = ((SPAWN, 12), (FACING, 2), (TRAVEL, 4))
+    # Sentinels where the request and the gate are asserted to store.  The subname
+    # gets none: save_storeLevelState stores the qualified name, which joins it, so
+    # a sentinel there would change the stored name.  Its store is in the record.
+    emu.mem.w8(SAVED_ORIENT, 0x5A)
+    emu.mem.write(PREV_LEVEL, b'zprev\0')
+    emu.mem.w8(RANK, 0x5A)
+    emu.write_watch = ((SPAWN, 12), (FACING, 2), (TRAVEL, 4), (SAVED_ORIENT, 1),
+                       (SUB_NAME, 1), (PREV_LEVEL, 1), (ORIENT, 1), (RANK, 1))
     emu.record_writes = True
     emu.record_calls = True
     emu.reset_log()
@@ -523,6 +648,10 @@ def arrival_chain(elf, disc, seed):
     facing = [w for w in emu.writes if w[1] == FACING]
     assert [(w[0], w[2]) for w in facing] == [(0x27CA70, 2)], facing   # g_randSeed >> 16
     assert emu.mem.u8(RANK) == 3                     # 0x27ca84: skips the free-spot search
+    check('rank-writes', [(w[0], w[3]) for w in emu.writes if w[1] == RANK], discover)
+    check('request-writes', [(w[0], w[1], w[3]) for w in emu.writes
+                             if w[1] in (SAVED_ORIENT, SUB_NAME, PREV_LEVEL, ORIENT)], discover)
+    assert emu.vu1_reads == [], emu.vu1_reads[:4]
     assert len(seen['player']) == 1
     position, heading, slot = seen['player'][0]
     assert position == emu.mem.read(SPAWN, 12) and slot == 0
@@ -536,33 +665,90 @@ def arrival_chain(elf, disc, seed):
             'spawn': (x, y, z), 'heading': heading}
 
 
-def run(elf, root, seed, discover=False):
-    assert hashlib.sha256(Path(elf).read_bytes()).hexdigest() == SHA256
-    disc = Disc(root)
+def armor_probe(elf, disc, seed):
+    """player_recalcArmor on the round-5 player, without and with the constructors."""
+    out = []
+    for constructors in (False, True):
+        emu = boot6(elf, disc) if constructors else r5.boot(elf, disc)
+        player(emu, seed, vec(emu))
+        emu.record_calls = True
+        emu.reset_log()
+        emu.r[4] = 0
+        emu.r[31] = EE.RETURN_ADDR
+        emu.jump(ARMOR)
+        stop = stop_of(emu, 20000000)
+        fraction = [c for c in emu.calls if c.target == SKILL_FRACTION]
+        out.append((stop, [c.args[0] & 0xFFFFFFFF for c in fraction][:1]))
+    # Skill 63's vtable word is 0 before the constructors run: its first slot read faults.
+    assert out[0] == (('fault', 0x308A98, 0x70, 2, 'read'), [SKILL63]), out[0]
+    assert out[1][0][0] == 'return', out[1]
+    return out
+
+
+def results(elf, disc, seed, discover=False):
+    """Every asserted round-6 result for one disc numbering, as plain values."""
     opened = menu_open(elf, disc, seed)
     picked, moves, selected, refused = menu_select(opened, seed)
     cancel = menu_cancel(opened)
     block = destinations_round_trip(picked, opened[1])
-    print('PASS seed=%d menu destinations=%d moves=%d selected=%d refused-current=%d fade-in=16 '
-          'fade-out=8 travel-frames=181 orientation=0xff cancel-removed=%d save-block=0x%x' % (
-              seed, len(opened[1]), moves, selected, refused, cancel, block))
-    snapshot, _reads = loader_snapshot(elf, disc, seed)
-    stops = loader_chain(snapshot, disc, discover)
+    snapshot, reads = loader_snapshot(elf, disc, seed)
+    out = {'menu': (len(opened[1]), moves, selected, refused, cancel, block),
+           'snapshot': (list(snapshot.sif_dma), reads)}
+    out['stops'] = loader_chain(snapshot, disc, discover)
     full = copy.deepcopy(snapshot)
+    del snapshot
     install_hardware(full)
-    cut = ablations(full, discover)
+    out['ablations'] = ablations(full, discover)
+    if discover:
+        return out
+    out['innovat1'] = arrival_load(full, seed, discover)
+    del full
+    out['arrival'] = arrival_chain(elf, disc, seed, discover)
+    out['armor'] = armor_probe(elf, disc, seed)
+    return out
+
+
+# The second numbering: a different base, descending, three sectors apart.
+SECTORS = ((0x1000, 1), (0x7F000, -3))
+
+
+def run(elf, root, seed, discover=False):
+    assert hashlib.sha256(Path(elf).read_bytes()).hexdigest() == SHA256
+    disc = Disc6(root, *SECTORS[0])
+    got = results(elf, disc, seed, discover)
     if discover:
         return
-    built, scripts = arrival_load(full, seed)
+    count, moves, selected, refused, cancel, block = got['menu']
+    print('PASS seed=%d menu destinations=%d moves=%d selected=%d refused-current=%d fade-in=16 '
+          'fade-out=8 travel-frames=181 orientation=0xff cancel-removed=%d save-block=0x%x' % (
+              seed, count, moves, selected, refused, cancel, block))
+    print('PASS seed=%d menu state 5 writes only the copy from 0x%x and 0x%x; cancel writes '
+          'nothing to 0x%x..0x%x' % (seed, COPY_SITE, ORIENT_STORE, NEXT_WORLD[0],
+                                     NEXT_WORLD[0] + NEXT_WORLD[1]))
     print('PASS seed=%d loader stops %s' % (seed, ' '.join(
-        '0x%08x' % s[1] if s[0] == 'fault' else s[0] for s in stops)))
+        '0x%08x' % s[1] if s[0] in ('fault', 'unimplemented') else s[0] for s in got['stops'])))
     print('PASS seed=%d loader ablations %s' % (seed, ' '.join(
-        '%s:%s' % (k, '0x%08x' % v[1] if v[0] == 'fault' else v[0]) for k, v in cut.items())))
+        '%s:%s' % (k, '0x%08x' % v[1] if v[0] == 'fault' else v[0])
+        for k, v in got['ablations'].items())))
+    print('PASS seed=%d no load from VU1 data memory in the chain, ablations and arrivals' % seed)
+    built, scripts = got['innovat1']
     print('PASS seed=%d innovat1 load returns, objects=%d scripts=%d' % (seed, built, len(scripts)))
-    arrival = arrival_chain(elf, disc, seed)
+    arrival = got['arrival']
     print('PASS seed=%d portal to hub: objects=%d reads=%d gate spawn=(%.2f, %.2f, %.2f) '
           'heading=0x%08x Player_ctor slot 0' % (
               seed, arrival['built'], arrival['reads'], *arrival['spawn'], arrival['heading']))
+    print('PASS seed=%d without constructors player_recalcArmor faults at 0x308a98 (skill 63 '
+          'vtable 0); with them it returns' % seed)
+    sites = sorted(set(disc.find_sites))
+    check('find-sites', sites, discover)
+    # The same runs under a second synthetic sector numbering give the same results.
+    other = Disc6(root, *SECTORS[1])
+    again = results(elf, other, seed)
+    assert again == got, [k for k in got if got[k] != again.get(k)]
+    assert sorted(set(other.find_sites)) == sites and len(other.find_sites) == len(disc.find_sites)
+    print('PASS seed=%d sectors 0x%x+%d*i and 0x%x%d*i give equal results; cd_findFile calls=%d '
+          'from %s' % (seed, SECTORS[0][0], SECTORS[0][1], SECTORS[1][0], SECTORS[1][1],
+                       len(disc.find_sites), ','.join('0x%x' % x for x in sites)))
     print('SUPPLIED %s' % ','.join(SUPPLIED))
     print('OPT-INS %s' % ','.join(OPT_INS))
     print('STUBS %s' % ','.join(FIXTURE_STUBS))
