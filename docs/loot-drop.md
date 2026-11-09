@@ -380,8 +380,8 @@ on both seeds. Reproduction, from this worktree (repeat for seed 7;
 `RTA_DISC` points to the owner's local ISO):
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_loot_drop.py /Users/syndicatemike/champions-re/SLUS_209.73 --seed 20973
-PYTHONDONTWRITEBYTECODE=1 python3 tools/probe_loot_drop_resources.py /Users/syndicatemike/champions-re/SLUS_209.73 --iso "$RTA_DISC" --seed 20973 --private-report local/loot-drop/private-chest-20973.json
+PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_loot_drop.py local/SLUS_209.73 --seed 20973
+PYTHONDONTWRITEBYTECODE=1 python3 tools/probe_loot_drop_resources.py local/SLUS_209.73 --iso "$RTA_DISC" --seed 20973 --private-report local/loot-drop/private-chest-20973.json
 ```
 
 The tools only read owner inputs. Generated names, decoded placement data and
