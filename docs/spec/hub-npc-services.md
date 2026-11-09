@@ -165,3 +165,11 @@ rings, co-op resurrection and native visual result remain open.
 and eight bounded EE cases over seeds 20973/7 with zero mismatches; the full
 Python unit suite passed 652/652. These checks do not resolve `hub2` choice
 effects or choice-action reachability to `removePlayerItem` in either hub.
+
+**2026-11-09 follow-up:** `docs/hub-services.md` executes the items this file
+left open. It covers hub2 node selection, choice reach and effects
+(`removePlayerItem` is not reachable from either dialog), the walk-in Trigger
+and PushTrigger in both hubs, the ring actions, and the hub-entry services
+(store level, mana restore, item cleanup, duplicate checks).
+`tools/difftest_hub_services.py` compares them at seeds 20973 and 7. This file's
+census, Savepoint check and native port list remain as written.
