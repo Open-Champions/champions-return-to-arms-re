@@ -82,8 +82,16 @@ Each fixture is disclosed where the test makes it:
   - s7 `0x420000`: `lui` at `0x3229ac`;
   - fp `0x500000`: `lui` at `0x3229b4`.
 
-  This scan reads instruction order, not control flow. The one branch that
-  skips `0x322e04` (`0x322dc8`) has `0x322dcc` in its delay slot.
+  This scan reads instruction order, not control flow. **Correction (round 9):**
+  round 8 said one branch skips `0x322e04`. Four branches before it land past
+  it: `0x322b40`, `0x322cdc`, `0x322dc8` and `0x322dec`.
+  **Observed (static, asserted by `loader_static`,
+  [r9 lines 88–132](../tools/difftest_arrival_stage_r9.py#L88)):** `0x322dc8` is a `bne` (not the likely form)
+  to `0x322e08`, with the first s4 setter `0x322dcc` in its delay slot. Every
+  branch or `j` that lands in `0x322dd0`–`0x322e58` is itself in
+  `0x322dc8`–`0x322e54`. The only `jr` is the epilogue's `jr ra` at
+  `0x3235a0`. After `0x322dcc`, only `0x322e04` writes s4. So every path that
+  reaches `0x322e58` runs `0x322dcc`, and s4 is `0x550000` on each of them.
   **Inferred:** the calls in between preserve s0–s7 and fp (they are
   callee-saved).
   **s2 is not planted.** No instruction in `0x322998`–`0x322e54` writes it, so
@@ -94,8 +102,11 @@ Each fixture is disclosed where the test makes it:
   the epilogue `0x323580`. **Executed:** in every run, `0x322ec0` is the first of
   these that is reached, so the caller's s2 is never read.
   **Caller frame:** the run starts with the test's stack pointer and does not
-  plant `mainloop_runSession`'s 0x60-byte frame. **Observed (static,
-  asserted):** after `0x322e58` the only stack-based accesses are the
+  plant `mainloop_runSession`'s 0x60-byte frame. **Observed (static, asserted
+  by `loader_static`):** the frame size is the immediate of `addiu sp, sp,
+  -0x60` at `0x32299c` and of `addiu sp, sp, 0x60` at `0x3235a4`, in the delay
+  slot of the final `jr ra`. These are the only two writers of sp in the
+  function. **Observed (static, asserted):** after `0x322e58` the only stack-based accesses are the
   epilogue's, from `0x323578`. **Executed:** the run reads no byte of
   `[sp, sp + 0x60)`.
 - **Resident lump.** Stage E copies entries from the private route-2 archive
@@ -127,7 +138,7 @@ With the word `0x4f70a0` set, it stores only the empty first byte of
 `0x53d330`. With PvP mode B (`0x4f7120`) set, it reaches the arena picker
 `0x304bc8` first.
 
-**Executed** at each difficulty 1–5 (`hub_name`, [r8 lines 336–362](../tools/difftest_arrival_stage_r8.py#L336);
+**Executed** at each difficulty 1–5 (`hub_name`, [r8 lines 336–363](../tools/difftest_arrival_stage_r8.py#L336);
 round 7 ran difficulty 1 only): `game_getHubName` `0x1ec300` reads three bits at
 the current difficulty `0x4f719c`:
 
@@ -169,7 +180,7 @@ private manifest gives these route ordinals
 - a new game selects route 0;
 - the mission-1 start selects route 2. This is the story level at row 0 `+8`.
   The evil alternative `+0x0c` ([data-tables.md line 632](data-tables.md#L632))
-  is null in row 0 (asserted by `hub_name`), so it does not replace `+8` for
+  is null in row 0 (`assert evil == 0` in `hub_name`, added in round 9), so it does not replace `+8` for
   mission 1. The menu state that uses `+0x0c` is not executed here;
 - the boot request selects route 1.
 
@@ -211,7 +222,9 @@ Each of the ten warm-up passes calls these, in this order:
 6. `0x17fe88`.
 
 `0x17fe88` returns 0 each time: v0 is 0 at the branch `0x322f18` that tests it,
-in all ten passes (asserted). Each pass stores 0 at
+in all ten passes (asserted). **Observed (static, asserted by `loader_static`):**
+`0x322f18` is `bne v0, zero` to `0x322f34`. It follows `jal 0x17fe88` at
+`0x322f10`, whose delay slot does not write v0. Each pass stores 0 at
 the timer word from `0x322f04`, and the counter falls 10, 9, … 0 through stores
 at `0x322f30` ([r7 lines 324–334](../tools/difftest_arrival_stage_r7.py#L324)).
 The calls that are skipped, and the reads that skip them (all asserted):
@@ -262,9 +275,22 @@ mode is 3 when bit `0x2` of `obj + 0x12c + 8 × state` is set, and 6
 otherwise. It then calls `0x170bc8(obj + 0x98)`. Slot 19 receives bit 0 of
 that `+0x12c` word as its value.
 
-**Executed** (`props`, [r8 lines 366–458](../tools/difftest_arrival_stage_r8.py#L366)): `setState` stores 0 at
+**Executed** (`props`, [r8 lines 367–459](../tools/difftest_arrival_stage_r8.py#L367)): `setState` stores 0 at
 `+0x17c` from `0x23d6ac`, before the push. After `0x170bc8` returns it stores
-`+0x17c` + clip `+4` + 1 from `0x23d764`. For clip `+4` = 5, 9 and `0x40`, with
+`+0x17c` + clip `+4` + 1 from `0x23d764`. **Observed (static, asserted by
+`loader_static` and `sum_static`, [r9 lines 88–155](../tools/difftest_arrival_stage_r9.py#L88)):** `0x23d734`
+is `jal anim_push` and `0x23d73c` is `jal 0x170bc8`, so `0x23d744` is the
+return address of the `0x170bc8` call. The sum is built from `0x23d744` to
+`0x23d760`: the state word `+0x178`, shifted left by 3 and added to obj + 8,
+indexes the clip at `+0x120`. Its word `+4` is added to `+0x17c`, and
+`0x23d760` is `addiu v1, v1, 1`. **The `+1` is that immediate.**
+**Executed** (`states`, [r9 lines 184–250](../tools/difftest_arrival_stage_r9.py#L184)): `setState` is called
+directly on the round-8 prop at states 0, 1, 2 and 5, with clip `+4` = 9 and
+`0x40`. Decoy clips (`+4` = `0x3000` + index) sit in every other slot 0–7.
+Each run gives exactly the stores (`0x23d6ac`, 0) and (`0x23d764`, clip `+4` +
+1), never state + 1, and `+0x178` = the state. The zero store is recorded
+before `anim_push` is entered, and the `0x23d764` store after `0x23d744` is
+reached. The late-write control holds at states 2 and 5. For clip `+4` = 5, 9 and `0x40`, with
 `0x22222222` or `0x13579bdf` planted at `+0x17c` beforehand, the stores to
 `+0x17c` are exactly (`0x23d6ac`, 0) and then (`0x23d764`, clip `+4` + 1). In a
 control run, a value written into `+0x17c` after `0x170bc8` returns (`0x100` or
@@ -297,8 +323,25 @@ The result is clip `+4` + 1.
   - `+0x1c`, the mode: `0x1708a0`;
   - `+0x1e` = 0: `0x170888`.
 
-  `+0x9e` becomes `0x100` OR the mode, in one store at `0x17087c`. So
-  `anim_push` ORs the mode into that halfword; it does not replace it.
+  `+0x9e` becomes `0x100` OR the mode, in one store at `0x17087c`.
+- **`+0x9e` with low bits that overlap the mode** (round 9, `nine_e`,
+  [r9 lines 162–180](../tools/difftest_arrival_stage_r9.py#L162)). Capacity 4, over the sentinel. The planted
+  halfword and the result:
+  - mode 6: `0x105` → `0x107`, `0x1ff` → `0x1ff`, `0x106` → `0x106`, 0 → 6;
+  - mode 3: `0x104` → `0x107`, `0x103` → `0x103`, `0x1ff` → `0x1ff`.
+
+  Each value is one store at `0x17087c`. Adding the mode, replacing the low
+  byte, or replacing the low 3 bits would each give a different result on at
+  least one of these inputs. **Observed (static, asserted by `nine_e_static`,
+  [r9 lines 63–77](../tools/difftest_arrival_stage_r9.py#L63)):** `0x17086c` is `lhu v0, 6(a3)`, `0x170874` is
+  `or v0, v0, a2` and `0x17087c` is `sh v0, 6(a3)`. a3 is a0 (`0x170840`), and
+  nothing else in `anim_push` writes v0 between those two instructions, or a2
+  before the `or`. So `anim_push` **ORs** the mode into `+0x9e`.
+- **A second push** (round 9, `states`). `setState` clears the depth byte
+  `+0x9c` (`sb zero` at `0x23d6f8`, asserted by field) and pushes at depth 0
+  again. It does not clear `+0x9e`. After a mode-6 push left `0x106`, a second
+  `setState` (state 1, mode 3) stores `0x107` at `0x17087c`. The modes
+  accumulate.
 - **Value 1, `+0x11c` bit 0 clear.** `+0xc` becomes `0x10000001` (store at
   `0x23d878`). No collision call is made.
 - **Value 1, `+0x11c` bit 0 set.** `0x182b00` is called from `0x23d7e0` with
@@ -323,7 +366,7 @@ include exactly two from `pool_free`:
 - at `0x1504bc`, the object address goes into the free-list head word, at
   `0x403a1c` + 16 × bucket;
 - at `0x1504c4`, the previous head goes into the object's first word.
-  Round 8 (`free_head`, [r8 lines 462–483](../tools/difftest_arrival_stage_r8.py#L462)) reads the free-list
+  Round 8 (`free_head`, [r8 lines 463–484](../tools/difftest_arrival_stage_r8.py#L463)) reads the free-list
   table before the delete. The value stored is the head word's old value.
   That is bucket 1, whose head is non-zero in this fixture.
 
@@ -351,9 +394,11 @@ that has no creature flag.
   from `0x44fe18`. That name is empty in the fixture, so the request goes to
   `lump_load` → `0x1724fc`, and the miss ends at `0x17363c`.
 - With `0x44fe18` set to the fixture level, `res_find` `0x17365c` is called
-  once, from `0x21689c`, with a0 = `"<level>.lmp"` and a1 = `"dialog.bin"`. It
+  once. The call is the `jal` at `0x216894` (asserted by field) and it returns
+  to `0x21689c` (round-8 log `site=` prints this return address;
+  `dialog_site`, [r9 lines 271–275](../tools/difftest_arrival_stage_r9.py#L271)), with a0 = `"<level>.lmp"` and a1 = `"dialog.bin"`. It
   returns 0, and `0x2168a0` reads address 0 (`dialog_refusal`,
-  [r8 lines 617–655](../tools/difftest_arrival_stage_r8.py#L617)).
+  [r8 lines 618–656](../tools/difftest_arrival_stage_r8.py#L618)).
 
 The cut therefore needs the level's own entries.
 
@@ -370,7 +415,7 @@ records can be removed at `0x1719c8`–`0x171a34`. `res_find` finds an entry wit
 the binary search `0x171de4`, which compares with `0x3b8534`.
 **Inferred:** the strings are region prefixes.
 
-**Executed** (`lump_order`, [r8 lines 487–613](../tools/difftest_arrival_stage_r8.py#L487); counts only):
+**Executed** (`lump_order`, [r8 lines 488–614](../tools/difftest_arrival_stage_r8.py#L488); counts only):
 
 - Fixup removes 3 records, at archive indices 13, 14 and 15, and leaves 16.
 - Before fixup, 2 adjacent pairs of names are out of order under `0x3b8534`.
@@ -460,8 +505,9 @@ Under these fixtures, for every body 0–11:
   started. For `hub`, refuse at the shop's lump load.
 - **`setState` with a clip.** Set `+0x17c` to 0 on entry. Push one entry when
   the stack has room, with mode 3 or 6 from bit `0x2`. Write all 32 bytes of the
-  entry as listed above, and OR the mode into `+0x9e`. Then set `+0x17c` to
-  clip `+4` + 1. Do not add it to an older value. With a slot-19 value of
+  entry as listed above, and OR the mode into `+0x9e`, keeping its earlier
+  bits (a second push ORs in a second mode). Then set `+0x17c` to clip `+4`
+  + 1, for the current state's clip, at any state. Do not add it to an older value. With a slot-19 value of
   1, set `+0xc` bit 0. Refuse when `+0x11c` bit 0 needs the collision world.
 - **Delete.** Remove the `name=` value from the name table, clear the three
   handles, and **free the block**. Round 6's "do not free" is withdrawn.
@@ -525,3 +571,40 @@ Run: `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_arrival_stage_r7.py local
 and `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_arrival_stage_r8.py local/SLUS_209.73 local/arrival-route-r4.json`.
 Result: bodies 0–11, seeds 7 and 20973, all stages PASS for both. Logs:
 `local/arrival-stage-r7-r8.log` and `local/arrival-stage-r8.log` (untracked).
+
+## Round-9 fixes (audit `research-loading-readiness-r7-fix`, 2026-11-09)
+
+The new test is `tools/difftest_arrival_stage_r9.py`. It reuses the round-8
+fixtures. `tools/difftest_arrival_stage_r8.py` gains one line (`assert evil ==
+0` in `hub_name`), and the r8 links above after that line move down by one. No
+assert was removed.
+
+- **R9-1.** `+0x9e` was planted with low bits that overlap the mode: `0x105`,
+  `0x1ff`, `0x106` and 0 for mode 6, and `0x104`, `0x103` and `0x1ff` for
+  mode 3. Every result is the old halfword OR the mode, and add, replacing the
+  low byte, and replacing the low 3 bits are each ruled out. The `lhu`/`or`/`sh`
+  fields at `0x17086c`/`0x170874`/`0x17087c` are asserted. A second push ORs a
+  second mode in. The operation is **OR**.
+- **R9-2.** `hub_name` now asserts that row 0 `+0x0c` is 0.
+- **R9-3.** `res_find` is called from `0x216894` and returns to `0x21689c`. The
+  round-8 `site=` value is the return address.
+- **R9-4.** The four static facts are asserted by field, with one correction.
+  Four branches before `0x322e04` land past it, not one. The claim the s4
+  value needs is asserted instead: every path into `0x322dd0`–`0x322e58` runs
+  `0x322dcc`. Also asserted: the `0x60` frame (`0x32299c`, `0x3235a4`), the
+  `bne v0` at `0x322f18` after `jal 0x17fe88`, and `0x23d744` as the return
+  address of `jal 0x170bc8` at `0x23d73c`. The zero store is shown, by run
+  order, to come before the push.
+- **R9-5.** The `+1` is the immediate of `addiu v1, v1, 1` at `0x23d760`, and
+  the whole sum `0x23d744`–`0x23d764` is checked by field. `setState` was run
+  directly at states 0, 1, 2 and 5, with decoy clips in the other slots, and
+  `+0x17c` is clip `+4` + 1 at every state.
+- **R9-6.** The run script is tracked as `tools/run_arrival_stage_r9.sh`. It
+  holds no private paths.
+- **R8-10** is unchanged: this round does not rewrite history. It is Malik's
+  decision.
+
+Run: `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_arrival_stage_r9.py local/SLUS_209.73 local/arrival-route-r4.json`,
+or `sh tools/run_arrival_stage_r9.sh` for r9, r8, r7, r6, r5 and the unit tests
+with headed logs. Result: bodies 0–11, seeds 7 and 20973, PASS. Log:
+`local/arrival-stage-r9.log` (untracked).
