@@ -354,6 +354,7 @@ def hub_name(path, archives, body, seed):
         out.append(level)
     no_stub(e)
     evil = e.mem.u32(MISSIONS + 0x0C)
+    assert evil == 0, hex(evil)  # row 0 +0x0c is null (round-8 audit R9-2)
     if evil:
         stem = e.mem.cstr(evil)
         evil_route = tuple(i for i, p in enumerate(archives) if Path(p).stem.lower() == stem)
