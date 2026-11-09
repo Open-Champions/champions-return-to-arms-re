@@ -5489,6 +5489,9 @@ Correction 2026-11-09 (executed, `docs/creature-ai-m1-3.md` §3.3): state 2 answ
 with request 0 (a forced archer sight with 3); the state 6 stand counter +0xf4 is decremented only
 once the clip has ended but tested every tick; states 4 and 5 continue after their attack request
 in the same tick (4: one own draw and the move; 5: not rooted -> 3).
+Correction 2026-11-09 (executed, `docs/creature-ai-m1-3.md` §3.3): in 0x17 a shaman that is not past
++0x47c and not in reach asks `see(0, 6000, 0x7fff)` and, when it passes, turns once more before the
+closing `Creature_turnToTarget` (run with +0x47c at 99, 100 and 101 against clock 100).
 
 #### Skeleton  (factory names `WatSkel`, `Skeleton*`; vtable 0x5175f8; size 0x478)
 
@@ -6271,6 +6274,9 @@ one own draw chooses def+0x24 or def+0x2c); setState(0x14) first calls holder ta
 State 0x14 in run: fade + 1, one own draw for an angle and a unit-sphere rejection loop (3
 own draws per attempt) for one particle per frame (definition 0x8e4ab0, lazily constructed
 on first use behind the flag 0x503684 — in run code).
+Correction 2026-11-09 (executed, `docs/creature-ai-m1-3.md` §3.2): a state 0x14 tick that starts
+with fade ≥ 100 calls `obj_delete` 0x14f200 (executed at 100, 101 and 127); 98 and 99 take the
+particle path. The fade byte is read signed, so a stored 128, 150 or 255 neither deletes nor turns.
 
 Fields: +0x3c8 s8 fade; +0x3cc s32 drain clock; +0x3d0… embedded Weapon1.
 

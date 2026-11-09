@@ -12,6 +12,12 @@ boundary moved: the WarWraith dead-state delete is at a stored fade ≥ 100 (§3
 The `hitAtReach` distance is now executed on all three axes, and both radii (§2.5).
 Claims that are still not executed are labelled Observed.
 
+Fix round 2, 2026-11-09 (audit CAIF-1..CAIF-7): the IronGuardian 7/8 turn is run
+with 0–4 players alive and turns only at exactly 1 (§3.9). The WarWraith fade byte
+is run above 100 and is read signed (§3.2). The walk now also gates branch-arm
+coverage (§3) and checks every walked run for loads of hit points (§2.4).
+`hitAtReach` at exactly 60.0 along `+0x14` is asserted both ways (§2.5).
+
 Labels: **Executed** = an original function ran in `tools/ee_emu.py` and was
 compared with an authored model (always on a synthetic object, with the stubs
 named next to the claim). **Observed** = read in the executable or a prior note,
@@ -126,11 +132,17 @@ States a class has no case for are stored as 0 (**Executed**,
 (SeaMonster does not: its setState(0x10) is asserted to write no `+0x318`); state
 0x10 calls `isAttackReady` and requests 0 when ready, otherwise
 `Creature_fleeFromTarget` `0x119f08`. This is cooldown-driven retreat.
-**Executed** (HP pass): no class run function here reads hit points into a flee
-or any other decision except Amphian's block (§3.11). Every state of every class
-variant was walked with hit points `+0x228` 10, 49, 50 and 51 of maximum `+0x22c`
-100 (three contexts each), and with 100 of 100 in the grid; a hidden HP test would
-show as a mismatch. Scope: `Creature_processDamage` and the base `Creature_run`
+**Executed** (HP read check over the whole grid, 2026-11-09): every walked run
+is checked for loads of hit points `+0x228` and maximum `+0x22c` (`HP_READS`;
+a replayed context repeats a walked run, so this covers every grid, draw, HP and
+exit context). Only two classes load them. Amphian loads them in state 5 for its
+block (§3.11). WarWraith loads them in state 7, after the drain `hitAtReach` on
+either result, for the heal write (§3.2), and no decision follows from it. Any
+other load fails the run. The other ten class run functions never load hit
+points on any walked path, so no decision of theirs can depend on HP.
+**Executed** (HP pass): every state of every class variant was also walked with
+hit points 10, 49, 50 and 51 of maximum 100 (three contexts each), and with 100 of
+100 in the grid. The only HP-dependent decision found is Amphian's. Scope: `Creature_processDamage` and the base `Creature_run`
 are stubs here, so an HP rule inside them is not covered (**Unknown**).
 0x12 waits for animation flag `0x10` (Goblin `0x30`) to clear; 0x13 waits
 for `isNotStunned`. Death 0x14: `Creature_deadUpdate` `0x1108a0` with the class
@@ -143,7 +155,7 @@ callees are stubs.
 
 ### 2.5 From attack to `damage_apply`
 
-**Executed** (`check_hits` in `tools/difftest_creature_ai_m1_3.py`, 81
+**Executed** (`check_hits` in `tools/difftest_creature_ai_m1_3.py`, 83
 cases a seed; `damage_apply`, sight, `Creature_isEnemy` `0x119328` and the grid
 collect `0x14a928` stubbed; `math_cos16/sin16` executed):
 
@@ -156,13 +168,15 @@ collect `0x14a928` stubbed; `math_cos16/sin16` executed):
   (`+0x10/+0x14/+0x18`) from the attacker position + facing × reach is **below
   60 on all three axes together**. Executed boundaries: 59.9 hits and 60.0 misses
   along `+0x10` and `+0x18` (reach 36 and 60); 59.9 hits and 60.1 misses along
-  `+0x14` either way; two-axis 59.40 / 60.10 and three-axis 59.93 / 60.10; an
+  `+0x14` either way, and exactly 60.0 hits along `+0x14` but misses along
+`−0x14` (both asserted; the edges bisect to about +60.00001 and −59.99999); two-axis 59.40 / 60.10 and three-axis 59.93 / 60.10; an
   attacker raised by 10 on `+0x14` moves that window to −49.9 … 69.9. Target
   radius 5 / 40 and attacker radius `+0x1c` 5 / 60 do not change the result. A
   target with object flag 8 is skipped (0x40 is not); what flag 8 means is not
-  established here. Exactly 60.0 along `+0x14` still hits; **Inferred**: at
-  facing 0 the reach point is not exactly on the `+0x10` axis (the sine
-  value is not exactly 0), so that boundary is asserted at 60.1.
+  established here. **Inferred** cause of the ±60.0 asymmetry: at facing 0 the
+  reach point lies about 0.00001 on the `+0x14` side of the `+0x10` axis (the
+  sine value is not exactly 0). A fixed offset like that brings +60.0 inside the
+  window and pushes −60.0 outside, which matches both results.
 - `Creature_hitAllEnemiesInArc` `0x119b58`: collects up to `0x80` candidates,
   then per candidate `isEnemy` and `canSeeObj`; one `damage_apply` per passing
   enemy (only the enemy candidate in the probe).
@@ -195,8 +209,10 @@ every class `ev` value; animation flags `+0x11a` 0/8/0x10/0x80; deadline
 present or not (Kobold); and every class variant. Boundary variants put the
 clock-compared fields at 99/100/101: WarWraith `+0x3cc`, Orc shaman `+0x47c`,
 goblin shaman `+0x3d8`, Droid `+0x3cc` and IronGuardian `+0x3cc`. They also
-cover the IronGuardian counter at 119/120/121, the WarWraith fade at 98/99 and an
-IronGuardian run with the alive-player count `0x4f8420` at 1. An equality case is
+cover the IronGuardian counter at 119/120/121 and the WarWraith fade at 98/99, plus
+101, 127, 128, 150 and 255 in states 0, 3 and 0x14. IronGuardian states 7/8 also
+run with the alive-player count `0x4f8420` at 1, 2, 3 and 4, and at 0 everywhere
+else. An equality case is
 therefore run for every `>`/`≥` and `<`/`≤` test listed below.
 
 Rare own-generator branches are driven too. The whole grid is repeated with seeds
@@ -215,8 +231,13 @@ context ("replayed model paths"). A field the code never read cannot change
 the run, so the model is still checked at every grid point.
 
 Model line coverage over all compared paths is printed per class (`COVER`).
-An unreached model line fails the run unless the line is marked "not walked"
-(none are). Compared per path: query arguments, slot-27
+So is branch-arm coverage (`ARMS`, added 2026-11-09). An arm is one outcome of
+one conditional jump in the compiled model: the table is Python 3.14
+`code.co_branches()`, and the taken arms are recorded with `sys.monitoring`
+BRANCH_LEFT/BRANCH_RIGHT. So both sides of a one-line conditional
+(`7 if … else 6`) count separately, and so does each test of a short-circuit
+chain, including a test that runs only after a rare draw. An unreached line or
+untaken arm fails the run unless its line is marked "not walked" (none are). Compared per path: query arguments, slot-27
 requests, hit-helper arguments, movement calls and the final own-generator state
 (`GameObject_rand` `0x1509d0` executed). Not compared: holder calls, zero-velocity
 `moveBy`, `settle`, math and effect calls, field writes. `see(n,f,arc[,ray])` is
@@ -255,7 +276,10 @@ Variant `+0x3cc`: 0 Kobold, 1 tough, 2 shaman.
 
 ### 3.2 WarWraith — run `0x2c0c2c`, setState `0x2c1648` (model `warwraith()`; notes `docs/monsters-2.md:6121-6274`)
 
-- Head: when fade `+0x3c8` ≥ 99 it also turns to the target (98 does not).
+- Head: when fade `+0x3c8` ≥ 99 it also turns to the target (98 does not). The
+  byte is read **signed** (executed 2026-11-09): a stored 128, 150 or 255 neither
+  turns nor deletes, the same as a negative fade. Its static range is 0–100
+  (`docs/monsters-2.md:6125`, Observed), so values above 100 may not occur in play.
 - 0: `sight` → 3; clock > `+0xf4` → 1. 1: `sight` → **0**; else move to destination.
 - 3: no target → 0; see(0,20,6000) → **7 if clock > `+0x3cc` else 6** (`+0x3cc`
   99 → 7; 100 and 101 → 6); otherwise
@@ -267,8 +291,9 @@ Variant `+0x3cc`: 0 Kobold, 1 tough, 2 shaman.
   hitAtReach(36, flags `0x404`); a nonzero result heals max HP/15 (write, not
   compared). Turns with a target; clip over → 3.
 - 0x11: clock > `+0xf4` → 3; 0x13 → 0. 0x14: a tick that starts with fade ≥ 100
-  calls `obj_delete` `0x14f200`. Otherwise it emits one particle (an angle draw
-  plus a unit-ball rejection point); fade 98 and 99 both take the particle path
+  (signed, so 100–127) calls `obj_delete` `0x14f200`, executed at 100, 101 and 127.
+  Otherwise it emits one particle (an angle draw plus a unit-ball rejection
+  point); fade 98, 99, 128, 150 and 255 all take the particle path
   (corrected 2026-11-09 from "fade + 1, at 100 delete"). The fade write itself
   is not compared.
 - Entry: 0 `+0xf4 = clock + r%120`; 7 `+0x3cc = clock + 300 + r%120` (so the
@@ -405,7 +430,9 @@ Sub-kind `+0x3c8`: 0 cutter, 1 hammer.
 - 5: cone(0,84,10000) → 6; cone(0,84,`0x4000`, facing +`0x4000`) → 7; facing
   −`0x4000` → 8; cone(84,400,2000) → 9; junk test → 10; not rooted → 3.
 - 6: `ev&1` hitAll(0,84,10000, flags 8). 7/8: turn only while the alive-player
-  count `0x4f8420` is 1 (executed with 0 and with 1); `ev&1` hitAll(0,84,`0x4000`, facing ±
+  count `0x4f8420` is exactly 1. Executed with 0, 1, 2, 3 and 4: only 1 turns, so
+  the test is `== 1` (as `docs/monsters-2.md:1392` reads it). With two or more
+  players alive the guardian does not turn in 7/8; `ev&1` hitAll(0,84,`0x4000`, facing ±
   `0x4000`, flags `0x80008`). 9: turns every tick → 5 (missile cadence not
   compared). 10: turns; `ev&1` → one draw, then ten junk blocks each with a draw
   and a unit-ball point; → 3. 0x12/0x13 → 5.
@@ -491,12 +518,14 @@ Implement in this order; each item names the executed evidence.
    (`GameObject_rand` on `+0x44`, never the shared seed in these paths).
 6. Entry timers of §3 (`+0xf4`, `+0x3cc`, `+0x318 = 60`, cflag `0x200` for blocks).
 7. Hits: the three helpers of §2.5 with the class flags; `hitAtReach` uses a
-   3-D distance < 60 (x, y and z) from the reach point, ignoring both radii; feed
+   3-D distance < 60 (x, y and z) from the reach point, ignoring both radii (the
+   reach point sits about 0.00001 to the `+0x14` side at facing 0, §2.5); feed
    `damage_apply` with (victim, attacker, rating, 0, 0, flags, descriptor; min,
    max) and apply the combat.md armour rule and the spells-r3 knock-back rule on
    the victim.
-8. Flee = cooldown retreat (0x10) only. No class run function reads HP, except
-   for Amphian's block below half (§2.4 HP pass). Any HP rule inside the base
+8. Flee = cooldown retreat (0x10) only. Only two class run functions load HP
+   (§2.4 read check): Amphian, for its block below half, and the WarWraith drain
+   heal (a write, not a decision). The other ten never load it. Any HP rule inside the base
    `Creature_run` / `processDamage` is outside this probe.
 9. Death: `deadUpdate` corpse distances, loot call, Droid/Clockwork/WarWraith
    self-deletion paths.
@@ -517,22 +546,29 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_arena_monsters.py \
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools -p 'test_*.py'
 ```
 
-Results after the final code edit (fix round, commit `10cb5c2`; each log starts with
-the commit and the SHA-256 of the tools): both seeds PASS. Twelve classes,
-503,723 contexts a seed (grid, draw, HP and exit), 57,170 executed walks with
-91,747 (seed 20973) / 91,780 (seed 7) executed answer paths, plus 736,352 /
-736,350 replayed model paths. Every model line was hit in every class (`COVER`,
-0 marked not walked). Also: 264 setState entries, 84 filter redirects, 72
-vtable slots, 81 hit cases, 807 factory selections and 4 property-key counts.
-The reused arena difftest compares 4,054 (seed 20973) and 4,012 (seed 7) calls
-with no failing property. The unit suite runs 659 tests, OK.
+Results after the final code edit. Fix round 2: the final code edit is commit
+`45042ce`, and the commit after it changes only this note and `docs/monsters-2.md`
+(`git diff --stat 45042ce` lists only the two docs). Each log is headed by the
+commit it ran at (the branch tip, which adds this paragraph), `status-clean`, the
+Python version and the SHA-256 of the tools. Both seeds PASS. Twelve classes,
+511,577 contexts a seed (grid, draw, HP and exit), 58,526 executed walks with
+93,783 (seed 20973) / 93,816 (seed 7) executed answer paths, plus 745,910 /
+745,908 replayed model paths. Every model line (`COVER`) and every one of the
+1,132 class branch arms plus 6 head/entry arms (`ARMS`) was hit, with 0 marked
+not walked. `HPREAD` shows loads of `+0x228`/`+0x22c` only in Amphian state 5
+and WarWraith state 7 (§2.4). Also: 264 setState entries, 84 filter redirects,
+72 vtable slots, 83 hit cases, 807 factory selections and 4 property-key counts.
+The reused arena difftest compares 4,054 (seed 20973) and 4,012 (seed 7)
+calls with no failing property. The unit suite runs 659 tests, OK.
 
-Logs (ignored, not committed; no game data): `local/creature-ai-r2/seed-20973.log`,
+Logs (ignored, not committed; no game data): `local/creature-ai-r3/seed-20973.log`,
 `seed-7.log`, `arena-seed-20973.log`, `arena-seed-7.log` and `unittest.log`.
 They are in the mini worktree, with a copy in the MacBook worktree
-`~/Projects/champions-re-wt/research-campaign-combat/local/creature-ai-r2/`. The
-first round's logs stay in `local/creature-ai/` on the mini, and a copy sits in
-the same MacBook `local/`.
+`~/Projects/champions-re-wt/research-campaign-combat/local/creature-ai-r3/`.
+The earlier rounds' logs stay in `local/creature-ai/` (first round) and
+`local/creature-ai-r2/` (fix round 1; there the final code edit was `113f8b2`
+and the logs were headed by the docs-only tip `3716afa`; the paragraph that
+named `10cb5c2` was wrong).
 
 ## 6. Unknown
 
