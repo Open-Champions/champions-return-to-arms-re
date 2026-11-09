@@ -811,7 +811,8 @@ def check_frontend(elf, seed):
         require(mem.u8(FRONT_CREDITS) == (1 if arg == 1 else 0), (arg, mem.u8(FRONT_CREDITS)))
         require(targets[-1] == (CREDITS_LOAD if arg == 1 else TASK_ADD), (arg, hex(targets[-1])))
         task = [c for c in emu.calls if c.target == TASK_ADD]
-        require(len(task) == 1 and task[0].args[0] & 0xFFFFFFFF == FRONTEND_RUN, 'frontend task')
+        require(len(task) == 1 and task[0].args[0] & 0xFFFFFFFF == FRONTEND_RUN
+                and task[0].args[1] & 0xFFFFFFFF == 25, 'frontend task')
         if arg == 1:
             tail = emu.calls[-3:]
             require([c.target for c in tail] == [STREAM_CLEAR, MUSIC_GLOBAL, CREDITS_LOAD], 'credits order')
