@@ -23,8 +23,10 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from ee_emu import EE  # noqa: E402
+from gob import gob_entries, lmp_entries  # noqa: E402
 import difftest_natives as N  # noqa: E402
 import difftest_story_mission45 as M  # noqa: E402
+import ref_core  # noqa: E402
 import ref_story_route as R  # noqa: E402
 import scr  # noqa: E402
 
@@ -49,6 +51,20 @@ MUSIC_GLOBAL = 0x2110E0
 STREAM_CLEAR = 0x216130
 TASK_ADD = 0x19E4A0
 FRONTEND_RUN = 0x1E08F0
+# Script locals (data-relative offsets), pinned by check_storm2 and
+# check_shard_static. storm2 checkEveryFrame: the live-monster count, its
+# per-call copy, and the frame counter.
+STORM2_MONSTERS, STORM2_SEEN, STORM2_FRAMES = 0xB0, 0xA8, 0xAC
+# shardCheck: (counter, count saved by start, script offset of the
+# `if saved >= count` branch that skips the grant).
+SHARD_LOCALS = {
+    'storm4': (0x8, 0xC, 0x3BC),
+    'nit2': (0x68, 0x6C, 0x84C),
+    'bossgood': (0x0, 0x4, 0xAB0),
+    'bossevil': (0x0, 0x4, 0xAB0),
+}
+# Mission natives and their argument counts.
+MISSION_NATIVES = {'setMissionAvailable': 2, 'grantMission': 1}
 STORY = (8, 9, 10, 11, 12)
 SOUND = [
     ('res_find', (b'fx.lmp', b'quest_complete.anm')),
@@ -274,16 +290,74 @@ def help_calls(keys, prefix):
             ('hud_showHelpMessage', (0xFFFFFFFF, 0, 0))]
 
 
-def ticks(rig, mem, entry, count, shells=None, paused=0):
+def ticks(rig, mem, entry, count, shells=None, paused=0, each=None):
+    """count deferred calls of entry. each(n), if given, runs after call n (1-based)."""
     if shells is not None:
         rig.responder.shells = shells
     mem.w32(M.G_PAUSED, paused)
-    for _ in range(count):
+    for n in range(count):
         M.clear_defer(mem)
         result = M.run_entry(rig, entry)
-        require(result == (0, ''), (entry, result))
+        require(result == (0, ''), (entry, n + 1, result))
+        if each is not None:
+            each(n + 1)
     # The next prepare checks the image value, so a paused case must not leak.
     mem.w32(M.G_PAUSED, 0)
+
+
+def code_words(image):
+    cs, ce = scr.parse(image)['code']
+    return struct.unpack_from('<%dI' % ((ce - cs) // 4), image, cs)
+
+
+def local_addr(rig, levels, level, offset):
+    return M.data_addr(rig, levels[level]['script.scr'], offset)
+
+
+def no_write(rig, addr):
+    return not any(a == addr for _p, a, _s, _v in rig.emu.writes)
+
+
+def check_shard_static(levels):
+    """Each shardCheck counter, the count start saves, and the compare that reads it."""
+    for level, (counter, saved, branch) in SHARD_LOCALS.items():
+        image = levels[level]['script.scr']
+        words = code_words(image)
+        start, end = M.entry_span(image, 'shardCheck')
+        # `A = var[saved]` directly before `if A >= X jump` (skip the grant).
+        require(start <= branch < end and words[branch // 4] == 0x40
+                and words[branch // 4 - 2:branch // 4] == (0x01, saved), (level, 'compare'))
+        require(M.compare_imm(image, 'shardCheck', 25) is not None, (level, '== 25'))
+        incs = [off for off in M.var_writes(image, counter)
+                if start <= off < end and words[off // 4] == 0x6D]
+        require(len(incs) == 1, (level, 'counter', incs))
+        stores = M.var_writes(image, saved)
+        s0, s1 = M.entry_span(image, 'start')
+        require(len(stores) == 1 and s0 <= stores[0] < s1 and words[stores[0] // 4] == 0x0F,
+                (level, 'saved store', stores))
+        require(any(off == stores[0] - 0x10 and name == 'playerHasItem'
+                    for off, name, _a in M.calls_of(image, 'start')), (level, 'saved = count'))
+    return len(SHARD_LOCALS)
+
+
+def saved_cases(rig, levels, level, seed, count_call, grant_calls, granted, untouched):
+    """The 25th call grants only when the count stub exceeds the saved local.
+    Planted values stand in for the start store."""
+    _counter, saved, _branch = SHARD_LOCALS[level]
+    for base, shells, grants in ((1, 1, False), (1, 2, True), (-1, 0, True)):
+        mem = prepare(rig, levels, level, seed)
+        require(M.run_entry(rig, 'start') == (0, ''), (level, 'start'))
+        mem.w32(local_addr(rig, levels, level, saved), base & 0xFFFFFFFF)
+        ticks(rig, mem, 'shardCheck', 24, shells=0)
+        ticks(rig, mem, 'shardCheck', 1, shells=shells)
+        require(granted(mem) if grants else untouched(mem), (level, base, shells))
+        require(rig.calls == (grant_calls if grants else [count_call]), (level, base, rig.calls))
+    return 3
+
+
+def start_saves_count(rig, levels, level, mem, count):
+    addr = local_addr(rig, levels, level, SHARD_LOCALS[level][1])
+    require(mem.s32(addr) == count and not no_write(rig, addr), (level, 'saved count', mem.s32(addr)))
 
 
 # ---- mission 9 ------------------------------------------------------------------------
@@ -305,21 +379,29 @@ def check_m9_offer(rig, levels, keys, seed):
     require(mem.u32(PLAYERS + QUEST_COUNT) == 1 and mem.cstr(PLAYERS + QUEST, 32) == 'OTHER-TITLE',
             'other quest kept')
     checks += 1
+    # setMissi1bb4 has no removeQuest site; a planted quest stays.
+    image = levels['valor']['script.scr']
+    require(not [o for o, name, _a in M.calls_of(image, 'setMissi1bb4') if name == 'removeQuest'],
+            'setMissi1bb4 removeQuest')
     mem = prepare(rig, levels, 'valor', seed)
+    M.plant_quest(rig, keys['KV1'], 'plant-body')
     require(M.run_entry(rig, 'setMissi1bb4') == (0, ''), 'setMissi1bb4')
     require(bytes_at(mem, 8) == [on, SENTINEL, SENTINEL, SENTINEL] and held(mem, skip=(8,)), 'm8')
-    require(no_quest(mem) and rig.calls == [], 'm8 quest')
+    require(mem.u32(PLAYERS + QUEST_COUNT) == 1 and mem.cstr(PLAYERS + QUEST, 32) == keys['KV1']
+            and rig.calls == [], 'm8 quest')
     checks += 1
     for entry, index in (('if2a2e', 8), ('ifa054', 9)):
         for byte in (0xA0, 0xA1, 0xA2, 0xA3):
             for other in (0xA0, 0xA3):
-                mem = prepare(rig, levels, 'valor', seed)
-                mem.w8(PLAYERS + MISSION + index, byte)
-                mem.w8(PLAYERS + MISSION + (17 - index), other)
-                got = M.run_entry(rig, entry)
-                require(got == (0 if byte & 1 else 1, ''), (entry, hex(byte), hex(other), got))
-                require(rig.calls == [], rig.calls)
-                checks += 1
+                for seventh in (0xA0, 0xA3):
+                    mem = prepare(rig, levels, 'valor', seed)
+                    mem.w8(PLAYERS + MISSION + index, byte)
+                    mem.w8(PLAYERS + MISSION + (17 - index), other)
+                    mem.w8(PLAYERS + MISSION + 7, seventh)
+                    got = M.run_entry(rig, entry)
+                    require(got == (0 if byte & 1 else 1, ''), (entry, hex(byte), hex(other), hex(seventh), got))
+                    require(rig.calls == [], rig.calls)
+                    checks += 1
     return checks
 
 
@@ -410,11 +492,13 @@ def check_travel(rig, levels, seed):
 
 def check_storm4(rig, levels, keys, seed):
     checks = 0
-    mem = prepare(rig, levels, 'storm4', seed)
+    count_call = ('inventory_countItemByName', (b'shardofstorms', 0))
+    mem = prepare(rig, levels, 'storm4', seed, shells=2)
     M.plant_var(rig, 'currentMission', 0x5A)
     require(M.run_entry(rig, 'start') == (0, ''), 'storm4 start')
     M.require_stored(rig, mem, 'currentmission', 9)
-    require(rig.calls == [('inventory_countItemByName', (b'shardofstorms', 0))], rig.calls)
+    require(rig.calls == [count_call], rig.calls)
+    start_saves_count(rig, levels, 'storm4', mem, 2)
     require(M.defer_name(mem) == 'shardCheck', M.defer_name(mem))
     require(mem.cstr(N.N.G_POST_ACTION, 32) == 'absorb' and held(mem), 'storm4 post')
     checks += 1
@@ -424,20 +508,25 @@ def check_storm4(rig, levels, keys, seed):
     M.require_stored(rig, mem, 'sawboss', 1)
     require(mem.cstr(N.N.G_POST_ACTION, 32) == 'cutsave', 'cutsave post')
     checks += 1
-    grant_calls = ([('inventory_countItemByName', (b'shardofstorms', 0))] + help_calls(keys, 'H9s')
-                   + [('player_voice', (0, 9))])
+    grant_calls = [count_call] + help_calls(keys, 'H9s') + [('player_voice', (0, 9))]
+    counter = SHARD_LOCALS['storm4'][0]
     for shells, paused_at, grants in ((1, None, True), (2, None, True), (0, None, False), (1, 24, True)):
         mem = prepare(rig, levels, 'storm4', seed)
         M.run_entry(rig, 'start')
         M.plant_var(rig, 'stm_gotShard', 0x5A)
-        ticks(rig, mem, 'shardCheck', 24, shells=0)
-        require(flag_words(mem) == [FLAG_FILL] * 4, 'early flag')
-        require(M.defer_name(mem) == 'shardCheck' and rig.calls == [], 'early call')
+        ctr = local_addr(rig, levels, 'storm4', counter)
+
+        def early(n):
+            # Every one of calls 1-24 (and a paused call after them).
+            require(rig.calls == [] and mem.s32(ctr) == n, ('storm4 call', n, rig.calls, mem.s32(ctr)))
+            require(flag_words(mem) == [FLAG_FILL] * 4 and held(mem), ('storm4 flag', n))
+            require(dict(M.variables(mem))['stm_gotshard'] == 0x5A, ('storm4 shard', n))
+            require(M.defer_name(mem) == 'shardCheck', ('storm4 requeue', n))
+        ticks(rig, mem, 'shardCheck', 24, shells=0, each=early)
         if paused_at is not None:
-            ticks(rig, mem, 'shardCheck', 1, shells=shells, paused=1)
-            require(flag_words(mem) == [FLAG_FILL] * 4 and rig.calls == [], 'paused tick')
-            require(dict(M.variables(mem))['stm_gotshard'] == 0x5A, 'paused shard')
+            ticks(rig, mem, 'shardCheck', 1, shells=shells, paused=1, each=lambda n: early(paused_at))
         ticks(rig, mem, 'shardCheck', 1, shells=shells)
+        require(mem.s32(ctr) == 0, ('storm4 counter reset', mem.s32(ctr)))
         if grants:
             require(flag_words(mem) == [FLAG_FILL | 0x10] * 4, [hex(w) for w in flag_words(mem)])
             M.require_stored(rig, mem, 'stm_gotshard', 1)
@@ -446,51 +535,104 @@ def check_storm4(rig, levels, keys, seed):
             require(M.defer_name(mem) == '', 'queued on grant')
         else:
             require(flag_words(mem) == [FLAG_FILL] * 4, 'no flag')
-            require(rig.calls == [('inventory_countItemByName', (b'shardofstorms', 0))], rig.calls)
+            require(rig.calls == [count_call], rig.calls)
             require(dict(M.variables(mem))['stm_gotshard'] == 0x5A, 'no shard store')
+            require(M.defer_name(mem) == 'shardCheck', 'storm4 requeue')
         require(held(mem), 'storm4 grants nothing')
         checks += 1
+    checks += saved_cases(rig, levels, 'storm4', seed, count_call, grant_calls,
+                          lambda mem: flag_words(mem) == [FLAG_FILL | 0x10] * 4 and held(mem),
+                          lambda mem: flag_words(mem) == [FLAG_FILL] * 4 and held(mem))
     return checks
 
 
 def check_storm2(rig, levels, keys, seed):
     checks = 0
+    image = levels['storm2']['script.scr']
+    words = code_words(image)
+    # The frame counter compare, and the locals it and the monster gate read.
+    require(M.compare_imm(image, 'checkEveryFrame', 100) == 0xEA8, 'storm2 == 100')
+    require(words[0xEA0 // 4:0xEA0 // 4 + 2] == (0x01, STORM2_FRAMES), 'storm2 frames local')
+    require(words[0xDB4 // 4:0xDB4 // 4 + 4] == (0x01, STORM2_MONSTERS, 0x0F, STORM2_SEEN), 'storm2 copy')
     for flag, carried in ((FLAG_FILL | 0x10, True), (FLAG_FILL, False)):
         mem = prepare(rig, levels, 'storm2', seed, flags=flag)
         M.plant_var(rig, 'currentMission', 0x5A)
+        frames = local_addr(rig, levels, 'storm2', STORM2_FRAMES)
+        mem.w32(frames, 0x5A5A5A5A)
         require(M.run_entry(rig, 'start') == (0, ''), 'storm2 start')
         M.require_stored(rig, mem, 'currentmission', 9)
+        require(mem.s32(frames) == 0 and not no_write(rig, frames), 'start clears the frame counter')
         require(flag_words(mem) == [FLAG_FILL] * 4, [hex(w) for w in flag_words(mem)])
         M.require_stored(rig, mem, 'stm_gotshard', 1 if carried else 0)
         require(M.defer_name(mem) == ('checkEveryFrame' if carried else ''), M.defer_name(mem))
         require(rig.calls == [('automap_revealAll', ())], rig.calls)
         require(held(mem), 'storm2 start bytes')
         checks += 1
-    bust = [('text_lookup', (keys['B9'].encode(),)),
-            ('hud_setBust', (b'bust_bubonian.tex', 0, 0, 0xFFFFFFFF))]
+
+    def bust(count=0):
+        return [('text_lookup', (keys['B9'].encode(),)),
+                ('hud_setBust', (b'bust_bubonian.tex', 0, count, 0xFFFFFFFF))]
     done = R.complete_byte(SENTINEL, -1)
-    for shard in (1, 0):
+
+    def fresh(shard):
         mem = prepare(rig, levels, 'storm2', seed)
         M.plant_var(rig, 'stm_gotShard', shard)
-        ticks(rig, mem, 'checkEveryFrame', 100)
-        require(rig.calls == bust and held(mem), ('100th', rig.calls))
-        require(dict(M.variables(mem))['storm2cleared'] == 0, 'not cleared yet')
+        frames = local_addr(rig, levels, 'storm2', STORM2_FRAMES)
+        monsters = local_addr(rig, levels, 'storm2', STORM2_MONSTERS)
+        require(mem.s32(frames) == 0 and mem.s32(monsters) == 0, 'storm2 image locals')
+        return mem, frames, monsters
+
+    for shard in (1, 0):
+        mem, frames, _monsters = fresh(shard)
+
+        def counting(n):
+            require(rig.calls == bust() and mem.s32(frames) == n, ('storm2 call', n, rig.calls, mem.s32(frames)))
+            require(held(mem) and dict(M.variables(mem))['storm2cleared'] == 0, ('storm2 early', n))
+            require(M.defer_name(mem) == 'checkEveryFrame', ('storm2 requeue', n))
+        ticks(rig, mem, 'checkEveryFrame', 100, each=counting)
         ticks(rig, mem, 'checkEveryFrame', 1)
         M.require_stored(rig, mem, 'storm2cleared', 1)
+        require(mem.s32(frames) == 101, ('101st', mem.s32(frames)))
         if shard:
-            require(rig.calls == bust + help_calls(keys, 'H9') + SOUND, rig.calls)
+            require(rig.calls == bust() + help_calls(keys, 'H9') + SOUND, rig.calls)
             require(bytes_at(mem, 9) == [done] * 4 and held(mem, skip=(9,)), bytes_at(mem, 9))
         else:
-            require(rig.calls == bust + help_calls(keys, 'H9'), rig.calls)
+            require(rig.calls == bust() + help_calls(keys, 'H9'), rig.calls)
             require(held(mem), 'no shard, no grant')
+            # Planted: no script route to a shard after this clear was found.
+            M.plant_var(rig, 'stm_gotShard', 1)
         require(M.defer_name(mem) == 'checkEveryFrame', 'requeue')
-        ticks(rig, mem, 'checkEveryFrame', 1)
-        require(rig.calls == [], ('after clear', rig.calls))
+        cleared = M.var_addr(mem, 'storm2cleared')
+
+        def after(n):
+            require(rig.calls == [] and mem.s32(frames) == 101, ('after clear', shard, n, rig.calls))
+            require(bytes_at(mem, 9) == ([done] * 4 if shard else [SENTINEL] * 4)
+                    and held(mem, skip=(9,)), ('after clear bytes', shard, n))
+            require(no_write(rig, cleared) and M.defer_name(mem) == 'checkEveryFrame', ('after', shard, n))
+        ticks(rig, mem, 'checkEveryFrame', 150, each=after)
         checks += 1
-    mem = prepare(rig, levels, 'storm2', seed)
-    M.plant_var(rig, 'stm_gotShard', 1)
+    # The counter only moves on unpaused frames with no monsters left.
+    mem, frames, monsters = fresh(1)
+
+    def blocked(count):
+        def each(n):
+            require(rig.calls == (bust(count) if count < 21 else []) and mem.s32(frames) == 0,
+                    ('monsters', count, n, rig.calls, mem.s32(frames)))
+            require(held(mem) and M.defer_name(mem) == 'checkEveryFrame', ('monsters held', count, n))
+        return each
+    for count in (3, 21):
+        mem.w32(monsters, count)
+        ticks(rig, mem, 'checkEveryFrame', 120, each=blocked(count))
+    mem.w32(monsters, 0)
+    ticks(rig, mem, 'checkEveryFrame', 100,
+          each=lambda n: require(mem.s32(frames) == n and held(mem), ('zero monsters', n)))
+    ticks(rig, mem, 'checkEveryFrame', 1)
+    require(bytes_at(mem, 9) == [done] * 4, 'grant after 100 zero-monster frames')
+    checks += 1
+    mem, frames, _monsters = fresh(1)
     ticks(rig, mem, 'checkEveryFrame', 50)
-    ticks(rig, mem, 'checkEveryFrame', 10, paused=1)
+    ticks(rig, mem, 'checkEveryFrame', 10, paused=1,
+          each=lambda n: require(rig.calls == bust() and mem.s32(frames) == 50, ('paused', n)))
     ticks(rig, mem, 'checkEveryFrame', 50)
     require(held(mem) and dict(M.variables(mem))['storm2cleared'] == 0, 'paused ticks count')
     ticks(rig, mem, 'checkEveryFrame', 1)
@@ -518,7 +660,18 @@ def check_fay(rig, levels, keys, seed):
         M.plant_var(rig, 'playerisgood', 1)
         M.run_entry(rig, 'preStart')
         require(dict(M.variables(mem))['playerisgood'] == 1
-                and dict(M.variables(mem)).get('playerisevil') == 0, 'kept decision')
+                and no_write(rig, M.var_addr(mem, 'playerisgood')), 'kept decision')
+        # Reading the absent playerisevil creates it: a 1-byte store of 0.
+        M.require_stored(rig, mem, 'playerisevil', 0)
+        checks += 1
+        mem = prepare(rig, levels, level, seed, evil=1, decision=1)
+        M.plant_var(rig, 'playerisgood', 0x5A)
+        M.plant_var(rig, 'playerisevil', 0x5A)
+        M.run_entry(rig, 'preStart')
+        for name in ('playerisgood', 'playerisevil'):
+            require(dict(M.variables(mem))[name] == 0x5A and no_write(rig, M.var_addr(mem, name)),
+                    (level, name, 'planted'))
+        require(rig.calls == [('lump_load', (b'bust.lmp',))], rig.calls)
         checks += 1
     for level, quest_evil, ident in (('fay2', 0, 'Q10g'), ('fay1', 1, 'Q10e')):
         for evil in (0, 1):
@@ -540,6 +693,12 @@ def check_fay(rig, levels, keys, seed):
                 # Both side variables are absent, so the box roll (getRand) is not reached.
                 require(mem.u32(N.N.G_RAND_SEED) == seed, (level, 'rand box'))
                 checks += 1
+    # fay3 checkEachFrame queues missionDone after `anchCompleted == 8`.
+    image = levels['fay3']['script.scr']
+    require(M.compare_imm(image, 'checkEachFrame', 8) == 0x10C4, 'fay3 == 8')
+    require([(o, a) for o, name, a in M.calls_of(image, 'checkEachFrame') if name == 'addDeferedCall']
+            == [(0x10F0, ('missionDone',)), (0x1184, ('checkEachFrame',))], 'fay3 queue')
+    checks += 1
     done = R.complete_byte(SENTINEL, -1)
     for side, title in (('playerisgood', 'Q10g.t'), ('playerisevil', 'Q10e.t')):
         mem = prepare(rig, levels, 'fay3', seed)
@@ -581,13 +740,23 @@ def check_fay(rig, levels, keys, seed):
 
 # ---- mission 11 -----------------------------------------------------------------------
 
+def nit1_start(rig, levels, seed, start_byte=SENTINEL, faywords=None):
+    mem = prepare(rig, levels, 'nit1', seed)
+    mem.w8(PLAYERS + MISSION + 11, start_byte)
+    M.plant_mission_vars(rig, mem, (('startedMission11', 1), ('currentMission', 11)))
+    if faywords is not None:
+        M.plant_var(rig, 'faywords', faywords)
+    require(M.run_entry(rig, 'start') == (0, ''), 'nit1 start')
+    return mem
+
+
 def check_nit(rig, levels, keys, seed):
     checks = 0
+    # One getRand site in nit1, in start.
+    _p, found, _q = M.calls_in(levels['nit1']['script.scr'])
+    require([off for off, name, _a in found if name == 'getRand'] == [0x1EC], 'nit1 getRand sites')
     for start_byte in (SENTINEL, R.complete_byte(SENTINEL, -1)):
-        mem = prepare(rig, levels, 'nit1', seed)
-        mem.w8(PLAYERS + MISSION + 11, start_byte)
-        M.plant_mission_vars(rig, mem, (('startedMission11', 1), ('currentMission', 11)))
-        require(M.run_entry(rig, 'start') == (0, ''), 'nit1 start')
+        mem = nit1_start(rig, levels, seed, start_byte)
         require(bytes_at(mem, 11) == [R.available_byte(start_byte, 1)] + [SENTINEL] * 3, 'nit1 byte')
         require(held(mem, skip=(11,)), 'nit1 others')
         M.require_stored(rig, mem, 'startedmission11', 1)
@@ -596,48 +765,84 @@ def check_nit(rig, levels, keys, seed):
             require(quest_is(mem, keys['Q11.t'], keys['Q11.b']), 'Q11')
         else:
             require(no_quest(mem), 'no Q11 when complete')
-        words = dict(M.variables(mem))['faywords']
-        require(1 <= words <= 4 and mem.u32(N.N.G_RAND_SEED) != seed, ('faywords', words))
+        # Exactly one shared-seed draw: faywords = draw % 4 + 1.
+        lcg = ref_core.Lcg(seed)
+        draw = lcg.draw()
+        require(mem.u32(N.N.G_RAND_SEED) == lcg.state, ('nit1 seed', hex(mem.u32(N.N.G_RAND_SEED))))
+        M.require_stored(rig, mem, 'faywords', draw % 4 + 1)
         require(rig.calls == [] and pending(mem) == 'PENDING-SENTINEL', rig.calls)
         checks += 1
+    # Further seeds until every faywords value has come up.
+    seen, probe = set(), seed
+    while len(seen) < 4:
+        probe += 1
+        require(probe - seed <= 64, ('faywords values', sorted(seen)))
+        mem = nit1_start(rig, levels, probe)
+        lcg = ref_core.Lcg(probe)
+        draw = lcg.draw()
+        require(mem.u32(N.N.G_RAND_SEED) == lcg.state, ('nit1 seed', probe))
+        M.require_stored(rig, mem, 'faywords', draw % 4 + 1)
+        seen.add(draw % 4 + 1)
+    checks += 1
+    # faywords already set: no draw and no store.
+    mem = nit1_start(rig, levels, seed, faywords=3)
+    require(mem.u32(N.N.G_RAND_SEED) == seed and dict(M.variables(mem))['faywords'] == 3
+            and no_write(rig, M.var_addr(mem, 'faywords')), 'nit1 planted faywords')
+    checks += 1
     done = R.complete_byte(SENTINEL, -1)
-    for shells, grants in ((1, True), (0, False)):
+    count_call = ('inventory_countItemByName', (b'shardofnightmare', 0))
+    grant_calls = [count_call] + help_calls(keys, 'H11') + SOUND
+    counter = SHARD_LOCALS['nit2'][0]
+    mem = prepare(rig, levels, 'nit2', seed, shells=2)
+    require(M.run_entry(rig, 'start') == (0, ''), 'nit2 start')
+    start_saves_count(rig, levels, 'nit2', mem, 2)
+    checks += 1
+    for shells, grants, paused in ((1, True, 0), (0, False, 0), (1, True, 1)):
         mem = prepare(rig, levels, 'nit2', seed)
         require(M.run_entry(rig, 'start') == (0, ''), 'nit2 start')
-        require(rig.calls == [('inventory_countItemByName', (b'shardofnightmare', 0))], rig.calls)
+        require(rig.calls == [count_call], rig.calls)
         require(M.defer_name(mem) == 'shardCheck', 'nit2 defer')
         M.plant_quest(rig, keys['Q11.t'], 'plant-body')
         M.plant_var(rig, 'nit_gotShard', 0x5A)
-        ticks(rig, mem, 'shardCheck', 24, shells=0)
-        require(held(mem) and rig.calls == [], 'nit2 early')
-        ticks(rig, mem, 'shardCheck', 1, shells=shells)
+        ctr = local_addr(rig, levels, 'nit2', counter)
+
+        def early(n):
+            require(rig.calls == [] and mem.s32(ctr) == n, ('nit2 call', n, rig.calls, mem.s32(ctr)))
+            require(held(mem) and mem.u32(PLAYERS + QUEST_COUNT) == 1, ('nit2 early', n))
+            require(dict(M.variables(mem))['nit_gotshard'] == 0x5A, ('nit2 shard', n))
+            require(M.defer_name(mem) == 'shardCheck', ('nit2 requeue', n))
+        # nit2 shardCheck has no gamePaused test: paused calls count too.
+        ticks(rig, mem, 'shardCheck', 24, shells=0, paused=paused, each=early)
+        ticks(rig, mem, 'shardCheck', 1, shells=shells, paused=paused)
+        require(mem.s32(ctr) == 0, 'nit2 counter reset')
         if grants:
             require(bytes_at(mem, 11) == [done] * 4 and held(mem, skip=(11,)), bytes_at(mem, 11))
             M.require_stored(rig, mem, 'nit_gotshard', 1)
             require(removed(mem), 'Q11 removed')
-            require(rig.calls == [('inventory_countItemByName', (b'shardofnightmare', 0))]
-                    + help_calls(keys, 'H11') + SOUND, rig.calls)
+            require(rig.calls == grant_calls, rig.calls)
             require(M.defer_name(mem) == '', 'nit2 queued on grant')
         else:
             require(held(mem) and mem.u32(PLAYERS + QUEST_COUNT) == 1, 'nit2 no grant')
             require(dict(M.variables(mem))['nit_gotshard'] == 0x5A, 'nit2 no store')
+            require(rig.calls == [count_call] and M.defer_name(mem) == 'shardCheck', 'nit2 requeue')
         checks += 1
-    # nit2 shardCheck has no gamePaused test: a paused tick still counts.
-    mem = prepare(rig, levels, 'nit2', seed)
-    M.run_entry(rig, 'start')
-    ticks(rig, mem, 'shardCheck', 24, shells=0, paused=1)
-    ticks(rig, mem, 'shardCheck', 1, shells=1, paused=1)
-    require(bytes_at(mem, 11) == [done] * 4, 'paused nit2 grant')
-    checks += 1
+    checks += saved_cases(rig, levels, 'nit2', seed, count_call, grant_calls,
+                          lambda mem: bytes_at(mem, 11) == [done] * 4 and held(mem, skip=(11,)),
+                          lambda mem: held(mem))
+    # nitmar1: the second writer. It has no removeQuest site at all.
+    _p, found, _q = M.calls_in(levels['nitmar1']['script.scr'])
+    require(not [off for off, name, _a in found if name == 'removeQuest'], 'nitmar1 removeQuest')
     mem = prepare(rig, levels, 'nitmar1', seed)
     require(M.run_entry(rig, 'start') == (0, ''), 'nitmar1 start')
     require(bytes_at(mem, 11) == [R.available_byte(SENTINEL, 1)] + [SENTINEL] * 3, 'nitmar1 avail')
     require(no_quest(mem) and rig.calls == [], 'nitmar1 quest')
     mem = prepare(rig, levels, 'nitmar1', seed)
+    M.plant_quest(rig, keys['Q11.t'], 'plant-body')
     require(M.run_entry(rig, 'callScri7351') == (0, ''), 'nitmar1 trigger')
     require(bytes_at(mem, 11) == [done] * 4 and held(mem, skip=(11,)), 'nitmar1 grant')
     require(rig.calls == help_calls(keys, 'H11m'), rig.calls)
-    require(no_quest(mem), 'nitmar1 no quest edit')
+    require(mem.u32(PLAYERS + QUEST_COUNT) == 1 and mem.cstr(PLAYERS + QUEST, 32) == keys['Q11.t'],
+            'nitmar1 keeps Q11')
     return checks + 2
 
 
@@ -662,13 +867,36 @@ def check_boss(rig, levels, keys, seed):
         require(rig.calls == [('inventory_countItemByName', (item, 0))], rig.calls)
         require(no_quest(mem), level)
         checks += 1
+        # The save-inhibit store is skipped once the start variable is set.
+        # bossgood killedboss stores killedThules, which this test never reads.
+        planted = [(killed, 1, False)] + ([('killedThules', 1, True)] if level == 'bossgood' else [])
+        for var, value, inhibits in planted:
+            mem = prepare(rig, levels, level, seed, shells=2)
+            mem.w32(G_SAVE_INHIBIT, 0x5A5A5A5A)
+            M.plant_var(rig, var, value)
+            require(M.run_entry(rig, 'start') == (0, ''), (level, var))
+            if inhibits:
+                require(mem.u32(G_SAVE_INHIBIT) == 1 and wrote(rig, G_SAVE_INHIBIT, 4, 1), (level, var))
+            else:
+                require(mem.u32(G_SAVE_INHIBIT) == 0x5A5A5A5A and no_write(rig, G_SAVE_INHIBIT), (level, var))
+            require(bytes_at(mem, 12) == [on] + [SENTINEL] * 3 and M.defer_name(mem) == 'shardCheck', var)
+            start_saves_count(rig, levels, level, mem, 2)
+            checks += 1
+        counter = SHARD_LOCALS[level][0]
         for shells, grants in ((1, True), (0, False)):
             mem = prepare(rig, levels, level, seed)
             M.run_entry(rig, 'start')
             M.plant_var(rig, 'finalShard', 0x5A)
-            ticks(rig, mem, 'shardCheck', 24, shells=0)
-            require(bytes_at(mem, 12) == [on] + [SENTINEL] * 3 and rig.calls == [], 'boss early')
+            ctr = local_addr(rig, levels, level, counter)
+
+            def early(n):
+                require(rig.calls == [] and mem.s32(ctr) == n, (level, n, rig.calls, mem.s32(ctr)))
+                require(bytes_at(mem, 12) == [on] + [SENTINEL] * 3 and held(mem, skip=(12,)), (level, n))
+                require(dict(M.variables(mem))['finalshard'] == 0x5A, (level, n, 'finalShard'))
+                require(M.defer_name(mem) == 'shardCheck', (level, n, 'requeue'))
+            ticks(rig, mem, 'shardCheck', 24, shells=0, each=early)
             ticks(rig, mem, 'shardCheck', 1, shells=shells)
+            require(mem.s32(ctr) == 0, (level, 'counter reset'))
             if grants:
                 require(bytes_at(mem, 12) == [R.complete_byte(on, -1)] + [done] * 3, bytes_at(mem, 12))
                 M.require_stored(rig, mem, 'finalshard', 1)
@@ -678,8 +906,13 @@ def check_boss(rig, levels, keys, seed):
             else:
                 require(bytes_at(mem, 12) == [on] + [SENTINEL] * 3, 'boss no grant')
                 require(dict(M.variables(mem))['finalshard'] == 0x5A, 'boss no store')
+                require(M.defer_name(mem) == 'shardCheck', 'boss requeue')
             require(held(mem, skip=(12,)), level)
             checks += 1
+        count_call = ('inventory_countItemByName', (item, 0))
+        checks += saved_cases(rig, levels, level, seed, count_call, [count_call] + help_calls(keys, 'H12'),
+                              lambda mem: bytes_at(mem, 12) == [R.complete_byte(on, -1)] + [done] * 3,
+                              lambda mem: bytes_at(mem, 12) == [on] + [SENTINEL] * 3)
         for shard, key in ((None, 0), (0, 0), (1, 1)):
             mem = prepare(rig, levels, level, seed)
             if shard is not None:
@@ -890,12 +1123,16 @@ CENSUS = {
 }
 
 
-def raw_mission_calls(image):
-    """(offset, native, first pushed immediate or None) for the two mission natives."""
+def raw_mission_calls(image, natives_out=None):
+    """(offset, native, first pushed immediate or None) for the two mission natives.
+
+    The sweep must end exactly at the end of the code, every native index must be in
+    range, and the argument byte count pushed last must match the arguments seen."""
     parsed = scr.parse(image)
     natives = [name for _, name in parsed['externals']]
-    cs, ce = parsed['code']
-    words = struct.unpack_from('<%dI' % ((ce - cs) // 4), image, cs)
+    if natives_out is not None:
+        natives_out.extend(natives)
+    words = code_words(image)
     found, pending, i = [], [], 0
     while i < len(words):
         op = words[i]
@@ -903,10 +1140,13 @@ def raw_mission_calls(image):
             i += 3
             continue
         if op == 0x7B:
+            require(words[i + 1] < len(natives), ('native index', hex(i * 4)))
             name = natives[words[i + 1]]
-            if name in ('setMissionAvailable', 'grantMission'):
+            if name in MISSION_NATIVES:
+                require(pending and pending[-1] == 4 * MISSION_NATIVES[name]
+                        and len(pending) == 1 + MISSION_NATIVES[name], (name, hex(i * 4), pending))
                 raw = pending[:-1][::-1]
-                found.append((i * 4, name, raw[0] if raw else None))
+                found.append((i * 4, name, raw[0]))
             pending = []
             i += 2
             continue
@@ -927,32 +1167,73 @@ def raw_mission_calls(image):
             i += 1 + scr.OPS[op][1]
         else:
             i += 1 if op in scr.NO_OPERAND else 2
+    require(i == len(words), ('sweep overran the code', i, len(words)))
     return found
 
 
-def check_census(data):
-    got = {key: set() for key in CENSUS}
-    files = 0
+def disc_scripts(data):
+    """Every script.scr in every lump of every .GOB. A GOB whose bytes name
+    script.scr but which yields none fails."""
+    scripts, files = [], 0
     for name in sorted(os.listdir(data)):
         if not name.upper().endswith('.GOB'):
             continue
-        try:
-            image = M.lump_map(os.path.join(data, name))['script.scr']
-        except AssertionError:
-            continue
+        blob = open(os.path.join(data, name), 'rb').read()
         files += 1
-        for off, native, first in raw_mission_calls(image):
-            require(first is not None, (name, hex(off), native))
+        got = 0
+        for lump, lo, size in gob_entries(blob):
+            if not lump.lower().endswith('.lmp'):
+                continue
+            inner_blob = blob[lo:lo + size]
+            for inner, off, inner_size in lmp_entries(inner_blob):
+                if inner.lower() == 'script.scr':
+                    scripts.append((name[:-4].lower(), lump.lower(), inner_blob[off:off + inner_size]))
+                    got += 1
+        require(got or b'script.scr' not in blob.lower(), ('unread script', name))
+    return files, scripts
+
+
+def check_census(data):
+    files, scripts = disc_scripts(data)
+    require(files > 100 and len(scripts) > 100, (files, len(scripts)))
+    got = {key: set() for key in CENSUS}
+    totals = {name: [0, set()] for name in MISSION_NATIVES}
+    shard_stores = set()
+    for level, lump, image in scripts:
+        natives = []
+        rows = raw_mission_calls(image, natives)
+        offsets = set()
+        for off, native, first in rows:
+            require(first is not None, (level, hex(off), native))
+            offsets.add(off)
+            totals[native][0] += 1
+            totals[native][1].add((level, lump))
             if 9 <= first <= 12:
-                got[(first, native)].add((name[:-4].lower(), off))
-    require(files > 100, files)
+                got[(first, native)].add((level, off))
+        # Independent of the sweep: every (0x7B, index) word pair for a mission
+        # native, at any word offset, must be a call the sweep decoded.
+        index = {n for n, name in enumerate(natives) if name in MISSION_NATIVES}
+        words = code_words(image)
+        loose = {k * 4 for k in range(len(words) - 1) if words[k] == 0x7B and words[k + 1] in index}
+        require(loose == offsets, (level, sorted(loose ^ offsets)))
+        _p, found, _q = M.calls_in(image)
+        for off, name, args in found:
+            if name == 'setv' and args and str(args[0]).lower() == 'stm_gotshard':
+                shard_stores.add((level, off, args[1]))
+    # Per-native totals over the disc, as counted independently in
+    # docs/spec/script-builtins.md (calls / files).
+    require({name: (n, len(where)) for name, (n, where) in totals.items()}
+            == {'setMissionAvailable': (88, 23), 'grantMission': (33, 32)}, totals)
     for key, sites in CENSUS.items():
         require(got[key] == sites, (key, sorted(got[key] ^ sites)))
-    return len(CENSUS)
+    # stm_gotShard is only ever stored as 1, by storm4 shardCheck and storm2 start.
+    require(shard_stores == {('storm4', 0x4A4, 1), ('storm2', 0x520, 1)}, sorted(shard_stores))
+    print('census: %d GOB files, %d scripts' % (files, len(scripts)))
+    return len(CENSUS) + 3
 
 
 def check_seed(rig, levels, keys, elf, seed):
-    checks = check_sites(levels) + check_links(levels)
+    checks = check_sites(levels) + check_links(levels) + check_shard_static(levels)
     checks += check_m9_offer(rig, levels, keys, seed)
     checks += check_storm1(rig, levels, keys, seed)
     checks += check_travel(rig, levels, seed)
