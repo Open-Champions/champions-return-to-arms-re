@@ -88,6 +88,12 @@ def plant_mask(e, hidden, flag, base_byte, records, extras=()):
     return block
 
 
+def overlaps(writes, address, length):
+    """Recorded stores that touch any byte of [address, address + length)."""
+    return [(pc, addr, size, value) for pc, addr, size, value in writes
+            if addr < address + length and address < addr + size]
+
+
 def bag_counts(mem):
     return tuple(mem.s32(RECORD + BAGS + bag * BAG_SIZE + BAG_COUNT) for bag in range(3))
 
@@ -150,8 +156,10 @@ def mask_direct(path, seed):
     e = EE(path)
     e.r[29] = e.stack_hi - 0x4000
     e.mem.w32(SEED, seed)
-    # The first six rows keep the previous complement matches. Their record
-    # bits do not change that complement, so the rows below separate the gate.
+    # Six rows (hidden, flag, bits, records). plant_mask puts the records at
+    # base byte 3, offset 0x30, clear of the flag halfword +0x10 and the base
+    # byte +0x21, and asserts both after the record writes. Rows 3-6 therefore
+    # run with flag bit 0x2 set. Their records do not change the complement.
     cases = (
         (0, 0, 0, ()),
         (0x5, 0, 1, ()),
@@ -161,14 +169,11 @@ def mask_direct(path, seed):
         (0x5, 2, 3, ((0x100, 1), (0x8, 4))),
     )
     for hidden, flag, bits, records in cases:
-        block = e.alloc(16 + 32 * 16)
-        e.mem.w64(block + 8, hidden)
-        e.mem.w16(block + 0x10, flag)
-        e.mem.w8(block + 0x21, 1)
-        for index, (show, hide) in enumerate(records):
-            e.mem.w64(block + 16 + index * 16, show)
-            e.mem.w64(block + 16 + index * 16 + 8, hide)
-        assert e.call(HIDE_MASK, block, bits) == show_mask(hidden, flag, bits, records)
+        block = plant_mask(e, hidden, flag, 3, records)
+        assert e.mem.u16(block + 0x10) & 2 == flag & 2
+        want = show_mask(hidden, flag, bits, records)
+        assert want == (~hidden) & MASK64
+        assert e.call(HIDE_MASK, block, bits) == want
     hidden, bits, base_byte = 0x5, 1, 4
     record, decoy = ((1, 2),), (4, 8)
     extras = ((0x30, decoy[0], decoy[1]), (0x50, decoy[0], decoy[1]))
@@ -226,7 +231,7 @@ def route0(path, image, body, seed):
     assert phases[-1][1] == 'absent'
     assert queues(o.emu) == (0, 2, 0)
     assert bag_counts(o.emu.mem) == before
-    assert not any(addr in bag_addrs for _pc, addr, _size, _value in o.emu.writes[mark:])
+    assert not any(overlaps(o.emu.writes[mark:], addr, 4) for addr in bag_addrs)
     assert calls(o.emu, FIND) == 17 and calls(o.emu, REMOVE) == 0
     made = [record for record in o.emu.calls if FIND <= record.site < FIND_END]
     targets = sorted({record.target for record in made})
@@ -440,8 +445,9 @@ def route2(path, image, off, body, seed, text):
     o.emu.record_writes = True
     o.emu.writes.clear()
     obj = plant_actor(o, amx_string(o.emu.mem, o.base, off, seen[0][1][0]), True)
-    name_stores = [(pc, value) for pc, addr, size, value in o.emu.writes
-                   if addr == NAME_COUNT and size == 4]
+    touching = overlaps(o.emu.writes, NAME_COUNT, 4)
+    assert all(addr == NAME_COUNT and size == 4 for _pc, addr, size, _value in touching), touching
+    name_stores = [(pc, value) for pc, _addr, _size, value in touching]
     before = o.emu.mem.u32(NAME_COUNT)
     assert before == 1 and name_stores and name_stores[-1][1] == 1, name_stores
     assert all(NAME_ADD <= pc < NAME_REMOVE for pc, _value in name_stores), name_stores
@@ -459,7 +465,7 @@ def route2(path, image, off, body, seed, text):
     assert calls(o.emu, POOL_FREE) == 0
     after = o.emu.mem.u32(NAME_COUNT)
     assert after == before == 1
-    assert not any(addr == NAME_COUNT for _pc, addr, _size, _value in o.emu.writes[marked:])
+    assert not overlaps(o.emu.writes[marked:], NAME_COUNT, 4)
     assert any(addr == obj + 0x48 and size == 4 and value == 0x5122A8
                for _pc, addr, size, value in o.emu.writes[marked:])
     # First cutscene frame. Each argument starts from a fresh cut_start.

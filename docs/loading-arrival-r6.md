@@ -27,10 +27,10 @@ round 5. Nothing here selects which one a campaign loads.
 | Route 2 delete, object present | `0x144b44` calls `0x14cf90` | that body returns: a recorded store of vtable `0x5122a8` at `+0x48`, three `0x1a1698`, no `0x3b91d8`, no `0x150470`. The name-count word stays 1 |
 | First `cut_runFrame` | `0x14a480` replaces `0x11111111` at `0x4039ac` with 0, then `0x19a6cc` | before `0x14f498`. The setup byte is not stored. Arguments 0 and 1 match when each starts from a fresh `cut_start` |
 
-Evidence: [route 0 bag words, the loader promote, and the 48 v0 values, lines 197–270](../tools/difftest_arrival_stage_r6.py#L197),
-[null-model sentinel and the planted mask, lines 277–322](../tools/difftest_arrival_stage_r6.py#L277),
-[show, hide, and the planted grid bits, lines 325–381](../tools/difftest_arrival_stage_r6.py#L325),
-[delete, the vtable store, and the first frame, lines 419–499](../tools/difftest_arrival_stage_r6.py#L419).
+Evidence: [route 0 bag words, the loader promote, and the 48 v0 values, lines 202–275](../tools/difftest_arrival_stage_r6.py#L202),
+[null-model sentinel and the planted mask, lines 282–327](../tools/difftest_arrival_stage_r6.py#L282),
+[show, hide, and the planted grid bits, lines 330–386](../tools/difftest_arrival_stage_r6.py#L330),
+[delete, the vtable store, and the first frame, lines 424–505](../tools/difftest_arrival_stage_r6.py#L424).
 
 ## `removePlayerItem` `0x14598c`
 
@@ -40,8 +40,8 @@ call reaches `inventory_findItemBySubstring` `0x1c5a70` once. Every call
 recorded from a site inside that function, before `0x1c5b48`, targets
 `strstr` `0x3b96a8`, and no other target is recorded there. None of the 17
 results select an item, so `inventory_removeItem` `0x1c1cb0` is not entered.
-The three bag-count words receive no store during the entry, so the counts
-stay the values below.
+The three bag-count words receive no store that touches any of their bytes
+during the entry, so the counts stay the values below.
 
 **Observed:** those counts are not the same for every body. Bag 0 is 1 for
 bodies 0, 1 and 4–9 and 11, 3 for bodies 2 and 3, and 2 for body 10. Bags 1
@@ -87,7 +87,9 @@ faults on the halfword load. The fault address is `0x10`.
 own hidden double on both seeds. The seed is stored at `0x404464` before the
 calls and is still there afterwards. Those six rows use record bits that do
 not change the complement, so a skipped walk and a walk of those records
-return the same value.
+return the same value. Since round 7 the records sit at offset `0x30`, clear
+of the flag halfword and the base byte, and four of the rows run with flag
+bit `0x2` stored.
 
 **Observed, Executed:** the same hidden double `0x5` and variant bit 0, with
 `+0x21` equal to 4, place one 16-byte record `{show 1, hide 2}` at `0x40`.
@@ -96,7 +98,7 @@ Different records sit at `0x30` and `0x50`. Flag 0 and flag 1, both with bit
 `0xfffffffffffffff9`: the mask ored with that record's first double and
 cleared by its second, from the byte `+0x21` shifted up by 4. It is not the
 decoy value `0xfffffffffffffff6`. The direct call is
-[lines 149–194](../tools/difftest_arrival_stage_r6.py#L149).
+[lines 155–199](../tools/difftest_arrival_stage_r6.py#L155).
 
 **Observed, Executed:** the route-0 autoprop with `States` 100 still has model
 word `+0x90` equal to 0. A sentinel at `+0xc8` is still there after the fault,
@@ -133,7 +135,8 @@ pointer is 0, calls `handle_clear` `0x1a1698` three times, and returns. The
 run records a store of the GameObject vtable `0x5122a8` at `+0x48`. It does
 not call `0x3b91d8` or `pool_free` `0x150470`. `objNames_add` `0x14bce0`
 stores 1 at the name-count word `0x5f86f8` from `0x14bd68` while the object
-is planted. The delete leaves that word at 1 and records no store of it.
+is planted. The delete leaves that word at 1 and records no store that
+touches any of its four bytes (round 7 tests the byte range).
 
 **Inferred:** a property list would take the walk that this fixture skips.
 The name would then be removed and the block freed. This run does not show
