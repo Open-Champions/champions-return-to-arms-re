@@ -393,6 +393,6 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools -p 'test_*.py'
 Results after the final edit: each seed prints `PASS` for L (132), R (33), H (315) and
 M (187), the control baseline passes with the same counts and fingerprints, and the
 controls reject 18 of 18 on each seed. `difftest_player_anim_select.py`
-passes 96/10/1 on both seeds. The unit suite runs 657 tests OK. The logs are ignored
+passes 96/10/1 on both seeds. The unit suite runs 658 tests OK. The logs are ignored
 files under `local/anim-states/`, each headed by the commit and the SHA-256 prefixes of
 the probe, the reference, the control script and the unit test file.
