@@ -938,6 +938,29 @@ class ControlTests(unittest.TestCase):
             hardware.call(BASE)
         self.assertEqual(register.exception.addr, 0x1000A000)
 
+    def test_vu1_data_memory_is_opt_in_store_and_readback(self):
+        # sw v0, 0(a0); lw v0, 0(a0): light_writeVuConstants stores at 0x1100ffcc.
+        store_load = [I(0x2B, V0, A0, 0), I(0x23, V0, A0, 0)]
+        bare = machine(store_load, {A0: 0x1100FFCC, V0: 0x4B000080}, run=False)
+        with self.assertRaises(MemoryFault) as unmapped:
+            bare.call(BASE)
+        self.assertEqual((unmapped.exception.addr, unmapped.exception.size,
+                          unmapped.exception.kind), (0x1100FFCC, 4, 'write'))
+        kept = machine(store_load, {A0: 0x1100FFCC, V0: 0x4B000080}, run=False)
+        kept.install_vu1_data_memory()
+        with self.assertRaises(EmuError):
+            kept.install_vu1_data_memory()
+        self.assertEqual(kept.mem.u32(0x1100C000), 0)
+        self.assertEqual(kept.call(BASE) & 0xFFFFFFFF, 0x4B000080)
+        self.assertEqual(kept.vu1_writes, [(BASE, 0x1100FFCC, 4, 0x4B000080)])
+        for outside in (0x1100BFFC, 0x11004000, 0x11010000):
+            other = machine([I(0x2B, V0, A0, 0)], {A0: outside, V0: 1}, run=False)
+            other.install_vu1_data_memory()
+            with self.assertRaises(MemoryFault) as refused:
+                other.call(BASE)
+            self.assertEqual(refused.exception.addr, outside)
+            self.assertEqual(other.vu1_writes, [])
+
     def test_main_ram_below_the_reserved_top_is_opt_in(self):
         store = [I(0x28, V0, A0, 0)]
         bare = machine(store, {A0: 0x0090B000, V0: 0xA5}, run=False)

@@ -64,7 +64,8 @@ install_modelled_end_of_heap accept FlushCache and EndOfHeap only at the
 callers named on those methods.  install_modelled_sif_dma models only
 sceSifSetDma (119) and sceSifDmaStat (118) inside the SPU helper 0x35ed90, the
 one caller whose use of both results was read; it records each descriptor and
-moves no bytes.  install_modelled_gs_privileged accepts 8-byte
+moves no bytes.  install_vu1_data_memory keeps the 16 KB VU1 data window as
+storage and records each store; no microprogram runs.  install_modelled_gs_privileged accepts 8-byte
 stores to the named GS privileged registers and reads CSR as 0; that is a
 model, not a GS.  Every value these handlers write in v0 is modelled, not a recovered kernel
 result.  Every other number still raises CpuTrap.  The opt-ins compose; none
@@ -644,6 +645,8 @@ class EE:
         self._next_sid = 1
         self._next_handler = 1
         self._sif_dma = False
+        self._vu1_data = False
+        self.vu1_writes = []            # with install_vu1_data_memory: (pc, addr, size, value)
         self.sif_dma = []               # with install_modelled_sif_dma: recorded descriptors
         self._next_dma_id = 1
         self.div_zero = 'stop'          # or 'r5900': continue with the reported HI/LO values
@@ -1024,6 +1027,35 @@ class EE:
         if self._vpu_stat:
             raise EmuError('modelled VPU status is already installed')
         self._vpu_stat = True
+
+    VU1_DATA_LO, VU1_DATA_HI = 0x1100C000, 0x11010000
+
+    def install_vu1_data_memory(self):
+        """Opt in to VU1 data memory as plain storage: store and readback only.
+
+        Observed: the EE reaches this window only through stores.  Every
+        lui of 0x1100 or 0x1101 in .text was read.  Two functions form
+        addresses in 0x1100c000-0x1100ffff and store to them, and neither
+        loads from there: light_writeVuConstants 0x148728 (0x14877c-0x1487b0
+        to 0x1100ffc0-0x1100ffdc, 0x1487c0 to 0x1100ffac) and 0x19be08
+        (0x19bed0-0x19bef8 to 0x1100ffb4, 0x1100ffb8 and 0x1100ff60-0x1100ff6c).
+        The other sites put 0x11000000 into a packet word, the VIF code the
+        DMA carries, not an address.  Microprograms start from VIF codes in
+        DMA packets (for example 0x14000017, formed at 0x194674-0x19467c),
+        not from an EE access to this window.
+
+        Model: the 16 KB at 0x1100c000 are created zeroed and kept.  A load
+        returns the last store.  That zero is the absence of a store, not a
+        measured VU1 value.  Each store is recorded in vu1_writes.  No VU1
+        microprogram runs, no VIF code is read, and nothing else reads these
+        bytes, so this does not claim any drawing.  VU1 micro memory
+        0x11008000-0x1100bfff and VU0 memory stay unmapped.  Composes with
+        the other opt-ins.
+        """
+        if self._vu1_data:
+            raise EmuError('VU1 data memory is already installed')
+        self._vu1_data = True
+        self.mem.map(self.VU1_DATA_LO, self.VU1_DATA_HI - self.VU1_DATA_LO)
 
     # FlushCache callers whose following instructions do not read v0.
     _FLUSH_IGNORED_RA = frozenset((0x19d628, 0x355744))
@@ -1671,6 +1703,8 @@ class EE:
             else:
                 self._ensure_main_ram(addr, size)
                 self.mem.store(addr, size, kept)
+        if self._vu1_data and self.VU1_DATA_LO <= addr < self.VU1_DATA_HI:
+            self.vu1_writes.append((self.cur, addr, size, kept))
         if self.record_writes and not self.stack_lo <= addr < self.stack_hi:
             if self.write_watch is None or self._overlaps_watch(addr, size) or (
                     phys is not None and self._overlaps_watch(phys, size)):
