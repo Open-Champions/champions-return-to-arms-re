@@ -938,6 +938,56 @@ class ControlTests(unittest.TestCase):
             hardware.call(BASE)
         self.assertEqual(register.exception.addr, 0x1000A000)
 
+    def test_dma_tag_address_extends_the_idle_model(self):
+        store_load = [I(0x2B, V0, A0, 0), I(0x23, V0, A0, 0)]
+        idle = machine(store_load, {A0: 0x1000A030, V0: 0x83FAD0}, run=False)
+        with self.assertRaises(EmuError):
+            idle.install_modelled_dma_tag_address()
+        idle.install_modelled_dma_idle()
+        with self.assertRaises(MemoryFault) as refused:
+            idle.call(BASE)
+        self.assertEqual(refused.exception.addr, 0x1000A030)
+        for channel in (0x10009000, 0x1000A000):
+            tag = machine(store_load, {A0: channel + 0x30, V0: 0x83FAD0}, run=False)
+            tag.install_modelled_dma_idle()
+            tag.install_modelled_dma_tag_address()
+            with self.assertRaises(EmuError):
+                tag.install_modelled_dma_tag_address()
+            self.assertEqual(tag.call(BASE) & 0xFFFFFFFF, 0x83FAD0)
+        fresh = machine([I(0x23, V0, A0, 0)], {A0: 0x1000A030}, run=False)
+        fresh.install_modelled_dma_idle()
+        fresh.install_modelled_dma_tag_address()
+        self.assertEqual(fresh.call(BASE), 0)
+        other = machine([I(0x23, V0, A0, 0)], {A0: 0x10008030}, run=False)
+        other.install_modelled_dma_idle()
+        other.install_modelled_dma_tag_address()
+        with self.assertRaises(MemoryFault):
+            other.call(BASE)
+
+    def test_timer0_count_reads_the_chosen_value(self):
+        # lw v0, 0(a0); sw zero, 0(a0); lw v1, 0(a0): the gfx_endFrame read and reset.
+        words = [I(0x23, V0, A0, 0), I(0x2B, ZERO, A0, 0), I(0x23, V1, A0, 0)]
+        bare = machine(words, {A0: 0x10000000}, run=False)
+        with self.assertRaises(MemoryFault) as unmapped:
+            bare.call(BASE)
+        self.assertEqual(unmapped.exception.addr, 0x10000000)
+        timed = machine(words, {A0: 0x10000000}, run=False)
+        timed.install_modelled_timer0_count(0x2626)
+        with self.assertRaises(EmuError):
+            timed.install_modelled_timer0_count(1)
+        self.assertEqual(timed.call(BASE), 0x2626)
+        self.assertEqual(timed.r[V1], 0x2626)
+        self.assertEqual(timed.timer0_writes, [(BASE + 4, 0)])
+        for other in (0x10000010, 0x10000800):
+            emu = machine([I(0x23, V0, A0, 0)], {A0: other}, run=False)
+            emu.install_modelled_timer0_count(0x2626)
+            with self.assertRaises(MemoryFault):
+                emu.call(BASE)
+        half = machine([I(0x21, V0, A0, 0)], {A0: 0x10000000}, run=False)
+        half.install_modelled_timer0_count(0x2626)
+        with self.assertRaises(MemoryFault):
+            half.call(BASE)
+
     def test_vu1_data_memory_is_opt_in_store_and_readback(self):
         # sw v0, 0(a0); lw v0, 0(a0): light_writeVuConstants stores at 0x1100ffcc.
         store_load = [I(0x2B, V0, A0, 0), I(0x23, V0, A0, 0)]

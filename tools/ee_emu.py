@@ -65,7 +65,10 @@ callers named on those methods.  install_modelled_sif_dma models only
 sceSifSetDma (119) and sceSifDmaStat (118) inside the SPU helper 0x35ed90, the
 one caller whose use of both results was read; it records each descriptor and
 moves no bytes.  install_vu1_data_memory keeps the 16 KB VU1 data window as
-storage and records each store; no microprogram runs.  install_modelled_gs_privileged accepts 8-byte
+storage and records each store; no microprogram runs.
+install_modelled_dma_tag_address adds offset 0x30 of the two modelled channels
+to install_modelled_dma_idle.  install_modelled_timer0_count makes the timer 0
+count word read a caller-chosen value.  install_modelled_gs_privileged accepts 8-byte
 stores to the named GS privileged registers and reads CSR as 0; that is a
 model, not a GS.  Every value these handlers write in v0 is modelled, not a recovered kernel
 result.  Every other number still raises CpuTrap.  The opt-ins compose; none
@@ -646,6 +649,9 @@ class EE:
         self._next_handler = 1
         self._sif_dma = False
         self._vu1_data = False
+        self._dma_tadr = False
+        self._timer0 = None
+        self.timer0_writes = []         # with install_modelled_timer0_count: (pc, value)
         self.vu1_writes = []            # with install_vu1_data_memory: (pc, addr, size, value)
         self.sif_dma = []               # with install_modelled_sif_dma: recorded descriptors
         self._next_dma_id = 1
@@ -1027,6 +1033,48 @@ class EE:
         if self._vpu_stat:
             raise EmuError('modelled VPU status is already installed')
         self._vpu_stat = True
+
+    def install_modelled_dma_tag_address(self):
+        """Opt in to the tag-address word, offset 0x30, of the two modelled channels.
+
+        Requires install_modelled_dma_idle, and extends it by one word per
+        channel.  Observed in sceDmaSend 0x350618 after its wait: 0x350644
+        loads offset 0x30 of the channel, and when that word is not -1 the
+        delay slot at 0x350650 stores the converted packet address there
+        (bnel at 0x35064c).  0x35065c then clears offset 0x20 and 0x350670
+        writes offset 0 with bits 0x105 set.  The loader's frame path reaches
+        it with the GIF channel 0x1000a000 (call at 0x19cb88).
+
+        Model: offset 0x30 of 0x10009000 and 0x1000a000 is storage that
+        starts at 0, like the other modelled words.  Starting at 0 means the
+        not -1 branch is taken.  No DMA tag is read and no packet is sent.
+        """
+        if not self._dma_idle:
+            raise EmuError('install_modelled_dma_idle first')
+        if self._dma_tadr:
+            raise EmuError('modelled DMA tag address is already installed')
+        self._dma_tadr = True
+
+    TIMER0_COUNT = 0x10000000
+
+    def install_modelled_timer0_count(self, count):
+        """Opt in to timer 0's count word, 0x10000000, reading a fixed count.
+
+        Observed in gfx_endFrame: 0x19db14 reads the word when the flag at
+        0x44fd44 is set, and 0x19dcd0 reads it, 0x19dcd8 stores 0 to it,
+        and 0x19dce0-0x19dcf4 store (count + 0x1314) / 0x2626 at 0x83d2c8.
+        engine_init writes 0x82 to 0x10000010 and 0 to the count at
+        0x19d6d4-0x19d6d8; this fixture does not run those stores.
+
+        Model: every 4-byte load of 0x10000000 returns count, the value the
+        caller chose.  It is not a measured elapsed time: retail depends on
+        how long the frame took.  A 4-byte store is recorded in
+        timer0_writes and does not change later loads.  Every other timer
+        register still faults.  Composes with the other opt-ins.
+        """
+        if self._timer0 is not None:
+            raise EmuError('modelled timer 0 count is already installed')
+        self._timer0 = count & M32
 
     VU1_DATA_LO, VU1_DATA_HI = 0x1100C000, 0x11010000
 
@@ -1640,7 +1688,7 @@ class EE:
         if addr & ~0xFFF not in (0x10009000, 0x1000A000):
             return None
         off = addr & 0xFFF
-        if off in (0x00, 0x10, 0x20):
+        if off in (0x00, 0x10, 0x20) or (off == 0x30 and self._dma_tadr):
             return off
         return None
 
@@ -1671,6 +1719,8 @@ class EE:
         elif self._gs_access(addr, size, False):
             value = 0
             self.gs_reads.append((self.cur, addr, value))
+        elif self._timer0 is not None and addr == self.TIMER0_COUNT and size == 4:
+            value = self._timer0
         else:
             key = self._hw_key(addr, size)
             if key is not None:
@@ -1696,6 +1746,8 @@ class EE:
             self.mem.store(phys, size, kept)
         elif self._gs_access(addr, size, True):
             self.gs_writes.append((self.cur, addr, kept))
+        elif self._timer0 is not None and addr == self.TIMER0_COUNT and size == 4:
+            self.timer0_writes.append((self.cur, kept))
         else:
             key = self._hw_key(addr, size)
             if key is not None:
