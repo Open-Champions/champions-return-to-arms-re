@@ -8,8 +8,9 @@ Four parts, all on constructed state (no game data is read or written):
   L  Player_move 0x1b4020 mode 0: the locomotion blend, playback rate, acceleration
      clamp, layer weights, idle restart and footstep event mask; modes 1-6 (sentinels).
   R  Player_animStep 0x1b9520: the speed handed to anim_advance (Drowsy gate and
-     planted fraction, slow) and the root delta turned into world axes; Player_move
-     adding root x 60 to the move.
+     planted fraction, slow, and fixed cases where the multiply/slow order changes the
+     bits) and the root delta turned into world axes; Player_move adding root x 60 to
+     the move.
   H  Player_processDamage 0x1b2cc0: which clip a hit, knock-down, flinch or death starts,
      with flags, blend times, the fade of an older top track and the call sites.
   M  Player_run 0x1a5030: a melee swing timeline (start, hit frame, combo window with
@@ -189,9 +190,10 @@ def part_locomotion(elf, rng):
             mem.w32(P + off, SENT)
         vec = rig.emu.alloc(16)
         move_call(rig, 5, 0.0, -1.0, vec)
+        steps = [c for c in rig.emu.calls if c.target == PLAYER_ANIM_STEP]
         clip_starts = [c for c in rig.emu.calls if c.target in (ANIM_BLEND, ANIM_START)]
         check('L', 'mode5 net=%d' % network,
-              [mem.u32(P + off) for off in LOCO_FIELDS] == [SENT] * 7 and not clip_starts)
+              [mem.u32(P + off) for off in LOCO_FIELDS] == [SENT] * 7 and not steps and not clip_starts)
 
 
 # ---------------------------------------------------------------------------------------
@@ -247,6 +249,13 @@ def anim_step_case(elf, facing, speed, slow, flags, rx, ry, bits, timer=0, found
     return ok, (seen, want_speed, (mem.u32(P + 0xBC), mem.u32(P + 0xC0)), want_root, finds, fractions)
 
 
+DROWSY_ORDER = (                  # speed, fraction, slow, multiply first, slow first
+    (C.ONE, 0x3F4CCCCD, 1, 0x3F4962FA, 0x3F4962FB),          # 1.0, 0.8
+    (0x3FA00000, 0x3EAA7EFA, 2, 0x3ECE0416, 0x3ECE0417),     # 1.25, 0.333
+    (C.ONE, 0x3F400000, 1, 0x3F3CCCCC, 0x3F3CCCCB),          # 1.0, 0.75
+)
+
+
 def part_root(elf, rng):
     slows = (0, 1, 30, 59, 60, 61, 0xFF)
     for slow in slows:
@@ -257,8 +266,9 @@ def part_root(elf, rng):
             ok, detail = anim_step_case(elf, facing, speed, slow, flags, rx, ry, rng.randrange(256))
             check('R', 'animStep slow=%d flags=%x' % (slow, flags), ok, detail)
     # Drowsy gate: timer +0x31a > 0 (s16) and a spell found; the finder is asked for
-    # (P, SpellDrowsy_typeinfo()).  The fraction is planted, so only the multiply and its
-    # order before the slow scaling are executed, not SpellDrowsy_getStat3Fraction.
+    # (P, SpellDrowsy_typeinfo()).  The fraction is planted, so only the multiply is
+    # executed, not SpellDrowsy_getStat3Fraction.  These random cases need not separate
+    # the multiply/slow order; the DROWSY_ORDER cases below do.
     gates = ((30, True), (30, False), (0, True), (0xFFFF, True))
     for index in range(12):
         timer, found = gates[index % 4]
@@ -269,6 +279,14 @@ def part_root(elf, rng):
                                     fbits(rng.uniform(-3, 3)), fbits(rng.uniform(-3, 3)), 0,
                                     timer=timer, found=found, fraction=fraction)
         check('R', 'animStep drowsy timer=%d found=%d slow=%d' % (C.s16(timer), found, slow), ok, detail)
+    # Drowsy order, fixed cases (no rng draws): fraction and slow chosen so that
+    # multiply-then-slow and slow-then-multiply give different bits.  The original must
+    # give the first; tools/test_ref_player_anim_states.py pins both values.
+    for speed, fraction, slow, want, swapped in DROWSY_ORDER:
+        ok, detail = anim_step_case(elf, 0x1234, speed, slow, 0x60, C.ONE, C.ZERO, 0,
+                                    timer=30, found=True, fraction=fraction)
+        check('R', 'animStep drowsy order speed=%08x fraction=%08x slow=%d' % (speed, fraction, slow),
+              ok and detail[0].get('f12') == want != swapped, detail)
     # Player_move: W = V + root x 60, then root is cleared.
     for network in (False, True):
         rig, planted = loco_rig(elf, network)
@@ -283,8 +301,10 @@ def part_root(elf, rng):
         check('R', 'move adds root x 60 net=%d' % network,
               moved is not None and moved[:2] == want and mem.u32(P + 0xBC) == 0 and mem.u32(P + 0xC0) == 0,
               (moved, want))
-    # Player_move mode 0 with Player_animStep followed: the step overwrites a stale root
-    # (as left by state 3) before the move stage, so the move carries this tick's root.
+    # Player_move mode 0 with Player_animStep followed and anim_advance stubbed to write
+    # the planted root: the step stores this root over a stale one (as left by state 3)
+    # before the move stage, so the move carries this tick's root.  That the real
+    # anim_advance overwrites rather than adds is docs/spec/animation.md section 5.
     for network in (False, True):
         rig = ET.MoveRig(elf, network=network)
         mem, P = rig.mem, rig.player
@@ -428,8 +448,9 @@ def part_hits(elf, rng, seed):
     emu, P, table = damage_rig(elf, seed, 1, bits=0x80000, high=FALL_HIGH, has_anim=1)
     check('H', 'knockdown already playing', not anim_calls(emu)
           and not [c for c in emu.calls if c.target == RES_FIND] and emu.mem.u32(P + 0x58C) == 3)
-    # (knock-down, light knock, surviving-hit flinch at 0x1b38d0)
-    for bits, high, resist in ((0x80000, FALL_HIGH, C.ONE), (0x40000, RESIST_HIGH, C.ONE), (0, 0, 0)):
+    # (knock-down at 0x1b30bc, light knock at 0x1b317c, surviving-hit flinch at 0x1b38d0)
+    for bits, high, resist, site in ((0x80000, FALL_HIGH, C.ONE, 0x1B30BC), (0x40000, RESIST_HIGH, C.ONE, 0x1B317C),
+                                     (0, 0, 0, 0x1B38D0)):
         for tracks, weight, want_weight in ((5, fbits(2.0), C.ONE), (6, fbits(0.5), fbits(0.5)),
                                             (4, fbits(2.0), fbits(2.0))):
             emu, P, table = damage_rig(elf, seed, 0, bits=bits, high=high, tracks=tracks, top_weight=weight,
@@ -438,8 +459,8 @@ def part_hits(elf, rng, seed):
             want_rate = M.FADE_RATE if tracks >= 5 else SENT
             check('H', 'fade tracks=%d bits=%x' % (tracks, bits),
                   emu.mem.u32(top + 0x14) == want_rate and emu.mem.u32(top + 0x10) == want_weight
-                  and len(anim_calls(emu)) == 1,
-                  (hex(emu.mem.u32(top + 0x14)), hex(emu.mem.u32(top + 0x10))))
+                  and [a[1] for a in anim_calls(emu)] == [site],
+                  (hex(emu.mem.u32(top + 0x14)), hex(emu.mem.u32(top + 0x10)), anim_calls(emu)))
 
 
 # ---------------------------------------------------------------------------------------
@@ -666,6 +687,22 @@ def part_melee(elf, rng):
               and [mem.u32(P + 0x10 + 4 * i) for i in range(3)] == pos, log)
 
 
+NAMES = {'L': 'locomotion blend', 'R': 'root motion', 'H': 'hit/knockdown/death clips',
+         'M': 'melee timeline and block gates'}
+
+
+def part_runners(elf, seed, rng):
+    """The four parts, sharing one rng in the order L, R, H, M (the control script
+    replays the same states)."""
+    return {'L': lambda: part_locomotion(elf, rng), 'R': lambda: part_root(elf, rng),
+            'H': lambda: part_hits(elf, rng, seed), 'M': lambda: part_melee(elf, rng)}
+
+
+def rng_tag(rng):
+    """Short fingerprint of the rng state a part starts from."""
+    return hashlib.sha256(repr(rng.getstate()).encode()).hexdigest()[:12]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('elf')
@@ -677,15 +714,13 @@ def main():
             parser.error('requires SLUS_209.73 US v2.00 (SHA-256 mismatch)')
     C.set_fpu('ps2')
     rng = random.Random(args.seed)
-    parts = {'L': lambda: part_locomotion(args.elf, rng), 'R': lambda: part_root(args.elf, rng),
-             'H': lambda: part_hits(args.elf, rng, args.seed), 'M': lambda: part_melee(args.elf, rng)}
-    names = {'L': 'locomotion blend', 'R': 'root motion', 'H': 'hit/knockdown/death clips',
-             'M': 'melee timeline and block gates'}
+    parts = part_runners(args.elf, args.seed, rng)
     for key in args.parts:
+        tag = rng_tag(rng)
         parts[key]()
         failed = sum(1 for f in FAILS if f[0] == key)
-        print('%s %s seed=%d cases=%d mismatches=%d' % ('PASS' if not failed else 'FAIL', names[key],
-                                                        args.seed, COUNTS.get(key, 0), failed))
+        print('%s %s seed=%d rng=%s cases=%d mismatches=%d' % ('PASS' if not failed else 'FAIL', NAMES[key],
+                                                               args.seed, tag, COUNTS.get(key, 0), failed))
         sys.stdout.flush()
     return 1 if FAILS else 0
 

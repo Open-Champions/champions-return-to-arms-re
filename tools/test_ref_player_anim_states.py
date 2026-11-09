@@ -1,8 +1,10 @@
 """Vectors for tools/ref_player_anim_states.py that need no game executable.
 
-Every value here is also an input/output pair the difftest
-tools/difftest_player_anim_states.py compared with the original code on seed 20973
-(docs/player-anim-states.md), except the combo-step table, which is Observed only."""
+Every value here comes from a branch the difftest tools/difftest_player_anim_states.py
+compares with the original code (docs/player-anim-states.md), except the combo-step
+table, which is Observed only.  Literal input/output pairs of a difftest run: the
+run_weight pair (the first moving tick of the seed-20973 L run) and the Drowsy-order
+values (fixed R cases, the same on every seed)."""
 import os
 import sys
 import unittest
@@ -57,6 +59,17 @@ class Timing(unittest.TestCase):
         self.assertEqual((first['run1'], first['run2']), (0xBDF5C28E, 0xBE47AE13))
         self.assertEqual(M.run_weight(0x3DCCCCCC, 0x3D4CCCCC, M.D_045_BITS), 0xBDF5C28E)
         self.assertEqual(M.run_weight(0x3DCCCCCC, 0x3D4CCCCC, M.D_07_BITS), 0xBE47AE13)
+
+    def test_drowsy_order(self):
+        # (speed, fraction, slow) where multiply-then-slow and slow-then-multiply differ;
+        # the original gives the first (difftest R, DROWSY_ORDER).
+        cases = ((C.ONE, 0x3F4CCCCD, 1, 0x3F4962FA, 0x3F4962FB),
+                 (0x3FA00000, 0x3EAA7EFA, 2, 0x3ECE0416, 0x3ECE0417),
+                 (C.ONE, 0x3F400000, 1, 0x3F3CCCCC, 0x3F3CCCCB))
+        for speed, fraction, slow, first, second in cases:
+            self.assertEqual(M.anim_step_speed(speed, slow, fraction), first)
+            self.assertEqual(C.mul(M.anim_step_speed(speed, slow), fraction), second)
+            self.assertNotEqual(first, second)
 
     def test_combo_steps(self):
         self.assertEqual([M.COMBO_STEPS[c] for c in range(8)], [7, 7, 4, 9, 7, 2, 7, 7])

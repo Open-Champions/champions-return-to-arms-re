@@ -137,7 +137,9 @@ K_DT = 0x3C888888           # 1/60
 
 
 def anim_step_speed(speed, slow_byte, drowsy=None):
-    """Speed handed to anim_advance: Drowsy fraction, then the slow amount 1..60."""
+    """Speed handed to anim_advance: Drowsy fraction, then the slow amount 1..60.  The
+    order is Observed (docs/spec/movement-camera.md 4.1, 0x1b9520) and executed by the
+    difftest's DROWSY_ORDER cases, where the other order gives different bits."""
     if drowsy is not None:
         speed = C.mul(speed, drowsy)
     if 1 <= slow_byte <= 60:
