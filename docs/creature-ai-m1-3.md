@@ -79,10 +79,10 @@ damaged in the last 480 frames a candidate beyond HomeRange is refused under the
 documented leash test. Base defaults: HomeRange 1000, pointblank range 300,
 visual range 500, visual arc `0x4000`; slot 25 first tests the point-blank
 circle, then the facing cone. **Observed** class overrides of HomeRange:
-WarWraith 600, IronGuardian 3000 (`docs/monsters-2.md:6182`, `:1354`).
+WarWraith 600, IronGuardian 3000 (`docs/monsters-2.md:6187`, `:1355`).
 
 **Observed** special pickers: WarWraith slot 20 gives a victim to at most one
-wraith and clears the farther wraith's target (`docs/monsters-2.md:6162-6178`);
+wraith and clears the farther wraith's target (`docs/monsters-2.md:6163-6173`);
 Kobold slot 21 treats only a `koboldshaman` as an ally (`docs/monsters-2.md:4975`).
 Neither override was executed in this round (**Unknown** by execution).
 
