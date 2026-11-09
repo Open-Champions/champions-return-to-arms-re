@@ -243,3 +243,85 @@ def restock_calls(gold):
         for budget in budgets:
             for attempt in range(5):
                 yield base, budget, attempt, category
+
+
+# ---- Round 3 (2026-11-09): storeLevel progression, failure, shop menu ----
+# hub `start` script offsets 0x29bc-0x2d1c; hub2 `start` 0x028c-0x05ec. The
+# last store pushes getv(currentMission) - 1 (move.alt, const.pri 1, sub.alt,
+# push.pri), not a constant. Mission bytes: bit 0 available, bit 1 complete,
+# at the player record +0x4bbf + 13*difficulty_index + mission.
+STORE_LEVEL_LITERAL = {'stobonus': 7, 'islgnome': 3}
+MISSION_AVAILABLE, MISSION_COMPLETE = 1, 2
+
+
+def hub_store_level(current_mission, mission_bytes=None):
+    """The value hub and hub2 `start` stores in storeLevel.
+
+    ``current_mission`` is the quest variable (0 when absent or cleared).
+    ``mission_bytes`` maps mission number to the player's mission byte.
+    """
+    rows = mission_bytes or {}
+    if current_mission == 0:
+        return 0
+    if current_mission == 7:
+        if rows.get(9, 0) & MISSION_COMPLETE:
+            return 8
+        if rows.get(9, 0) & MISSION_AVAILABLE:
+            return 7
+        if rows.get(8, 0) & MISSION_AVAILABLE:
+            return 6
+        return 5
+    if current_mission == 9:
+        return 7
+    if current_mission == 8:
+        return 6
+    return current_mission - 1
+
+
+# Shop panels: 0x86a4b0 + panel*0x74. +0x4c state, +0x18 row, +0x14 cursor
+# direction, +0x3c cursor animation, +0x34 pad slot, +0x54 saved row.
+PANELS, PANEL_STRIDE = 0x86A4B0, 0x74
+MENU_BUY, MENU_SELL, MENU_IDLE, MENU_CHOICE = 0, 1, 2, 3
+CURSOR_STEP = 0x3DBA2E8B          # 1/11 per tick, menu_cursorInput 0x1c6700
+CURSOR_TICKS = 11                  # ticks from a direction press to the new row
+PAD, PAD_STRIDE = 0x4028D0, 0x58  # +0x8 held bits, +0xc pressed edges, +0x10 held
+CONFIRM_MASK, CANCEL_MASK, LIST_CONFIRM_MASK = 0x41BFBC, 0x41BFB8, 0x41B970
+PAD_UP, PAD_DOWN = 0x1000 | 0x100000, 0x4000 | 0x200000
+
+
+def choice_step(state, row, pressed, confirm, cancel, animating=False, blocked=False):
+    """shop_buySellMenu 0x1c6bb8 for one tick of panel state 3 -> (state, row).
+
+    A confirm needs the cursor animation at exactly 0.0. Row 0 opens the
+    stock list (state 0), row 1 the player's bags (state 1). Cancel goes to
+    state 2 unless the panel's words at 0x4f4878 / 0x4f4880 are nonzero.
+    """
+    assert state == MENU_CHOICE
+    if pressed & confirm and not animating:
+        return (MENU_BUY if row == 0 else MENU_SELL), row
+    if pressed & cancel and not blocked:
+        return MENU_IDLE, row
+    return state, row
+
+
+def list_cancel(state, saved_row, pressed, cancel, blocked=False):
+    """itemList_input 0x1cdab0-0x1cdbb8: a list's cancel returns to the choice."""
+    assert state in (MENU_BUY, MENU_SELL)
+    if pressed & cancel and not blocked:
+        return MENU_CHOICE, saved_row
+    return state, None
+
+
+def buy_allowed(gold, price, bag_count, carried, weight, capacity):
+    """itemList_input 0x1ce0b0-0x1ce1b4: the local checks before shop msg 0.
+
+    Returns 'send', 'gold' (message), 'full' (sound only) or 'weight' (message).
+    The receiver, shop_buy 0x1d1240, checks only gold again.
+    """
+    if I.s32(gold) < I.s32(price):
+        return 'gold'
+    if bag_count >= 64:
+        return 'full'
+    if not I.fle(I.fadd(carried, weight), capacity):
+        return 'weight'
+    return 'send'

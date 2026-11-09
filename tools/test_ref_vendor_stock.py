@@ -39,5 +39,33 @@ class Prices(unittest.TestCase):
         self.assertEqual(calls[-1][3], 2)
 
 
+class Round3(unittest.TestCase):
+    def test_hub_store_level(self):
+        self.assertEqual(S.hub_store_level(0), 0)
+        self.assertEqual([S.hub_store_level(n) for n in range(1, 7)], [0, 1, 2, 3, 4, 5])
+        self.assertEqual(S.hub_store_level(7), 5)
+        self.assertEqual(S.hub_store_level(7, {8: 1}), 6)
+        self.assertEqual(S.hub_store_level(7, {8: 1, 9: 1}), 7)
+        self.assertEqual(S.hub_store_level(7, {9: 2}), 8)
+        self.assertEqual(S.hub_store_level(7, {8: 2}), 5)
+        self.assertEqual([S.hub_store_level(n) for n in (8, 9, 10, 11, 12)], [6, 7, 9, 10, 11])
+
+    def test_menu_steps(self):
+        self.assertEqual(S.choice_step(3, 0, 0x40, 0x40, 0x20), (0, 0))
+        self.assertEqual(S.choice_step(3, 1, 0x40, 0x40, 0x20), (1, 1))
+        self.assertEqual(S.choice_step(3, 1, 0x40, 0x40, 0x20, animating=True), (3, 1))
+        self.assertEqual(S.choice_step(3, 0, 0x20, 0x40, 0x20), (2, 0))
+        self.assertEqual(S.choice_step(3, 0, 0x20, 0x40, 0x20, blocked=True), (3, 0))
+        self.assertEqual(S.list_cancel(1, 1, 0x20, 0x20), (3, 1))
+        self.assertEqual(S.list_cancel(0, 0, 0x40, 0x20), (0, None))
+
+    def test_buy_allowed(self):
+        one, ten = 0x3F800000, 0x41200000
+        self.assertEqual(S.buy_allowed(100, 59, 0, 0, one, ten), 'send')
+        self.assertEqual(S.buy_allowed(58, 59, 0, 0, one, ten), 'gold')
+        self.assertEqual(S.buy_allowed(100, 59, 64, 0, one, ten), 'full')
+        self.assertEqual(S.buy_allowed(100, 59, 0, ten, one, ten), 'weight')
+
+
 if __name__ == '__main__':
     unittest.main()
