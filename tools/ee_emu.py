@@ -49,7 +49,9 @@ the level-teardown diagnostic.  install_terminate_thread models only syscall 37
 at the callers that do not read v0.  install_modelled_boot models the thread,
 semaphore and boot callers listed on that method.  install_modelled_intc, also
 opt-in, delivers one registered INTC handler when a modelled WaitSema would
-block on a semaphore that handler signals, then retries.  The delivery cadence
+block on a semaphore that handler signals, then retries.  It delivers only
+while COP0 Status enables interrupts, unless installed with
+while_disabled=True, which records Status at each delivery.  The delivery cadence
 is modelled, not a vertical-blank interval.  install_ram_mirrors aliases the
 uncached and uncached-accelerated windows 0x20000000 and 0x30000000 onto the
 same main-RAM pages when the low 28 bits are below 32 MB.
@@ -627,6 +629,8 @@ class EE:
         self.gs_reads = []              # (pc, address, value) of modelled GS register loads
         self._hw_words = {}
         self._in_intc = False
+        self._intc_while_disabled = False
+        self.intc_delivery_status = []  # COP0 Status at each modelled INTC delivery
         self._threads = {}
         self._semas = {}
         self._intc = []
@@ -864,8 +868,32 @@ class EE:
             return addr in self.GS_PRIVILEGED_STORES
         return addr == self.GS_CSR
 
-    def install_modelled_intc(self):
+    # COP0 Status bits: IE (0), EXL (1), ERL (2), EIE (16).
+    STATUS_IE, STATUS_EXL, STATUS_ERL, STATUS_EIE = 0x1, 0x2, 0x4, 0x10000
+
+    def interrupts_enabled(self):
+        """True when COP0 Status would take an interrupt: IE and EIE set, EXL and ERL clear.
+
+        The interrupt mask bits are not modelled.  This emulator starts with
+        Status 0; only EI, DI and MTC0 change it.  The kernel that would set a
+        thread's Status is not modelled.
+        """
+        status = self.cop0[12] & M32
+        need = self.STATUS_IE | self.STATUS_EIE
+        return (status & need) == need and not status & (self.STATUS_EXL | self.STATUS_ERL)
+
+    def install_modelled_intc(self, while_disabled=False):
         """Opt in to one modelled INTC delivery when WaitSema would block.
+
+        Status gate (round 8, audit R7-2): a delivery runs only when
+        interrupts_enabled() is true.  Otherwise the WaitSema raises CpuTrap
+        and names Status.  while_disabled=True delivers anyway.  That is a
+        modelled exception the CPU state does not allow: Status at each
+        delivery is recorded in intc_delivery_status so a test can assert it.
+        The boots in rounds 6 to 8 reach every delivery with Status 0, so they
+        need while_disabled=True, and everything after a delivery depends on
+        that model.  The handler's own EI (0x19b778, 0x19b920) is discarded
+        by the register restore below.
 
         Observed registration, from engine_init 0x19d19c: AddIntcHandler
         0x3526c0 is syscall 0x10.  The call at 0x19d37c passes cause 2 in a0,
@@ -901,6 +929,8 @@ class EE:
         if self._modelled_intc:
             raise EmuError('modelled interrupt delivery is already installed')
         self._modelled_intc = True
+        self._intc_while_disabled = bool(while_disabled)
+        self.intc_delivery_status = []
 
     def install_ram_mirrors(self):
         """Opt in to the uncached and uncached-accelerated mirrors of main RAM.
@@ -1260,7 +1290,13 @@ class EE:
             words = self._handler_signal_words(handler['fn'])
             if not any(self.mem.u32(addr) == sid for addr in words):
                 continue
+            status = self.cop0[12] & M32
+            if not self.interrupts_enabled() and not self._intc_while_disabled:
+                raise CpuTrap('SYSCALL at 0x%08x (v1 = 68, a0 = %d); modelled WaitSema count is 0 '
+                              'and Status 0x%08x disables the INTC handler 0x%08x'
+                              % (self.cur, sid, status, handler['fn']))
             self.intc_deliveries.append((handler['cause'], handler['fn'], sid))
+            self.intc_delivery_status.append(status)
             self._run_intc_handler(handler)
             ran = True
         return ran

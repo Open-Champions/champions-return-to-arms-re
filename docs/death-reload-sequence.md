@@ -432,7 +432,21 @@ SignalSema already applies. It does not consult the max word, and it is not
 a recovered kernel result. Registration order is the delivery order. This
 boot registers one handler, and its next argument is 0.
 
-**Executed:** the delivery cadence is one run per blocking WaitSema. That
+**Correction (round 8, audit R7-2): every delivery below is taken while COP0
+Status disables interrupts.** The emulator starts with Status 0, and nothing
+in this boot sets IE (bit 0). The emulator's EI sets only EIE (bit 16).
+Status is recorded as 0 at each of the five deliveries. A CPU in that state
+would not take the interrupt. Before round 8,
+`_deliver_intc_for_sema` never read Status. It now delivers only when IE and
+EIE are set and EXL and ERL are clear. `install_modelled_intc(while_disabled=True)`
+delivers anyway, as a disclosed modelled exception, and records Status at
+each delivery. The intc and mirror tests use that form and assert Status 0
+five times. So the five deliveries, the counter, semaphore counts and
+everything later in rounds 6 to 8 depend on that model, not on an executed
+interrupt. The handler's own EI at `0x19b778`/`0x19b920` is discarded when
+the registers are restored.
+
+**Modelled:** the delivery cadence is one run per blocking WaitSema. That
 cadence is modelled. It is not a vertical-blank interval. The waits at
 `0x19d394`, `0x19d3a4`, `0x19d3f0`, `0x19d3fc` and `0x19d408` each deliver
 the handler once. The word at `0x44fd98` becomes 5. A planted `0x11111111`

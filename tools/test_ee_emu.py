@@ -794,7 +794,7 @@ class ControlTests(unittest.TestCase):
         delivered.load_words(handler, body)
         delivered.load_words(wrapper, [addiu(V1, ZERO, -0x43), R(0x0C), JR_RA, NOP])
         delivered.install_modelled_boot()
-        delivered.install_modelled_intc()
+        delivered.install_modelled_intc(while_disabled=True)
         with self.assertRaises(EmuError):
             delivered.install_modelled_intc()
         delivered.hook(BASE + 40, lambda emu: emu.set_reg('ra', 0x353560))
@@ -804,6 +804,36 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(delivered.mem.u32(DATA + 0x60), 2)
         self.assertEqual(delivered.intc_deliveries, [(2, handler, 1)])
         self.assertEqual(delivered._semas[1]['count'], 0)
+        self.assertEqual(delivered.intc_delivery_status, [0])
+        # Status gate: with Status 0 the default refuses and names Status.
+        refused = machine(main, data=param, run=False)
+        refused.load_words(handler, body)
+        refused.load_words(wrapper, [addiu(V1, ZERO, -0x43), R(0x0C), JR_RA, NOP])
+        refused.install_modelled_boot()
+        refused.install_modelled_intc()
+        refused.hook(BASE + 40, lambda emu: emu.set_reg('ra', 0x353560))
+        refused.hook(BASE + 44, lambda emu: emu.set_reg('ra', EE.RETURN_ADDR))
+        with self.assertRaises(CpuTrap) as gated:
+            refused.call(BASE)
+        self.assertIn('Status 0x00000000 disables', str(gated.exception))
+        self.assertEqual(refused.intc_deliveries, [])
+        for status, runs in ((0x10001, True), (0x10000, False), (0x1, False),
+                             (0x10003, False), (0x10005, False)):
+            gate = machine(main, data=param, run=False)
+            gate.load_words(handler, body)
+            gate.load_words(wrapper, [addiu(V1, ZERO, -0x43), R(0x0C), JR_RA, NOP])
+            gate.install_modelled_boot()
+            gate.install_modelled_intc()
+            gate.cop0[12] = status
+            gate.hook(BASE + 40, lambda emu: emu.set_reg('ra', 0x353560))
+            gate.hook(BASE + 44, lambda emu: emu.set_reg('ra', EE.RETURN_ADDR))
+            if runs:
+                self.assertEqual(gate.call(BASE), 1)
+                self.assertEqual(gate.intc_delivery_status, [status])
+            else:
+                with self.assertRaises(CpuTrap):
+                    gate.call(BASE)
+                self.assertEqual(gate.intc_deliveries, [])
         bare = machine([addiu(V1, ZERO, -0x43), R(0x0C)], run=False)
         bare.install_modelled_boot()
         with self.assertRaises(CpuTrap) as unsigned:

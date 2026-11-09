@@ -41,7 +41,9 @@ def run_engine(elf):
     e.install_modelled_gs_privileged()
     e.install_deci2_kputs()
     e.install_modelled_boot()
-    e.install_modelled_intc()
+    # Status is 0 at every delivery, so each one is a modelled exception the
+    # CPU state does not allow (audit R7-2).  It is recorded and asserted.
+    e.install_modelled_intc(while_disabled=True)
     e.r[28] = GP
     e.mem.w32(COUNTER_NEIGHBOR, 0x11111111)
     e.mem.w8(FIELD_BYTE, 0xA5)
@@ -85,6 +87,7 @@ def run_engine(elf):
     assert e.mem.u32(SEMA_A) == 1 and e.mem.u32(SEMA_B) == 2
     assert e._semas[1]['count'] == 5 and e._semas[2]['count'] == 0
     assert e.intc_deliveries == [(2, HANDLER, 2)] * 5
+    assert e.intc_delivery_status == [0] * 5, e.intc_delivery_status
     assert e.mem.u32(RING_SLOT) == RING_SENTINEL and e.mem.u32(RING_NEIGHBOR) == 0x22222222
     assert e.mem.u32(PARTICLE_WORD) == PARTICLE_SENTINEL
     assert e.mem.u32(PARTICLE_NEIGHBOR) == 0x33333333

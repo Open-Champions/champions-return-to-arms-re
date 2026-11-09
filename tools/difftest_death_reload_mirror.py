@@ -44,7 +44,9 @@ def run_boot(elf):
     e.install_modelled_gs_privileged()
     e.install_deci2_kputs()
     e.install_modelled_boot()
-    e.install_modelled_intc()
+    # Status is 0 at every delivery, so each one is a modelled exception the
+    # CPU state does not allow (audit R7-2).  It is recorded and asserted.
+    e.install_modelled_intc(while_disabled=True)
     e.install_ram_mirrors()
     e.install_modelled_main_ram()
     e.install_modelled_dma_idle()
@@ -97,6 +99,7 @@ def run_boot(elf):
     assert e.mem.u8(HEAP_BLOCK + HEAP_SIZE - 1) == 0xa5
     assert e._hw_words == {0x1000a000: 0x101, 0x1000a010: 0x188c180, 0x1000a020: 0x8c08}
     assert e.intc_deliveries == [(2, HANDLER, 4)] * 5, e.intc_deliveries
+    assert e.intc_delivery_status == [0] * 5, e.intc_delivery_status
     # The GS model's CSR reads: the graphics reset, then each modelled delivery.
     assert e.gs_reads == [(0x34f780, 0x12001000, 0)] + [(0x19b8d8, 0x12001000, 0)] * 5, e.gs_reads
     assert e.mem.u32(RING_SLOT) == 0 and e.mem.u32(PARTICLE_WORD) == 0
