@@ -717,6 +717,63 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(str(still.exception),
                          'SYSCALL at 0x%08x (v1 = 60); no kernel is modelled' % (BASE + 4))
 
+    def test_modelled_sif_dma_is_opt_in_and_records_the_descriptor(self):
+        setdma = [addiu(V1, ZERO, 119), R(0x0C)]
+        with self.assertRaises(CpuTrap) as unhandled:
+            machine(setdma)
+        self.assertEqual(str(unhandled.exception),
+                         'SYSCALL at 0x%08x (v1 = 119); no kernel is modelled' % (BASE + 4))
+        with self.assertRaises(CpuTrap) as unhandled_stat:
+            machine([addiu(V1, ZERO, 118), R(0x0C)])
+        self.assertEqual(str(unhandled_stat.exception),
+                         'SYSCALL at 0x%08x (v1 = 118); no kernel is modelled' % (BASE + 4))
+        pair = [addiu(V1, ZERO, 119), R(0x0C), R(0x21, A0, V0, ZERO),
+                addiu(V1, ZERO, 118), R(0x0C)]
+
+        def prepared(set_ra=0x35edd0, stat_ra=0x35edf8):
+            emu = machine(pair, run=False)
+            emu.mem.map(0x8f6000, 0x1000)
+            emu.mem.write(0x8f60c0, struct.pack('<4I', 0x01025b00, 0, 0x940, 0))
+            emu.install_modelled_sif_dma()
+            emu.hook(BASE + 4, lambda e: e.set_reg('ra', set_ra))
+            emu.hook(BASE + 16, lambda e: e.set_reg('ra', stat_ra))
+            emu.hook(BASE + 20, lambda e: e.set_reg('ra', EE.RETURN_ADDR))
+            return emu
+
+        emu = prepared()
+        with self.assertRaises(EmuError):
+            emu.install_modelled_sif_dma()
+        emu.write_watch = ((0x8f60c0, 16),)
+        self.assertEqual(emu.call(BASE, 0x8f60c0, 1) & 0xFFFFFFFF, 0xFFFFFFFF)
+        self.assertEqual(emu.r[A0], 1)
+        self.assertEqual(emu.sif_dma, [(1, 0x01025b00, 0, 0x940, 0)])
+        self.assertEqual(emu.writes, [])
+        for args, set_ra in (((0x8f60c0, 1), 0x350dd8), ((0x8f60c0, 2), 0x35edd0),
+                             ((0x8f60d0, 1), 0x35edd0)):
+            wrong = prepared(set_ra=set_ra)
+            with self.assertRaises(CpuTrap) as rejected:
+                wrong.call(BASE, *args)
+            self.assertIn('outside the observed 0x35ed90 sceSifSetDma contract',
+                          str(rejected.exception))
+            self.assertEqual(wrong.sif_dma, [])
+        stat = prepared(stat_ra=0x3678a8)
+        with self.assertRaises(CpuTrap) as rejected_stat:
+            stat.call(BASE, 0x8f60c0, 1)
+        self.assertIn('outside the observed 0x35ed90 sceSifDmaStat contract',
+                      str(rejected_stat.exception))
+        unknown = machine([addiu(V1, ZERO, 118), R(0x0C)], run=False)
+        unknown.install_modelled_sif_dma()
+        unknown.hook(BASE + 4, lambda e: e.set_reg('ra', 0x35edf8))
+        with self.assertRaises(CpuTrap):
+            unknown.call(BASE, 1)
+        other = machine([addiu(V1, ZERO, 60), R(0x0C)], run=False)
+        other.install_modelled_sif_dma()
+        other.install_deci2_kputs()
+        with self.assertRaises(CpuTrap) as still:
+            other.call(BASE)
+        self.assertEqual(str(still.exception),
+                         'SYSCALL at 0x%08x (v1 = 60); no kernel is modelled' % (BASE + 4))
+
     def test_modelled_boot_is_opt_in_and_labels_its_ids(self):
         create = [addiu(V1, ZERO, 32), R(0x0C)]
         with self.assertRaises(CpuTrap) as unhandled:

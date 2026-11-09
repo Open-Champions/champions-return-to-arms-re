@@ -49,7 +49,10 @@ at the callers that do not read v0.  install_modelled_boot models the thread,
 semaphore and boot callers listed on that method.  install_modelled_intc, also
 opt-in, delivers one registered INTC handler when a modelled WaitSema would
 block on a semaphore that handler signals, then retries.  The delivery cadence
-is modelled, not a vertical-blank interval.  Every value these handlers write
+is modelled, not a vertical-blank interval.  install_modelled_sif_dma models
+only sceSifSetDma (119) and sceSifDmaStat (118) inside the SPU helper
+0x35ed90, the one caller whose use of both results was read; it records each
+descriptor and moves no bytes.  Every value these handlers write
 in v0 is modelled, not a recovered kernel result.  Every other number still
 raises CpuTrap.  The opt-ins compose; none is installed by default.
 
@@ -614,6 +617,9 @@ class EE:
         self._next_tid = 2
         self._next_sid = 1
         self._next_handler = 1
+        self._sif_dma = False
+        self.sif_dma = []               # with install_modelled_sif_dma: recorded descriptors
+        self._next_dma_id = 1
         self.div_zero = 'stop'          # or 'r5900': continue with the reported HI/LO values
         self.patches = {}               # address -> original word
         self.stack_lo, self.stack_hi = self.STACK_LO, self.STACK_HI
@@ -799,6 +805,73 @@ class EE:
             raise EmuError('modelled interrupt delivery is already installed')
         self._modelled_intc = True
 
+    def install_modelled_sif_dma(self):
+        """Opt in to sceSifSetDma and sceSifDmaStat inside the SPU helper 0x35ed90.
+
+        Observed: sceSifSetDma 0x352da0 loads v1 = 0x77 (119) and executes
+        SYSCALL at 0x352da4, then jr ra.  sceSifDmaStat 0x352d80 loads v1 =
+        0x76 (118), SYSCALL at 0x352d84, then jr ra.  The helper 0x35ed90 is
+        called as (source, destination, size, mode).  Mode 0 returns -1 at
+        0x35eddc without a syscall.  Otherwise it stores source, destination,
+        size and 0 in the four words at 0x8f60c0 and calls sceSifSetDma with
+        a0 = 0x8f60c0 and a1 = 1 (0x35edb0-0x35edc8).  0x35edd0 moves v0 to
+        s0.  A zero result returns -1.  A nonzero result with mode 1 calls
+        sceSifDmaStat with that result at 0x35edf0 and repeats while the
+        return is not negative (bgez at 0x35edf8); the helper then returns 0.
+        A nonzero result with any other mode returns 0 without polling.
+
+        Observed callers: only two jal sites reach 0x35ed90, and both pass
+        mode 1.  sound_flushSpuCommands 0x210cd0 calls it at 0x210e28; the next
+        instruction replaces a0 for 0x35ee38 and v0 is not read.
+        sample_uploadToSpu 0x213ff0 calls it at 0x214120 and compares the
+        helper's result with -1 at 0x214130.
+
+        Inferred from those branches: a nonzero sceSifSetDma result is a
+        queued transfer id, and a negative sceSifDmaStat result means it has
+        finished.  The retail id values and the queue-full case are unknown.
+
+        Model: syscall 119 is accepted only with return address 0x35edd0,
+        a0 = 0x8f60c0 and a1 = 1.  v0 is a modelled id counting from 1, never
+        0.  The four descriptor words (source, destination, size, attribute)
+        and the id are appended to self.sif_dma.  No source byte is read and
+        nothing is written: there is no IOP memory here.  Syscall 118 is
+        accepted only with return address 0x35edf8 and an id this model
+        returned; v0 is -1, so the first poll reports the transfer finished.
+        That is the condition the loop tests, not a measured completion
+        time.  The other sceSifSetDma callers (0x350dd4, 0x355ac4, 0x356d80,
+        0x35bdfc, 0x367884) and sceSifDmaStat callers (0x350d68, 0x3678a0)
+        still raise CpuTrap.  Composes with the other opt-ins.
+        """
+        if self._sif_dma:
+            raise EmuError('modelled SIF DMA is already installed')
+        self._sif_dma = True
+        self.syscall_handler = EE._dispatch_opt_in_syscall
+
+    _SIF_DMA_DESCRIPTOR = 0x8f60c0
+    _SIF_SET_DMA_RA = 0x35edd0
+    _SIF_DMA_STAT_RA = 0x35edf8
+
+    def modelled_sif_dma(self, number):
+        ra = self.r[31] & M32
+        a0 = self.r[4] & M32
+        if number == 119:
+            a1 = self.r[5] & M32
+            if ra != self._SIF_SET_DMA_RA or a0 != self._SIF_DMA_DESCRIPTOR or a1 != 1:
+                raise CpuTrap('SYSCALL at 0x%08x (v1 = 119, a0 = 0x%x, a1 = %d, ra = 0x%08x); '
+                              'outside the observed 0x35ed90 sceSifSetDma contract'
+                              % (self.cur, a0, a1, ra))
+            dma_id = self._next_dma_id
+            self._next_dma_id = dma_id + 1
+            words = tuple(self.mem.u32(a0 + 4 * i) for i in range(4))
+            self.sif_dma.append((dma_id,) + words)
+            self._set_v0(dma_id)
+            return
+        if ra != self._SIF_DMA_STAT_RA or not 0 < a0 < self._next_dma_id:
+            raise CpuTrap('SYSCALL at 0x%08x (v1 = 118, a0 = 0x%x, ra = 0x%08x); '
+                          'outside the observed 0x35ed90 sceSifDmaStat contract'
+                          % (self.cur, a0, ra))
+        self._set_v0(0xffffffff)
+
     # Return addresses of jal TerminateThread whose following instructions do not read v0.
     _TERMINATE_IGNORED_RA = frozenset((
         0x17de0c, 0x17e480, 0x17fe68, 0x31ef38,
@@ -814,6 +887,9 @@ class EE:
             self.terminate_thread()
             return
         if self._modelled_boot and self._modelled_boot_syscall(number):
+            return
+        if number in (118, 119) and self._sif_dma:
+            self.modelled_sif_dma(number)
             return
         raise CpuTrap('SYSCALL at 0x%08x (v1 = %d); no kernel is modelled'
                       % (self.cur, number))
