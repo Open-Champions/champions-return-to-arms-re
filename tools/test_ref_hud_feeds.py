@@ -130,6 +130,11 @@ class TileTest(unittest.TestCase):
         out = H.strip_vertices(lambda c, r: 0, [4, 5, 6], 10, 5)
         self.assertEqual(len(out), 2 * 4 * 4)
 
+    def test_strip_prim_runs(self):
+        self.assertEqual(H.strip_prim_runs(3, 5), [16, 16])
+        self.assertEqual(H.strip_prim_runs(1, 30), [])
+        self.assertEqual(H.TILE_PRIM & 7, 4)
+
 
 if __name__ == '__main__':
     unittest.main()

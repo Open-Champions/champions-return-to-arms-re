@@ -10,7 +10,7 @@ Sections
   2. Branch conditions of the hud_showMessage 0x1d92a0 callers reachable in missions:
      script_setInfo 0x14318c, DoorSwing_interact 0x28aa7c, Savepoint_interactPrompt
      0x28da58, JumpGate_interactPrompt 0x27d7a0, and itemprop_tryPickup 0x154dbc
-     (which never calls it).
+     (whose own body never calls it; its accepted-path callees were stubbed).
   3. Ammunition (lines 3 and 6) and thrown (line 7) notice starters.
   4. Map icons: the registrar 0x1689a4, the PushTrigger_ctor property feed and the
      draw-time vars_get / script_runByName gates of 0x168cac.
@@ -140,7 +140,8 @@ def jumpgate_first_prompt(flag_4f, task_running, gate_script, gate_result, seen)
 
 
 def pickup(bag_count_plus_one_below_64, load_fits):
-    """itemprop_tryPickup(slot, item): never calls hud_showMessage.
+    """itemprop_tryPickup(slot, item): its own body never calls hud_showMessage (its
+    callees, the level-script call included, were stubs in the difftest).
     Returns (result, effects)."""
     if not bag_count_plus_one_below_64:
         return 0, ('sound',)
@@ -296,3 +297,14 @@ def strip_vertices(grid_cell, rows, first_col, count):
             out.extend(tile_quad(grid_cell(c, r), grid_cell(c, r + 1),
                                  grid_cell(c + 1, r), grid_cell(c + 1, r + 1)))
     return out
+
+
+# Added in the round-3 fix: the GS shape of one strip packet. Each pair of adjacent rows
+# is one PRIM write, 0x15c (triangle strip, Gouraud, textured, alpha-blended, UV
+# coordinates), followed by four XYZ2 vertices with ADC 0 per quad of that row pair.
+TILE_PRIM = 0x15C
+
+
+def strip_prim_runs(row_count, column_count):
+    """Vertices after each PRIM write of one strip packet: one run per row pair."""
+    return [4 * (column_count - 1)] * max(row_count - 1, 0)

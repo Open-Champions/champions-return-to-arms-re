@@ -3,6 +3,9 @@
 
   PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_hud_feeds.py local/SLUS_209.73 --seed 20973
 
+Census: every direct jal / j to hud_showMessage 0x1d92a0 in .text, with its containing
+function from ghidra_funcs.tsv, asserted site by site (pointer calls not covered).
+
 Runs, in tools/ee_emu.py: hud_run 0x1db870 (the level-up panel edge),
 menu_openInventory 0x1c15c8 and invmsg_dispatch 0x1bfdb0 (acknowledged level +0x58);
 script_setInfo, DoorSwing_interact, Savepoint_interactPrompt, JumpGate_interactPrompt and
@@ -42,6 +45,7 @@ NETWORK = 0x402791
 EXIT_COUNT = 0x4F694A
 CHEAT_XP = 0x4F8EE0
 TIMER, FORCE, TEXT = 0x4F66E0, 0x4F66E2, 0x86AB78
+PANEL_WORD, PANEL_BYTE = 0x4F4090, 0x4F65C8
 
 HUD_RUN, OPEN_INVENTORY, INVMSG_DISPATCH = 0x1DB870, 0x1C15C8, 0x1BFDB0
 SHOW_MESSAGE, WIDE_COPY = 0x1D92A0, 0x19E854
@@ -68,6 +72,82 @@ def draws(emu):
 def no_draws(emu, name):
     if draws(emu):
         raise Fail('%s drew a seed' % name)
+
+
+# ---- 0. hud_showMessage census --------------------------------------------------------
+# Every direct jump to hud_showMessage 0x1d92a0 in .text: (site, 'jal' or 'j', start of the
+# containing function in ghidra_funcs.tsv). Pointer calls (jalr) are not covered.
+SHOW_MESSAGE_SITES = (
+    (0x1431C0, 'jal', 0x14318C), (0x143D94, 'jal', 0x143D04), (0x18C2F0, 'jal', 0x18C230),
+    (0x18C4B8, 'jal', 0x18C230), (0x1A6EBC, 'jal', 0x1A5030), (0x1A7AF0, 'jal', 0x1A5030),
+    (0x1A8040, 'jal', 0x1A5030), (0x1AAFC4, 'jal', 0x1A5030), (0x1D3298, 'jal', 0x1D3150),
+    (0x1D8E9C, 'jal', 0x1D8CA0), (0x1DC024, 'jal', 0x1DBC48), (0x1DC054, 'jal', 0x1DBC48),
+    (0x1DE3C8, 'j', 0x1DE340), (0x207D7C, 'jal', 0x207C3C), (0x207E40, 'jal', 0x207C3C),
+    (0x218210, 'jal', 0x218128), (0x218270, 'jal', 0x218128), (0x218294, 'jal', 0x218128),
+    (0x27D600, 'jal', 0x27CB58), (0x27D858, 'jal', 0x27D7A0), (0x28AB88, 'jal', 0x28AA7C),
+    (0x28B2F8, 'j', 0x28B268), (0x28D6A0, 'jal', 0x28CDD0), (0x28DB70, 'jal', 0x28DA58),
+    (0x28DB94, 'jal', 0x28DA58), (0x2C71CC, 'jal', 0x2C7140), (0x2CFFF8, 'jal', 0x2CFFB8),
+    (0x2D0B68, 'jal', 0x2D0A58), (0x2D14F0, 'jal', 0x2D1484), (0x2D29E0, 'jal', 0x2D2984),
+    (0x2D6018, 'jal', 0x2D5FC4), (0x2D6D94, 'jal', 0x2D6D40), (0x2D87D0, 'jal', 0x2D877C),
+    (0x2D9A6C, 'jal', 0x2D9A18), (0x2DAC84, 'jal', 0x2DAC30), (0x2DE39C, 'jal', 0x2DE334),
+    (0x2E6574, 'jal', 0x2E6534), (0x2FAA68, 'jal', 0x2FAA00), (0x3121AC, 'jal', 0x312168),
+    (0x312208, 'jal', 0x312168), (0x319778, 'jal', 0x319710), (0x31A0B4, 'jal', 0x31A04C),
+    (0x328140, 'j', 0x328090),
+)
+
+
+def elf_text(path):
+    """(address, bytes) of the .text section, from the ELF section headers."""
+    with open(path, 'rb') as source:
+        data = source.read()
+    shoff, = struct.unpack_from('<I', data, 0x20)
+    shentsize, shnum, shstrndx = struct.unpack_from('<HHH', data, 0x2E)
+
+    def header(i):
+        return struct.unpack_from('<10I', data, shoff + i * shentsize)
+    names = header(shstrndx)[4]
+    for i in range(shnum):
+        h = header(i)
+        name = data[names + h[0]:data.index(b'\0', names + h[0])]
+        if name == b'.text':
+            return h[3], data[h[4]:h[4] + h[5]]
+    raise Fail('no .text section')
+
+
+def function_ranges():
+    """[(start, lo, hi)] from the tracked ghidra_funcs.tsv (a function may list several
+    address ranges)."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        'ghidra_funcs.tsv')
+    out = []
+    with open(path) as source:
+        for line in source:
+            parts = line.rstrip('\n').split('\t')
+            if len(parts) < 3 or not parts[0][:1].isalnum():
+                continue
+            start = int(parts[0], 16)
+            for span in parts[2].split(','):
+                lo, hi = span.split('-')
+                out.append((start, int(lo, 16), int(hi, 16)))
+    return out
+
+
+def census_cases(elf, rng):
+    base, text = elf_text(elf)
+    jal, j = 0x0C000000 | (SHOW_MESSAGE >> 2), 0x08000000 | (SHOW_MESSAGE >> 2)
+    ranges = function_ranges()
+    found = []
+    for off in range(0, len(text) - 3, 4):
+        word, = struct.unpack_from('<I', text, off)
+        if word in (jal, j):
+            site = base + off
+            owner = [start for start, lo, hi in ranges if lo <= site <= hi]
+            found.append((site, 'jal' if word == jal else 'j', owner[0] if len(owner) == 1 else None))
+    check('hud_showMessage census', tuple(found), SHOW_MESSAGE_SITES)
+    kinds = [k for _s, k, _f in found]
+    check('hud_showMessage census kinds', (kinds.count('jal'), kinds.count('j')), (40, 3))
+    census_cases.functions = len({f for _s, _k, f in found})
+    return len(found)
 
 
 # ---- 1. acknowledged level -----------------------------------------------------------
@@ -209,6 +289,8 @@ def ack_chain_cases(elf, rng):
                 emu.mem.w8(rec + 0x59, (earned if i == slot else 0x44) & 0xFF)
                 emu.mem.w8(rec + 0xED, 0x77)
                 emu.mem.w8(rec + 0xEE, 0x66)
+            emu.mem.w32(PANEL_WORD, 0xA5A5A5A5)
+            emu.mem.w8(PANEL_BYTE, 0x5A)
             emu.reset_log()
             emu.call(OPEN_INVENTORY, slot, level_up)
         rec = PLAYER + STRIDE * slot
@@ -223,6 +305,10 @@ def ack_chain_cases(elf, rng):
             check('open case %d +0xed/+0xee' % n,
                   (owner.mem.u8(rec + 0xED), owner.mem.u8(rec + 0xEE)), (0x77, 0x66))
         check('open case %d remote +0xee' % n, other.mem.u8(rec + 0xEE), 0x66)
+        # the same branch stores word 5 at 0x4f4090 and byte 1 at 0x4f65c8 (0x1c1834, 0x1c1838)
+        check('open case %d panel globals' % n,
+              [(e.mem.u32(PANEL_WORD), e.mem.u8(PANEL_BYTE)) for e in (owner, other)],
+              [(5, 1) if level_up else (0xA5A5A5A5, 0x5A), (0xA5A5A5A5, 0x5A)])
         before = [(e.mem.u8(rec + 0x58)) for e in (owner, other)]
         check('open case %d ack before dispatch' % n, before, [ack & 0xFF] * 2)
         for emu in (owner, other):
@@ -461,7 +547,9 @@ def jumpgate_cases(elf, rng):
     props = {}
     prop_stub(emu, props)
     box = {'task': 0, 'result': 0}
-    emu.stub(TASK_RUNNING, function=lambda _e: box['task'], name='task_isRunning')
+    tasks = []
+    emu.stub(TASK_RUNNING, function=lambda e: tasks.append(e.r[4] & 0xFFFFFFFF) or box['task'],
+             name='task_isRunning (recorded name pointer)')
     emu.stub(SCRIPT_RUN, function=lambda _e: box['result'], name='script_runByName')
     activated = []
     emu.stub(0x27DB60, function=lambda e: activated.append(1), name='jumpgate_0x27db60 (recorded; takes no argument)')
@@ -480,10 +568,13 @@ def jumpgate_cases(elf, rng):
         emu.mem.w8(gate + 0x4D, seen)
         emu.mem.w32(0x4F8440 + 4 * slot, alive_slot)
         activated.clear()
+        tasks.clear()
         plant_message(emu)
         emu.looked.clear()
         emu.reset_log()
         emu.call(0x27D7A0, gate, buf, slot)
+        if not flag_4f:
+            check('jumpgate %d task name' % n, tasks[:1], [0x547E10])
         want = H.jumpgate_first_prompt(flag_4f, task, has_script, result, seen)
         state, calls = shown(emu)
         if want == 'message':
@@ -526,7 +617,10 @@ def pickup_cases(elf, rng):
                        (0x3B7EF0, 'sprintf'), (SCRIPT_RUN, 'script_runByName'),
                        (0x1C1868, 'inventory_giveItem'), (0x1BEC10, 'player_0x1bec10'),
                        (0x1B7BA8, 'player_voice')):
-        emu.stub(addr, function=(lambda nm: lambda e: calls.append(nm) or 0)(name), name=name)
+        emu.stub(addr, function=(lambda nm: lambda e: calls.append(nm) or args.append(
+            (nm, tuple(F.s32(e.r[k] & 0xFFFFFFFF) for k in (4, 5, 6)))) or 0)(name),
+            name=name + ' (recorded with a0-a2)')
+    args = []
     item = emu.alloc(0x40)
     definition = emu.alloc(0x40)
     emu.mem.w32(item, definition)
@@ -542,6 +636,7 @@ def pickup_cases(elf, rng):
         box['weight'] = F.f32(weight)
         emu.mem.w64(item + 8, flags)
         calls.clear()
+        args.clear()
         plant_message(emu)
         emu.reset_log()
         result = emu.call(0x154DBC, slot, item) & 0xFFFFFFFF
@@ -555,6 +650,13 @@ def pickup_cases(elf, rng):
                    ['sprintf', 'res_find', 'sound_playOnObject', 'script_runByName',
                     'inventory_giveItem', 'player_0x1bec10']}[want[1]]
         check('pickup %d calls' % n, calls, effects)
+        got = {nm: a for nm, a in args}
+        if want[1] == ('voice0',):
+            check('pickup %d voice args' % n, got['player_voice'][:2], (slot, 0))
+        elif want[1] != ('sound',):
+            check('pickup %d script name' % n, got['script_runByName'][0], 0x532678)
+            check('pickup %d giveItem args' % n, got['inventory_giveItem'], (slot, F.s32(item), 1))
+            check('pickup %d after' % n, got['player_0x1bec10'][0], slot)
         no_draws(emu, 'itemprop_tryPickup')
         checked += 1
 
@@ -676,18 +778,24 @@ def thrown_cases(elf, rng):
                               H.thrown_release(count))
                 check('thrown 0x%x count kept' % start, emu.mem.u16(emu.item + 4), count)
                 checked += 1
-    swap = emu.alloc(0x40)
+    # One item and definition per weapon set word +0x4430 + 4*k (k = -1..3). Only set 1's
+    # definition carries the class under test; the others carry the opposite answer, so a
+    # read of another set's word would change the result. Counts vary per item.
+    items = [emu.alloc(0x10) for _ in range(5)]
+    defs = [emu.alloc(0x40) for _ in range(5)]
+    swap_counts = (0, 1, 20, 21, 50, 0xFFFF)
     for slot in range(4):
         for which in (0, 1, 2, -1):
             for klass in (0, 4, 6, 7):
                 rec = PLAYER + STRIDE * slot
                 emu.mem.w32(P + 0x3C8, slot)
                 emu.mem.w8(rec + 0x4A7C, which & 0xFF)
-                for k in range(-1, 3):
-                    emu.mem.w32(rec + 0x4434 + 4 * k, emu.item)
-                emu.mem.w32(emu.item, swap)
-                emu.mem.w8(swap + 0x1E, klass)
-                emu.mem.w16(emu.item + 4, 50)
+                for k in range(-1, 4):
+                    it, d = items[k + 1], defs[k + 1]
+                    emu.mem.w32(rec + 0x4430 + 4 * k, it)
+                    emu.mem.w32(it, d)
+                    emu.mem.w8(d + 0x1E, klass if k == 1 else (0 if klass == 6 else 6))
+                    emu.mem.w16(it + 4, rng.choice(swap_counts))
                 plant_notices(emu)
                 run_slice(emu, 0x1BB9B0, 0x1BBA0C, {16: rec, 17: rec, 18: P, 20: 1})
                 check_notices(emu, 'swap s%d set%d class%d' % (slot, which, klass), slot,
@@ -797,6 +905,8 @@ def registrar_cases(elf, rng):
         check('pushtrigger %d angle' % n, mem.u16(obj + 0x38), angle & 0xFFFF)
         if name is None:
             check('pushtrigger %d no icon' % n, (mem.u32(H.ICON_COUNT), emu.found), (count, []))
+            check('pushtrigger %d registrar not entered' % n,
+                  [c for c in emu.calls if c.target == REGISTRAR], [])
             checked += 1
             return
         rotate = H.pushtrigger_rotate(name == mem.cstr(ROTATE_A), name == mem.cstr(ROTATE_B))
@@ -831,6 +941,25 @@ def registrar_cases(elf, rng):
                 rng.choice((None, 0, 1, 7)), rng.random() < 0.5, rng.random() < 0.5,
                 rng.random() < 0.3)
             n += 1
+    # The registrar's own null-name test: call 0x1689a4 directly with name 0 and real
+    # offset / scale / var / script strings.
+    for k in range(4):
+        count = rng.randrange(0, 20)
+        mem.w32(H.ICON_COUNT, count)
+        entry = H.ICONS + count * H.ICON_STRIDE
+        for off in range(0, H.ICON_STRIDE, 4):
+            mem.w32(entry + off, 0xA5A5A500 + off)
+        emu.formatted.clear()
+        emu.found.clear()
+        emu.reset_log()
+        emu.call(REGISTRAR, pos, k & 1, 0, (k * 0x4000) & 0xFFFF, put(emu, '1.5 2.5'),
+                 put(emu, '7'), put(emu, 'qv'), put(emu, 'qs'))
+        check('registrar null %d' % k,
+              (mem.u32(H.ICON_COUNT), [mem.u32(entry + off) for off in range(0, H.ICON_STRIDE, 4)],
+               emu.found, emu.formatted),
+              (count, [0xA5A5A500 + off for off in range(0, H.ICON_STRIDE, 4)], [], []))
+        no_draws(emu, 'registrar')
+        checked += 1
     return checked
 
 
@@ -1003,6 +1132,21 @@ def tile_cases(elf, rng, cases=40):
             vif = V.Vif1(V.Vu1(), kick=gs.path1, direct=gs.path2)
             vif.feed(V.dma_chain_words(lambda a, k: emu.mem.read(a, k), p))
             have = [(v.uv[0], v.uv[1], v.rgba[3]) for v in gs.vertices]
+            # GS packet shape: vertices per PRIM write, and each vertex's PRIM, ADC bit and
+            # register.
+            runs = []
+            for ev in gs.events:
+                if ev[0] == 'reg' and ev[1] == 'PRIM':
+                    runs.append(0)
+                elif ev[0] == 'vtx':
+                    if not runs:
+                        raise Fail('tile vertex before any PRIM write')
+                    runs[-1] += 1
+            check('tile packet cols %d+%d PRIM runs' % (c0, n), runs,
+                  H.strip_prim_runs(len(rows), n))
+            check('tile packet cols %d+%d vertex kinds' % (c0, n),
+                  sorted({(v.prim, v.adc, v.reg) for v in gs.vertices}),
+                  [(H.TILE_PRIM, 0, 'XYZ2')] if gs.vertices else [])
             expect = list(H.strip_vertices(cell, rows, c0, n))
             if have != expect:
                 bad = next(i for i in range(min(len(have), len(expect)))
@@ -1027,6 +1171,7 @@ def main():
         print('SKIP: SLUS-20973 v2.00 ELF missing')
         return 0
     parts = [
+        ('message census', census_cases),
         ('acknowledge edge', ack_cases),
         ('acknowledge chain', ack_chain_cases),
         ('setInfo', setinfo_cases),
@@ -1045,7 +1190,10 @@ def main():
         if args.only and args.only not in name:
             continue
         count = fn(args.elf, random.Random('%d/%s' % (args.seed, name)))
-        if fn is tile_cases:
+        if fn is census_cases:
+            print('PASS %s %d direct jumps to hud_showMessage (40 jal, 3 j) in %d functions, '
+                  'each site and its function asserted' % (name, count, census_cases.functions))
+        elif fn is tile_cases:
             st = tile_cases.stats
             print('PASS %s %d strip packets in vu1_emu (%d drawer calls, %d drew, %d vertices); '
                   'seed draws 0' % (name, count, st['cases'], st['drawn'], st['vertices']))
