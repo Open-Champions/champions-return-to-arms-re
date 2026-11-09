@@ -265,14 +265,14 @@ player across all 12 models; a rendered playthrough is required.
 ## 5. Verification on this worktree
 
 All commands below used `PYTHONDONTWRITEBYTECODE=1` and the read-only
-`/Users/syndicatemike/champions-re/SLUS_209.73` input, whose SHA-256 was
+`~/champions-re/SLUS_209.73` input, whose SHA-256 was
 checked by each difftest. No generated data was placed in tracked files.
 
 | Command (prefix omitted) | Result |
 |---|---|
-| `python3 tools/difftest_player_anim_select.py /Users/syndicatemike/champions-re/SLUS_209.73 --seed 20973` | 96/96 base selection, 10/10 equip-to-selector cases and 1/1 lethal state entry; 0 mismatches |
+| `python3 tools/difftest_player_anim_select.py ~/champions-re/SLUS_209.73 --seed 20973` | 96/96 base selection, 10/10 equip-to-selector cases and 1/1 lethal state entry; 0 mismatches |
 | same with `--seed 7` | 96/96 base selection, 10/10 equip-to-selector cases and 1/1 lethal state entry; 0 mismatches |
-| `python3 tools/difftest_player.py /Users/syndicatemike/champions-re/SLUS_209.73 --seed 20973` | 31,990 compared ticks; all reported properties pass, including 2,500 isolated `Player_pickAttackAnim` calls; scripted animation responses as described above |
+| `python3 tools/difftest_player.py ~/champions-re/SLUS_209.73 --seed 20973` | 31,990 compared ticks; all reported properties pass, including 2,500 isolated `Player_pickAttackAnim` calls; scripted animation responses as described above |
 | same with `--seed 7` | 31,991 compared ticks; all reported properties pass, including 2,500 isolated `Player_pickAttackAnim` calls |
 | `python3 -m unittest discover -s tools -p 'test_*.py'` | 652 tests, OK |
 
