@@ -500,3 +500,7 @@ US v2.00, 120 archives, 120 level scripts, 18,675 objects.
 - Which built-in branch a turn-in takes depends on the item and quest state; this document
   counts reachability, it does not run the entries (`docs/quests.md` §7 item 7).
 - No run on a game (Play!, PCSX2 or a console).
+
+The machinery around this machine (post action, deferred calls, `callScript`, the end
+order, the input map, pause and lockout, hub offers) is in
+[dialog-system.md](dialog-system.md) (2026-11-09).
