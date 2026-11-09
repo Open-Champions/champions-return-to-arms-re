@@ -945,10 +945,13 @@ class EE:
         not a register block at 0x10000000 or 0x12000000.
 
         Observed at 0x16bed0: a pointer built from 0x006f4140 is ORed with
-        0x30000000 and kept.  Observed at 0x19d990: 0x0044fe80 plus a 0 or 1
-        displacement is ORed with 0x30000000 and stored.  Both bases are
-        inside main RAM.  Those are the uncached-accelerated addresses of the
-        same bytes, the form the DMA and GIF packets carry.
+        0x30000000 and kept.  Observed at 0x19d978-0x19d990: bit 0 of a word
+        is multiplied by 0x445c0 (three-operand mult at 0x19d97c, constant
+        formed at 0x19d928/0x19d934), added to 0x0044fe80, and the result,
+        0x0044fe80 or 0x00494440, is ORed with 0x30000000 and stored.  Both
+        bases are inside main RAM.  Inferred: those are the
+        uncached-accelerated addresses of the same bytes, the form the DMA
+        and GIF packets carry.
 
         An address in 0x20000000 or 0x30000000 whose low 28 bits are below
         0x02000000 uses the cached page.  A cached page that is not mapped

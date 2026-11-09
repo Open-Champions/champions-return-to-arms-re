@@ -458,7 +458,8 @@ loads CSR `0x12001000` at `0x19b8d8`, keeps bit 13, and stores it at
 also 0. The tests now assert the model's six CSR reads, `0x34f780` once and
 `0x19b8d8` five times, as a check of the model. Semaphore 1's modelled count is
 5. Semaphore 2 is waited after each signal, so its modelled count is 0. The
-later wait at `0x19d828` does not run.
+later waiter call at `0x19d82c` (hooked at `0x19d828`, the instruction
+before it) does not run.
 
 **Executed:** the next stop is a 2-byte write at pc `0x19d4b4`, return
 address `0x19d498`, to address `0x21800094`. v0 is `0x2300`. That is the word
@@ -535,7 +536,8 @@ offset `0x14` of the result. A `sync` follows at `0x19d4b8`, then
 `0x1800080` is below `0x02000000`, inside the 32 MB main-RAM window. The
 register blocks this code uses are formed with `lui` of `0x1000` and
 `0x1200`. **Observed:** `0x30000000` is also ORed onto main-RAM addresses, at
-`0x16bed0` (base `0x6f4140`) and `0x19d990` (base `0x44fe80`).
+`0x16bed0` (base `0x6f4140`) and `0x19d990` (`0x44fe80` plus bit 0 of a
+word times `0x445c0`, so `0x44fe80` or `0x494440`; audit R7-5).
 
 **Inferred:** `0x21800094` is the uncached alias of main-RAM byte
 `0x1800094`, written so the DMA that follows reads the new value. This is
@@ -550,9 +552,11 @@ Register windows are not aliased.
 
 ### Other stops, and what each opt-in models
 
-- **Main RAM past the image.** **Observed:** SetupHeap at `0x14fc64` is
-  passed start `0x90a434` and size -1. That is the end of the second
-  `PT_LOAD`. SetupThread at `0x14fc48` is passed
+- **Main RAM past the second `PT_LOAD`.** **Observed:** SetupHeap at
+  `0x14fc64` is passed start `0x90a434` and size -1. That is the end of the
+  second `PT_LOAD`. The third, at `0x1800000`-`0x1918200`, lies inside the
+  modelled range. It is already mapped, so the model does not touch it
+  (wording corrected, audit R7-6). SetupThread at `0x14fc48` is passed
   stack base `0x1fc0000`. On the 32 MB path, `0x19d58c`-`0x19d5c8` ask
   `mem_malloc` `0x150680` for `0x16a5bcc` bytes. `mem_initHeap` `0x150598`
   fills the block with `0xa5`, one byte per iteration, at `0x1505c8`.
@@ -625,16 +629,23 @@ Each seed and each fixture form give the same result.
    particle word have no store in this stage.
 
 **Observed, past the stop:** `0x35574c` tests bit `0x20` of `0x1000e010`
-and, when set, writes `0x20` back. `0x355764` reads `0x1000c000`. The
+and, when set, writes `0x20` back. `0x355764`/`0x355768` form `0x1000c000`,
+and `0x35576c` reads it (correction, audit R7-4). The
 function calls the wrappers at `0x352dc0`, `0x352de0` and `0x352df0`, which
 load syscall numbers `0x78`, `0x79` and `0x7a`. The loop at
-`0x355800`-`0x35580c` repeats the `0x352df0` call until v0 is nonzero.
+`0x355800`-`0x35580c` repeats the `0x352df0` call with a0 = 4 until bit
+`0x20000` of v0 is set (`0x3557fc` sets s0 = `0x20000`, `0x355808` ANDs it).
+It is entered only when the first `0x352df0` call, at `0x3557ac` with a0 =
+`0x80000000`, returns 0 (`0x3557b4`). (Correction, audit R7-4: round 7 said
+"until v0 is nonzero".)
 **Inferred:** this is SIF setup, and that loop waits for the IOP. There is
 no IOP here, so no model is added for `0x1000e010`, `0x1000c000` or those
 syscalls. The stop is where the EE starts waiting on the other processor.
 
 **Not reached:** `0x17a3a0` at `0x19d6f8` (the `texcache_init` path),
-`particle_init` `0x18e648` at `0x19d818`, and the waiter at `0x19d828`.
+`particle_init` `0x18e648` at `0x19d818`, and the waiter call `jal 0x19d028`
+at `0x19d82c`. The tests hook `0x19d828`, the straight-line `lui` before that
+call, as its proxy (audit R7-4).
 
 ### Death sequence on the same machine
 
