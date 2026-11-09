@@ -259,7 +259,9 @@ Evidence: [no linked player](../tools/difftest_mission2_compose.py#L567-L589).
 Round 4 continues the archive open and the in-range prompt in
 [mission2-round4.md](mission2-round4.md). Round 5 runs NPC, trigger, and
 portal use and the loader past the SIF DMA in
-[mission2-round5.md](mission2-round5.md). This round left the following
+[mission2-round5.md](mission2-round5.md). Round 6 runs the portal menu to
+travel, the destination-list save and load, and the loader to the gate
+arrival in [mission2-round6.md](mission2-round6.md). This round left the following
 open. In-range NPC, trigger, and portal use. The loader body after a successful
 archive open, arrival, and save/load of the destination list. Real
 cancel-button reachability of the constructed counter 16. Mission 1's own
