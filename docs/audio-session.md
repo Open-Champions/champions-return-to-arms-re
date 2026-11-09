@@ -10,12 +10,17 @@ Labels. **Executed** means `tools/difftest_audio_session.py` ran the original fu
 or the named address slice of a larger one, in `tools/ee_emu.py`, and
 `tools/ref_audio_session.py` agreed on every recorded call, every stored word and the
 cosmetic seed. It ran with seeds 20973 and 7 and 300 random cases per property (600 for
-foley and hits; the voice property runs every model × kind twice plus 600 random calls),
-with 0 mismatches. The property name is in brackets. Each property's stubs are named in
+foley and hits; the voice property runs every model × kind twice plus 600 random calls,
+and the idle-voice property 12 models × 91 strings plus 34 matching strings), with 0
+mismatches. The property name is in brackets. Each property's stubs are named in
 its docstring: disc, IOP, directory and object-system callees are replaced by recorders
 that return the case's value. **Observed** means read at the address given and not run.
-**Disc** means counted from the NTSC level directories of the private disc on the mini
-(read only; names and counts only). **Inferred** and **Unknown** have their usual
+**Observed [census]** marks a count made by `tools/audio_session_census.py`, which
+asserts every count this document gives (its CHECKS, STORE_TARGETS and CALLER_TARGETS).
+It reads the executable and, read only, the NTSC level directories of a private disc copy
+(`<LEVEL>.GOB::<level>.lmp::ntsc_dialog.bin`). It reports names and counts only. Its
+retained log is the untracked `local/logs/audio-session-census.log` in the mini worktree,
+headed by the commit and the tool's SHA-256. **Inferred** and **Unknown** have their usual
 meaning. Nothing here was heard, run on a console, or run in PCSX2.
 
 ## 1. Client list
@@ -23,8 +28,9 @@ meaning. Nothing here was heard, run on a console, or run in PCSX2.
 In the order a client would build it. Each line points to the section with the evidence.
 
 1. **One mixer, created once.** `sound_init` 0x212f08 has one caller, `engine_init`
-   0x19d73c. Keep `g_soundFrame`, `g_drawFrame`, the duck words, the channel volumes
-   and the poll countdown for the whole process (section 7).
+   0x19d73c. Keep `g_soundFrame`, `g_drawFrame`, the duck words and the channel volumes
+   for the whole process. The poll countdown is not one of them: it is set to 60 at every
+   non-recall load (section 7).
 2. **Per frame:** `sound_update` calls `music_updateDucking` first, then pause/resume,
    the 4-frame queue service, sequences, ambient one-shots, the SPU flush, the 8-frame
    end-flag reads, the stream-0 volume, and the 16-frame volume send [update order]
@@ -34,15 +40,17 @@ In the order a client would build it. Each line points to the section with the e
    load is a recall, set the music countdown to 60 frames, so the level track is
    queued about one second into the level [level entry] [session countdown] (section 2).
 4. **Level track:** the first directory name containing `_env_` or `mx_theme`, queued
-   on stream 2 as 0x122: it fades the old entry, carries the music bit and the
-   cutscene-keep bit, and **does not loop**. It is queued again every 14,400–21,599
+   on stream 2 as 0x102, which becomes 0x122 when `music_playLevel`'s volume gate passes.
+   It fades the old entry, carries the cutscene-keep bit (and then the music bit), and
+   **does not loop** (flag 1 is clear). It is queued again every 14,400–21,599
    frames (section 2, and audio-playback.md 197–215). The per-level names are in
    section 2.2.
 5. **Level ambience:** the first `amb_` name, on stream 0 with flags 3 (loop + fade),
    requeued whenever stream 0 is idle on a 16th drawn frame (audio-playback.md 197–215).
    Its volume is 0.5859375 × min(2 × music volume, 1) [music and stream-0 volume].
 6. **PvP mode B levels:** one of the 11 boss tracks, chosen with the cosmetic seed,
-   looped (flags 1 → 0x23) [pvp music]. Boss fights: audio-playback.md 178–254.
+   queued with flags 1, so it loops [pvp music]. `music_playGlobal` stores it as 0x23
+   (audio-playback.md 137, 164). Boss fights: audio-playback.md 178–254.
 7. **Menus:** title `mx_maintheme_l.vag`; credits `mx_endcredits_ext_l.vag` (flags 3);
    moving the music slider plays `mx_main_l.vag` (pause) or `mx_maintheme_l.vag`
    (front end) with 0x41 when no music is playing, and fades it after 240 or 120 idle
@@ -50,8 +58,8 @@ In the order a client would build it. Each line points to the section with the e
 8. **Voices:** `player_voice(slot, kind)` → stream 1, flags 0x24, name
    `<prefix><nnn>` picked at random among the `MOUTH.VAT` names with that prefix.
    `playGotItemSound` is kind 9 [player voice] (section 4.1).
-9. **Footsteps:** armour foley from the boot item, or water steps; no plain ground step
-   [foley] (section 4.2).
+9. **Footsteps:** armour foley from the item in equipped slot 4 (else slot 10), or
+   water steps; no plain ground step [foley] (section 4.2).
 10. **Hits:** `hit_<material>_<type>_<weight>.anm` from `fx.lmp` [hit name] (section 4.3).
 11. **Options:** effects and music default to 0.5, the stereo word to 1
     [option defaults]. Channel volumes are clamped to 0..1 and sent as `int(v × 256)`
@@ -64,14 +72,19 @@ In the order a client would build it. Each line points to the section with the e
 **Observed** (`docs/issues/sync-breakers.md` 168; `sound_unloadAbove` 0x215418): every
 `game_clearLevel` reaches `sound_unloadAbove` through `lump_unloadUpToLevel` 0x1713e8.
 After its sequence loop (0x215538–0x21556c, `sound_stop` on every active slot) the body
-from 0x215570 has no branch except a three-pass loop. It sends two driver RPCs, one of
-them 0x70 (volume target), then calls `stream_queueStop` for streams 0, 1 and 2
+from 0x215570 has no branch except a three-pass loop. It sends RPC 0x70 (volume target)
+three times, at 0x2155d8, 0x215628 and 0x21567c, with payload word 0, 1 and 2
+(0x21557c, 0x2155e4, 0x215634). Then it calls `stream_queueStop` for streams 0, 1 and 2
 (0x215684–0x215698). It could not be run as a whole function here (it walks object
 lists), so this is Observed, not Executed. **Inferred:** every level change, including a
 recall, fades all three streams out.
 
 **Executed [level entry]** (`game_loadLevel` 0x1e59a4–0x1e5a90;
-`ref_audio_session.level_entry`, lines 36–57):
+`ref_audio_session.level_entry`, lines 36–57). The directory getter
+`stream_levelDirectory` 0x216860, `music_playLevel` 0x215f48, `game_set4f83b8` 0x1ec0e0
+and `stream_queueStop` 0x211338 are recorders. The getter returns a synthetic directory
+(0x50-byte rows of made-up names, some containing `enttag`) or 0. No disc directory was
+used:
 
 - First, unconditionally, `g_cosmeticSeed` 0x404460 = `g_randSeed` 0x404464
   (0x1e59b4–0x1e59c4). From here on, every cosmetic draw in audio (voice numbers,
@@ -86,13 +99,16 @@ recall, fades all three streams out.
   `music_playLevel(name, 2)`, then `game_set4f83b8` 0x1ec0e0 receives
   `(next cosmetic draw >> 16) % 1200 + 1800`. With no such name, or no directory,
   `stream_queueStop(2)` is queued instead.
-- **Disc:** none of the 90 level directories contains `enttag` (section 2.2), so in the
-  shipped game every non-recall load queues the stop. What 0x4f83b8 does is not traced
+- **Observed [census]** ("levels with an enttag name" = 0): none of the 90 level
+  directories has a name containing `enttag`. **Inferred** from that count and the rule
+  above: in the shipped game every non-recall load queues the stop. What 0x4f83b8 does
+  is not traced
   here (**Unknown**).
 
-**Executed [session countdown]** (`mainloop_runSession` 0x322d94–0x322db8;
-`ref_audio_session.session_countdown`, lines 60–64): unless one of the two recall bytes
-is set, `g_ambientCountdown` 0x50608c = 60 before the load. The poll
+**Executed [session countdown]** (`mainloop_runSession` 0x322d94–0x322db8, no callee in
+the slice; `ref_audio_session.session_countdown`, lines 60–64): unless one of the two
+recall bytes is set, `g_ambientCountdown` 0x50608c = 60 (store at 0x322db4) before the
+load. The poll
 (`mainloop_pollAmbientAudio` 0x322520, once per displayed frame) decrements it, and at 0
 it queues the level track (audio-playback.md 197–215). **Inferred:** on an ordinary load
 the level track is queued on the 60th poll, about one second at 60 Hz, and then waits
@@ -101,30 +117,39 @@ recall, the countdown keeps the value it had in the previous level. The level tr
 returns only when that countdown runs out: up to 360 seconds, although the load has
 already faded the old music.
 
-**Observed** loop rule: the poll queues 0x102 and `music_playLevel` adds 0x22, giving
-0x122 (audio-playback.md 136–140, 149). Bit 1 (loop) is clear, so the level track plays once.
+**Observed** loop rule: the poll queues 0x102, and `music_playLevel` ORs in 0x22 when its
+volume gate passes, giving 0x122 (audio-playback.md 138, 149, 164–165). Flag 1 (loop,
+audio-playback.md 126) is clear either way, so the level track plays once.
 It is queued again only when the countdown, reset to 14,400–21,599 frames, runs out.
 **Inferred:** silence between plays is normal and must not be filled by looping.
 
-**Executed [pvp music]** (`game_loadLevel` 0x1e5e00–0x1e5e58;
-`ref_audio_session.pvp_music`, lines 77–82): when `g_pvpModeB` 0x4f7120 is nonzero, the
+**Executed [pvp music]** (`game_loadLevel` 0x1e5e00–0x1e5e58, with `music_playGlobal`
+0x2110e0 a recorder; `ref_audio_session.pvp_music`, lines 77–82): when `g_pvpModeB`
+0x4f7120 is nonzero, the
 load draws the cosmetic seed once and calls `music_playGlobal(table[(draw >> 16) % 11],
 1)`. The table is at 0x4f8320; it holds the 11 boss names of audio-playback.md 178–193
 in this order: avataroffear, broon, cazicthule, dozekar, droon, ironguardian,
 matanielmarr, proon, ralloszek, vanerhost, whitetormentor. It is null-terminated
-[image]. The flags become 0x23, so the track loops. All 11 were drawn in each run.
+[image]. All 11 were drawn in each run. The recorded flags are 1 (loop). That
+`music_playGlobal` ORs in 0x22 and stores 0x23 was not run in this property. It rests on
+audio-playback.md 137 (0x41 stored as 0x63, Executed) and 164 (OR 0x22, Observed).
 **Inferred:** the level poll still runs in these levels. It does not replace the track,
 because it tests `stream_queuedFlags(2)` 0x216310, which ORs the active entry's flags
 (when +0x14 is set) with every queued entry's, and 0x23 carries 0x20 (0x3225a4–0x3225b0;
 audio-playback.md 201–203).
 
-### 2.2 Level track and ambience per level (Disc)
+### 2.2 Level track and ambience per level (Observed [census])
 
-From the NTSC `dialog.bin` directory of each `g_levelTable` row (90 rows, US v2.00):
-the first `_env_`/`mx_theme` name (what the poll queues) and the first `amb_` name.
-88 levels have exactly one `mx_` row and two have none. Each chosen name occurs once in
-its table, so the last-match lookup of `stream_findLevelEntry` 0x210e60 finds that same
-row. There are 54 distinct level tracks and 20 distinct ambience entries.
+**For checking a playthrough only. Never copy this table into client code, native or
+Godot.** A client reads both names from the level directory at load (below).
+
+From the NTSC `ntsc_dialog.bin` directory of each `g_levelTable` row (90 rows, US v2.00):
+the first `_env_`/`mx_theme` name (what the poll queues) and the first `amb_` name. The
+census asserts each count here. 88 levels have exactly one `mx_` row; `storm1` and
+`innovat2` have none. Each chosen track name and each chosen ambience name occurs once in
+its directory, so the last-match lookup of `stream_findLevelEntry` 0x210e60 finds that
+same row. There are 54 distinct level tracks, all `mx_env_…_l.vag`, and 20 distinct
+ambience entries, all `amb_…_l.vag`.
 
 | Level track (`mx_env_…_l.vag`) | Levels |
 |---|---|
@@ -141,14 +166,14 @@ row. There are 54 distinct level tracks and 20 distinct ambience entries.
 | `fay1`, `fay2`, `fay3`, `nit1` | same name |
 | `thunder1` | `nit2`, `nitmedal`, `pvpnit`, `nitbon2`, `pvpbas` |
 | `thunder2` | `nitdung1`, `nitdung2`, `nitdung4`, `nitbonus` |
-| `thunder3`, `thunder4` | `bossgood`, `bossevil` |
+| `thunder3` | `bossgood` |
+| `thunder4` | `bossevil` |
 | none | `storm1` (24 rows, no `mx_` row), `innovat2` (empty directory) |
 
 The ambience entry is one of 20 `amb_…_l.vag` names, each shared by several levels (for
 example, `hub` uses `amb_act5_airhub_l.vag`). `fay2` and `innovat2` have no `amb_` row;
-`storm1` has one (`amb_act3_desert_l.vag`) but no level track. A client should read both names from the directory
-at load with the poll's substring rule, not hard-code this table. The table is here so a
-playthrough can be checked against it.
+`storm1` has one (`amb_act3_desert_l.vag`) but no level track. A client must read both
+names from the directory at load with the poll's substring rule.
 
 ### 2.3 Other level-time music
 
@@ -206,7 +231,7 @@ frozen; 26 shipped scripts use it 27 times. `playGotItemSound` calls `player_voi
 9)` with the slot quirk N8.
 
 **Executed [player voice]** (`player_voice` 0x1b7ba8, whole function, 12 models × kinds
-−2..23; `ref_audio_session.player_voice`, lines 138–169). In this order:
+−2..23; `ref_audio_session.player_voice`, lines 138–171). In this order:
 
 1. `net_isLocalSlot(slot)` 0x13e150 is called. A remote slot returns.
 2. A cutscene byte 0x44fcd0 that is nonzero returns.
@@ -239,21 +264,39 @@ number draws nothing. The call is `stream_playGlobalRandom(1, "<prefix><nnn>", 0
 0x2160c0, which picks at random among the `MOUTH.VAT` names that start with that string
 (`stream_queueRandomByPrefix` 0x211190, `docs/formats/audio.md`). Flags 0x24 wait for
 the current voice (4) and carry 0x20, so the voice ducks music (audio-playback.md
-217–237). Kind 2 compares the string at 0x41b721 with 34 fixed names, by `strcmp` or
-`strstr`. Those names are not Return to Arms levels, and with each of the 90
-`g_levelTable` names in that string no call is made, so in this game the idle voice is
-silent. **Inferred:** that list was carried over from another game. **Unknown:** what
-0x41b721 holds during play.
+217–237).
+
+Kind 2, the idle voice (0x322bf4), works differently. For models 0–9 it compares the
+string at 0x41b721 with 34 fixed strings. There are 34 compare sites in `player_voice`,
+0x1b81c8–0x1b8e8c: 20 `strcmp` and 14 `strstr` [image]. A match calls `sprintf` and then
+`stream_playGlobal` 0x215c20, not `stream_playGlobalRandom`. Models 10 and 11 make no
+compare. **Executed [idle voice]**, every gate open, `stream_playGlobal` and
+`stream_playGlobalRandom` both recorders:
+
+- With the empty string at 0x41b721, all 34 compare sites run, and each reads 0x41b721.
+- Each of the 34 compared strings, put at 0x41b721, reaches `stream_playGlobal` once.
+  This shows the property can see a match.
+- With each of the 90 `g_levelTable` names, and with the empty string, for all 12 models,
+  no stream call is made, and models 0–9 run all 34 compares. So none of the 34 strings
+  matches a Return to Arms level name.
+
+**Inferred:** the list was carried over from another game. The idle voice is silent in
+play provided 0x41b721 holds a level-table name or is empty. It is silent for every value
+tested here, but that is not shown for play. **Unknown:** what 0x41b721 holds during
+play. A trace of its writer, or a capture, would settle it.
 
 ### 4.2 Footsteps
 
 **Executed [foley]** (`sound_playFoley` 0x1e7c40, whole function;
-`ref_audio_session.foley`, lines 179–193). `Player_footstep` 0x1beec8 passes the player's
-position, the in-water bit (bit 61 of +0xa8) and the word +0x08 of the boot item (record
-+0x4400, else +0x4418). Without an item it passes 0x80000 (**Observed** 0x1beef4–0x1bef44).
+`ref_audio_session.foley`, lines 182–196). `Player_footstep` 0x1beec8 passes the player's
+position, the in-water bit (bit 61 of +0xa8) and the word +0x08 of the item in equipped
+slot 4 (record +0x4400), else slot 10 (+0x4418). The record holds 17 equipped-item
+pointers by slot from +0x43f0 (`docs/player.md` 82). Which body part slots 4 and 10 are
+is not established here. Without an item it passes 0x80000 (**Observed**
+0x1beef0–0x1bef44).
 
 - In water: `fs_water1.anm` or `fs_water2.anm`, from `(draw >> 16) & 1`.
-- Otherwise, the first armour bit set, in this order: 0x400000 `foly_plate1–5`,
+- Otherwise, the first material bit set, in this order: 0x400000 `foly_plate1–5`,
   0x200000 `foly_chainmail1–5`, 0x100000 `foly_leather1–5`, 0x80000 `foly_cloth1–4`. The
   index is `(draw >> 16) % 5` for the first three and `& 3` for cloth, plus 1.
 - With none of 0x780000 set: no sound, and no draw.
@@ -268,7 +311,7 @@ table in this path.
 ### 4.3 Hits
 
 **Executed [hit name]** (`sound_playHit` 0x1e7e40, whole function;
-`ref_audio_session.hit_name`, lines 208–245). `damage_apply` calls it at 0x1ea7b8 with
+`ref_audio_session.hit_name`, lines 212–250). `damage_apply` calls it at 0x1ea7b8 with
 `landed` = 1 unless flag 0x4000 is set, and at 0x1eac24 with `landed` = 0 unless flag
 0x8000 is set (**Observed**). Its arguments are (amount, victim-is-player, victim,
 victim slot, damage flags, landed).
@@ -276,8 +319,9 @@ victim slot, damage flags, landed).
 - Damage flags with 0x4000 or 0x8000: no sound.
 - Material, for a creature victim: the first set bit of the 64-bit word +0xa8, in the
   order 35 `lthr`, 36 `chnmail`, 37 `mtlplate`, 40 `bone`, 39 `exo`, 38 `stone`, 34
-  `cloth`, else `flesh`. For a player victim it is the armour item of record +0x4400:
-  0x80000 `cloth`, 0x100000 `lthr`, 0x200000 `chnmail`, 0x400000 `mtlplate`, else, or
+  `cloth`, else `flesh`. For a player victim it is the word +0x08 of the item in equipped
+  slot 4 (record +0x4400): 0x80000 `cloth`, 0x100000 `lthr`, 0x200000 `chnmail`,
+  0x400000 `mtlplate`, else, or
   with no item, `flesh`.
 - Type: flag 8 `slash` (spelled `slsh` for `stone` and `exo`), else flag 4 `pierce`,
   else `bludg`.
@@ -306,9 +350,15 @@ string loads before each call:
 | spell put on a quick slot | `hud_onQuickSlot` 0x1de2e8 | `menu_spell_assign.anm` |
 | script heal | `script_healPlayer` 0x1468e0 | `spel_cas_curelw.anm` |
 
-424 `jal` sites start a sequence, a sample or a music entry. This table covers the
-reward and feedback ones that came up for this question. It is not a catalogue; the rest
-are spells, projectiles, creatures and menus, at their own call sites.
+**Observed [census]:** 424 `jal` sites call one of eight start functions. 406 of them
+start a sample or a sequence: `sound_playSample` 11, `sound_playOnObject` 333 and
+`sound_playAtPos` 62. The other 18 start a music or global stream entry:
+`music_playGlobal` 9, `music_playLevel` 3, `music_playLevelIndex` 2, `stream_playGlobal`
+3 and `stream_playGlobalRandom` 1. `stream_playLevel` 0x215fc8 (dialog lines,
+`startAudio`, cutscene keys) adds 5 more sites. These are not counted in the 424. This
+table covers the reward and feedback sounds that came up for this question. It is not a
+catalogue; the rest are spells, projectiles, creatures and menus, at their own call
+sites.
 
 ## 5. Volume and options
 
@@ -316,7 +366,9 @@ are spells, projectiles, creatures and menus, at their own call sites.
 `g_sfxVolume` 0x4f8940 = 0x3f000000, `g_musicVolume` 0x4f8944 = 0x3f000000 and 0x4f8948
 = 1. The same values go to the options image +0x08, +0x0c and +0x10 (0x4f8f40–0x4f8f48).
 Then `music_applyVolume` is the only call. The executable image holds 1.0, 1.0 and 1 for
-the three globals, and `save_init` replaces them before play. How an options file and the
+the three globals, and `save_init` 0x216fcc replaces them before play: it calls
+`config_setDefaults(-1)` at 0x21700c (**Observed** 0x217004–0x21700c;
+`symbols/audio-save.tsv` 72). How an options file and the
 slider change the music value, in steps of 1/120, is executed on branch
 `t3/research-combat-ctors-4` (commit 22408a1, `docs/spec/music-volume.md`). The effects
 slider uses the same menu type. **Unknown:** what 0x4f8948 = 1 means; it is sent to the
@@ -325,7 +377,7 @@ setting (`docs/audio-save.md` 278).
 
 **Executed [channel volumes]** (`audio_setChannelVolume` 0x216690, `audio_sendVolumes`
 0x2166e0; `ref_audio_session.set_channel_volume` and `send_volumes_payload`, lines
-298–313). The three driver channels, one per stream, are floats at 0x4f8a18; the image
+303–315). The three driver channels, one per stream, are floats at 0x4f8a18; the image
 holds 1.0 in each. Setting a channel clamps the value to 0..1. If the result equals the
 stored float, nothing happens. Otherwise it is stored, and RPC 0x80 is sent with 16
 bytes at 0x877200: the stereo word, then `cvt.w.s(channel × 256)` for channels 0, 1 and 2.
@@ -334,7 +386,9 @@ bytes at 0x877200: the stereo word, then `cvt.w.s(channel × 256)` for channels 
   for stream 2's status. With 0x20 it sets channel 2 to duck × music × 0x3f480000
   (0.78125), multiplied in that order. The same product is set by `music_playGlobal`,
   `music_playLevelIndex` and `music_playLevel` (0x211130, 0x215f18, 0x215f98, Observed),
-  and by `music_updateDucking` (0x21264c).
+  and by `music_updateDucking` (0x21264c). `ambient_update` also writes the channel-2
+  float directly, at 0x214d00, through a base set to 0x4f8a18 at 0x214cac (**Observed
+  [census]**). What it stores there was not traced.
 - **Channel 0 (intro and level ambience)** [music and stream-0 volume]: every
   `sound_update` checks stream 0's active flags and the flags of every queued entry
   (0x2127f0–0x212840). When none carries 0x20, it sets channel 0 to
@@ -349,7 +403,7 @@ bytes at 0x877200: the stereo word, then `cvt.w.s(channel × 256)` for channels 
 ## 6. Frame order
 
 **Executed [update order]** (`sound_update` 0x212670, every callee auto-stubbed to
-return 0; `ref_audio_session.update_order`, lines 264–276). The callees, in order:
+return 0; `ref_audio_session.update_order`, lines 269–281). The callees, in order:
 
 1. `music_updateDucking` 0x212500, at 0x212690;
 2. `sound_pauseResumeVoices` 0x212340;
@@ -371,31 +425,57 @@ and mute countdown branches between the listed calls only take their zero paths.
 
 The client keeps one native mixer per process and ends a session instead of rebuilding
 it (open-champions-godot `docs/PLAYABLE_AUDIO.md` on `codex/session-music`, "Clock and
-authority"). The original
-supports that shape:
+authority"). The original supports that shape:
 
-- **Observed:** `sound_init` 0x212f08 has one caller, `engine_init` 0x19d73c, and
-  `sound_allocStreamBuffers` 0x212b28 has one, `sound_init` 0x2130a0. Nothing frees or
-  re-creates the mixer at a load.
+- **Observed [census]:** `sound_init` 0x212f08 has one caller, `engine_init` 0x19d73c,
+  and `sound_allocStreamBuffers` 0x212b28 has one, `sound_init` 0x2130a0. **Inferred**
+  from those two caller lists: nothing re-creates the mixer or its stream buffers at a
+  load. No free path was traced.
 - **Executed (audio-playback.md 256–272):** `g_soundFrame` and `g_drawFrame` count for the
   whole process. Their image phases match a counter that started at 0.
-- **Process-lifetime words touched here:** the duck scalar and target (0x4f894c,
-  0x4f8a0c), the channel floats 0x4f8a18, `g_ambientCountdown` 0x50608c (kept across a
-  recall load [session countdown]), the preview timers 0x44fa7c and 0x4f7030, and the
-  sequence generation counter 0x4f8950 (`docs/audio-save.md` 202–223). None is reset by a
-  load.
-- **Reset at every load:** sequences and stream queues (`sound_unloadAbove`, Observed),
-  and `g_cosmeticSeed`, copied from `g_randSeed` [level entry].
+- **Kept across every load.** **Observed [census], store scan:** the only stores to these
+  words are the ones named. **Inferred:** none of them is a load-time reset. Each is the
+  word's own update during play (ducking, volume changes, menu timers, sequence starts).
+  - The duck scalar 0x4f894c: `music_updateDucking` only (five stores, 0x2125a0–0x212608).
+  - The duck target 0x4f8a0c: `music_updateDucking` (0x212540, 0x21256c, 0x212570) and
+    `music_setDuck` 0x216570 (store 0x216584), whose one caller is `dialog_runTask`
+    0x2300dc.
+  - The channel floats 0x4f8a18: `audio_setChannelVolume`, through an indexed base the
+    scan cannot follow. Its seven callers are `cut_advance`, the three music entry points,
+    `music_updateDucking`, `sound_update` and `music_applyVolume` (section 5). The scan
+    also finds one direct store, in `ambient_update` 0x214d00.
+  - The preview timers 0x44fa7c and 0x4f7030: their own menu code only (0x18d7ac,
+    0x18d7c8; 0x1e10c4, 0x1e10f0).
+  - The sequence generation counter 0x4f8950: `sound_playOnObject` 0x2143d8 and
+    `sound_playAtPos` 0x214594 (`docs/audio-save.md` 202–223).
+- **Reset at every non-recall load:** `g_ambientCountdown` 0x50608c is set to 60 by
+  `mainloop_runSession` at 0x322db4 [session countdown]. After a recall it keeps the
+  value from the previous level. Its other stores are the poll's own decrement and
+  re-arm (0x322560, 0x3225a8) and `mainloop_setAmbientCountdown` 0x321870 (store
+  0x321878). Nothing references that setter: no `jal` or `j` targets it and no data word
+  holds its address (**Observed [census]**).
+- **Reset at every load, recall or not:** sequences and stream queues
+  (`sound_unloadAbove`, Observed), and `g_cosmeticSeed`, copied from `g_randSeed` [level
+  entry].
+
+The store scan follows `lui`/`addiu`/`ori` bases inside each function, in listing order.
+It cannot see stores through an indexed base or a pointer loaded from memory. The caller
+lists above cover the setter that works that way.
 
 **Inferred client rule:** a session boundary should do what a level load does. Stop the
-sequences, queue stream stops, and leave the counters, the channel floats and the duck
-words alone. When the client models the cosmetic generator, it should copy the shared
-seed at each load. The client's `end_session()` already keeps the counters and the duck
-words. Whether it reseeds a cosmetic generator was not checked here.
+sequences and queue stream stops. Set the poll countdown to 60 unless the boundary is a
+recall, so the level track is queued about one second in. Leave `g_soundFrame`,
+`g_drawFrame`, the channel floats and the duck words alone. When the client models the
+cosmetic generator, it should copy the shared seed at each load. The client's
+`end_session()` already keeps the counters and the duck words. Whether it resets the
+countdown or reseeds a cosmetic generator was not checked here.
 
 ## 8. Not established
 
 - What 0x4f83b8 (set by the unused `enttag` path) and the 0x86ad58 credits flag are for.
+- What 0x41b721 holds during play, so whether the idle voice (kind 2) is silent there as
+  well as for every level name (section 4.1).
+- What `ambient_update` stores into the channel-2 float at 0x214d00.
 - The meaning of the stereo word values, and how voice and effect panning react to them.
 - The `MOUTH.VAT` name counts behind each voice prefix. The pick among them is random
   (cosmetic), and this round did not count them.
@@ -409,9 +489,11 @@ words. Whether it reseeds a cosmetic generator was not checked here.
 ```
 python3 tools/difftest_audio_session.py path/to/SLUS_209.73 --seed 20973
 python3 tools/difftest_audio_session.py path/to/SLUS_209.73 --seed 7
+python3 tools/audio_session_census.py path/to/SLUS_209.73 path/to/disc-root
 python3 -c "import dis, unittest, sys; sys.path.append('tools'); import test_ref_audio_session as t; unittest.main(module=t, argv=['x'])"
 ```
 
-The per-level table of section 2.2 needs the disc's level lumps. It was produced by a
-throw-away script that reads each `ntsc_dialog.bin` through `tools/anim_audio_info.py`'s
-container reader. The script stays under `local/`.
+The census needs a read-only copy of the disc's files, the directory that holds `BG/`.
+Without it the census skips the level part and still runs the executable counts. It
+prints entry names and counts, never sample bytes, offsets or sizes. Keep its output
+under `local/`.
