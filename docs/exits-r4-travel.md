@@ -37,10 +37,12 @@ The directory `0x8ab590` holds 0x18-byte entries, key then a size word at
 +0x14. An existing key keeps its stored size. A new key is appended, including
 as an 11th entry after ten keys. `save_writeLevelState` `0x218600` is called
 at `0x8ab698` plus the sum of the sizes before that entry, and only when
-`0x16118 + that sum + this size` is at most `0x4bc78`. The entry is still
-created when the bytes will not fit. The writer body is supplied. Fifteen
-cases compare the directory and the writer pointer. Actual object, decal and
-explored-map bytes remain **Unknown**.
+`0x16118 + that sum + this size` is at most `0x4bc78`. An existing key that
+overflows keeps its entry and skips the writer. A new key that overflows is
+still appended with its reserved size, and the writer is not called (round
+five: `hub` 220000 then `strife`, and `hub` 185001 then a forced 35000). The
+writer body is supplied. Seventeen cases compare the directory and the
+writer pointer. The writer's bytes are executed in `docs/exits-r5-travel.md`.
 
 ## Qualified name and the load consumer
 
@@ -70,8 +72,12 @@ the following. Stack checks and presentation calls are supplied.
   with the new act from `save_getAct` `0x217edc`, `quest_clearAll` `0x1d3adc`,
   and `player_removeFlag39Items` `0x1be1d8` for each slot below `0x4d8ae0`.
   It stores 1 at `0x4f7118` and runs original `vars_clearAll` `0x1ed728`,
-  which keeps the variable name and zeroes its value. Those three world
-  calls are supplied; their order and arguments are compared.
+  which keeps the variable name and zeroes its value. The four world calls
+  are supplied. Round five compares their order, `0x21f144`, `0x27db00`,
+  `0x1d3adc`, then `0x1be1d8` once per slot, and one `0x1d3adc` call. The
+  compared arguments are `0x21f144` [0], `0x1be1d8` [0, 1], and `0x27db00`
+  [0] for a clear into act 0 and [6] for a clear into act 6, after a
+  `0x217edc` call. `0x1d3adc` arguments are not compared.
 - `playerSel_applyPending` `0x2247ec` runs on the paths that pass the save
   branch, including a path that does not change acts. It does not run on the
   supplied nonzero-save return. Its body is supplied.
@@ -103,10 +109,16 @@ free-spot search, allocation and the player constructor supplied:
   are greater than 0, supplied peer test `0x13dd40` is true, and, when
   `0x4f713c` is set, original `0x1ec5a8` says this is the medal slot
   `0x4f7148`. The constructor receives the spawn position, the sign-extended
-  facing halfword, and the slot. Its body is supplied.
+  facing halfword, and the slot. Its body is supplied. Round five tests each
+  gate alone in one four-slot run: a dead slot never reaches `0x13dd40`, a
+  living non-peer reaches `0x13dd40` but not `0x1ec5a8`, and a living peer
+  that is not the medal slot reaches both. Only slot 0 is built. The call
+  order is `0x13dd40`, `0x1ec5a8` for slot 0, `0x13dd40` for slot 2, then
+  `0x13dd40`, `0x1ec5a8` for slot 3.
 - On an act change, bytes `None` are written at record +0x24 for every slot,
-  including a slot with no hit points. Card state `0x217550` equal to 4, or a
-  running death task, skips that write. The state function is supplied.
+  including a slot with no hit points. Card state `0x217550` equal to 4 skips
+  that write. A running death task also leaves +0x24 unchanged on an act
+  change (round five). The state function is supplied.
 - Original `save_levelStateStored` `0x2182d4` looks up the new qualified name.
   A miss stores 300 at `0x506054`. A hit leaves the previous idle-voice value.
 - A set word at `0x505b00` stores 20 at `0x506058` and clears the word.
@@ -135,8 +147,13 @@ PYTHONDONTWRITEBYTECODE=1 python3 -m tools.difftest_exit_travel --seed 20973
 PYTHONDONTWRITEBYTECODE=1 python3 -m tools.difftest_exit_travel --seed 7
 ```
 
-Each seed passes with zero failures: **54 entry calls / 234 assertions**,
-10 act cases, 4 qualified-name cases, 15 directory cases and 15 loader cases.
-Entry calls are the probed functions only; nested original callees are not
-added to that count. Retained logs are
-`local/exit-travel-r4/travel-20973.log` and `travel-7.log`.
+Round four: each seed passed with zero failures, **54 entry calls / 234
+assertions**, 10 act cases, 4 qualified-name cases, 15 directory cases and 15
+loader cases (`local/exit-travel-r4/travel-20973.log` and `travel-7.log`).
+
+Round five adds two directory cases and three loader cases. Each seed now
+passes with zero failures: **59 entry calls / 265 assertions**, 10 act cases,
+4 qualified-name cases, 17 directory cases and 18 loader cases. Entry calls
+are the probed functions only; nested original callees are not added to that
+count. Retained logs are `local/exit-travel-r5/travel-20973.log` and
+`travel-7.log`.

@@ -162,6 +162,12 @@ def departures(elf):
                        prior=(('hub', 220001),)))
     full = tuple(('SYN_K%d' % i, 1) for i in range(10))
     cases.append(dict(name='strife', act=0, card=0, flag=0, forced=0, prior=full))
+    # Round five: a new key whose bytes do not fit. The prior sizes already fill
+    # 0x4bc78 - 0x16118, so any nonzero size fails the fit check.
+    cases.append(dict(name='strife', act=0, card=0, flag=0, forced=0,
+                       prior=(('hub', 220000),), new_overflow=True))
+    cases.append(dict(name='SYN_NO_LEVEL', act=0, card=0, flag=0, forced=1,
+                       prior=(('hub', 185001),), new_overflow=True))
     for case in cases:
         _clear_dir(p.mem)
         for index, (key, size) in enumerate(case['prior']):
@@ -184,6 +190,12 @@ def departures(elf):
             entries, offset = R.store_directory(case['prior'], case['name'], size)
             p.equal(_read_dir(p.mem), entries)
             p.equal(written, [] if offset is None else [DATA + offset])
+        if case.get('new_overflow'):
+            # The key is appended with its reserved size; the writer is not called.
+            p.equal(_read_dir(p.mem), case['prior'] + ((case['name'], size),))
+            p.equal(written, [])
+            p.equal(sum(s for _k, s in case['prior']) + size + R.DATA_BASE > R.SIZE_LIMIT,
+                    True)
         if case['name'] == 'storm1a':
             # First current-act prefix is storm1, not the later storm1a row.
             p.equal(_read_dir(p.mem), (('storm1a', p.rows[8][1][1]),))
@@ -365,6 +377,22 @@ def transition(elf, rng):
     p.equal(resets, [0])
     p.equal(removed, [0, 1])
     p.equal(0x1ED728 in [c.target for c in p.ee.calls], True)
+    # Round five: the clear block's order, including quest_clearAll 0x1d3adc.
+    clear_order = (0x21F144, 0x27DB00, 0x1D3ADC, 0x1BE1D8)
+    p.equal([c.target for c in p.ee.calls if c.target in clear_order],
+            [0x21F144, 0x27DB00, 0x1D3ADC, 0x1BE1D8, 0x1BE1D8])
+    p.equal(len(p.targets(0x1D3ADC)), 1)
+    # A clear into act 6: the reset argument is save_getAct's result, not 0.
+    prepare('SYN_OLD', '', 'honor', act=0)
+    m.w32(PLAYERS, 1)
+    run()
+    p.equal(m.s32(ACT), 6)
+    p.equal([c.args[0] for c in p.targets(0x27DB00)], [6])
+    p.equal([c.target for c in p.ee.calls if c.target in clear_order],
+            [0x21F144, 0x27DB00, 0x1D3ADC, 0x1BE1D8])
+    getact = [i for i, c in enumerate(p.ee.calls) if c.target == 0x217EDC]
+    reset = [i for i, c in enumerate(p.ee.calls) if c.target == 0x27DB00]
+    p.equal(any(i < reset[0] for i in getact), True)
 
     # Recall copies x/y only. Slot 0 is not scattered. Slot 1 is, then z is
     # the supplied terrain height. Facing grows by 8000 and is sign-extended.
@@ -436,6 +464,40 @@ def transition(elf, rng):
     p.equal([c[5] for c in constructed], [0])
     p.equal(m.cstr(RECORD + RECALL_OFF), 'None')
     p.equal(m.cstr(RECORD + STRIDE + RECALL_OFF), 'None')
+
+    # Round five: each gate alone. Slot 1 is dead, slot 2 is alive with no
+    # peer, slot 3 is an alive peer that is not the medal slot. Only slot 0 is
+    # built. The hit-point test comes first, then the peer test, then 0x1ec5a8.
+    prepare('SYN_OLD', '', 'strife', act=5)
+    m.w32(LOADED, 1)
+    m.w32(PLAYERS, 4)
+    m.w8(RANK, 3)
+    m.w32(MEDAL, 1)
+    m.w8(MEDAL_SLOT, 0)
+    state['peers'] = {0, 3}
+    for slot, hp in ((0, 1.0), (1, 0.0), (2, 1.0), (3, 1.0)):
+        m.wf32(RECORD + STRIDE * slot + HP_OFF, hp)
+        m.wf32(SPAWN + 12 * slot, 2.0)
+        m.wf32(SPAWN + 12 * slot + 4, 2.0)
+    run()
+    p.equal([c[5] for c in constructed], [0])
+    p.equal([c.args[0] & 0xFFFFFFFF for c in p.targets(0x13DD40)], [0, 2, 3])
+    medal_calls = p.targets(0x1EC5A8)
+    p.equal(len(medal_calls), 2)
+    p.equal([c.target for c in p.ee.calls if c.target in (0x13DD40, 0x1EC5A8)],
+            [0x13DD40, 0x1EC5A8, 0x13DD40, 0x13DD40, 0x1EC5A8])
+
+    # Round five: a running death task skips the +0x24 write on an act change.
+    prepare('SYN_OLD', '', 'strife', act=5)
+    death['on'] = 1
+    m.w32(LOADED, 1)
+    m.w32(PLAYERS, 1)
+    state['peers'] = {0}
+    m.wf32(RECORD + HP_OFF, 1.0)
+    m.write(RECORD + RECALL_OFF, b'\xab' * 8)
+    run()
+    p.equal(m.s32(ACT), 0)
+    p.equal(m.read(RECORD + RECALL_OFF, 8), b'\xab' * 8)
 
     # Card state 4 and a stored destination suppress the two side effects.
     prepare('SYN_OLD', '', 'strife', act=5)
