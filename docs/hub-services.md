@@ -421,7 +421,7 @@ cutscene entry `0x34a4`; the stack-read store index; the actual bag cell that
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; sys.argv=["difftest_hub_services.py","--elf","local/SLUS_209.73","--data","<disc>/BG/DATA"]; runpy.run_path("tools/difftest_hub_services.py", run_name="__main__")'
-PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; sys.argv=["difftest_hub_npcs.py","--elf","local/SLUS_209.73","--iso","local/disc.iso"]; runpy.run_path("tools/difftest_hub_npcs.py", run_name="__main__")'
+PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,runpy,sys; sys.path.insert(0,"tools"); sys.argv=["difftest_hub_npcs.py","--elf","local/SLUS_209.73","--iso","local/disc.iso"]; runpy.run_path("tools/difftest_hub_npcs.py", run_name="__main__")'
 PYTHONDONTWRITEBYTECODE=1 python3 -c 'import dis,unittest; unittest.main(module=None, argv=["u","discover","-s","tools","-p","test_*.py"])'
 ```
 
