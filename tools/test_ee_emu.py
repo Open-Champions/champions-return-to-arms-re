@@ -904,6 +904,32 @@ class ControlTests(unittest.TestCase):
         status.install_modelled_dma_idle()
         self.assertEqual(status.call(BASE), 0)
 
+    def test_gs_privileged_model_names_its_registers_and_reads_csr_as_zero(self):
+        store = [I(0x3F, V0, A0, 0)]                                # sd v0, 0(a0)
+        load = [I(0x37, V0, A0, 0)]                                 # ld v0, 0(a0)
+        plain = machine(store, {A0: 0x12000000}, run=False)
+        with self.assertRaises(MemoryFault):
+            plain.call(BASE)
+        model = machine(store + [I(0x37, V0, A1, 0)],
+                        {A0: 0x12001000, A1: 0x12001000, V0: 0x2000}, run=False)
+        model.install_modelled_gs_privileged()
+        with self.assertRaises(EmuError):
+            model.install_modelled_gs_privileged()
+        # The store is recorded and not kept: CSR still reads the modelled 0.
+        self.assertEqual(model.call(BASE), 0)
+        self.assertEqual(model.gs_writes, [(BASE, 0x12001000, 0x2000)])
+        self.assertEqual(model.gs_reads, [(BASE + 4, 0x12001000, 0)])
+        for addr, code in ((0x12000000, load), (0x12000010, store), (0x12001010, store)):
+            other = machine(code, {A0: addr}, run=False)
+            other.install_modelled_gs_privileged()
+            with self.assertRaises(MemoryFault) as fault:
+                other.call(BASE)
+            self.assertEqual(fault.exception.addr, addr)
+        narrow = machine([I(0x2B, V0, A0, 0)], {A0: 0x12000000}, run=False)  # sw
+        narrow.install_modelled_gs_privileged()
+        with self.assertRaises(MemoryFault):
+            narrow.call(BASE)
+
     def test_vpu_stat_cfc2_is_opt_in_and_only_register_29(self):
         cfc2 = (0x12 << 26) | (2 << 21) | (V0 << 16) | (29 << 11)
         other = (0x12 << 26) | (2 << 21) | (V0 << 16) | (1 << 11)

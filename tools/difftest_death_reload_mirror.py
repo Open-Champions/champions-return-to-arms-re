@@ -39,8 +39,9 @@ OUTSIDE_RAM = 0x04000000
 def run_boot(elf):
     e = EE(elf)
     e.record_calls = False
-    # The first store in engine_init targets the GS register window.
-    e.mem.map(0x12000000, 0x2000)
+    # engine_init and the INTC handler use GS privileged registers.  This is
+    # the GS register model (EE.install_modelled_gs_privileged), not a GS.
+    e.install_modelled_gs_privileged()
     e.install_deci2_kputs()
     e.install_modelled_boot()
     e.install_modelled_intc()
@@ -96,6 +97,8 @@ def run_boot(elf):
     assert e.mem.u8(HEAP_BLOCK + HEAP_SIZE - 1) == 0xa5
     assert e._hw_words == {0x1000a000: 0x101, 0x1000a010: 0x188c180, 0x1000a020: 0x8c08}
     assert e.intc_deliveries == [(2, HANDLER, 4)] * 5, e.intc_deliveries
+    # The GS model's CSR reads: the graphics reset, then each modelled delivery.
+    assert e.gs_reads == [(0x34f780, 0x12001000, 0)] + [(0x19b8d8, 0x12001000, 0)] * 5, e.gs_reads
     assert e.mem.u32(RING_SLOT) == 0 and e.mem.u32(PARTICLE_WORD) == 0
     assert e.writes == [], e.writes
     assert not any(c.stubbed for c in e.calls)

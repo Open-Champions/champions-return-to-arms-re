@@ -83,8 +83,9 @@ def run_entry(elf):
 def run_engine(elf):
     e = EE(elf)
     e.record_calls = False
-    # The first store in engine_init targets the GS register window.
-    e.mem.map(0x12000000, 0x2000)
+    # engine_init and the INTC handler use GS privileged registers.  This is
+    # the GS register model (EE.install_modelled_gs_privileged), not a GS.
+    e.install_modelled_gs_privileged()
     e.install_deci2_kputs()
     e.install_modelled_boot()
     arm_sentinels(e)
@@ -102,6 +103,8 @@ def run_engine(elf):
     assert (e.r[28] & 0xffffffff) == GP
     assert_sentinels(e)
     assert e.mem.u32(HANDLER_ID) == 1
+    # One modelled CSR read, by the graphics reset; it returns the model's 0.
+    assert e.gs_reads == [(0x34f780, 0x12001000, 0)], e.gs_reads
     return e
 
 

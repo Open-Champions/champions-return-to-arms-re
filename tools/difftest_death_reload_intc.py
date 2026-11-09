@@ -36,8 +36,9 @@ GP = 0x56c170
 def run_engine(elf):
     e = EE(elf)
     e.record_calls = False
-    # The first store in engine_init targets the GS register window.
-    e.mem.map(0x12000000, 0x2000)
+    # engine_init and the INTC handler use GS privileged registers.  This is
+    # the GS register model (EE.install_modelled_gs_privileged), not a GS.
+    e.install_modelled_gs_privileged()
     e.install_deci2_kputs()
     e.install_modelled_boot()
     e.install_modelled_intc()
@@ -76,7 +77,10 @@ def run_engine(elf):
     assert e.mem.is_mapped(0x1800094, 2)
     assert e.mem.u32(COUNTER) == 5
     assert e.mem.u32(COUNTER_NEIGHBOR) == 0x11111111
+    # 0 is the GS model's CSR bit 13, stored by the handler at 0x19b8f8.
+    # It checks the model; it is not an executed GS result.
     assert e.mem.u8(FIELD_BYTE) == 0
+    assert e.gs_reads == [(0x34f780, 0x12001000, 0)] + [(0x19b8d8, 0x12001000, 0)] * 5, e.gs_reads
     assert e.mem.u32(HANDLER_ID) == 1
     assert e.mem.u32(SEMA_A) == 1 and e.mem.u32(SEMA_B) == 2
     assert e._semas[1]['count'] == 5 and e._semas[2]['count'] == 0

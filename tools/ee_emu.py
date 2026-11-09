@@ -59,7 +59,9 @@ VIF1 and GIF channels and two status words, and returns the channel control
 word with the start bit clear.  install_modelled_vpu_stat makes CFC2 of
 register 29 return 0.  install_modelled_flush_cache and
 install_modelled_end_of_heap accept FlushCache and EndOfHeap only at the
-callers named on those methods.  Every value these handlers write in v0 is modelled, not a recovered kernel
+callers named on those methods.  install_modelled_gs_privileged accepts 8-byte
+stores to the named GS privileged registers and reads CSR as 0; that is a
+model, not a GS.  Every value these handlers write in v0 is modelled, not a recovered kernel
 result.  Every other number still raises CpuTrap.  The opt-ins compose; none
 is installed by default.
 
@@ -620,6 +622,9 @@ class EE:
         self._vpu_stat = False
         self._flush_cache = False
         self._end_of_heap = False
+        self._gs_privileged = False
+        self.gs_writes = []             # (pc, address, value) of modelled GS register stores
+        self.gs_reads = []              # (pc, address, value) of modelled GS register loads
         self._hw_words = {}
         self._in_intc = False
         self._threads = {}
@@ -810,6 +815,54 @@ class EE:
             raise EmuError('modelled EndOfHeap is already installed')
         self._end_of_heap = True
         self.syscall_handler = EE._dispatch_opt_in_syscall
+
+    # Privileged GS registers this boot stores to.  Names are the usual PS2
+    # register map; they are labels here, not evidence from this image.
+    GS_PRIVILEGED_STORES = {
+        0x12000000: 'PMODE', 0x12000020: 'SMODE2', 0x12000070: 'DISPFB1',
+        0x12000080: 'DISPLAY1', 0x12000090: 'DISPFB2', 0x120000A0: 'DISPLAY2',
+        0x120000E0: 'BGCOLOR', 0x12001000: 'CSR',
+    }
+    GS_CSR = 0x12001000
+
+    def install_modelled_gs_privileged(self):
+        """Opt in to a GS privileged-register model.  It is a model, not a GS.
+
+        Observed 8-byte stores, all executed by the round-5 to round-8 boots:
+        engine_init 0x19d1dc and 0x19d39c-0x19d480 (0x12000000, 0x12000020,
+        0x12000070-0x120000a0); 0x34f774 (0x200 to 0x12001000) and
+        0x34fd90-0x34fdc8 in the graphics reset; the INTC handler 0x19b6e4
+        stores 0 or 2 at 0x12000000 (0x19b6fc/0x19b710, chosen by the word at
+        0x44fd6c) and, on its byte-0 path, at 0x12000020 and
+        0x12000070-0x120000a0.  Observed 8-byte loads, all of 0x12001000:
+        0x34f780 keeps bits 16-23 (stored as a halfword at 0x34f798); the
+        handler's exits 0x19b730 and 0x19b8d8 keep bit 13 and store it as a
+        byte at 0x44fd9c (0x19b750, 0x19b8f8).
+
+        An 8-byte store to an address in GS_PRIVILEGED_STORES is accepted and
+        recorded in gs_writes.  Nothing is kept: no store changes a later
+        read.  An 8-byte load of 0x12001000 returns 0 and is recorded in
+        gs_reads.  That 0 is modelled: bit 13 and bits 16-23 read 0 because
+        the model says so, not because a GS reported them.  So the 0 the
+        handler stores at 0x44fd9c is this model's output.  Any other access
+        to 0x12000000-0x12001fff, or a load of any other GS register, still
+        faults.  Do not also map that window.
+        """
+        if self._gs_privileged:
+            raise EmuError('modelled GS registers are already installed')
+        self._gs_privileged = True
+        self.gs_writes = []
+        self.gs_reads = []
+
+    def _gs_access(self, addr, size, store):
+        """True when the modelled GS registers accept this access."""
+        if not self._gs_privileged or (addr & ~0x1FFF) != 0x12000000:
+            return False
+        if size != 8:
+            return False
+        if store:
+            return addr in self.GS_PRIVILEGED_STORES
+        return addr == self.GS_CSR
 
     def install_modelled_intc(self):
         """Opt in to one modelled INTC delivery when WaitSema would block.
@@ -1468,6 +1521,9 @@ class EE:
             if not self.mem.is_mapped(phys, size):
                 raise MemoryFault(self.cur, addr, size, 'read')
             value = self.mem.load(phys, size)
+        elif self._gs_access(addr, size, False):
+            value = 0
+            self.gs_reads.append((self.cur, addr, value))
         else:
             key = self._hw_key(addr, size)
             if key is not None:
@@ -1491,6 +1547,8 @@ class EE:
             if not self.mem.is_mapped(phys, size):
                 raise MemoryFault(self.cur, addr, size, 'write')
             self.mem.store(phys, size, kept)
+        elif self._gs_access(addr, size, True):
+            self.gs_writes.append((self.cur, addr, kept))
         else:
             key = self._hw_key(addr, size)
             if key is not None:

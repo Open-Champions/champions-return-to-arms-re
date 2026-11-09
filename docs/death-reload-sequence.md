@@ -342,9 +342,16 @@ from `0x80000000` through `0x8007ffff`. The scan compares the cursor with a1,
 and this caller passes a1 = `0x80080000`.
 
 **Executed, separate:** `engine_init` `0x19d19c` is called with gp set to
-`0x56c170`, because startup does not reach it. The test maps `0x12000000` for
-`0x2000` bytes so the 8-byte store of zero at `0x19d1dc` has a destination.
-That map is not a GS model. With the diagnostic opt-in and the modelled boot
+`0x56c170`, because startup does not reach it. The 8-byte store of zero at
+`0x19d1dc` targets a GS privileged register. Round 5 originally mapped
+`0x12000000` for `0x2000` bytes of zeroed memory to give it a destination.
+**Correction (round 8, audit R7-1):** that map acted as a GS register model.
+It accepted every store and read back what it held. The tests now install
+`EE.install_modelled_gs_privileged` instead. It accepts 8-byte stores only to
+the eight registers this boot uses, records them and keeps nothing. It
+answers only 8-byte reads of CSR `0x12001000`, with a modelled 0. Every other
+access to that window faults. In this round-5 stop the only CSR read is at
+`0x34f780`. With the diagnostic opt-in and the modelled boot
 handler, execution reaches WaitSema. GetThreadId's modelled result is 1.
 ChangeThreadPriority of that id to 10 does not read the old priority.
 GsPutIMR, return address `0x34f79c`, and SetGsCrt, return address `0x19d36c`,
@@ -429,8 +436,13 @@ boot registers one handler, and its next argument is 0.
 cadence is modelled. It is not a vertical-blank interval. The waits at
 `0x19d394`, `0x19d3a4`, `0x19d3f0`, `0x19d3fc` and `0x19d408` each deliver
 the handler once. The word at `0x44fd98` becomes 5. A planted `0x11111111`
-at `0x44fd94` stays. A planted `0xA5` at `0x44fd9c` becomes 0, the low bit of
-the zero doubleword read from `0x12001000`. Semaphore 1's modelled count is
+at `0x44fd94` stays. A planted `0xA5` at `0x44fd9c` becomes 0. That 0 is the GS model's
+output, not an executed GS result (audit R7-1). The handler's byte-0 exit
+loads CSR `0x12001000` at `0x19b8d8`, keeps bit 13, and stores it at
+`0x19b8f8`. The model reads CSR as 0. Before round 8 the read returned the
+`0x200` that `0x34f774` had stored in the harness map, and bit 13 of that is
+also 0. The tests now assert the model's six CSR reads, `0x34f780` once and
+`0x19b8d8` five times, as a check of the model. Semaphore 1's modelled count is
 5. Semaphore 2 is waited after each signal, so its modelled count is 0. The
 later wait at `0x19d828` does not run.
 
