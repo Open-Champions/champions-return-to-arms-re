@@ -60,8 +60,16 @@ DROP_LOOT = 0x10F2C8            # Creature_dropLoot
 OBJ_DELETE = 0x14F200
 MOVE_BY = 0x113C48
 STAGGER_FEEDBACK = 0x1B7BA8     # (slot, 0xc) after a stagger; also (slot, 3) on a player kill
-KNOCK_CHANCE = 0x30851C         # skill 0x3e chance getter
-KNOCK_RESIST = 0x308578         # skill 0x3e reaction after a resisted knock-down
+KNOCK_CHANCE = 0x30851C         # SkillStrongStance_getStat0, followed with its two slots
+SKILL_SLOT10, SKILL_SLOT14 = 0x3C88DC, 0x3C85FC
+KNOCK_RESIST = 0x308578         # SkillStrongStance_trigger, followed with every callee
+LIGHT_CTOR = 0x201BD8           # LightEffect_ctor (inside the trigger)
+PHANTOM_CTOR = 0x1618D4         # StrongStancePhantom_ctor (inside the trigger)
+GAMEOBJECT_CTOR = 0x14CB10      # GameObject_ctor: the shared draw of a new object
+SAMPLE_COUNT = 0x1799C8         # model_getSamplePointCount: stub, 8 points
+SAMPLE_POINT = 0x178E18         # model_getSamplePoint: stub, writes (0, 0, 0)
+RES_FIND = 0x17365C             # res_find: stub, returns 0 (no clip for the phantom)
+STATIC_INIT, STAT_SETUP = 0x16AC74, 0x1EBCA0   # the executable's skill start-up
 ATTACH_SPELL = 0x11A838
 
 RANK_STUB = 0x00E20100          # stands in for player virtual slot 39 (skill rank)
@@ -84,6 +92,28 @@ PLAIN = 0x42200000              # 40
 EXP_VALUE = 0x460CA000          # 9000
 MAX_HP = 0x44610000             # 900
 RANKS = (1, 5, 20)
+
+# Oracles. tools/mutate_combat_r6.py changes one at a time; each change must fail.
+KNOCK_PER_RANK = 5              # skill 0x3e chance = 5 x rank (docs/spec/skills-35-68.md)
+KNOCK_MOD = 100                 # resist when (H % 100) < chance
+REACTION_DRAWS = 2              # shared draws inside 0x308578: LightEffect, phantom
+BLOCK_REL = 0x6000              # processDamage block: |rel| >= 0x6000 lowers one level
+DEATH_ORDER = ('loot', 'slot28', 'state', 'flag', 'award')   # with Horsemen_setState
+AWARD_SITES = {1: 0x1121E8, 2: 0x1120E4}   # player_giveExp call site by player count
+DEAD_FLAG_PC = 0x111E04
+
+
+def block_added(state, behind, flags, amount=PLAIN):
+    """Player_takeDamage in block state 8 or 0xb: what is added to pending damage."""
+    if flags & 0x40 or behind:
+        return amount
+    return R.fmul(amount, R.HALF) if flags & 0x20000 else 0
+
+
+def block_lowers(rel):
+    """Player_processDamage, state 8: does the hit lose one knock level."""
+    rel = ee_emu.sx16(rel & 0xFFFF)
+    return rel >= BLOCK_REL or rel <= -BLOCK_REL
 
 
 class Failure(Exception):
@@ -124,8 +154,13 @@ class Probe:
             print('FAIL ' + label)
 
     # ---- guests -------------------------------------------------------------------------
-    def guest(self, seed, players=1):
+    def guest(self, seed, players=1, skills=False):
         emu = ee_emu.EE(self.elf, fpu_model='ps2')
+        if skills:
+            # The executable's own start-up: every Skill object and its statistics.
+            emu.call(STATIC_INIT, 1, 0xFFFF, max_steps=20000000)
+            emu.call(STAT_SETUP, max_steps=20000000)
+            emu.reset_log()
         emu.mem.w32(DC.G_SEED, seed & M32)
         emu.mem.w32(G_NUM, players)
         emu.mem.w32(G_FRAME, 1000)
@@ -254,26 +289,38 @@ class Probe:
         """Player_takeDamage in block state 8 or 0xb. Followed: strcmp, local-slot test,
         atan2, cos16, sin16, the handle pair. Stubbed (return 0): block animation
         0x16ceb0, strcpy 0x3b7ef0, res_find 0x17365c, the sound 0x214428, 0x1b9658,
-        holy-shield search. Facing 0, so the front is +x."""
-        cases = (('front', 8, 30.0, 0, 0, True), ('front_half', 8, 30.0, 0x20000, 0x41A00000, True),
-                 ('back', 8, -30.0, 0, PLAIN, True), ('state_b_front', 0xB, 30.0, 0, 0, False),
-                 ('flag_40', 8, 30.0, 0x40, PLAIN, True))
-        for label, state, dx, flags, added, draws in cases:
+        holy-shield search. Facing 0, so the front is +x. Pending damage is planted at
+        3.0, so an early return (pending kept, no store) cannot pass."""
+        pending = 0x40400000                                     # 3.0
+        cases = (('front', 8, 30.0, 0), ('front_half', 8, 30.0, 0x20000),
+                 ('back', 8, -30.0, 0), ('state_b_front', 0xB, 30.0, 0),
+                 ('state_b_back', 0xB, -30.0, 0), ('state_b_front_half', 0xB, 30.0, 0x20000),
+                 ('flag_40', 8, 30.0, 0x40))
+        for label, state, dx, flags in cases:
             emu = self.guest(seed)
             obj, _ = self.player(emu, 0, x=victim_xy[0], y=victim_xy[1])
             emu.mem.w32(obj + 0x58C, state)
             emu.mem.w16(obj + 0x38, 0)
-            emu.mem.w32(obj + 0xC8, 0)
-            attacker, _ = self.actor(emu, 0x20, victim_xy[0] + dx, victim_xy[1])
+            emu.mem.w32(obj + 0xC8, pending)
+            emu.mem.w16(obj + 0x2E0, 0x1234)
+            attacker_xy = (victim_xy[0] + dx, victim_xy[1])
+            attacker, _ = self.actor(emu, 0x20, *attacker_xy)
             emu.follow = Follow({STRCMP, IS_LOCAL, ATAN2, COS16, SIN16, HANDLE_CLEAR, HANDLE_LINK})
             before = emu.mem.u32(DC.G_SEED)
             emu.reset_log()
             emu.call(PLAYER_TAKE, obj, attacker, flags, fargs=(40.0,))
             self.counts['player_take_calls'] += 1
+            want = R.fadd(pending, block_added(state, dx < 0, flags))
             drew = emu.mem.u32(DC.G_SEED) == self.draws(before, 1)
             kept = emu.mem.u32(DC.G_SEED) == before
-            self.check('block_' + label, emu.mem.u32(obj + 0xC8) == added
-                       and (drew if draws and not flags & 0x40 else kept))
+            self.check('block_' + label, emu.mem.u32(obj + 0xC8) == want
+                       and self.stored(emu, obj + 0xC8, want, pc=0x1B56A4)
+                       and (drew if state == 8 and not flags & 0x40 else kept))
+            # The hit went on past the block test: angle stored, attacker linked.
+            angle = self.direction(victim_xy, attacker_xy)
+            link = emu.mem.u32(obj + 0x2E4)
+            self.check('block_reached_angle_' + label, self.stored(emu, obj + 0x2E0, angle)
+                       and link and emu.mem.u32(link + 0xC) == attacker)
 
     def knock_along(self, emu, obj, angle, victim_xy, attacker_xy, label):
         """Creature_applyKnockback after the hit. Followed: cos16, sin16. moveBy is a
@@ -309,10 +356,14 @@ class Probe:
         return (max(below) if below else None), limit
 
     def resolve(self, seed, high, pending=PLAIN, bits=0, state=2, resist=0, flags=0x60,
-                field_44c=0, facing=0, angle=0, rank_stub=None, chance=None, pvp_a=0):
+                field_44c=0, facing=0, angle=0, rank_stub=None, pvp_a=0, real_reaction=False):
         """Original Player_processDamage. Every callee is a stub returning 0 unless
-        named: the slot-39 rank stub, the 0x30851c chance stub."""
-        emu = self.guest(seed)
+        named. With rank_stub: slot 39 (skill rank) is a recorded stub, the executable's
+        skill start-up has run, and the chance getter 0x30851c runs for real. With
+        real_reaction: 0x308578 runs for real with every callee, except four fixture
+        stubs (pool_new: a zeroed block; the model's sample-point count 8 and points
+        (0, 0, 0), because the planted player has no model; res_find: 0)."""
+        emu = self.guest(seed, skills=rank_stub is not None)
         obj, table = self.player(emu, 0, flags=flags)
         record = G_PLAYERS
         emu.mem.w32(record + 0xDC, resist)
@@ -325,18 +376,73 @@ class Probe:
         emu.mem.w16(obj + 0x2E0, angle)
         emu.mem.w32(obj + 0x448, 0x5A5A)
         emu.mem.w32(SA.G_PVP_MODE_A, pvp_a)
+        follow = set()
         if rank_stub is not None:
             emu.mem.w32(table + 0x138 + 4, RANK_STUB)
             emu.stub(RANK_STUB, ret=rank_stub, name='rank')
-        if chance is not None:
-            emu.stub(KNOCK_CHANCE, ret=chance, name='knock_chance')
+            follow |= {KNOCK_CHANCE, SKILL_SLOT10, SKILL_SLOT14}
+        emu.reaction = {}
+        emu.blocks = []
+        if real_reaction:
+            self.real_reaction(emu)
         planted = seed_for_high(high) if high is not None else seed & M32
         emu.mem.w32(DC.G_SEED, planted)
-        emu.follow = Follow(set())
+        emu.follow = Follow(follow)
         emu.reset_log()
-        emu.call(PLAYER_PROCESS, obj)
+        emu.call(PLAYER_PROCESS, obj, max_steps=3000000)
         self.counts['player_process_calls'] += 1
         return emu, obj, planted
+
+    def real_reaction(self, emu):
+        info = emu.reaction
+
+        def pool(guest):
+            block = guest.alloc(max(guest.r[4] & M32, 16))
+            emu.blocks.append((guest.r[4] & M32, block))
+            return block
+
+        def point(guest):
+            for index in range(3):
+                guest.mem.w32((guest.r[9] & M32) + 4 * index, 0)
+
+        def enter(guest):
+            ret = guest.r[31] & M32
+            info.update(seed_in=guest.mem.u32(DC.G_SEED), first=len(guest.calls) - 1,
+                        follow=guest.follow)
+            guest.follow = None
+
+            def leave(back):
+                back.follow = info['follow']
+                info.update(seed_out=back.mem.u32(DC.G_SEED), last=len(back.calls))
+                back.unhook(ret)
+            guest.hook(ret, leave)
+        emu.stub(POOL_NEW, function=pool, name='pool_new')
+        emu.stub(SAMPLE_COUNT, ret=8, name='sample_count')
+        emu.stub(SAMPLE_POINT, function=point, name='sample_point')
+        emu.stub(RES_FIND, name='res_find')
+        emu.hook(KNOCK_RESIST, enter)
+
+    def reaction_ok(self, emu, obj, speed):
+        """0x308578 ran to its return: one LightEffect and one StrongStancePhantom, each
+        built by GameObject_ctor with one shared draw, and nothing else on the seed."""
+        info = emu.reaction
+        if 'seed_out' not in info:
+            return False
+        inner = emu.calls[info['first']:info['last']]
+        lights = [call for call in inner if call.target == LIGHT_CTOR]
+        ghosts = [call for call in inner if call.target == PHANTOM_CTOR]
+        made = [call for call in inner if call.target == GAMEOBJECT_CTOR]
+        sizes = [size for size, _block in emu.blocks]
+        ok = (info['seed_out'] == self.draws(info['seed_in'], REACTION_DRAWS)
+              and len(lights) == 1 and len(ghosts) == 1 and len(made) == 2
+              and sizes == [0xBC, 0x3D8]
+              and lights[0].args[0] == emu.blocks[0][1]
+              and ghosts[0].args[0] == emu.blocks[1][1] and ghosts[0].args[1] == obj
+              and ghosts[0].args[3] == speed and ghosts[0].args[4] == 0)
+        if ok:
+            ghost = emu.blocks[1][1]
+            ok = emu.mem.u32(ghost + 0x2E8) == R.fmul(R.itof(speed), 0x3FA00000)   # x 1.25
+        return ok
 
     def staggered(self, emu, obj):
         return (emu.mem.u32(obj + 0x58C) == 3 and emu.mem.u32(obj + 0x448) == 1000
@@ -388,67 +494,100 @@ class Probe:
 
     def knock_down(self, seed):
         """Knock bits draw one more number: (high % 100) < chance resists a knock-down.
-        Resistance +0xdc is planted at 1.0 so the later stagger roll cannot fire."""
-        rank, chance = 7, 40
-        resist_high = 100 * 300 + chance - 1
-        fall_high = 100 * 300 + chance
-        for flags in (0x60, 0x20060):
-            emu, obj, planted = self.resolve(seed, resist_high, bits=0x80000, resist=SENTINEL,
-                                             flags=flags, rank_stub=rank, chance=chance)
+        Resistance +0xdc is planted at 1.0 so the later stagger roll cannot fire. The
+        rank is a stub (8); the chance comes from the real 0x30851c."""
+        rank = 8
+        chance = KNOCK_PER_RANK * rank
+        # 307 is not a multiple of 100, so a wrong modulus moves the residue.
+        resist_high = KNOCK_MOD * 307 + chance - 1
+        fall_high = KNOCK_MOD * 307 + chance
+        self.knock_chance_ladder(seed)
+        # A resisted heavy hit: the real reaction for the player, none for the copy.
+        for bits, speed, flags in ((0x80000, 150, 0x60), (0x80000, 150, 0x20060),
+                                   (0x100000, 200, 0x60), (0x200000, 250, 0x60)):
+            emu, obj, planted = self.resolve(seed, resist_high, bits=bits, resist=SENTINEL,
+                                             flags=flags, rank_stub=rank, real_reaction=True)
             asked = self.calls(emu, RANK_STUB)
             got = self.calls(emu, KNOCK_CHANCE)
             reaction = self.calls(emu, KNOCK_RESIST)
             self.check('knock_rank_query', len(asked) == 1 and asked[0].args[1] == 0x3E
                        and len(got) == 1 and got[0].args[:2] == (emu.mem.u32(G_KNOCK_SKILL), rank))
+            copy = bool(flags & 0x20000)
+            # Shared draws: the knock roll, the reaction's two (player only), the
+            # surviving-hit roll.
+            count = 2 + (0 if copy else REACTION_DRAWS)
+            self.counts['knock_resisted_draws_%x_%s' % (bits, 'copy' if copy else 'player')] = \
+                self.count_draws(planted, emu.mem.u32(DC.G_SEED))
             self.check('knock_resisted', emu.mem.u32(obj + 0x58C) == 2
                        and emu.mem.u32(obj + 0x2E8) == 0
-                       and self.stored(emu, obj + 0x2E8, 0x43160000)
+                       and self.stored(emu, obj + 0x2E8, fpat(float(speed)))
                        and self.stored(emu, obj + 0x2E8, 0)
-                       and emu.mem.u32(DC.G_SEED) == self.draws(planted, 2))
-            if flags & 0x20000:
-                self.check('knock_resisted_copy_no_reaction', not reaction)
+                       and not self.calls(emu, STAGGER_FEEDBACK)
+                       and emu.mem.u32(DC.G_SEED) == self.draws(planted, count))
+            if copy:
+                self.check('knock_resisted_copy_no_reaction', not reaction and not emu.reaction)
             else:
                 self.check('knock_resisted_reaction', len(reaction) == 1
                            and reaction[0].args[0] == emu.mem.u32(G_KNOCK_SKILL)
-                           and reaction[0].args[1] == obj and reaction[0].args[3] == 150)
+                           and reaction[0].args[1] == obj and reaction[0].args[3] == speed
+                           and self.reaction_ok(emu, obj, speed))
         emu, obj, planted = self.resolve(seed, fall_high, bits=0x80000, resist=SENTINEL,
-                                         rank_stub=rank, chance=chance)
+                                         rank_stub=rank, real_reaction=True)
         self.check('knock_down', self.staggered(emu, obj)
                    and emu.mem.u32(obj + 0x2E8) == 0x43160000
                    and not self.calls(emu, KNOCK_RESIST)
                    and emu.mem.u32(DC.G_SEED) == self.draws(planted, 1))
         emu, obj, planted = self.resolve(seed, resist_high, bits=0x40000, resist=SENTINEL,
-                                         rank_stub=rank, chance=chance)
+                                         rank_stub=rank, real_reaction=True)
         self.check('light_knock_ignores_roll', self.staggered(emu, obj)
                    and emu.mem.u32(obj + 0x2E8) == 0x42C80000
+                   and not self.calls(emu, KNOCK_RESIST)
                    and emu.mem.u32(DC.G_SEED) == self.draws(planted, 1))
         # Blocking (state 8): a hit whose angle minus facing is at least 0x6000 away
         # from 0 drops one knock level, so the resisted heavy hit becomes a light one.
-        for angle, front in ((0x5FFF, False), (0x6000, True), (0xA001, False), (0xA000, True),
-                             (0x0000, False), (0x8000, True)):
+        for facing, angle in ((0, 0x5FFF), (0, 0x6000), (0, 0xA001), (0, 0xA000),
+                              (0, 0x0000), (0, 0x8000), (0x6000, 0x6000)):
             emu, obj, planted = self.resolve(seed, resist_high, bits=0x80000, resist=SENTINEL,
-                                             state=8, facing=0, angle=angle,
-                                             rank_stub=rank, chance=chance)
-            if front:
+                                             state=8, facing=facing, angle=angle,
+                                             rank_stub=rank, real_reaction=True)
+            if block_lowers(angle - facing):
                 self.check('block_front_light', self.staggered(emu, obj)
+                           and not self.calls(emu, KNOCK_RESIST)
                            and emu.mem.u32(DC.G_SEED) == self.draws(planted, 1))
             else:
                 self.check('block_back_resisted', emu.mem.u32(obj + 0x58C) == 8
                            and emu.mem.u32(obj + 0x2E8) == 0
-                           and emu.mem.u32(DC.G_SEED) == self.draws(planted, 2))
-        # Facing enters through the difference: the same angle with facing 0x6000 is
-        # relative 0, a hit from behind.
-        emu, obj, planted = self.resolve(seed, resist_high, bits=0x80000, resist=SENTINEL,
-                                         state=8, facing=0x6000, angle=0x6000,
-                                         rank_stub=rank, chance=chance)
-        self.check('block_relative_to_facing', emu.mem.u32(obj + 0x58C) == 8)
+                           and self.reaction_ok(emu, obj, 150)
+                           and emu.mem.u32(DC.G_SEED) == self.draws(planted, 2 + REACTION_DRAWS))
         # PvP mode A (0x4f711c): one knock level less and half the speed.
         for bits, speed, state, count in ((0x40000, 0x42480000, 2, 2), (0x80000, 0x42960000, 3, 1)):
             emu, obj, planted = self.resolve(seed, resist_high, bits=bits, resist=SENTINEL,
-                                             rank_stub=rank, chance=chance, pvp_a=1)
+                                             rank_stub=rank, pvp_a=1, real_reaction=True)
             self.check('pvp_a_knock', emu.mem.u32(obj + 0x2E8) == speed
                        and emu.mem.u32(obj + 0x58C) == state
+                       and not self.calls(emu, KNOCK_RESIST)
                        and emu.mem.u32(DC.G_SEED) == self.draws(planted, count))
+
+    def knock_chance_ladder(self, seed):
+        """The real 0x30851c after the executable's skill start-up: 5 x rank."""
+        emu = self.guest(seed, skills=True)
+        skill = emu.mem.u32(G_KNOCK_SKILL)
+        emu.follow = Follow({SKILL_SLOT10, SKILL_SLOT14})
+        for rank in range(0, 26):
+            emu.reset_log()
+            got = emu.call(KNOCK_CHANCE, skill, rank, max_steps=200000) & M32
+            self.check('knock_chance_rank', got == KNOCK_PER_RANK * rank)
+            self.counts['knock_chance_calls'] += 1
+            if rank in (1, 10, 20, 25):
+                self.counts['knock_chance_rank_%d' % rank] = got
+
+    def count_draws(self, planted, final, limit=16):
+        state = R.Seed(planted)
+        for count in range(limit + 1):
+            if state.state == final:
+                return count
+            state.draw()
+        return -1
 
     # ---- C. kill credit and D. death path ------------------------------------------------
     def award_oracle(self, emu, levels, alive, killer, value=EXP_VALUE):
@@ -472,7 +611,7 @@ class Probe:
 
     def kill(self, seed, players, hits, levels=(30,), alive=None, classes=None,
              fraction=0, own_draw=0, rank_list=None, prop=0, cflags=0, set_state=SET_STATE,
-             extra_follow=()):
+             extra_follow=(), facing=0):
         """Original Creature_takeDamage for each hit, then original Creature_processDamage.
         hits: (attacker key, damage flags, amount pattern). Followed: atan2, handle pair,
         powf, player_getSkillRank, the slot-27 body. Stubs: giveExp (recorded),
@@ -490,6 +629,7 @@ class Probe:
         actors['mob'], _ = self.actor(emu, 0x20, 50.0, 50.0)
         victim, table = self.actor(emu, 0x20, 10.0, 20.0, hp=PLAIN)
         emu.mem.w32(victim + 0x22C, MAX_HP)
+        emu.mem.w16(victim + 0x38, facing)
         emu.mem.w32(victim + 0xD8, EXP_VALUE)
         emu.mem.w64(victim + 0xA8, cflags)
         emu.mem.w32(table + 0xD8 + 4, set_state)
@@ -525,13 +665,42 @@ class Probe:
         emu.stub(OWN_DRAW, ret=own_draw, name='own_draw')
         emu.stub(POOL_NEW, function=pool, name='pool_new')
         emu.stub(PROP_INT, ret=prop, name='prop')
+        emu.loot_args = []
+
+        def loot(guest):
+            # The three words behind a1 while the call is live (the stack is reused later).
+            where = guest.r[5] & M32
+            emu.loot_args.append(tuple(guest.mem.u32(where + 4 * n) for n in range(3)))
+        emu.stub(DROP_LOOT, function=loot, name='dropLoot')
         emu.follow = Follow({POWF, GET_RANK, HANDLE_CLEAR, HANDLE_LINK, set_state} | set(extra_follow))
         emu.reset_log()
+        emu.calls = StampedCalls(emu)
         emu.call(CREATURE_PROCESS, victim, 0)
         self.counts['creature_process_calls'] += 1
         awards = [(call.args[0] & M32, ee_emu.s32(call.args[1] & M32))
                   for call in self.calls(emu, GIVE_EXP)]
+        if awards:
+            site = AWARD_SITES[1 if players < 2 else 2]
+            self.check('award_site_%d' % min(players, 2),
+                       all(call.site == site for call in self.calls(emu, GIVE_EXP)))
         return emu, victim, actors, awards, blocks
+
+    @staticmethod
+    def event_order(emu, index):
+        """Sort named events by when they happened: writes and calls share one clock,
+        the write count at the time of each call."""
+        stamps = {}
+        clock = Probe.call_clock(emu)
+        for name, (kind, hits) in index.items():
+            if not hits:
+                return []
+            # A write at index i comes after every call made with at most i writes before it.
+            stamps[name] = hits[0] + 0.5 if kind == 'w' else clock[hits[0]]
+        return sorted(stamps, key=lambda name: (stamps[name], name))
+
+    @staticmethod
+    def call_clock(emu):
+        return emu.calls.stamps
 
     def killer_of(self, emu, victim):
         link = emu.mem.u32(victim + 0x2E4)
@@ -564,6 +733,8 @@ class Probe:
             self.check('two_player_mana_killer_only',
                        all((mana[slot] != 0x41200000) == (slot == killer) for slot in range(2)))
             self.counts['award_case_%s_%x_%d%d' % (key, flags, alive[0], alive[1])] = sum(a for _s, a in awards)
+            if killer == -1:
+                self.check('documented_vector_no_killer', awards == [(0, 381), (1, 381)])
         emu, _v, _a, awards, _ = self.kill(seed, 2, [('bolt', 0, PLAIN)], levels=(30, 34))
         self.check('documented_vector', awards == [(0, 304), (1, 457)])
         emu, _v, _a, awards, _ = self.kill(seed, 2, [('bolt', 0, PLAIN)], levels=(30, 34),
@@ -598,10 +769,12 @@ class Probe:
         state = self.stored(emu, victim + 0x232, 0x14)
         dead_flag = [index for index, (_pc, wrote, _size, pattern) in enumerate(emu.writes)
                      if wrote == victim + 0x0C and pattern & 0x2000]
+        dead_pcs = [emu.writes[index][0] for index in dead_flag]
         slot27 = self.calls(emu, SET_STATE)
         self.check('death_slot27', len(slot27) == 1 and slot27[0].args[:2] == (victim, 0x14)
                    and slot27[0].site == 0x111DE8)
         self.check('death_state_then_flag', state and dead_flag and state[0] < dead_flag[0]
+                   and dead_pcs == [DEAD_FLAG_PC]
                    and emu.mem.u16(victim + 0x232) == 0x14
                    and emu.mem.u32(victim + 0x0C) == 0x2129)
         self.check('death_award_after_state', awards == [(0, 2202)])
@@ -614,21 +787,49 @@ class Probe:
         self.check('cflag_no_award', awards == [] and emu.mem.u16(victim + 0x232) == 0x14)
         # A class slot 27: Horsemen_setState case 0x14 calls Creature_dropLoot and slot 28.
         # Followed: the set-state body. Stubbed: dropLoot (recorded), slot 28 (recorded),
-        # its name lookup 0x10a9c0 and animation call (return 0).
-        emu, victim, _a, awards, _ = self.kill(seed, 1, [('p0', 0, PLAIN)],
-                                               set_state=HORSEMEN_SET_STATE)
-        loot = self.calls(emu, DROP_LOOT)
-        death = self.calls(emu, ONDEATH_STUB)
-        give = [index for index, call in enumerate(emu.calls) if call.target == GIVE_EXP]
-        order = [index for index, call in enumerate(emu.calls) if call.target == DROP_LOOT]
-        self.check('class_drop_loot', len(loot) == 1 and loot[0].args[0] == victim
-                   and loot[0].site == 0x273314
-                   and loot[0].fargs[:6] == (0x42100000, 0x40000000, 0x3FE66666, 0x3F199999,
-                                             0x40000000, 0x3E800000))
-        self.check('class_on_death', len(death) == 1 and death[0].args[0] == victim)
-        self.check('class_loot_before_award', give and order and order[0] < give[0]
-                   and awards == [(0, 2202)] and emu.mem.u16(victim + 0x232) == 0x14)
-        self.counts['drop_loot_calls'] += len(loot)
+        # its name lookup 0x10a9c0 and animation call (return 0). Two players, killer
+        # p0 (own hit) or p1 (its bolt), victim facing 0x2345: the dropLoot arguments
+        # must not change with the killer.
+        seen = []
+        for key, killer in (('p0', 0), ('bolt', 1)):
+            emu, victim, actors, awards, _ = self.kill(seed, 2, [(key, 0, PLAIN)], levels=(30, 34),
+                                                       set_state=HORSEMEN_SET_STATE, facing=0x2345)
+            loot = self.calls(emu, DROP_LOOT)
+            death = self.calls(emu, ONDEATH_STUB)
+            self.check('class_drop_loot', len(loot) == 1 and loot[0].site == 0x273314
+                       and loot[0].fargs[:6] == (0x42100000, 0x40000000, 0x3FE66666, 0x3F199999,
+                                                 0x40000000, 0x3E800000))
+            self.check('class_on_death', len(death) == 1 and death[0].args[0] == victim
+                       and death[0].site == 0x2733B0)
+            # Order of the whole death path: loot and slot 28 inside the class set-state,
+            # then its state store, the flag store, the award.
+            index = {
+                'state': ('w', self.stored(emu, victim + 0x232, 0x14)),
+                'flag': ('w', self.stored(emu, victim + 0x0C, pc=DEAD_FLAG_PC)),
+                'loot': ('c', [n for n, call in enumerate(emu.calls) if call.target == DROP_LOOT]),
+                'slot28': ('c', [n for n, call in enumerate(emu.calls) if call.target == ONDEATH_STUB]),
+                'award': ('c', [n for n, call in enumerate(emu.calls) if call.target == GIVE_EXP]),
+            }
+            self.check('class_death_order', self.event_order(emu, index) == list(DEATH_ORDER)
+                       and awards == self.award_oracle(emu, [30, 34], [True, True], killer))
+            if not loot:
+                continue
+            call = loot[0]
+            ints = tuple(value & M32 for value in call.args)
+            position = emu.loot_args[0]
+            node = emu.mem.u32(victim + 0x2E4)
+            killer_obj = actors['p%d' % killer]
+            # a0 the creature, a1 a copy of its position, a2 its facing, a3 0 (the
+            # Observed signature, docs/issues/kill-loot-xp.md section 2). No register
+            # argument a0-t3 is the killer object, its handle node or its slot.
+            self.check('drop_loot_args', ints[0] == victim
+                       and position == tuple(emu.mem.u32(victim + 0x10 + 4 * n) for n in range(3))
+                       and ee_emu.sx16(ints[2] & 0xFFFF) == 0x2345 and ints[3] == 0
+                       and killer_obj not in ints and node not in ints
+                       and (killer == 0 or killer not in ints[:4]))
+            seen.append((ints[0] - victim, ints[2], ints[3], position, call.fargs[:6]))
+            self.counts['drop_loot_calls'] += 1
+        self.check('drop_loot_killer_independent', len(seen) == 2 and seen[0] == seen[1])
         # A corpse with more pending damage: pending cleared, flags kept, nothing else.
         emu = self.guest(seed)
         corpse, table = self.actor(emu, 0x2129, hp=0)
@@ -648,34 +849,39 @@ class Probe:
     def despawn(self, seed):
         """Creature_deadUpdate: with cflag 0x1000000 and the top clip finished, the body
         sinks 0.35 per call and is deleted once the sink passes +0x20. Every callee is a
-        stub (obj_delete recorded)."""
-        emu = self.guest(seed)
-        body, _ = self.actor(emu, 0x20)
-        emu.mem.w64(body + 0xA8, 0x1000000)
-        emu.mem.w16(body + 0x11A, 0x80)
-        emu.mem.w32(body + 0x20, SENTINEL)
-        emu.mem.w32(body + 0x18, 0x40A00000)           # body z 5
-        position = emu.alloc(16)
-        emu.mem.w32(position + 8, 0x40A00000)          # z 5
-        emu.follow = Follow(set())
-        sink, steps, deleted_at = 0, 0, None
-        while deleted_at is None and steps < 10:
-            emu.reset_log()
-            emu.call(DEAD_UPDATE, body, 0, position, 0, fargs=(0.0,))
-            steps += 1
-            self.counts['dead_update_calls'] += 1
-            sink = R.fadd(sink, K_SINK)
-            self.check('sink_step', emu.mem.u32(body + 0x2F4) == sink
-                       and emu.mem.u32(body + 0x3C) == R.fsub(0x40A00000, sink))
-            if self.calls(emu, OBJ_DELETE):
-                deleted_at = steps
-                self.check('sink_delete', R.flt(SENTINEL, sink)
-                           and emu.mem.u32(body + 0x0C) & 0x4002 == 0x4002
-                           and self.calls(emu, OBJ_DELETE)[0].args[0] == body)
-            else:
-                self.check('sink_keep', not R.flt(SENTINEL, sink))
-        self.check('sink_deleted', deleted_at == 3)
-        self.counts['sink_calls_to_delete'] = deleted_at or 0
+        stub (obj_delete recorded). Body +0x18 is 5 and the a2 vector's z is 7, so the
+        two readings of +0x3c differ. f12 = 0, and 20, 30 and 100 with a zero vector as
+        the monster classes pass them (docs/monsters-2.md). a1 = a3 = 0 throughout."""
+        for f12, vector_z in ((0.0, 7.0), (20.0, 0.0), (30.0, 0.0), (100.0, 0.0)):
+            emu = self.guest(seed)
+            body, _ = self.actor(emu, 0x20)
+            emu.mem.w64(body + 0xA8, 0x1000000)
+            emu.mem.w16(body + 0x11A, 0x80)
+            emu.mem.w32(body + 0x20, SENTINEL)
+            emu.mem.w32(body + 0x18, 0x40A00000)           # body z 5
+            position = emu.alloc(16)
+            emu.mem.wf32(position + 8, vector_z)
+            emu.follow = Follow(set())
+            sink, steps, deleted_at = 0, 0, None
+            while deleted_at is None and steps < 10:
+                emu.mem.w32(body + 0x0C, 0x20)             # 0x4000 must come back each call
+                emu.reset_log()
+                emu.call(DEAD_UPDATE, body, 0, position, 0, fargs=(f12,))
+                steps += 1
+                self.counts['dead_update_calls'] += 1
+                sink = R.fadd(sink, K_SINK)
+                self.check('sink_step', emu.mem.u32(body + 0x2F4) == sink
+                           and emu.mem.u32(body + 0x3C) == R.fsub(0x40A00000, sink))
+                if self.calls(emu, OBJ_DELETE):
+                    deleted_at = steps
+                    self.check('sink_delete', R.flt(SENTINEL, sink)
+                               and emu.mem.u32(body + 0x0C) == 0x4022
+                               and self.calls(emu, OBJ_DELETE)[0].args[0] == body)
+                else:
+                    self.check('sink_keep', not R.flt(SENTINEL, sink)
+                               and emu.mem.u32(body + 0x0C) == 0x4020)
+            self.check('sink_deleted', deleted_at == 3)
+            self.counts['sink_calls_to_delete_f%d' % int(f12)] = deleted_at or 0
         # Clip not finished: the sink is stored as 0. No cflag: no sink, no delete.
         for label, cflags, clip in (('clip_running', 0x1000000, 0), ('no_cflag', 0, 0x80)):
             emu = self.guest(seed)
@@ -760,8 +966,15 @@ class Probe:
 
         def at_cost(emu):
             seen['cost'] = (emu.mem.u32(record + 0xC0), emu.mem.s16(player + 0x4AE))
+        attach_hook = rig.emu.hooks.get(ATTACH_SPELL)
+
+        def at_attach(emu):
+            seen.setdefault('attach', (emu.mem.u32(record + 0xC0), emu.mem.s16(player + 0x4AE)))
+            if attach_hook is not None:
+                attach_hook(emu)
         rig.emu.hook(cast, at_cast)
         rig.emu.hook(N.MANA[sid], at_cost)
+        rig.emu.hooks[ATTACH_SPELL] = at_attach
         rig.script_rng = random.Random(seed * 1000 + sid * 10 + rank)
         rig.calls = []
         rig.eview.state = {'alive': set()}
@@ -778,6 +991,10 @@ class Probe:
         finally:
             rig.emu.unhook(cast)
             rig.emu.unhook(N.MANA[sid])
+            if attach_hook is not None:
+                rig.emu.hooks[ATTACH_SPELL] = attach_hook
+            else:
+                rig.emu.hooks.pop(ATTACH_SPELL, None)
             for name, value in saved.items():
                 if value is not None:
                     setattr(world, name, value)
@@ -826,6 +1043,8 @@ class Probe:
             pools = [call for call in rig.emu.calls if rig.names.get(call.target) == 'pool_new']
             self.check('spell_attached', len(attach) == 1 and attach[0].args[0] == player
                        and pools and attach[0].args[1] == pools[0].ret)
+            # Attach comes before the recast store and the debit.
+            self.check('attach_before_recast', seen.get('attach') == (N.ABOVE, 0))
             if sid == 55 and attach:
                 spell = attach[0].args[1] & M32
                 percent = probe.support.stat(55, 0, rank) & 0xFFFF
@@ -845,6 +1064,19 @@ class Probe:
         for seed in SEEDS:
             self.run_seed(seed)
         return not self.failures
+
+
+class StampedCalls(list):
+    """emu.calls that also notes, on each record, how many writes came before it."""
+
+    def __init__(self, emu):
+        super().__init__()
+        self.emu = emu
+        self.stamps = []
+
+    def append(self, record):
+        self.stamps.append(len(self.emu.writes))
+        super().append(record)
 
 
 def position_of(emu):
