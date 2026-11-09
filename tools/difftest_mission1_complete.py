@@ -166,6 +166,9 @@ class Host:
         self.seed = seed
         self.counts = [0, 0, 0, 0]
         self.removes = []
+        self.count_slots = []
+        self.one_player_args = []
+        self.write_marks = []
         self.stubs = []
         self.entered = []
         self.scripts = []
@@ -213,8 +216,16 @@ class Host:
         return run
 
     def _native_seen(self, name):
-        def run(_ee):
+        def run(ee):
             self.entered.append(name)
+            if name == "onePlayerHasItem":
+                # Handlers take (machine, params): params[0] is the byte count and
+                # params[1] the player argument (docs/spec/script-builtins.md #51).
+                params = ee.r[5] & 0xFFFFFFFF
+                self.one_player_args.append((ee.mem.u32(params), ee.mem.s32(params + 4)))
+            if ee.record_writes:
+                # Where this native starts in ee.writes, to order stores against it.
+                self.write_marks.append((name, len(ee.writes)))
         return run
 
     def _script_seen(self, ee):
@@ -231,6 +242,7 @@ class Host:
 
     def _count_item(self, ee):
         slot = ee.r[5] & 0xFFFFFFFF
+        self.count_slots.append(slot)
         if slot > 3:
             return 0
         return self.counts[slot]
@@ -277,6 +289,9 @@ class Host:
             mem.w32(rec + EXP, 0)
         self.counts[:] = (0, 0, 0, 0)
         self.removes.clear()
+        self.count_slots.clear()
+        self.one_player_args.clear()
+        self.write_marks.clear()
         self.stubs.clear()
         self.entered.clear()
         self.scripts.clear()
@@ -568,6 +583,12 @@ RALLOS_REMOVE = (
     (0x7B0, "hideMonster", "rallos2"),
     (0x7DC, "deleteMonster", "rallos2"),
 )
+# inventory_countItemByName slots on a granting call: playerHasItem's sum over the one
+# planted player, then onePlayerHasItem(0). onePlayerHasItem(1..3) fail the
+# g_numPlayers test and do not count.
+GRANT_COUNT_SLOTS = [0, 0]
+# onePlayerHasItem (byte count, player) on a granting call.
+GRANT_ONE_PLAYER_ARGS = [(8, 0), (8, 1), (8, 2), (8, 3)]
 SHARD_GRANT_NATIVES = [
     "gamePaused", "playerHasItem", "playGotItemSound", "addHelpMessage", "setv",
     "grantMission", "setv", "postAction"]
@@ -749,6 +770,69 @@ def run_evil(host, image):
     return expected["frame"], expected["notice_frame"]
 
 
+def run_boss_pause(host, image):
+    """bossDefeatedPause on its own, then callScria381 with callScript not starting it.
+
+    Global 0 and the other script globals hold sentinels; every non-stack store is
+    recorded so the global-0 store can be ordered against the natives entered."""
+    ee = host.ee
+    checks = 0
+    for entry, nested in (("bossDefeatedPause", False), ("callScria381", True)):
+        host.reset_campaign()
+        host.place(image)
+        host.plant_untouched()
+        for cell in (0, 8, 0xC, 0x10):
+            host.set_global(cell, MARK_GLOBAL + cell)
+        cell0 = host.data_base()
+        call_script = host.handlers["callScript"]
+        if nested:
+            # callScript returns 0 without running script_runByName for its argument.
+            ee.stub(call_script, function=host._native_stub("callScript"), name="callScript")
+        mark = host.mark()
+        ee.writes = []
+        ee.record_writes = True
+        try:
+            assert host.run(entry) == 0
+        finally:
+            ee.record_writes = False
+            if nested:
+                ee.unhook(call_script)
+                ee.hook(call_script, host._native_seen("callScript"))
+        stores = [(index, pc, size, value) for index, (pc, addr, size, value) in enumerate(ee.writes)
+                  if addr < cell0 + 4 and addr + size > cell0]
+        marks = list(host.write_marks)
+        if not nested:
+            assert host.since(mark) == (["addDeferedCall"], ["bossDefeatedPause"], []), host.since(mark)
+            # Exactly one store touches global 0: a 4-byte 0, made before addDeferedCall is entered.
+            assert len(stores) == 1 and stores[0][2:] == (4, 0), stores
+            assert marks == [("addDeferedCall", marks[0][1])] and stores[0][0] < marks[0][1], (
+                stores, marks)
+            # The storing pc is inside the interpreter's ZERO a (opcode 0x5b) handler,
+            # 0x140548-0x14057f in docs/script.md opcode table, i.e. script code.
+            assert ZERO_A[0] <= stores[0][1] < ZERO_A[1], hex(stores[0][1])
+            assert host.global_cell(0) == 0
+            assert host.queued_names() == ["bossDefeatedDelay"]
+            BOSS_STORE["pc"] = stores[0][1]
+        else:
+            assert host.since(mark) == (["callScript"], ["callScria381"], ["callScript"]), host.since(mark)
+            # Without the nested entry nothing stores into global 0 and nothing is queued.
+            assert stores == [], stores
+            assert host.global_cell(0) == MARK_GLOBAL
+            assert host.queued_names() == []
+        assert [host.global_cell(cell) for cell in (8, 0xC, 0x10)] == [
+            MARK_GLOBAL + cell for cell in (8, 0xC, 0x10)]
+        assert [host.mission(slot, 1) for slot in range(4)] == [1, 0, 0, 0]
+        assert host.post_name() == "" and host.pending() == ""
+        host.assert_untouched()
+        ee.writes = []
+        checks += 1
+    return checks
+
+
+BOSS_STORE = {}
+ZERO_A = (0x140548, 0x140580)
+
+
 def run_evil_gates(host, image):
     host.reset_campaign()
     host.place(image)
@@ -808,10 +892,15 @@ def run_good(host, image):
     assert host.queued_names() == [], host.queued_names()
     assert host.front_names() == ["shardCheckLoop"], host.front_names()
     mark = host.mark()
+    asked = len(host.count_slots)
+    one = len(host.one_player_args)
     host.deferred()
     entered, scripts, stubs = host.since(mark)
     # Count 1: onePlayerHasItem is asked once per player slot and nothing is removed.
     assert entered == SHARD_GRANT_NATIVES + ["onePlayerHasItem"] * 4, entered
+    # Slot argument of every inventory_countItemByName call during this deferred call.
+    assert host.count_slots[asked:] == GRANT_COUNT_SLOTS, host.count_slots[asked:]
+    assert host.one_player_args[one:] == GRANT_ONE_PLAYER_ARGS, host.one_player_args[one:]
     assert scripts == ["shardCheckLoop"] and stubs == ["playGotItemSound", "addHelpMessage"], stubs
     assert [host.mission(slot, 1) for slot in range(4)] == [3, 2, 2, 2]
     assert host.global_cell(8) == 0
@@ -862,8 +951,12 @@ def run_good(host, image):
         host.deferred()
         assert host.mission(0, 1) == 1
     mark = host.mark()
+    asked = len(host.count_slots)
+    one = len(host.one_player_args)
     host.deferred()
     entered, scripts, stubs = host.since(mark)
+    assert host.count_slots[asked:] == GRANT_COUNT_SLOTS, host.count_slots[asked:]
+    assert host.one_player_args[one:] == GRANT_ONE_PLAYER_ARGS, host.one_player_args[one:]
     # Count 2 in slot 0: one removePlayerItem after slot 0's query, then slots 1-3.
     assert entered == SHARD_GRANT_NATIVES + [
         "onePlayerHasItem", "removePlayerItem"] + ["onePlayerHasItem"] * 3, entered
@@ -899,18 +992,24 @@ def set_var(host, name, value):
 
 
 def run_knights(host, image):
-    """Each knight death entry with the other three knight variables planted."""
+    """Each knight death entry with the other three knight variables planted.
+
+    States per entry: all other three set, all other three clear, and each single
+    other knight clear with the remaining two set. Set means planted 0x5a+index."""
     checks = 0
     for position, (entry, _set_at, _call_at, var) in enumerate(KNIGHT_ENTRIES):
-        for others_set in (True, False):
+        others = tuple(index for index in range(4) if index != position)
+        states = ((), others) + tuple((index,) for index in others)
+        for clear in states:
             host.reset_campaign()
             host.place(image)
             host.plant_untouched()
             for cell in (0, 8, 0xC, 0x10):
                 host.set_global(cell, MARK_GLOBAL + cell)
+            all_clear = clear == others
             planted = {}
             for index, name in enumerate(KNIGHT_VARS):
-                planted[name] = MARK_GLOBAL + index if others_set else 0
+                planted[name] = 0 if index in clear or all_clear else MARK_GLOBAL + index
                 set_var(host, name, planted[name])
             mark = host.mark()
             assert host.run(entry) == 0
@@ -918,14 +1017,16 @@ def run_knights(host, image):
             expect = dict(planted, **{var: 1})
             assert {name: host.vars().get(name) for name in KNIGHT_VARS} == expect, host.vars()
             assert scripts == [entry, "knightDefeatedPause"] and stubs == []
-            if others_set:
-                assert entered == ["setv", "callScript"] + ["getv"] * 4 + ["addDeferedCall"]
+            after = [expect[name] for name in KNIGHT_VARS]
+            first_clear = next((index for index, value in enumerate(after) if value == 0), None)
+            if first_clear is None:
+                assert entered == ["setv", "callScript"] + ["getv"] * 4 + ["addDeferedCall"], entered
                 assert host.queued_names() == ["knightDefeatedDelay"]
             else:
-                # The four reads stop at the first clear variable.
-                reads = 2 if position == 0 else 1
-                assert entered == ["setv", "callScript"] + ["getv"] * reads, entered
-                assert host.queued_names() == []
+                # The four reads stop at the first clear variable, in knight1..knight4 order.
+                assert entered == ["setv", "callScript"] + ["getv"] * (first_clear + 1), (
+                    entry, clear, entered)
+                assert host.queued_names() == [], (entry, clear, host.queued_names())
             assert [host.global_cell(cell) for cell in (0, 8, 0xC, 0x10)] == [
                 MARK_GLOBAL + cell for cell in (0, 8, 0xC, 0x10)]
             assert [host.mission(slot, 1) for slot in range(4)] == [1, 0, 0, 0]
@@ -1088,6 +1189,7 @@ def main():
     checks = check_static(images, objects)
     host = Host(args.elf, args.seed)
     end_call, notice_call = run_evil(host, images["drunare"])
+    checks += run_boss_pause(host, images["drunare"])
     run_evil_gates(host, images["drunare"])
     checks += run_knights(host, images["drunare"])
     run_good(host, images["drunarm"])
@@ -1098,8 +1200,9 @@ def main():
     assert host.seed_now() == args.seed
     assert notice_call == 252 and end_call == 877
     checks += end_call + notice_call + low + high
-    print("PASS seed %d checks %d notice-call %d end-call %d hp %d/%d rallos-call %d" % (
-        args.seed, checks, notice_call, end_call, low, high, rallos_call))
+    print("PASS seed %d checks %d notice-call %d end-call %d hp %d/%d rallos-call %d"
+          " boss-store-pc 0x%x" % (
+              args.seed, checks, notice_call, end_call, low, high, rallos_call, BOSS_STORE["pc"]))
 
 
 if __name__ == "__main__":

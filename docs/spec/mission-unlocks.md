@@ -295,8 +295,9 @@ together. `inventory_countItemByName` `0x1c5880` returns the test's counts;
 `0x1c1cb0` record one removal and do not walk a bag. The register seed is
 unchanged. This is not a played fight, a cutscene, or a level load.
 
-**Observed:** a full `grantMission` scan of `drunare`, `drunarm`, `strife`,
-`drundar`, `blood1`, and `hub` finds five sites. The mission-1 sites are
+**Observed:** a `grantMission` scan of six levels only, `drunare`, `drunarm`,
+`strife`, `drundar`, `blood1`, and `hub`, finds five sites. No other level's
+script is scanned. The mission-1 sites are
 `drunare` `levelChange` at `0xac4`, `drunarm` `shardCheckLoop` at `0x97c`,
 and the `exitzone` sites already named in `docs/quests.md` (`strife` `0x1abc`,
 `drundar` `0x19ec`). Each argument is 1. `blood1` has none. `hub` `start`
@@ -333,9 +334,20 @@ no `getv`, no `callScript`, no script-to-script `call`, and no constant
 **Executed, recorded call list:** running `callScria381` enters `callScript`
 then `addDeferedCall`, and the only entries started are `callScria381` and
 `bossDefeatedPause`. No stub is entered. A planted global 0 `0x5a` is 0
-afterwards, and the queued name is `bossDefeatedDelay`. Running
-`bossDefeatedPause` alone does the same store and queue, so the store is in
-that entry's script code, not in a native.
+afterwards, and the queued name is `bossDefeatedDelay`.
+
+**Executed, recorded writes:** `bossDefeatedPause` run on its own, with
+globals `0`, `0x8`, `0xc`, and `0x10` planted `0x5a` + cell and every
+non-stack store recorded, enters only `addDeferedCall` and starts only
+itself. Exactly one store touches global 0: a 4-byte 0, made before
+`addDeferedCall` is entered, at pc `0x140560`. That pc is inside the
+interpreter's `ZERO a` (opcode `0x5b`) handler `0x140548` (`docs/script.md`
+line 374), so the store is that entry's script code, not a native. The queue
+is `bossDefeatedDelay` and the other three globals keep their sentinels.
+`callScria381` run with `callScript` stubbed (it returns 0 and starts no
+entry) records only that stub, starts only itself, makes no store to global 0
+(it stays `0x5a`), and queues nothing. So within the pair the store is in
+`bossDefeatedPause`.
 
 **Executed, knights:** each knight entry, with `knight1`..`knight4` planted
 `0x5a`..`0x5d`, stores 1 into its own variable and leaves the other three
@@ -343,7 +355,12 @@ planted. Its recorded list is `setv`, `callScript`, four `getv`, and
 `addDeferedCall`; entries started are that entry and `knightDefeatedPause`;
 `knightDefeatedDelay` is queued. With the other three planted 0 the reads stop
 at the first clear variable (two `getv` for `knight1`, one for the others) and
-nothing is queued. No stub is entered. Script globals `0`, `0x8`, `0xc`, and
+nothing is queued. Each entry is also run with exactly one of the other three
+clear and the remaining two planted: the reads stop at that clear variable in
+`knight1`..`knight4` order (`getv` count = its index + 1, after the entry's own
+store of 1) and nothing is queued. In these twenty runs (four entries, five
+states each) `knightDefeatedDelay` is queued only when all four are non-zero.
+States with exactly two of the other three clear are not run. No stub is entered. Script globals `0`, `0x8`, `0xc`, and
 `0x10` keep their planted values, mission 1 stays `1,0,0,0`, no post action or
 level is set, and the sentinels listed under the post action below stay.
 `knightDefeatedDelay` and `knightDefeated` are not run here; what they do is
@@ -402,9 +419,14 @@ stubbed `playGotItemSound` and the stubbed `addHelpMessage`, sets a
 `grantMission(1)`, posts `endmission`, and leaves both halves empty. The
 recorded list for that call is `gamePaused`, `playerHasItem`,
 `playGotItemSound`, `addHelpMessage`, `setv`, `grantMission`, `setv`,
-`postAction`, then `onePlayerHasItem` once per player slot (four times) when
-slot 0's count is 1. With slot 0 at 2, `removePlayerItem` follows slot 0's
-query and the other three queries come after it. The stubs entered on both
+`postAction`, then `onePlayerHasItem` four times when slot 0's count is 1.
+Its recorded player arguments are `0`, `1`, `2`, `3` (byte count 8 each).
+With the planted `g_numPlayers` 1, `inventory_countItemByName` is reached
+only twice on that call, both with slot 0: once from `playerHasItem` and once
+from `onePlayerHasItem(0)`. Players 1–3 fail the `g_numPlayers` test
+(`docs/spec/script-builtins.md` #51) and are not counted. With slot 0 at 2,
+`removePlayerItem` follows `onePlayerHasItem(0)` and the queries for players
+1–3 come after it, with the same recorded arguments and count slots. The stubs entered on both
 granting calls are exactly `playGotItemSound` and `addHelpMessage`. With the snapshot at 0 and the
 live count at 1, that is deferred call 25, and global `0xc` is still 0.
 With the snapshot at 1, call 25 clears global `0x8`, leaves `0xc` at 1, does
@@ -482,7 +504,7 @@ complete.
    `drunarm` and `drundar` `exitzone` requests `drunare`. No `blood1` exit is
    run here; its requests are not taken from this probe.
 2. On the evil arena, run the avatar death entry, then the deferred delay.
-   The death entry stores 0 into global 0. Set `endsound` and
+   The nested `bossDefeatedPause` stores 0 into global 0. Set `endsound` and
    `firstmissionever` when scaled time passes 250. On the call that passes
    1500, if `killedAv` is clear, remove that quest, remember `levelChange`,
    and only then let the post-action grant mission 1 and request `hub2`.
@@ -527,10 +549,15 @@ directory, ignored, and is not named in tracked files beyond this relative path.
 **Unknown:** complete campaign prerequisite graph beyond mission 1's two
 completion writers above, and every offer/turn-in outside this one hub
 dialog. Specifically: actual actor resource/entry binding and containment;
-level startup and dialog initiation; the good arena's return to a hub;
-mission 8/9 availability writers; replay and repeat paths outside tested
-records; physical travel and save/load composition. No order is derived
-from filenames or mission indices.
+level startup and dialog initiation; item and boss gates feeding completion
+(both arena gates above are reached only through stubbed hit points, item
+counts, and a directly run death entry); alternative hub/alignment paths;
+variable mission arguments (the `grantMission` scan above covers six levels
+only: `drunare`, `drunarm`, `strife`, `drundar`, `blood1`, `hub`); the good
+arena's return to a hub; mission 8/9 availability writers; replay and repeat
+paths outside tested records; demo-specific behavior (the `exitzone`
+demo/counter grant is not taken here); physical travel and save/load
+composition. No order is derived from filenames or mission indices.
 
 Mission 1's two completion writers are the section above. The next round
 must still bind real world entry to the avatar death and to the good arena's
