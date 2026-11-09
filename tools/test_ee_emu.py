@@ -810,6 +810,147 @@ class ControlTests(unittest.TestCase):
             bare.call(BASE)
         self.assertIn('no kernel is modelled', str(unsigned.exception))
 
+    def test_write_watch_keeps_only_overlapping_stores(self):
+        stores = [I(0x2B, V0, A0, 0), I(0x2B, V0, A0, 8), I(0x28, V0, A0, 7)]
+        plain = machine(stores, {A0: DATA, V0: 7}, run=False)
+        plain.call(BASE)
+        self.assertEqual(len(plain.writes), 3)
+        watched = machine(stores, {A0: DATA, V0: 7}, run=False)
+        watched.write_watch = ((DATA + 4, 4),)
+        watched.call(BASE)
+        self.assertEqual(watched.writes, [(BASE + 8, DATA + 7, 1, 7)])
+
+    def test_ram_mirrors_alias_main_ram_and_leave_hardware_alone(self):
+        store_load = [I(0x29, V0, A0, 0), I(0x25, V0, A1, 0)]
+        bare = machine(store_load, {A0: 0x21800094, A1: 0x1800094, V0: 0x2300}, run=False)
+        bare.mem.map(0x1800000, 0x100)
+        with self.assertRaises(MemoryFault) as unmapped:
+            bare.call(BASE)
+        self.assertEqual((unmapped.exception.addr, unmapped.exception.kind), (0x21800094, 'write'))
+        aliased = machine(store_load, {A0: 0x21800094, A1: 0x1800094, V0: 0x2300}, run=False)
+        aliased.mem.map(0x1800000, 0x100)
+        aliased.install_ram_mirrors()
+        with self.assertRaises(EmuError):
+            aliased.install_ram_mirrors()
+        self.assertEqual(aliased.call(BASE), 0x2300)
+        self.assertEqual(aliased.mem.u16(0x1800094), 0x2300)
+        other = machine([I(0x25, V0, A0, 0)], {A0: 0x31800094}, run=False)
+        other.mem.map(0x1800000, 0x100)
+        other.mem.w16(0x1800094, 0x2300)
+        other.install_ram_mirrors()
+        self.assertEqual(other.call(BASE), 0x2300)
+        missing = machine([I(0x29, V0, A0, 0)], {A0: 0x21000000, V0: 1}, run=False)
+        missing.install_ram_mirrors()
+        with self.assertRaises(MemoryFault) as named:
+            missing.call(BASE)
+        self.assertEqual(named.exception.addr, 0x21000000)
+        self.assertFalse(missing.mem.is_mapped(0x01000000, 2))
+        hardware = machine([I(0x2B, V0, A0, 0)], {A0: 0x1000A000, V0: 1}, run=False)
+        hardware.install_ram_mirrors()
+        with self.assertRaises(MemoryFault) as register:
+            hardware.call(BASE)
+        self.assertEqual(register.exception.addr, 0x1000A000)
+
+    def test_main_ram_below_the_reserved_top_is_opt_in(self):
+        store = [I(0x28, V0, A0, 0)]
+        bare = machine(store, {A0: 0x0090B000, V0: 0xA5}, run=False)
+        with self.assertRaises(MemoryFault) as missing:
+            bare.call(BASE)
+        self.assertEqual(missing.exception.addr, 0x0090B000)
+        present = machine(store, {A0: 0x0090B000, V0: 0xA5}, run=False)
+        present.install_modelled_main_ram()
+        with self.assertRaises(EmuError):
+            present.install_modelled_main_ram()
+        present.call(BASE)
+        self.assertEqual(present.mem.u8(0x0090B000), 0xA5)
+        self.assertEqual(present.mem.u8(0x0090B001), 0)
+        high = machine(store, {A0: 0x02000000, V0: 1}, run=False)
+        high.install_modelled_main_ram()
+        with self.assertRaises(MemoryFault) as reserved:
+            high.call(BASE)
+        self.assertEqual(reserved.exception.addr, 0x02000000)
+        for low in (0x4, 0x18, 0x0090A430):
+            null = machine(store, {A0: low, V0: 1}, run=False)
+            null.install_modelled_main_ram()
+            with self.assertRaises(MemoryFault) as below:
+                null.call(BASE)
+            self.assertEqual(below.exception.addr, low)
+
+    def test_dma_idle_clears_the_start_bit_and_keeps_other_words(self):
+        touch = [I(0x2B, V0, A0, 0), I(0x23, V0, A0, 0)]
+        plain = machine([I(0x23, V0, A0, 0)], {A0: 0x1000A000}, run=False)
+        with self.assertRaises(MemoryFault):
+            plain.call(BASE)
+        channel = machine(touch, {A0: 0x1000A000, V0: 0x101}, run=False)
+        channel.install_modelled_dma_idle()
+        with self.assertRaises(EmuError):
+            channel.install_modelled_dma_idle()
+        self.assertEqual(channel.call(BASE), 0x001)
+        address = machine(touch, {A0: 0x1000A010, V0: 0x1800080}, run=False)
+        address.install_modelled_dma_idle()
+        self.assertEqual(address.call(BASE), 0x1800080)
+        neighbor = machine([I(0x23, V0, A0, 4)], {A0: 0x1000A000}, run=False)
+        neighbor.install_modelled_dma_idle()
+        with self.assertRaises(MemoryFault) as beside:
+            neighbor.call(BASE)
+        self.assertEqual(beside.exception.addr, 0x1000A004)
+        for unnamed in (0x10008000, 0x1000B000, 0x1000A030):
+            elsewhere = machine([I(0x23, V0, A0, 0)], {A0: unnamed}, run=False)
+            elsewhere.install_modelled_dma_idle()
+            with self.assertRaises(MemoryFault) as other:
+                elsewhere.call(BASE)
+            self.assertEqual(other.exception.addr, unnamed)
+        status = machine([I(0x23, V0, A0, 0)], {A0: 0x10003C00}, run=False)
+        status.install_modelled_dma_idle()
+        self.assertEqual(status.call(BASE), 0)
+
+    def test_vpu_stat_cfc2_is_opt_in_and_only_register_29(self):
+        cfc2 = (0x12 << 26) | (2 << 21) | (V0 << 16) | (29 << 11)
+        other = (0x12 << 26) | (2 << 21) | (V0 << 16) | (1 << 11)
+        with self.assertRaises(UnimplementedInstruction):
+            machine([cfc2])
+        idle = machine([cfc2], run=False)
+        idle.install_modelled_vpu_stat()
+        with self.assertRaises(EmuError):
+            idle.install_modelled_vpu_stat()
+        self.assertEqual(idle.call(BASE), 0)
+        stopped = machine([other], run=False)
+        stopped.install_modelled_vpu_stat()
+        with self.assertRaises(UnimplementedInstruction):
+            stopped.call(BASE)
+
+    def test_flushcache_is_accepted_only_at_the_unread_return(self):
+        words = [addiu(V1, ZERO, 100), R(0x0C)]
+        accepted = machine(words, run=False)
+        accepted.install_modelled_boot()
+        accepted.hook(BASE + 4, lambda emu: emu.set_reg('ra', 0x19d628))
+        accepted.hook(BASE + 8, lambda emu: emu.set_reg('ra', EE.RETURN_ADDR))
+        self.assertEqual(accepted.call(BASE), 0)
+        second = machine(words, run=False)
+        second.install_modelled_boot()
+        second.hook(BASE + 4, lambda emu: emu.set_reg('ra', 0x355744))
+        second.hook(BASE + 8, lambda emu: emu.set_reg('ra', EE.RETURN_ADDR))
+        self.assertEqual(second.call(BASE), 0)
+        rejected = machine(words, run=False)
+        rejected.install_modelled_boot()
+        rejected.hook(BASE + 4, lambda emu: emu.set_reg('ra', 0x19d630))
+        with self.assertRaises(CpuTrap) as trap:
+            rejected.call(BASE)
+        self.assertIn('v1 = 100', str(trap.exception))
+
+    def test_end_of_heap_is_the_address_engine_init_reserves(self):
+        words = [addiu(V1, ZERO, 62), R(0x0C)]
+        accepted = machine(words, run=False)
+        accepted.install_modelled_boot()
+        accepted.hook(BASE + 4, lambda emu: emu.set_reg('ra', 0x353138))
+        accepted.hook(BASE + 8, lambda emu: emu.set_reg('ra', EE.RETURN_ADDR))
+        self.assertEqual(accepted.call(BASE), 0x01FC0000)
+        rejected = machine(words, run=False)
+        rejected.install_modelled_boot()
+        with self.assertRaises(CpuTrap) as trap:
+            rejected.call(BASE)
+        self.assertIn('v1 = 62', str(trap.exception))
+
     def callee_program(self):
         """v0 = callee(a0 + 1) + 1000, where callee(x) = x * 2 and stores x at DATA."""
         return [R(0x25, S0, RA, ZERO),          # 0: s0 = ra

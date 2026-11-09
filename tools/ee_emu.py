@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """ee_emu.py - a function-level interpreter for the PS2 Emotion Engine CPU (MIPS R5900).
 
-This is NOT a console emulator.  It has no timing, no hardware registers, no general
-kernel, no IOP, no VU units and no BIOS.  It loads the segments of an ELF into a sparse
-memory, lets
-you prepare registers and memory, runs ONE function (or a stretch of one) instruction by
-instruction, and reports what the code did: return value, calls made, memory written.
+This is NOT a console emulator.  It has no timing, no IOP and no BIOS.  Hardware
+registers, kernel calls and VU status exist only through the opt-in methods below,
+and none of those is installed by default.  It loads the segments of an ELF into a
+sparse memory, lets you prepare registers and memory, runs ONE function (or a stretch
+of one) instruction by instruction, and reports what the code did: return value,
+calls made, memory written.
 Callees can be run for real, replaced by Python functions, or stubbed wholesale.
 
 Command line:
@@ -49,9 +50,16 @@ at the callers that do not read v0.  install_modelled_boot models the thread,
 semaphore and boot callers listed on that method.  install_modelled_intc, also
 opt-in, delivers one registered INTC handler when a modelled WaitSema would
 block on a semaphore that handler signals, then retries.  The delivery cadence
-is modelled, not a vertical-blank interval.  Every value these handlers write
-in v0 is modelled, not a recovered kernel result.  Every other number still
-raises CpuTrap.  The opt-ins compose; none is installed by default.
+is modelled, not a vertical-blank interval.  install_ram_mirrors aliases the
+uncached and uncached-accelerated windows 0x20000000 and 0x30000000 onto the
+same main-RAM pages when the low 28 bits are below 32 MB.
+install_modelled_main_ram creates heap pages from 0x0090a434 to 0x01fc0000
+zeroed on first access.  install_modelled_dma_idle keeps three words of the
+VIF1 and GIF channels and two status words, and returns the channel control
+word with the start bit clear.  install_modelled_vpu_stat makes CFC2 of
+register 29 return 0.  Every value these handlers write in v0 is modelled, not a recovered kernel
+result.  Every other number still raises CpuTrap.  The opt-ins compose; none
+is installed by default.
 
 Floating point (where this is an approximation)
   The R5900 FPU is not IEEE 754.  There are no NaNs, infinities or denormals: an exponent
@@ -604,6 +612,11 @@ class EE:
         self._terminate_thread = False
         self._modelled_boot = False
         self._modelled_intc = False
+        self._ram_mirrors = False
+        self._main_ram = False
+        self._dma_idle = False
+        self._vpu_stat = False
+        self._hw_words = {}
         self._in_intc = False
         self._threads = {}
         self._semas = {}
@@ -744,7 +757,17 @@ class EE:
         there, and whose next instructions are jr ra and nop, transfers to the
         registered address with ra unchanged.  AddIntcHandler records cause,
         handler and next.  EnableIntc marks that cause enabled.  Neither change
-        delivers an interrupt.  Composes with the other opt-ins.
+        delivers an interrupt.  FlushCache is accepted only for return
+        addresses 0x19d628 and 0x355744.  The instruction at each is a lui that
+        replaces the register it writes, and neither path reads v0 before
+        that.  The modelled result is 0; this emulator has no cache to flush.  EndOfHeap is accepted only for return
+        address 0x353138.  That caller compares v0 with the requested break
+        and, when v0 is not below the request, returns the previous break.
+        The modelled end is 0x01fc0000.  Observed: SetupThread at 0x14fc48 is
+        passed stack base 0x01fc0000, and SetupHeap at 0x14fc64 is passed start
+        0x0090a434 and size -1.  Inferred: a heap of size -1 ends where that
+        stack begins.  It is not a recovered kernel limit.  Composes with the
+        other opt-ins.
         """
         if self._modelled_boot:
             raise EmuError('modelled boot handler is already installed')
@@ -798,6 +821,93 @@ class EE:
         if self._modelled_intc:
             raise EmuError('modelled interrupt delivery is already installed')
         self._modelled_intc = True
+
+    def install_ram_mirrors(self):
+        """Opt in to the uncached and uncached-accelerated mirrors of main RAM.
+
+        Observed at engine_init 0x19d3a8: register s4 is formed with lui of
+        0x2000.  At 0x19d4ac the word loaded from 0x01800010 is ORed with that
+        value, and 0x19d4b4 stores a halfword at offset 0x14 of the result.
+        That word is 0x01800080, which is inside the 32 MB main-RAM window.
+        The same OR and halfword store repeat at 0x19d514 and 0x19d520, and
+        SYNC follows each store.  0x01800000 itself is formed with lui of
+        0x180 and passed to tex_relocate 0x179e10.  It is a main-RAM address,
+        not a register block at 0x10000000 or 0x12000000.
+
+        Observed at 0x16bed0: a pointer built from 0x006f4140 is ORed with
+        0x30000000 and kept.  Observed at 0x19d990: 0x0044fe80 plus a 0 or 1
+        displacement is ORed with 0x30000000 and stored.  Both bases are
+        inside main RAM.  Those are the uncached-accelerated addresses of the
+        same bytes, the form the DMA and GIF packets carry.
+
+        An address in 0x20000000 or 0x30000000 whose low 28 bits are below
+        0x02000000 uses the cached page.  A cached page that is not mapped
+        still faults, and the fault names the address the instruction used.
+        Hardware windows formed with lui of 0x1000 or 0x1200 are not aliased.
+        This is not a cache and not a DMA completion model.
+        """
+        if self._ram_mirrors:
+            raise EmuError('main-RAM mirrors are already installed')
+        self._ram_mirrors = True
+
+    def install_modelled_main_ram(self):
+        """Opt in to the main-RAM heap the ELF did not load.
+
+        Observed: SetupHeap at 0x14fc64 is passed start 0x0090a434 and size -1,
+        and SetupThread at 0x14fc48 is passed stack base 0x01fc0000.  On the
+        32 MB path engine_init 0x19d58c-0x19d5c8 asks mem_malloc for 0x16a5bcc
+        bytes, and mem_initHeap 0x150598 fills the block it gets with 0xa5, one
+        byte per iteration, at 0x1505c8.  A missing page from 0x0090a434 up to
+        0x01fc0000 is created zeroed on access.  That zero is the absence of a
+        store, not a measurement of retail RAM.  An access below 0x0090a434 or
+        at or above 0x01fc0000 is unchanged, so a null-based access still
+        faults.
+        """
+        if self._main_ram:
+            raise EmuError('modelled main RAM is already installed')
+        self._main_ram = True
+
+    def install_modelled_dma_idle(self):
+        """Opt in to the DMA words the GIF kick and the idle wait actually use.
+
+        Observed: 0x350680, called from engine_init at 0x19d4c0 and 0x19d52c,
+        waits through 0x350190 and then writes the channel at offsets 0x10,
+        0x20 and 0x00.  0x350190 reads the word at offset 0 and proceeds when
+        bit 0x100 is clear; otherwise it spins.  The caller's a0 is 0x1000a000.
+        sceGsSyncPath 0x34fe78, called with a0 = 0 at 0x19d4cc, reads the same
+        bit at 0x10009000 and 0x1000a000, the word at 0x10003c00 masked with
+        0x1f000003, and the word at 0x10003020 masked with 0xc00.  Each wait
+        ends when the tested bits are clear.
+
+        The words at offsets 0x00, 0x10 and 0x20 of the two channels these
+        callers name, 0x10009000 and 0x1000a000, are storage that starts at
+        0.  Other channels are not modelled and still fault.  A 4-byte
+        read of offset 0 returns that word with bit 0x100 clear.  That clear
+        bit is modelled: it is the condition the spinners test, not a
+        completed GIF transfer.  The two status words above are the same kind
+        of storage and are not masked.  Any other address in the register
+        window still faults.  Neighbours of an accepted word are not storage.
+        """
+        if self._dma_idle:
+            raise EmuError('modelled DMA idle is already installed')
+        self._dma_idle = True
+
+    def install_modelled_vpu_stat(self):
+        """Opt in to CFC2 of control register 29 returning 0.
+
+        Observed in sceGsSyncPath at 0x34ff5c and 0x34ff7c: CFC2 into a GPR
+        from register 29, then a test of bit 0x100.  The wait ends when that
+        bit is clear.  This model writes 0.  That 0 is not a recovered VU
+        status.  Every other COP2 encoding still stops as an unimplemented
+        instruction.  Composes with the other opt-ins; without it, COP2 stops
+        the same way as before.
+        """
+        if self._vpu_stat:
+            raise EmuError('modelled VPU status is already installed')
+        self._vpu_stat = True
+
+    # FlushCache callers whose following instructions do not read v0.
+    _FLUSH_IGNORED_RA = frozenset((0x19d628, 0x355744))
 
     # Return addresses of jal TerminateThread whose following instructions do not read v0.
     _TERMINATE_IGNORED_RA = frozenset((
@@ -868,6 +978,16 @@ class EE:
                 return False
             self._installed_syscalls[a0] = a1
             self._set_v0(0)
+            return True
+        if number == 100:
+            if ra not in self._FLUSH_IGNORED_RA:
+                return False
+            self._set_v0(0)
+            return True
+        if number == 62:
+            if ra != 0x353138:
+                return False
+            self._set_v0(0x01FC0000)
             return True
         if number == 32:
             entry = self.mem.u32(a0 + 4)
@@ -1275,6 +1395,40 @@ class EE:
         return False
 
     # ---- memory access from instructions -----------------------------------------------
+    def _ensure_main_ram(self, addr, size):
+        if not self._main_ram or addr < 0x0090A434 or addr + size > 0x01FC0000:
+            return
+        if not self.mem.is_mapped(addr, size):
+            self.mem.map(addr, size)
+
+    def _mirror_phys(self, addr):
+        """Cached main-RAM address for an uncached mirror, or None."""
+        if not self._ram_mirrors:
+            return None
+        top = addr >> 28
+        if top != 2 and top != 3:
+            return None
+        phys = addr & 0x0FFFFFFF
+        if phys >= 0x02000000:
+            return None
+        return phys
+
+    def _dma_reg_off(self, addr):
+        if addr & ~0xFFF not in (0x10009000, 0x1000A000):
+            return None
+        off = addr & 0xFFF
+        if off in (0x00, 0x10, 0x20):
+            return off
+        return None
+
+    def _hw_key(self, addr, size):
+        """Modelled 4-byte hardware word, or None so the access uses memory."""
+        if not self._dma_idle or size != 4 or addr & 3:
+            return None
+        if self._dma_reg_off(addr) is not None or addr in (0x10003c00, 0x10003020):
+            return addr
+        return None
+
     def _overlaps_watch(self, addr, size):
         end = addr + size
         for watch, width in self.write_watch:
@@ -1285,7 +1439,21 @@ class EE:
     def _load(self, addr, size):
         if addr & (size - 1):
             raise CpuTrap('unaligned %d-byte load from 0x%08x at pc 0x%08x' % (size, addr, self.cur))
-        value = self.mem.load(addr, size)
+        phys = self._mirror_phys(addr)
+        if phys is not None:
+            self._ensure_main_ram(phys, size)
+            if not self.mem.is_mapped(phys, size):
+                raise MemoryFault(self.cur, addr, size, 'read')
+            value = self.mem.load(phys, size)
+        else:
+            key = self._hw_key(addr, size)
+            if key is not None:
+                value = self._hw_words.get(key, 0)
+                if self._dma_reg_off(addr) == 0:
+                    value &= ~0x100
+            else:
+                self._ensure_main_ram(addr, size)
+                value = self.mem.load(addr, size)
         if self.reads is not None:
             self.reads.append((self.cur, addr, size, value))
         return value
@@ -1293,10 +1461,24 @@ class EE:
     def _store(self, addr, size, value):
         if addr & (size - 1):
             raise CpuTrap('unaligned %d-byte store to 0x%08x at pc 0x%08x' % (size, addr, self.cur))
-        self.mem.store(addr, size, value)
+        kept = value & ((1 << (size * 8)) - 1)
+        phys = self._mirror_phys(addr)
+        if phys is not None:
+            self._ensure_main_ram(phys, size)
+            if not self.mem.is_mapped(phys, size):
+                raise MemoryFault(self.cur, addr, size, 'write')
+            self.mem.store(phys, size, kept)
+        else:
+            key = self._hw_key(addr, size)
+            if key is not None:
+                self._hw_words[key] = kept & M32
+            else:
+                self._ensure_main_ram(addr, size)
+                self.mem.store(addr, size, kept)
         if self.record_writes and not self.stack_lo <= addr < self.stack_hi:
-            if self.write_watch is None or self._overlaps_watch(addr, size):
-                self.writes.append((self.cur, addr, size, value & ((1 << (size * 8)) - 1)))
+            if self.write_watch is None or self._overlaps_watch(addr, size) or (
+                    phys is not None and self._overlaps_watch(phys, size)):
+                self.writes.append((self.cur, addr, size, kept))
 
     def _unimplemented(self, word, what=''):
         raise UnimplementedInstruction(self.cur, word, what)
@@ -1336,6 +1518,7 @@ class EE:
         ops[0x0F] = self._lui
         ops[0x10] = self._cop0
         ops[0x11] = self._cop1
+        ops[0x12] = self._cop2
         ops[0x14] = self._beql
         ops[0x15] = self._bnel
         ops[0x16] = self._blezl
@@ -1906,6 +2089,17 @@ class EE:
             self.cop0[12] &= ~0x10000
         else:
             self._unimplemented(w, 'COP0')
+
+    def _cop2(self, w):
+        if not self._vpu_stat:
+            self._unimplemented(w)
+        rs = (w >> 21) & 31
+        rd = (w >> 11) & 31
+        if rs == 0x02 and rd == 29:     # CFC2 VPU_STAT.  The 0 is modelled.
+            value = 0
+            self.r[(w >> 16) & 31] = value
+            return
+        self._unimplemented(w, 'COP2')
 
     # ---- COP1 --------------------------------------------------------------------------
     def _cop1(self, w):

@@ -488,3 +488,154 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_death_reload_intc.py local/SLUS
 
 Each seed: two engine_init stops on the uncached store and two
 particle-reset faults. No stubs. Success output reports counts only.
+
+## Round 7: main-RAM mirrors through engine_init's SIF stop, 2026-11-09
+
+Every opt-in below is off by default. The round-5 and round-6 tests do not
+install them and their stops are unchanged.
+`tools/difftest_death_reload_mirror.py` installs them on top of the round-6
+machine.
+
+### The uncached store at `0x19d4b4`
+
+**Observed:** `engine_init` forms `0x20000000` in s4 with `lui` at
+`0x19d3a8`. It forms `0x1800000` with `lui` at `0x19d420` and passes it to
+`tex_relocate` `0x179e10` at `0x19d490`. At `0x19d49c` it loads the word at
+offset `0x10` of that block. Round 6 read that word as `0x1800080`. At
+`0x19d4ac` it ORs the word with s4, and at `0x19d4b4` it stores a halfword at
+offset `0x14` of the result. A `sync` follows at `0x19d4b8`, then
+`0x350680`, which writes the GIF channel. The same OR, halfword store and
+`sync` repeat at `0x19d514`-`0x19d524` for the block at `0x188c100`.
+`0x1800080` is below `0x02000000`, inside the 32 MB main-RAM window. The
+register blocks this code uses are formed with `lui` of `0x1000` and
+`0x1200`. **Observed:** `0x30000000` is also ORed onto main-RAM addresses, at
+`0x16bed0` (base `0x6f4140`) and `0x19d990` (base `0x44fe80`).
+
+**Inferred:** `0x21800094` is the uncached alias of main-RAM byte
+`0x1800094`, written so the DMA that follows reads the new value. This is
+the EE's uncached window at `0x20000000`. `0x30000000` is the
+uncached-accelerated window. It is not a hardware register block.
+
+**Model:** `EE.install_ram_mirrors` sends an address in `0x20000000` or
+`0x30000000` whose low 28 bits are below `0x02000000` to the same backing
+page as the cached address. There is no cache. If the cached page is not
+mapped, the access still faults and names the address the instruction used.
+Register windows are not aliased.
+
+### Other stops, and what each opt-in models
+
+- **Main RAM past the image.** **Observed:** SetupHeap at `0x14fc64` is
+  passed start `0x90a434` and size -1. That is the end of the second
+  `PT_LOAD`. SetupThread at `0x14fc48` is passed
+  stack base `0x1fc0000`. On the 32 MB path, `0x19d58c`-`0x19d5c8` ask
+  `mem_malloc` `0x150680` for `0x16a5bcc` bytes. `mem_initHeap` `0x150598`
+  fills the block with `0xa5`, one byte per iteration, at `0x1505c8`.
+  **Model:** `EE.install_modelled_main_ram` creates a missing page from
+  `0x90a434` up to `0x1fc0000` zeroed on first access. That zero is the
+  absence of a store, not a measured retail value. Below `0x90a434` nothing
+  changes, so the null-based faults at address 4 and `0x18` still fault.
+- **EndOfHeap**, syscall 62 at `0x3529c0`, accepted only for return address
+  `0x353138`. That caller compares v0 with the requested break.
+  **Inferred:** a size of -1 ends at the stack base. **Model:** v0 =
+  `0x1fc0000`. It is not a recovered kernel limit.
+- **GIF and VIF1 channel words.** **Observed:** `0x350680` waits through
+  `0x350190`, which spins while bit `0x100` of the channel word at offset 0
+  is set. It then writes offsets `0x10`, `0x20` and 0, setting `0x101`.
+  `sceGsSyncPath` `0x34fe78` tests bit `0x100` at `0x10009000` and
+  `0x1000a000`, `0x10003c00` under mask `0x1f000003`, and `0x10003020`
+  under mask `0xc00`. **Model:** `EE.install_modelled_dma_idle` makes offsets
+  0, `0x10` and `0x20` of those two channels storage, plus the two status
+  words. A read of offset 0 returns the stored word with bit `0x100` clear.
+  That is a channel that has finished at once. No transfer reaches a GS.
+  Other channels still fault.
+- **VPU_STAT.** **Observed:** `0x34ff5c` and `0x34ff7c` are CFC2 of control
+  register 29 into `$6`, then a test of bit `0x100`. **Model:**
+  `EE.install_modelled_vpu_stat` returns 0 for that encoding only. Any other
+  COP2 instruction still stops.
+- **FlushCache**, syscall 100 at `0x352c60`, accepted only for return
+  addresses `0x19d628` and `0x355744`. **Observed:** each is a `lui` that
+  replaces its register, and neither path reads v0 first. **Model:** v0 = 0.
+  This emulator has no cache, so nothing else changes.
+- **The startup semaphore.** **Observed:** the allocator waits at `0x3b61c8`
+  on the id at `0x5075d0`, which startup's CreateSema at `0x35c084` stores at
+  `0x35c098`. So `engine_init` runs on the machine startup left, after
+  startup stops at `0x35c108`. sp is reset to the test stack. gp is the
+  startup value, `0x56c170`. Startup's CreateSema calls create ids 1 and 2,
+  so the waits in `engine_init` use id 4. Five modelled deliveries of
+  `0x19b6e4` pass them, as in round 6.
+
+### Executed
+
+Each seed and each fixture form give the same result.
+
+1. Startup stops at `0x35c108` reading `0x80000000`, as in round 5. With
+   write recording on, the only stores that overlap `0x7cfd40` or
+   `0x82c408` are the two 16-byte `.bss` clears of 0 at `0x14fbe0`. The test
+   then empties the log, so each later stage is checked on its own.
+2. `engine_init` passes both uncached stores. Right after `0x19d4b4`, the
+   cached halfword at `0x1800094` is `0x2300` (address `0x21800080` +
+   `0x14`). Right after `0x19d520`, the cached halfword at `0x188c194` is
+   `0x2bc0` (address `0x2188c180` + `0x14`). `tex_relocate` returns to
+   `0x19d498` and `0x19d4f0`. The GIF words hold `0x101` at `0x1000a000`,
+   `0x188c180` at `0x1000a010` and `0x8c08` at `0x1000a020`. The semaphore
+   ids at `0x8400f0` and `0x8400f4` are 3 and 4.
+3. `mem_malloc` returns `0x90a600`, stored at `0x8400e8`. The size
+   `0x16a57cc` is stored at `0x8400ec`. `mem_initHeap` runs its fill loop to
+   the end. The last byte, at `0x1fafdcb`, is `0xa5`. This is about 166
+   million instructions, all executed. **Observed:** the ELF's third
+   `PT_LOAD` is `0x1800000` to `0x1918200`. Both blocks sent to the GIF are
+   in it, and both are inside the heap block. After the fill, the halfwords
+   at `0x1800094` and `0x188c194` are `0xa5a5`. **Inferred:** retail reuses
+   that segment as heap once the uploads are sent. Whether a retail DMA has
+   finished reading it by then is Unknown.
+4. **Next stop:** `engine_init` calls `0x19ba98` at `0x19d638`. That calls
+   `0x355d68` at `0x19baa8`, which calls `0x355608` at `0x355db0`.
+   FlushCache at `0x35573c` returns. At `0x35574c` the 4-byte read of
+   `0x1000e010` faults, return address `0x355744`. The ring word and the
+   particle word have no store in this stage.
+
+**Observed, past the stop:** `0x35574c` tests bit `0x20` of `0x1000e010`
+and, when set, writes `0x20` back. `0x355764` reads `0x1000c000`. The
+function calls the wrappers at `0x352dc0`, `0x352de0` and `0x352df0`, which
+load syscall numbers `0x78`, `0x79` and `0x7a`. The loop at
+`0x355800`-`0x35580c` repeats the `0x352df0` call until v0 is nonzero.
+**Inferred:** this is SIF setup, and that loop waits for the IOP. There is
+no IOP here, so no model is added for `0x1000e010`, `0x1000c000` or those
+syscalls. The stop is where the EE starts waiting on the other processor.
+
+**Not reached:** `0x17a3a0` at `0x19d6f8` (the `texcache_init` path),
+`particle_init` `0x18e648` at `0x19d818`, and the waiter at `0x19d828`.
+
+### Death sequence on the same machine
+
+The death sequence then runs on that machine, with TerminateThread
+installed, as in round 6. The test heap the fixture uses is moved to
+`0x4000000`, above 32 MB. The game heap now covers `0x90a600` to
+`0x1fafdcc`, and the default test heap at `0x1000000` sits inside it.
+**Executed:** the loader stops on the 4-byte write to address 4 at pc
+`0x18ec10`, return address `0x1e502c`. Request byte `0x41b720` is 254.
+World reconstruction `0x14e808`, `Player_ctor` `0x1a1d28`, `texcache_init`
+and `particle_init` are not called. No store overlaps the ring or particle
+word. Both are 0. No call is stubbed.
+
+**`texcache_reset` at `0x179b30`:** still blocked. That store adds `0x18` to
+the pointer at `0x7cfd40`. In this session that word is 0 from the `.bss`
+clear, and `texcache_init`, which round 4 saw write `0x7cfe00` there, is
+after the SIF stop. The loader also faults at `0x18ec10` before reaching it.
+
+**Unknown:** the IOP side of SIF setup and what `0x1000e010` holds at
+`0x35574c`. Retail heap contents before the fill. Whether retail DMA
+finishes before the first poll. Retail ids, interrupt timing, file loading,
+world reconstruction, player construction and playable arrival. Native
+`blocked_death_reload` stays.
+
+## Reproduce, round 7
+
+```
+PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_death_reload_mirror.py local/SLUS_209.73 --seed 20973
+PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_death_reload_mirror.py local/SLUS_209.73 --seed 7
+```
+
+Each seed: two engine_init stops at the SIF status read, and two
+particle-reset faults. Each run executes the heap fill twice, about 340
+million instructions. No stubs. Success output reports counts only.
