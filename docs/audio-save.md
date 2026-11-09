@@ -104,10 +104,14 @@ pointer +0x43d8.
 
 Level state: `save_storeLevelState(name)` looks the level up in the directory (adding it if
 there is room; at most 10 levels and the whole buffer must stay under 0x4bc78) and has
-`save_writeLevelState` write three length-prefixed sections produced by 0x14e5c8 (objects),
-0x19ee10 and 0x16865c. The size reserved per level comes from the act table (0x4f8e48:
+`save_writeLevelState` write length-prefixed object and decal sections (0x14e5c8,
+0x19ee10), then a fixed 0x16c8-byte explored-map section (0x16865c). The size
+reserved per level comes from the act table (0x4f8e48:
 per act a list of {name, u16 size}; 0x4f8e10 counts; 0x4f8e7c number of acts). Skipped
-while the card state is 4 or a flag in 0x44fe08 is set.
+while the card state is 4 or bit 0x800 in 0x44fe08 is set.
+
+The object-state overlay, class examples, script restart and terrain reload
+boundary are detailed in `docs/save-world.md`.
 
 ### What is per character and what is per game
 

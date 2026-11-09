@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """ee_emu.py - a function-level interpreter for the PS2 Emotion Engine CPU (MIPS R5900).
 
-This is NOT a console emulator.  It has no timing, no hardware registers, no kernel, no
-IOP, no VU units and no BIOS.  It loads the segments of an ELF into a sparse memory, lets
+This is NOT a console emulator.  It has no timing, no hardware registers, no general
+kernel, no IOP, no VU units and no BIOS.  It loads the segments of an ELF into a sparse
+memory, lets
 you prepare registers and memory, runs ONE function (or a stretch of one) instruction by
 instruction, and reports what the code did: return value, calls made, memory written.
 Callees can be run for real, replaced by Python functions, or stubbed wholesale.
@@ -41,7 +42,16 @@ An instruction that is not implemented stops the run with UnimplementedInstructi
 names the address and the word.  Nothing is guessed.  The same goes for a load or store
 that touches memory nobody mapped (MemoryFault), an unaligned access, an integer overflow
 trap, BREAK, SYSCALL and an integer division by zero (which does not trap on this CPU but
-has no defined result).
+has no defined result).  SYSCALL still stops unless the caller installed
+syscall_handler.  install_deci2_kputs models only syscall 124 function 0x10,
+the level-teardown diagnostic.  install_terminate_thread models only syscall 37
+at the callers that do not read v0.  install_modelled_boot models the thread,
+semaphore and boot callers listed on that method.  install_modelled_intc, also
+opt-in, delivers one registered INTC handler when a modelled WaitSema would
+block on a semaphore that handler signals, then retries.  The delivery cadence
+is modelled, not a vertical-blank interval.  Every value these handlers write
+in v0 is modelled, not a recovered kernel result.  Every other number still
+raises CpuTrap.  The opt-ins compose; none is installed by default.
 
 Floating point (where this is an approximation)
   The R5900 FPU is not IEEE 754.  There are no NaNs, infinities or denormals: an exponent
@@ -585,10 +595,25 @@ class EE:
         self.record_calls = True
         self.writes = []                # (pc, address, size, value) outside the stack
         self.record_writes = True
+        self.write_watch = None        # None, or ((address, size), ...): keep only overlaps
         self.reads = None               # set to [] to record (pc, address, size, value)
         self.trace = None               # set to [] to record every executed pc
         self.notes = []                 # things worth telling the reader (e.g. divide by 0)
         self.syscall_handler = None
+        self._deci2_kputs = False
+        self._terminate_thread = False
+        self._modelled_boot = False
+        self._modelled_intc = False
+        self._in_intc = False
+        self._threads = {}
+        self._semas = {}
+        self._intc = []
+        self.intc_deliveries = []
+        self._installed_syscalls = {}
+        self._current_tid = 1
+        self._next_tid = 2
+        self._next_sid = 1
+        self._next_handler = 1
         self.div_zero = 'stop'          # or 'r5900': continue with the reported HI/LO values
         self.patches = {}               # address -> original word
         self.stack_lo, self.stack_hi = self.STACK_LO, self.STACK_HI
@@ -651,6 +676,449 @@ class EE:
                 self.patch(addr, value)
                 count += 1
         return count
+
+    def install_deci2_kputs(self):
+        """Opt in to the observed Deci2 function-0x10 contract.  Default runs are unchanged.
+
+        Observed at 0x352e10–0x352e1c: Deci2Call loads v1 = 0x7c (124) and executes
+        SYSCALL, then returns through jr ra.  The level-teardown diagnostic reaches
+        that stub only as function 0x10, through dbg_printf 0x355490, the formatter
+        0x354590, callback 0x355300, buffered putc 0x354240 and wrapper 0x35e428.
+        Wrapper 0x35e428 stores its string pointer as the first parameter word and
+        passes a0 = 0x10.  The branch at 0x354280 ignores v0, and 0x35531c overwrites
+        v0 with 1, so this path does not observe the kernel result.  The retail
+        result and the bytes of the string are therefore not part of the contract.
+        This handler writes v0 = 0 and does not read guest memory.  Any other
+        syscall number raises the same CpuTrap as an unhandled syscall, unless
+        install_terminate_thread was also opted in, which adds only syscall 37
+        at a caller that does not read v0.  Any other Deci2 function number,
+        including 1, 3 and 4 at 0x35e218, 0x35e288 and 0x35e2b8, raises CpuTrap
+        and names a0.  Assigning the bound method would pass the emulator twice;
+        this stores the unbound dispatcher.
+        """
+        if self._deci2_kputs:
+            raise EmuError('a syscall handler is already installed')
+        self._deci2_kputs = True
+        self.syscall_handler = EE._dispatch_opt_in_syscall
+
+    def install_terminate_thread(self):
+        """Opt in to TerminateThread where the caller does not read v0.
+
+        Observed: wrapper 0x352830 loads v1 = 0x25 (37), executes SYSCALL at
+        0x352834 and returns through jr ra.  Nine jal sites pass a thread id in
+        a0.  Eight do not read v0.  Their return addresses are 0x17de0c and
+        0x17e480 (the id word at 0x7cfd04, then 0x353b20 with that id), 0x17fe68
+        (same id, then return), 0x31ef38 (the id word at 0x8eafe4, then
+        0x361250), 0x36782c (then a tail call to DeleteThread), and 0x368e2c,
+        0x3a02cc and 0x3a1270 (then DeleteThread of the same id).  The ninth
+        return, 0x35f3bc, compares v0 with -1 and is rejected: the retail value
+        is unknown.  This handler writes v0 = 0 and does not read or write
+        guest memory.  That 0 is not a recovered kernel result, and the id word
+        is left unchanged, so this does not claim the thread was stopped.  Any
+        other syscall number, and syscall 37 with any other return address,
+        still raises CpuTrap.  Composes with install_deci2_kputs.
+        """
+        if self._terminate_thread:
+            raise EmuError('TerminateThread handler is already installed')
+        self._terminate_thread = True
+        self.syscall_handler = EE._dispatch_opt_in_syscall
+
+    def install_modelled_boot(self):
+        """Opt in to the boot thread and semaphore calls whose callers were read.
+
+        Every v0 written here is modelled.  It is not a recovered kernel result.
+        The current thread is id 1.  CreateThread ids start at 2.  Semaphore ids
+        start at 1.  ReferThreadStatus word 0 is 0x10 because the callers at
+        0x353b80 and 0x322504 compare with 16; that does not establish what the
+        kernel calls that state.  A new semaphore's count is the word at param
+        +8 and its max is the word at param +4: the fills at 0x16c67c, 0x19d2ac
+        and 0x31ee9c put the large word at +4 and 0 or 1 at +8.  WaitSema with
+        a zero count raises CpuTrap instead of succeeding.  StartThread does
+        not enter the thread.  SetupThread is accepted only at 0x14fc48, where
+        v0 is moved to sp.  SetupHeap is accepted only at 0x14fc64, where v0
+        is not read.  SetGsCrt is accepted only for return address 0x19d36c,
+        and GsPutIMR only for 0x34f79c; neither caller reads v0.  EnableIntc is
+        accepted only for return address 0x353560, which saves v0; the modelled
+        previous state is 1.  SetSyscall is accepted only for return addresses
+        0x35c1d0 and 0x35c1dc.  A later syscall whose number was registered
+        there, and whose next instructions are jr ra and nop, transfers to the
+        registered address with ra unchanged.  AddIntcHandler records cause,
+        handler and next.  EnableIntc marks that cause enabled.  Neither change
+        delivers an interrupt.  Composes with the other opt-ins.
+        """
+        if self._modelled_boot:
+            raise EmuError('modelled boot handler is already installed')
+        self._modelled_boot = True
+        self._threads = {1: {'priority': 0, 'status': 0x10, 'entry': 0,
+                             'stack': 0, 'size': 0, 'gp': 0, 'started': False}}
+        self._semas = {}
+        self._intc = []
+        self.intc_deliveries = []
+        self._installed_syscalls = {}
+        self._current_tid = 1
+        self._next_tid = 2
+        self._next_sid = 1
+        self._next_handler = 1
+        self.syscall_handler = EE._dispatch_opt_in_syscall
+
+    def install_modelled_intc(self):
+        """Opt in to one modelled INTC delivery when WaitSema would block.
+
+        Observed registration, from engine_init 0x19d19c: AddIntcHandler
+        0x3526c0 is syscall 0x10.  The call at 0x19d37c passes cause 2 in a0,
+        handler 0x19b6e4 in a1 and 0 in a2.  EnableIntc 0x352720 is syscall
+        0x14, reached through 0x353528 with that cause in a0; its return
+        address is 0x353560.  The handler saves ra, returns through jr ra, and
+        sets v0 to 0.  It does not read a0 before overwriting it.  Both of its
+        exits jal iSignalSema 0x352a10.  That wrapper loads v1 = -0x43 and
+        executes SYSCALL.  One delay slot loads the id at 0x8400f4; the other
+        signal uses the id previously loaded from 0x8400f0.  The same exits
+        increment the word at 0x44fd98.
+
+        Inferred: a0 on entry is the registered cause, because that is the
+        first AddIntcHandler argument and the handler is an ordinary function.
+        This model passes that cause in a0.  When the handler returns, the
+        interrupted general registers, COP0 and pc are restored, because the
+        waiter at 0x19d05c continues with the registers it held.  The BIOS
+        save mask is not in this image.  Restoring the whole register file is
+        the model.  iSignalSema applies the same count increment as the
+        modelled SignalSema (syscall 66).  That increment does not consult
+        the max word, and it is not a recovered kernel result.
+
+        Delivery runs only for an enabled handler whose body signals the
+        waited id through 0x352a00 or 0x352a10, where the id is the current
+        word at an address the jal's a0 load forms with lui plus lw.  One
+        delivery per blocking WaitSema, in registration order.  That cadence
+        is modelled.  It is not a vertical-blank interval.  A handler that
+        does not return is left in place and the original exception
+        propagates.  Composes with install_modelled_boot; WaitSema itself
+        still requires that opt-in.  Without this method, a zero count still
+        raises CpuTrap.
+        """
+        if self._modelled_intc:
+            raise EmuError('modelled interrupt delivery is already installed')
+        self._modelled_intc = True
+
+    # Return addresses of jal TerminateThread whose following instructions do not read v0.
+    _TERMINATE_IGNORED_RA = frozenset((
+        0x17de0c, 0x17e480, 0x17fe68, 0x31ef38,
+        0x36782c, 0x368e2c, 0x3a02cc, 0x3a1270,
+    ))
+
+    def _dispatch_opt_in_syscall(self):
+        number = s64(self.r[3])
+        if number == 124 and self._deci2_kputs:
+            self.deci2_kputs()
+            return
+        if number == 37 and self._terminate_thread:
+            self.terminate_thread()
+            return
+        if self._modelled_boot and self._modelled_boot_syscall(number):
+            return
+        raise CpuTrap('SYSCALL at 0x%08x (v1 = %d); no kernel is modelled'
+                      % (self.cur, number))
+
+    def _set_v0(self, value):
+        value &= M32
+        self.r[2] = value | HIGH32 if value & SIGN32 else value
+
+    def _modelled_boot_syscall(self, number):
+        """Handle one opted-in boot syscall.  Return False if this number is not in the model."""
+        ra = self.r[31] & M32
+        a0 = self.r[4] & M32
+        a1 = self.r[5] & M32
+        a2 = self.r[6] & M32
+        if number == 60:
+            if self.cur != 0x14fc48:
+                return False
+            self._set_v0((a1 + a2 - 0x10) & M32)
+            return True
+        if number == 61:
+            if self.cur != 0x14fc64:
+                return False
+            self._set_v0(0)
+            return True
+        if number == 2:
+            if ra != 0x19d36c:
+                return False
+            self._set_v0(0)
+            return True
+        if number == 113:
+            if ra != 0x34f79c:
+                return False
+            self._set_v0(0)
+            return True
+        if number == 20:
+            if ra != 0x353560:
+                return False
+            for handler in self._intc:
+                if handler['cause'] == a0:
+                    handler['enabled'] = True
+            self._set_v0(1)
+            return True
+        if number == 16:
+            handler_id = self._next_handler
+            self._next_handler = handler_id + 1
+            self._intc.append({'id': handler_id, 'cause': a0, 'fn': a1,
+                               'next': a2, 'enabled': False})
+            self._set_v0(handler_id)
+            return True
+        if number == 116:
+            if ra not in (0x35c1d0, 0x35c1dc):
+                return False
+            self._installed_syscalls[a0] = a1
+            self._set_v0(0)
+            return True
+        if number == 32:
+            entry = self.mem.u32(a0 + 4)
+            stack = self.mem.u32(a0 + 8)
+            size = self.mem.u32(a0 + 12)
+            gp = self.mem.u32(a0 + 16)
+            priority = self.mem.u32(a0 + 20)
+            tid = self._next_tid
+            self._next_tid = tid + 1
+            self._threads[tid] = {'priority': priority, 'status': 0x10, 'entry': entry,
+                                  'stack': stack, 'size': size, 'gp': gp, 'started': False}
+            self._set_v0(tid)
+            return True
+        if number == 47:
+            self._set_v0(self._current_tid)
+            return True
+        if number == 41:
+            tid = a0 or self._current_tid
+            thread = self._threads.get(tid)
+            if thread is None:
+                raise CpuTrap('SYSCALL at 0x%08x (v1 = 41, a0 = %d); '
+                              'modelled thread was not created' % (self.cur, tid))
+            self._set_v0(thread['priority'])
+            thread['priority'] = a1
+            return True
+        if number == 48:
+            tid = a0 or self._current_tid
+            thread = self._threads.get(tid)
+            if thread is None:
+                self._set_v0(0xffffffff)
+                return True
+            if a1:
+                self.mem.w32(a1, thread['status'])
+                self.mem.w32(a1 + 4, thread['entry'])
+                self.mem.w32(a1 + 8, thread['stack'])
+                self.mem.w32(a1 + 12, thread['size'])
+                self.mem.w32(a1 + 16, thread['gp'])
+                self.mem.w32(a1 + 20, thread['priority'])
+                self.mem.w32(a1 + 24, thread['priority'])
+            self._set_v0(thread['status'])
+            return True
+        if number == 34:
+            thread = self._threads.get(a0)
+            if thread is None:
+                raise CpuTrap('SYSCALL at 0x%08x (v1 = 34, a0 = %d); '
+                              'modelled thread was not created' % (self.cur, a0))
+            thread['started'] = True
+            self._set_v0(a0)
+            return True
+        if number == 64:
+            sid = self._next_sid
+            self._next_sid = sid + 1
+            self._semas[sid] = {'count': self.mem.u32(a0 + 8), 'max': self.mem.u32(a0 + 4)}
+            self._set_v0(sid)
+            return True
+        if number in (65, 66, 68, 69) or number == -0x43:
+            if number == -0x43 and not self._modelled_intc:
+                return False
+            sema = self._semas.get(a0)
+            if sema is None:
+                raise CpuTrap('SYSCALL at 0x%08x (v1 = %d, a0 = %d); '
+                              'modelled semaphore was not created' % (self.cur, number, a0))
+            if number == 65:
+                del self._semas[a0]
+                self._set_v0(a0)
+                return True
+            if number == 66 or number == -0x43:
+                sema['count'] = (sema['count'] + 1) & M32
+                self._set_v0(a0)
+                return True
+            if sema['count'] == 0:
+                if number == 69:
+                    self._set_v0(0xffffffff)
+                    return True
+                if (number == 68 and self._modelled_intc and not self._in_intc
+                        and self._deliver_intc_for_sema(a0) and sema['count'] != 0):
+                    pass
+                else:
+                    raise CpuTrap('SYSCALL at 0x%08x (v1 = 68, a0 = %d); '
+                                  'modelled WaitSema count is 0' % (self.cur, a0))
+            sema['count'] -= 1
+            self._set_v0(a0)
+            return True
+        installed = self._installed_syscalls.get(number if number >= 0 else number & M32)
+        if installed is None and number < 0:
+            installed = self._installed_syscalls.get(number & M32)
+        if installed:
+            nxt = self.mem.u32(self.pc)
+            delay = self.mem.u32((self.pc + 4) & M32)
+            if nxt != 0x03e00008 or delay != 0:
+                raise CpuTrap('SYSCALL at 0x%08x (v1 = %d); installed handler 0x%08x '
+                              'but the wrapper is not jr ra / nop' % (self.cur, number, installed))
+            self.jump(installed)
+            return True
+        return False
+
+    def _gpr_written(self, word, reg):
+        """True when this instruction writes reg.  Used only to resolve a signal id."""
+        if reg == 0:
+            return False
+        op = word >> 26
+        rt = (word >> 16) & 31
+        rd = (word >> 11) & 31
+        if op == 0:
+            funct = word & 63
+            # jr, syscall, break, sync, mthi, mtlo, and the hi/lo arithmetic.
+            if funct in (8, 12, 13, 15, 17, 19, 24, 25, 26, 27):
+                return False
+            return rd == reg
+        if op in (8, 9, 10, 11, 12, 13, 14, 15,
+                  0x1A, 0x1B, 0x1E, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
+                  0x26, 0x27, 0x37):
+            return rt == reg
+        if op == 3 or (op == 1 and ((word >> 16) & 31) in (0x10, 0x11, 0x12, 0x13)):
+            return reg == 31
+        if op == 0x10 and ((word >> 21) & 31) == 0:
+            return rt == reg
+        if op == 0x11 and ((word >> 21) & 31) == 0:
+            return rt == reg
+        return False
+
+    def _lui_base(self, pc, reg, start):
+        addr = (pc - 4) & M32
+        while addr >= start:
+            word = self.mem.u32(addr)
+            if (word >> 26) == 0x0F and ((word >> 16) & 31) == reg:
+                return (word & 0xFFFF) << 16
+            if self._gpr_written(word, reg):
+                return None
+            if addr < 4:
+                break
+            addr -= 4
+        return None
+
+    def _lw_a0_address(self, lw_pc, start):
+        word = self.mem.u32(lw_pc)
+        if (word >> 26) != 0x23 or ((word >> 16) & 31) != 4:
+            return None
+        base = (word >> 21) & 31
+        off = word & 0xFFFF
+        if off & 0x8000:
+            off -= 0x10000
+        hi = self._lui_base(lw_pc, base, start)
+        if hi is None:
+            return None
+        return (hi + off) & M32
+
+    def _handler_signal_words(self, fn):
+        """Addresses whose word is passed to SignalSema or iSignalSema.
+
+        Linear scan from the handler until jr ra.  A jal to 0x352a00 or
+        0x352a10 qualifies when its delay slot is lw $4, or the delay slot is
+        nop and the nearest earlier write of $4 is such an lw.  The address
+        must be formed by an earlier lui of the base.  Anything else is not
+        treated as a signal of a known id.
+        """
+        found = []
+        pc = fn & M32
+        start = pc
+        for _ in range(512):
+            if not self.mem.is_mapped(pc, 8):
+                break
+            word = self.mem.u32(pc)
+            if word == 0x03E00008:
+                break
+            if (word >> 26) == 3:
+                target = ((pc + 4) & 0xF0000000) | ((word & 0x03FFFFFF) << 2)
+                if target in (0x352a00, 0x352a10):
+                    delay = self.mem.u32((pc + 4) & M32)
+                    addr = None
+                    if (delay >> 26) == 0x23 and ((delay >> 16) & 31) == 4:
+                        addr = self._lw_a0_address((pc + 4) & M32, start)
+                    elif delay == 0:
+                        scan = (pc - 4) & M32
+                        while scan >= start:
+                            earlier = self.mem.u32(scan)
+                            if self._gpr_written(earlier, 4):
+                                addr = self._lw_a0_address(scan, start)
+                                break
+                            if scan < 4:
+                                break
+                            scan -= 4
+                    if addr is not None:
+                        found.append(addr)
+            pc = (pc + 4) & M32
+        return found
+
+    def _deliver_intc_for_sema(self, sid):
+        """Run enabled handlers that signal sid.  Return True if one ran."""
+        ran = False
+        for handler in list(self._intc):
+            if not handler['enabled'] or not handler['fn']:
+                continue
+            words = self._handler_signal_words(handler['fn'])
+            if not any(self.mem.u32(addr) == sid for addr in words):
+                continue
+            self.intc_deliveries.append((handler['cause'], handler['fn'], sid))
+            self._run_intc_handler(handler)
+            ran = True
+        return ran
+
+    def _run_intc_handler(self, handler):
+        saved_r = self.r[:]
+        saved_rh = self.rh[:]
+        saved_f = self.f[:]
+        saved_cop0 = self.cop0[:]
+        saved = (self.pc, self.npc, self.cur, self.hi, self.lo, self.hi1, self.lo1,
+                 self.sa, self.acc, self.fcr31, self._pending_call, self._fresh_call,
+                 self._call_site)
+        self._in_intc = True
+        completed = False
+        try:
+            cause = handler['cause'] & M32
+            self.r[4] = cause | HIGH32 if cause & SIGN32 else cause
+            self.r[31] = self.RETURN_ADDR
+            self.jump(handler['fn'])
+            reason = self.run(max_steps=2000000)
+            completed = reason == 'return'
+            if not completed:
+                raise CpuTrap('modelled INTC handler 0x%08x did not return (%s) at 0x%08x'
+                              % (handler['fn'], reason, self.pc))
+        finally:
+            self._in_intc = False
+            if completed:
+                self.r[:] = saved_r
+                self.rh[:] = saved_rh
+                self.f[:] = saved_f
+                self.cop0[:] = saved_cop0
+                (self.pc, self.npc, self.cur, self.hi, self.lo, self.hi1, self.lo1,
+                 self.sa, self.acc, self.fcr31, self._pending_call, self._fresh_call,
+                 self._call_site) = saved
+
+    def terminate_thread(self):
+        ra = self.r[31] & M32
+        if ra not in self._TERMINATE_IGNORED_RA:
+            raise CpuTrap('SYSCALL at 0x%08x (v1 = 37, ra = 0x%08x); '
+                          'caller reads v0 or is outside the observed TerminateThread contract'
+                          % (self.cur, ra))
+        self.r[2] = 0
+
+    def deci2_kputs(self):
+        number = s64(self.r[3])
+        if number != 124:
+            raise CpuTrap('SYSCALL at 0x%08x (v1 = %d); no kernel is modelled'
+                          % (self.cur, number))
+        function = s32(self.r[4])
+        if function != 0x10:
+            raise CpuTrap('SYSCALL at 0x%08x (v1 = 124, a0 = %d); '
+                          'Deci2 function is outside the observed function-0x10 contract'
+                          % (self.cur, function))
+        self.r[2] = 0
 
     def hook(self, addr, function):
         """Call function(emu) whenever execution reaches addr.  The instruction at addr
@@ -807,6 +1275,13 @@ class EE:
         return False
 
     # ---- memory access from instructions -----------------------------------------------
+    def _overlaps_watch(self, addr, size):
+        end = addr + size
+        for watch, width in self.write_watch:
+            if addr < watch + width and watch < end:
+                return True
+        return False
+
     def _load(self, addr, size):
         if addr & (size - 1):
             raise CpuTrap('unaligned %d-byte load from 0x%08x at pc 0x%08x' % (size, addr, self.cur))
@@ -820,7 +1295,8 @@ class EE:
             raise CpuTrap('unaligned %d-byte store to 0x%08x at pc 0x%08x' % (size, addr, self.cur))
         self.mem.store(addr, size, value)
         if self.record_writes and not self.stack_lo <= addr < self.stack_hi:
-            self.writes.append((self.cur, addr, size, value & ((1 << (size * 8)) - 1)))
+            if self.write_watch is None or self._overlaps_watch(addr, size):
+                self.writes.append((self.cur, addr, size, value & ((1 << (size * 8)) - 1)))
 
     def _unimplemented(self, word, what=''):
         raise UnimplementedInstruction(self.cur, word, what)
