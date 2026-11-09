@@ -65,7 +65,7 @@ callers named on those methods.  install_modelled_sif_dma models only
 sceSifSetDma (119) and sceSifDmaStat (118) inside the SPU helper 0x35ed90, the
 one caller whose use of both results was read; it records each descriptor and
 moves no bytes.  install_vu1_data_memory keeps the 16 KB VU1 data window as
-storage and records each store; no microprogram runs.
+storage and records each store and each load; no microprogram runs.
 install_modelled_dma_tag_address adds offset 0x30 of the two modelled channels
 to install_modelled_dma_idle.  install_modelled_timer0_count makes the timer 0
 count word read a caller-chosen value.  install_modelled_gs_privileged accepts 8-byte
@@ -653,8 +653,12 @@ class EE:
         self._timer0 = None
         self.timer0_writes = []         # with install_modelled_timer0_count: (pc, value)
         self.vu1_writes = []            # with install_vu1_data_memory: (pc, addr, size, value)
+        self.vu1_reads = []             # with install_vu1_data_memory: (pc, addr, size, value)
         self.sif_dma = []               # with install_modelled_sif_dma: recorded descriptors
-        self._next_dma_id = 1
+        # Its own name: t3/research-death-reload 98ea7a6 (install_modelled_sif, syscall
+        # 119 at return address 0x355acc) counts its ids in _next_dma_id and resets it
+        # to 1 on install.  A shared counter would break both models' ids-from-1.
+        self._next_sif_dma_id = 1
         self.div_zero = 'stop'          # or 'r5900': continue with the reported HI/LO values
         self.patches = {}               # address -> original word
         self.stack_lo, self.stack_hi = self.STACK_LO, self.STACK_HI
@@ -1094,7 +1098,11 @@ class EE:
 
         Model: the 16 KB at 0x1100c000 are created zeroed and kept.  A load
         returns the last store.  That zero is the absence of a store, not a
-        measured VU1 value.  Each store is recorded in vu1_writes.  No VU1
+        measured VU1 value.  Each store is recorded in vu1_writes and each
+        load in vu1_reads, so a caller can assert that no load happened: the
+        static scan above covers lui-formed addresses only, not pointers read
+        from data or bases computed at run time, and VIF unpacks, which also
+        write this memory on hardware, are not modelled.  No VU1
         microprogram runs, no VIF code is read, and nothing else reads these
         bytes, so this does not claim any drawing.  VU1 micro memory
         0x11008000-0x1100bfff and VU0 memory stay unmapped.  Composes with
@@ -1163,13 +1171,13 @@ class EE:
                 raise CpuTrap('SYSCALL at 0x%08x (v1 = 119, a0 = 0x%x, a1 = %d, ra = 0x%08x); '
                               'outside the observed 0x35ed90 sceSifSetDma contract'
                               % (self.cur, a0, a1, ra))
-            dma_id = self._next_dma_id
-            self._next_dma_id = dma_id + 1
+            dma_id = self._next_sif_dma_id
+            self._next_sif_dma_id = dma_id + 1
             words = tuple(self.mem.u32(a0 + 4 * i) for i in range(4))
             self.sif_dma.append((dma_id,) + words)
             self._set_v0(dma_id)
             return
-        if ra != self._SIF_DMA_STAT_RA or not 0 < a0 < self._next_dma_id:
+        if ra != self._SIF_DMA_STAT_RA or not 0 < a0 < self._next_sif_dma_id:
             raise CpuTrap('SYSCALL at 0x%08x (v1 = 118, a0 = 0x%x, ra = 0x%08x); '
                           'outside the observed 0x35ed90 sceSifDmaStat contract'
                           % (self.cur, a0, ra))
@@ -1730,6 +1738,8 @@ class EE:
             else:
                 self._ensure_main_ram(addr, size)
                 value = self.mem.load(addr, size)
+        if self._vu1_data and self.VU1_DATA_LO <= addr < self.VU1_DATA_HI:
+            self.vu1_reads.append((self.cur, addr, size, value))
         if self.reads is not None:
             self.reads.append((self.cur, addr, size, value))
         return value

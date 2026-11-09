@@ -1011,6 +1011,24 @@ class ControlTests(unittest.TestCase):
             self.assertEqual(refused.exception.addr, outside)
             self.assertEqual(other.vu1_writes, [])
 
+    def test_vu1_data_memory_records_loads(self):
+        # sw v0, 0(a0); lw v0, 0(a0): the readback is recorded in vu1_reads.
+        store_load = [I(0x2B, V0, A0, 0), I(0x23, V0, A0, 0)]
+        kept = machine(store_load, {A0: 0x1100FFCC, V0: 0x4B000080}, run=False)
+        kept.install_vu1_data_memory()
+        self.assertEqual(kept.vu1_reads, [])
+        self.assertEqual(kept.call(BASE) & 0xFFFFFFFF, 0x4B000080)
+        self.assertEqual(kept.vu1_reads, [(BASE + 4, 0x1100FFCC, 4, 0x4B000080)])
+        # A store alone records no load; outside the window nothing is recorded.
+        store = machine([I(0x2B, V0, A0, 0)], {A0: 0x1100C000, V0: 7}, run=False)
+        store.install_vu1_data_memory()
+        store.call(BASE)
+        self.assertEqual(store.vu1_reads, [])
+        plain = machine([I(0x23, V0, A0, 0)], {A0: 0x1100FFCC}, run=False)
+        with self.assertRaises(MemoryFault):
+            plain.call(BASE)
+        self.assertEqual(plain.vu1_reads, [])
+
     def test_main_ram_below_the_reserved_top_is_opt_in(self):
         store = [I(0x28, V0, A0, 0)]
         bare = machine(store, {A0: 0x0090B000, V0: 0xA5}, run=False)
