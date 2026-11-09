@@ -106,57 +106,52 @@ revisit, provided the saved entry was retained and the class is not filtered.
 | Case | Original treatment and evidence |
 |---|---|
 | Opened chests | **Observed** (`Chest_saveState` 0x292284): exactly 12 bytes: `u32` model hide mask from +0x54, `u16` remaining gold from +0x4c, bytes +0x58 (bomb choice) and +0x59 (class variant), then `u32` opened from +0x84. `Chest_ctor` 0x2920c0–0x292254 seeds the gold/bomb/mask fields; `Chest_interact` 0x292a60–0x292aac refuses an already opened chest and sets +0x84 on opening. The item/potion descriptor properties are not serialized in these 12 bytes; spawned loot is separate world objects if eligible. **Executed:** 16 synthetic save/load cases per seed establish exact bytes, restored fields, and calls to 0x170838/0x170bc8 when opened and 0x14f5f0 in both opened states (`Chest_loadState` 0x2922cc). **Executed elsewhere (2026-10-27):** `t3/research-death-reload` `24bd3ba` `docs/death-reload-objects.md` line 24 (OBJ2-3) runs the original constructor, cache setter 0x14f5f0 and animation calls without stubs for gold 0, 1, 32767, 32768 and 65535: an opened chest with signed gold ≤ 0 clears object flag 0x100000, positive gold keeps it, and the clip ends at its last frame with flags 0x204. **Observed** (0x29236c–0x292380): the class-definition argument is the word at 0x501698 + 4 × variant byte. `AutoChest_saveState` 0x23b06c emits a separate 12-byte hide mask, gold, two bytes and open word at +0xc8/+0xdc/+0xe4/+0xe5/+0xd8. `AutoChest_loadState` 0x23b0b4 is executed in the same OBJ2-3 row; it stores the mask with a 64-bit `sd`, so a mask with bit 31 set sign-extends into +0xcc. Trap-fuse restoration remains **Unknown**. A deleted chest has no eligible live record to save. |
-| Killed enemies | **Observed** (`Creature_saveState` 0x116780–0x11691c): `u32` variant (+0xe8), `f32` current/max HP (+0x228/+0x22c), then, only when HP ≤ 0, `s32` interned death-animation string handle or −1; next is a `u32` bit field mapping five bits of +0xa8 to bits 0..4, +0x231 bit 0 to bit 5, and nonzero +0x312 to bit 6. Bit 6 appends one `s32` from +0x312. The +0xa8 masks are 0x1000000, 0x100000000, 0x400000, 0x800000 and 0x2000000000000. **Executed:** 24 alive/dead writer cases per seed cover these masks and the optional word; 12/16 bytes with no optional word. **Executed (round 3, this branch):** `Creature_loadState` 0x116920; see "Creature and jump-gate load effects" below. Corpse flag 0x2000 can be thinned at 0x14e140; transient 0x4000 objects are omitted. A dead or removed enemy need not reappear from `objects.ob`; corpse presentation and timers are not a proven full live-tick snapshot. |
+| Killed enemies | **Observed** (`Creature_saveState` 0x116780–0x11691c): `u32` variant (+0xe8), `f32` current/max HP (+0x228/+0x22c), then, only when HP ≤ 0, `s32` interned death-animation string handle or −1; next is a `u32` bit field mapping five bits of +0xa8 to bits 0..4, +0x231 bit 0 to bit 5, and nonzero +0x312 to bit 6. Bit 6 appends one `s32` from +0x312. The +0xa8 masks are 0x1000000, 0x100000000, 0x400000, 0x800000 and 0x2000000000000. **Executed:** 24 alive/dead writer cases per seed cover these masks and the optional word; 12/16 bytes with no optional word. **Executed elsewhere, without stubs:** `t3/research-death-reload` `16f86da` `docs/death-reload-creature.md` (180 cases per seed). A seed-varied cross-check is in "Creature and jump-gate load effects" below. Corpse flag 0x2000 can be thinned at 0x14e140; transient 0x4000 objects are omitted. A dead or removed enemy need not reappear from `objects.ob`; corpse presentation and timers are not a proven full live-tick snapshot. |
 | Triggered scripts | **Observed** (`Trigger_saveState` 0x1ecf18): five bytes, `u32` at +0x64 then byte at +0x60. **Executed:** exact writer bytes on both seeds. **Executed elsewhere:** `death-reload-objects.md` line 23 (OBJ2-2, `24bd3ba`): `Trigger_loadState` 0x1ecef4 consumes five bytes, restores +0x64/+0x60, keeps the constructor's grid and bucket membership, and neither runs the trigger's script nor moves it to the active list. Quest variables are in the main save, via `save_build` 0x221cf0 and `save_load` 0x221d60. A deleted one-use object is represented by absence. `script_setCurrent` 0x1ed650 loads a new machine and `preStart`/`start` run again at 0x217acc/0x217bac. The instruction pointer, call stack, deferred queue and active dialog are not a level-state section. **Inferred:** scripts re-derive effects from variables and object state; an in-flight script cannot resume at its old instruction. |
-| Doors and gates | **Observed / Executed** writer bytes: `DoorSwing_saveState` 0x28ae3c emits 8 bytes (`u16` angle +0x50, sign-extended `s16` direction +0x58, `f32` speed +0x54); `DoorSecret_saveState` 0x28b1a0 emits one open byte +0x58; `RollDoor_saveState` 0x28dee8 emits 16 bytes (`s32` open +0x5a, `s32` piece index +0x4c, `f32` speed +0x50, `s32` counter +0x54); `JumpGate_saveState` 0x27d974 emits two bytes +0x4d/+0x4e. **Executed elsewhere:** `death-reload-objects.md` line 26 (OBJ2-5, `24bd3ba`) runs the three door loaders with original collision, height, pose and run-list services: open swing and rolling doors join the active list, a secret door's open surface drops by 300 units (−1184 quarter units from 16), a rolling door clears terrain bit 2 and restores the piece height. Line 27 (OBJ2-6) does the same for the non-portal gate 0x23ceb8. Door derived constructors were supplied there, not run. **Executed (round 3, this branch):** `JumpGate_loadState` 0x27d998; see below. Lights remain **Unknown**. The destination list is separately in the save header (`jumpgate_saveDestinations` 0x27dcf4 / load 0x27dd30). Moving-piece geometry itself comes from `.world`. |
+| Doors and gates | **Observed / Executed** writer bytes: `DoorSwing_saveState` 0x28ae3c emits 8 bytes (`u16` angle +0x50, sign-extended `s16` direction +0x58, `f32` speed +0x54); `DoorSecret_saveState` 0x28b1a0 emits one open byte +0x58; `RollDoor_saveState` 0x28dee8 emits 16 bytes (`s32` open +0x5a, `s32` piece index +0x4c, `f32` speed +0x50, `s32` counter +0x54); `JumpGate_saveState` 0x27d974 emits two bytes +0x4d/+0x4e. **Executed elsewhere:** `death-reload-objects.md` line 26 (OBJ2-5, `24bd3ba`) runs the three door loaders with original collision, height, pose and run-list services: open swing and rolling doors join the active list, a secret door's open surface drops by 300 units (−1184 quarter units from 16), a rolling door clears terrain bit 2 and restores the piece height. Line 27 (OBJ2-6) does the same for the non-portal gate 0x23ceb8. Door derived constructors were supplied there, not run. **Executed (round 3, this branch):** `JumpGate_loadState` 0x27d998 links its light into `g_lightGrid`; see below. Other classes' light restoration remains **Unknown**. The destination list is separately in the save header (`jumpgate_saveDestinations` 0x27dcf4 / load 0x27dd30). Moving-piece geometry itself comes from `.world`. |
 | Dropped items | **Observed** (`ItemProp_saveState` 0x1596a4): a 0x48-byte item record from +0x148, with its first word temporarily converted from a definition pointer to its table index by `item_encodeDefinitionIndex` 0x107ea4, followed by the variable `Prop_saveState` 0x158d8c suffix. Save decodes the in-memory item pointer again before returning. **Executed:** 16 synthetic save/load cases per seed assert the prefix, original pointer restoration after save, decoded 0x48-byte item in the loaded object, Prop-load call address and transform-call address in `ItemProp_loadState` 0x159758. The input item bytes are random, so both state-bit branches are not covered. **Executed elsewhere:** `death-reload-objects.md` line 25 (OBJ2-4, `24bd3ba`) runs the original ItemProp alternate constructor, `Prop_loadState` 0x158f04, string-table resolution and 0x163b30 for both bit-39 branches and masks 8/10. The final translation comes from the base pose, not the suffix's coordinates. The primary factory route stops at syscall 124 there, so it remains **Unknown**. The Prop suffix has three interned string handles, a compact one-byte power-of-two mask or a 13-byte nonpower mask (`s32` −1, `u64` mask, zero byte), three signed quaternion bytes, a signed quaternion `s16` scalar and three signed coordinate `s16`s (0x158d8c–0x158ef0); 24/36 bytes in the two executed writer mask cases. The strings and quaternion depend on the surrounding world string table and live matrix. Picked-up items delete the world object (`itemprop_tryPickup` 0x154dbc). **Unknown:** exact retention of every temporary drop under thinning/flag policies. |
 
 ## Creature and jump-gate load effects (round 3, 2026-11-09)
 
-**Executed** in `tools/difftest_save_world_travel.py`, which runs the original
-bodies on synthetic objects and replaces only the callees listed in its
-`STUBS` table with recording stubs. Those stubs are printed on every run.
+**Primary evidence, not redone:** `t3/research-death-reload` `16f86da`
+`docs/death-reload-creature.md` runs `Creature_loadState` 0x116920 with no
+stubs, 180 cases per seed. Its R2-C1 to R2-C6 sections cover these effects:
+the variant dispatch and model mask, HP as saved fraction × max HP, and the
+dead branch (state 20, flags 0x2009, run-list removal through 0x14f290).
+They also cover the clip search with original `loadStr_ptr` 0x14f688 and
+`strcmp` 0x3b8534, the reset/push/end animation calls, the vtable +0xe0
+death handler 0x10beb8 (it clears 0x08c00000 from +0xa8 before the saved
+masks are ORed back), and the typeid branch that sets +0x28 to 70. The
+optional +0x312 word's three eligibility conditions are covered too. Round 1
+of that branch (`docs/death-reload.md` lines 120–140) also covers
+`JumpGate_loadState` 0x27d998 with recorded services.
 
-`Creature_loadState` 0x116920, 48 cases per seed, alive and dead:
+**Executed here, additive:** `tools/difftest_save_world_travel.py`. It
+replaces only the callees in its printed `STUBS` table with recording stubs.
 
-- It stores the variant word at +0xe8, then calls the virtual entry at
-  vtable +0xe8 with the object. HP at +0x228 becomes max HP at +0x22c times
-  the saved fraction (`mul.s` 0x116964). The saved value is a fraction, not
-  absolute HP.
-- HP ≤ 0 (`c.ole.s` 0x11698c) takes the corpse branch. It stores 20 at
-  +0x232, ORs 0x2009 into the object flags, and calls `obj_stopRunning`
-  0x14f290. The saved handle goes through the original `loadStr_ptr` 0x14f688,
-  which reads the record string table at 0x5f8704; −1 gives no name. The
-  original `strcmp` 0x3b8534 then searches the clip table at +0x24, starting
-  at entry 1. On a match it runs `anim_clear`, `anim_push(+0x114, clip, 4)`
-  and `anim_jumpTopToEnd(+0x114)`, sets bit 0x80 at +0x11a, and calls the
-  virtual entry at vtable +0xe0 with argument 1. A missing name or handle −1
-  skips the clip and that call.
-- Still on the corpse branch, the original typeinfo getters
-  `Orc_typeinfo` 0x3c4658 or `Creature_typeinfo` 0x3c2608 run, then
-  `rtti_typeInfoEquals` 0x3b1250. Only an Orc gets byte 0x46 at +0x28.
-- The packed bits are ORed into the 64-bit word at +0xa8. Loading never
-  clears a bit that the constructor set. Bit 5 replaces bit 0 of +0x231.
-- Bit 6 always consumes one more word. It takes effect only when +0x312 is
-  not −1, object flag 0x20 is set and object flag 0x40 is clear. Then it
-  clears the low byte of +0x310, stores the word's low half at +0x312, calls
-  `handle_clear` 0x1a1698 on +0x234, and zeroes +0x234. Otherwise the word is
-  skipped.
-- It returns 12 (alive) or 16 (dead) bytes, plus 4 when bit 6 is set. This
-  matches the writer in the table above.
-
-`JumpGate_loadState` 0x27d998, 12 cases per seed: it restores bytes +0x4d and
-+0x4e and returns 2. When +0x4e is nonzero, the original grid relink 0x148bc8
-unlinks the node at +0x100 and pushes it onto the head of a 90 × 90 cell list
-at 0x5d34d8. The cell index is (x + 0x2d00) >> 8 and (y + 0x2d00) >> 8, using
-the floats at +0x130/+0x134; a position outside the grid goes to the list at
-0x5db368. Then `res_find(+0x90, "jumpgate_idle.anm")` and
-`anim_push(+0xd8, clip, 3)` are called. In both cases
-`obj_runEveryFrame` 0x14f248 is called. **Unknown:** what the virtual hooks,
-`obj_stopRunning`, `handle_clear` and the animation calls do to real objects
-here. They are recording stubs in this probe; the death-reload branch runs
-the animation and run-list services for other classes only. Destination
-lists live in the save header (`jumpgate_saveDestinations` 0x27dcf4).
+- Creature, 48 seed-varied cases per seed. Random initial +0xa8, +0x231,
+  object flags, +0x310 dword and saved bits; HP fractions from 1 to −1;
+  death clip found, missing, or handle −1. These agree with the death-reload
+  result, and add three details. The return size is 12 or 16 bytes, plus 4
+  for bit 6, matching the writer above. The bytes at +0x311 and +0x314–0x317
+  survive the 64-bit low-byte clear at 0x116b88. And the original
+  `Orc_typeinfo` 0x3c4658 / `Creature_typeinfo` 0x3c2608 getters run from
+  the executable's zeroed descriptors, so the lazy descriptor construction
+  that that note left outside its fixture is executed. Only the Orc
+  descriptor sets +0x28 to 0x46.
+- JumpGate, 12 cases per seed. It restores +0x4d and +0x4e and returns 2.
+  When +0x4e is nonzero, the original `light_link2` 0x148bc8 runs
+  (`symbols/objects.tsv`; death-reload round 1 recorded it as the "light
+  service"). It unlinks the light node at +0x100 from a prior list and
+  pushes it onto `g_lightGrid` 0x5d34d8. The cell is (x + 0x2d00) >> 8,
+  (y + 0x2d00) >> 8 on the 90 × 90 grid, from the node's floats at
+  +0x130/+0x134; outside the grid it goes to `g_lightOverflowList` 0x5db368.
+  Then come `res_find(+0x90, "jumpgate_idle.anm")` and
+  `anim_push(+0xd8, clip, 3)`. Both states call `obj_runEveryFrame` 0x14f248.
+- **Unknown here:** the effects of the stubbed virtual hooks, run-list and
+  animation services. The death-reload note executes those for Creature,
+  but not for JumpGate. The jump-gate destination list is in the save header
+  (`jumpgate_saveDestinations` 0x27dcf4).
 
 ## What a level remembers across travel (round 3)
 
@@ -284,11 +279,12 @@ until the listed **Unknown** is probed.
    `save_game` steps above.
 8. Class state, verified load effects: Chest, AutoChest (64-bit mask
    store), Trigger, ItemProp, Prop and the three doors (death-reload OBJ2-2
-   to OBJ2-5), gate (OBJ2-6), Creature HP fraction, corpse flags, clip
-   search, flag OR and the +0x312 rule, and JumpGate bytes and grid relink
-   (this section).
-9. *Refuse*: Creature and JumpGate virtual hooks, real animation and
-   run-list effects (stubbed here); trap fuses; lights; ItemProp primary
+   to OBJ2-5), gate (OBJ2-6), Creature (death-reload-creature.md R2-C1 to
+   R2-C6), and JumpGate bytes with `light_link2` (the Creature and
+   jump-gate section).
+9. *Refuse*: JumpGate animation and run-list effects (stubbed here), and
+   Creature subclass overrides and model resources (death-reload Unknowns);
+   trap fuses; lights of other classes; ItemProp primary
    factory; thinning under budget overflow (lines 57–65); and death reload
    to a playable level.
 
@@ -319,7 +315,7 @@ display, save and revisit every shipped level with full object fidelity.
 
 1. **Load the actual level data first.** Decode `.GOB`/`.lmp` and `.world`, retain every terrain cell, height-field element, chunk, piece and texture reference, then remove the one-plain-element presentation refusal through a measured multi-element renderer. Keep simulation terrain and rendered surfaces separate.
 2. **Define the native world-state envelope.** Key by qualified level name and version the native schema. Preserve current player/quest/position fields; add per-level object records, decals and explored map. Choose an explicit capacity and failure policy. The original's ten readable slots, write-only overflow gap, retained failed-fit entry and 0x4bc78-byte limit cannot serve as an all-level guarantee.
-3. **Implement the object registry and save policy.** Match stable class/property/pose identity, transient and filtered classes, deletion, save ordering and overflow behavior. Port the verified serialized layouts for Chest, ItemProp plus Prop suffix, Creature, Trigger and door/gate writers. Keep the original string table and definition-index semantics explicit in the native schema. Port the load effects verified in `death-reload-objects.md` OBJ2-2 to OBJ2-6 and the Creature/JumpGate section above. Refuse reconstruction that depends on the stubbed virtual hooks, trap fuses, lights or the ItemProp primary factory rather than fabricating it.
+3. **Implement the object registry and save policy.** Match stable class/property/pose identity, transient and filtered classes, deletion, save ordering and overflow behavior. Port the verified serialized layouts for Chest, ItemProp plus Prop suffix, Creature, Trigger and door/gate writers. Keep the original string table and definition-index semantics explicit in the native schema. Port the load effects verified in `death-reload-objects.md` OBJ2-2 to OBJ2-6, `death-reload-creature.md`, and the JumpGate light link above. Refuse reconstruction that depends on JumpGate animation, Creature subclass overrides, trap fuses, other classes' lights or the ItemProp primary factory rather than fabricating it.
 4. **Restore in original order.** Restore saved player spawn poses from the main save, load the actual level and a fresh script machine, consume and clear the saved spawn rank before `preStart`, then unpack the explored map, construct saved objects and their state, load decals, construct filtered `objects.ob` records, and run `start`. Rebuild moving-piece collision and doors only after their load effects are verified against the original with `.world` present.
 4a. **Apply the travel rules** in "What a level remembers across travel": store on departure with the four skips, keep only slot 0 on an act change, and keep a card-loaded directory as loaded.
 5. **Port persistent script effects.** Quest variables, trigger delay/inside flag, one-use deletion, jump-gate list and class-specific counters belong to their documented stores. Treat the interpreter PC, stack, pending dialog and deferred work as fresh on reload unless a separately evidenced native feature requires a different policy.
@@ -373,9 +369,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_save_world_travel.py /path/to/S
 PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_save_world_travel.py /path/to/SLUS_209.73 --seed 7
 ```
 
-Each seed covers 48 Creature load cases (alive, dead, death clip found,
-missing and −1, Orc and non-Orc, +0x312 word applied and skipped), 12
-JumpGate loads, 20 `save_game` cases (silent build, message and build,
+Each seed covers 48 Creature cross-check cases (alive, dead, death clip
+found, missing and −1, Orc and non-Orc, +0x312 word applied and skipped),
+12 JumpGate loads with `light_link2`, 20 `save_game` cases (silent build, message and build,
 message only, nothing) and a 21-step travel sequence. Each run ends by
 printing its stub list. Two deliberate reference mutations (a swapped
 Creature flag mask, and swapped `save_game` message choice) each failed the
