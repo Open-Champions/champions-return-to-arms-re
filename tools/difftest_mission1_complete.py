@@ -167,6 +167,8 @@ class Host:
         self.counts = [0, 0, 0, 0]
         self.removes = []
         self.stubs = []
+        self.entered = []
+        self.scripts = []
         self.hp = 0
         self.base = self.ee.alloc(0x80000, align=16)
         self.names = self.ee.alloc(0x1000, align=16)
@@ -188,6 +190,15 @@ class Host:
         for name in STUB_NAMES:
             handler = handlers[name]
             ee.stub(handler, function=self._native_stub(name), name=name)
+        # Oracle for "which natives ran": every other handler keeps its original body
+        # and only gets a recording hook at its first instruction.
+        by_addr = {}
+        for name, handler in handlers.items():
+            if name not in STUB_NAMES:
+                by_addr.setdefault(handler, []).append(name)
+        for handler, names in by_addr.items():
+            ee.hook(handler, self._native_seen("|".join(sorted(names))))
+        ee.hook(RUN_BY_NAME, self._script_seen)
         ee.stub(COUNT_ITEM, function=self._count_item, name="inventory_countItemByName")
         ee.stub(FIND_ITEM, function=self._find_item, name="inventory_findItemBySubstring")
         ee.stub(REMOVE_ITEM, function=self._remove_item, name="inventory_removeItem")
@@ -195,10 +206,28 @@ class Host:
     def _native_stub(self, name):
         def run(_ee):
             self.stubs.append(name)
+            self.entered.append(name)
             if name == "getHitPoints":
                 return self.hp
             return 0
         return run
+
+    def _native_seen(self, name):
+        def run(_ee):
+            self.entered.append(name)
+        return run
+
+    def _script_seen(self, ee):
+        self.scripts.append(ee.mem.cstr(ee.r[4] & 0xFFFFFFFF, 80))
+
+    def mark(self):
+        """Positions in the native and script-entry logs, for `since`."""
+        return len(self.entered), len(self.scripts), len(self.stubs)
+
+    def since(self, mark):
+        """Natives entered (original and stubbed, in order), script entries started
+        through script_runByName, and stubs entered after `mark`."""
+        return (self.entered[mark[0]:], self.scripts[mark[1]:], self.stubs[mark[2]:])
 
     def _count_item(self, ee):
         slot = ee.r[5] & 0xFFFFFFFF
@@ -249,6 +278,8 @@ class Host:
         self.counts[:] = (0, 0, 0, 0)
         self.removes.clear()
         self.stubs.clear()
+        self.entered.clear()
+        self.scripts.clear()
         self.hp = 0
         self.set_mission(0, 1, 0, 1)
 
@@ -469,6 +500,79 @@ def entry_natives(image, entry):
     raise AssertionError(entry)
 
 
+def entry_span(image, entry):
+    rows = public_rows(image)
+    for index, (val, name) in enumerate(rows):
+        if name == entry:
+            return val, (rows[index + 1][0] if index + 1 < len(rows) else 1 << 30)
+    raise AssertionError(entry)
+
+
+def entry_internal_calls(image, entry):
+    """Script-to-script `call` ops (0x31) inside one public entry."""
+    start, end = entry_span(image, entry)
+    parsed = scr.parse(image)
+    cs, ce = parsed["code"]
+    words = struct.unpack_from("<%dI" % ((ce - cs) // 4), image, cs)
+    found, i = [], 0
+    while i < len(words):
+        off, op = i * 4, words[i]
+        if op == 0x31 and start <= off < end:
+            found.append((off, words[i + 1]))
+        if op == 0x7D:
+            i += 3
+        elif op == 0x7B:
+            i += 2
+        elif op in scr.OPS:
+            i += 1 + scr.OPS[op][1]
+        elif op in scr.NO_OPERAND:
+            i += 1
+        else:
+            i += 2
+    return found
+
+
+def entry_string_args(image, entry):
+    """Constant string arguments pushed to the natives of one entry, plus the
+    (offset, index) pairs whose push is not a constant cell."""
+    start, end = entry_span(image, entry)
+    parsed = scr.parse(image)
+    cs = parsed["code"][0]
+    texts, unresolved = [], []
+    for off, _native in walk_sysreqs(image):
+        if not start <= off < end:
+            continue
+        argc = struct.unpack_from("<I", image, cs + off - 4)[0] // 4
+        for index in range(argc):
+            try:
+                _n, arg = push_arg(image, off, index)
+            except AssertionError:
+                unresolved.append((off, index))
+                continue
+            if isinstance(arg, str):
+                texts.append(arg)
+    return texts, unresolved
+
+
+KNIGHT_VARS = ("knight1", "knight2", "knight3", "knight4")
+KNIGHT_ENTRIES = (
+    ("setv4d6b", 0xB3C, 0xB68, "knight1"),
+    ("setv772a", 0xBB4, 0xBE0, "knight2"),
+    ("setv5138", 0xC2C, 0xC58, "knight3"),
+    ("setvcccf", 0xCA4, 0xCD0, "knight4"),
+)
+RALLOS_REMOVE = (
+    (0x72C, "killMonster", "rallos"),
+    (0x758, "hideMonster", "rallos"),
+    (0x784, "deleteMonster", "rallos"),
+    (0x7B0, "hideMonster", "rallos2"),
+    (0x7DC, "deleteMonster", "rallos2"),
+)
+SHARD_GRANT_NATIVES = [
+    "gamePaused", "playerHasItem", "playGotItemSound", "addHelpMessage", "setv",
+    "grantMission", "setv", "postAction"]
+
+
 def s32(value):
     value &= 0xFFFFFFFF
     return value - 0x100000000 if value & 0x80000000 else value
@@ -548,6 +652,43 @@ def check_static(images, objects):
     assert all(row.get("name") == ["knight"] for row in by_class["UndeadKnight1"])
     assert by_class["CazicAvatar"][0].get("name") == ["avatar"]
     checks += 6
+    are = images["drunare"]
+    assert entry_natives(are, "callScria381") == ["callScript"]
+    assert push_arg(are, 0xD14, 0) == ("callScript", "bossDefeatedPause")
+    assert entry_natives(are, "bossDefeatedPause") == ["addDeferedCall"]
+    assert push_arg(are, 0x6EC, 0) == ("addDeferedCall", "bossDefeatedDelay")
+    checks += 4
+    for entry, set_at, call_at, var in KNIGHT_ENTRIES:
+        assert entry_natives(are, entry) == ["setv", "callScript"], entry
+        assert push_arg(are, set_at, 0) == ("setv", var) and push_arg(are, set_at, 1) == ("setv", 1)
+        assert push_arg(are, call_at, 0) == ("callScript", "knightDefeatedPause")
+        checks += 3
+    assert entry_natives(are, "knightDefeatedPause") == ["getv"] * 4 + ["addDeferedCall"]
+    for off, var in zip((0x3F0, 0x418, 0x440, 0x468), KNIGHT_VARS):
+        assert push_arg(are, off, 0) == ("getv", var)
+    assert push_arg(are, 0x4CC, 0) == ("addDeferedCall", "knightDefeatedDelay")
+    checks += 6
+    for level, entry in (("drunare", "callScria381"), ("drunare", "bossDefeatedPause"),
+                         ("drunarm", "removeRallos")) + tuple(
+                             ("drunare", row[0]) for row in KNIGHT_ENTRIES):
+        assert entry_internal_calls(images[level], entry) == [], (level, entry)
+        checks += 1
+    unresolved_expected = {
+        "levelChange": [], "shardCheckLoop": [(0xA54, 1), (0xA9C, 1)], "exitzone": []}
+    for level, entry in COMPLETION:
+        natives = entry_natives(images[level], entry)
+        assert "getv" not in natives and "callScript" not in natives, (level, entry)
+        assert entry_internal_calls(images[level], entry) == [], (level, entry)
+        texts, unresolved = entry_string_args(images[level], entry)
+        assert not set(texts) & set(KNIGHT_VARS), (level, entry)
+        assert unresolved == unresolved_expected[entry], (level, entry, unresolved)
+        checks += 4
+    arm = images["drunarm"]
+    assert entry_natives(arm, "removeRallos") == [row[1] for row in RALLOS_REMOVE]
+    for off, native, target in RALLOS_REMOVE:
+        assert push_arg(arm, off, 0) == (native, target)
+        checks += 1
+    checks += 1
     return checks
 
 
@@ -558,7 +699,12 @@ def run_evil(host, image):
     host.set_global(0, MARK_GLOBAL)
     _native, title = push_arg(image, 0xA4C, 0)
     host.plant_quest(title)
+    mark = host.mark()
     assert host.run("callScria381") == 0
+    # Recorded, not inferred: the only natives entered are callScript and the nested
+    # entry's addDeferedCall, and the only script entry started is bossDefeatedPause.
+    assert host.since(mark) == (
+        ["callScript", "addDeferedCall"], ["callScria381", "bossDefeatedPause"], [])
     assert host.global_cell(0) == 0
     assert host.queued_names() == ["bossDefeatedDelay"]
     assert host.mission(0, 1) == 1
@@ -661,7 +807,12 @@ def run_good(host, image):
     assert host.global_cell(0) == MARK_GLOBAL + 2
     assert host.queued_names() == [], host.queued_names()
     assert host.front_names() == ["shardCheckLoop"], host.front_names()
+    mark = host.mark()
     host.deferred()
+    entered, scripts, stubs = host.since(mark)
+    # Count 1: onePlayerHasItem is asked once per player slot and nothing is removed.
+    assert entered == SHARD_GRANT_NATIVES + ["onePlayerHasItem"] * 4, entered
+    assert scripts == ["shardCheckLoop"] and stubs == ["playGotItemSound", "addHelpMessage"], stubs
     assert [host.mission(slot, 1) for slot in range(4)] == [3, 2, 2, 2]
     assert host.global_cell(8) == 0
     assert host.global_cell(0xC) == 0
@@ -677,7 +828,10 @@ def run_good(host, image):
     assert host.post_name() == "endmission"
     assert host.pending() == ""
     assert host.removes == []
+    mark = host.mark()
     host.post()
+    assert host.since(mark) == (
+        ["addHelpMessage", "soundSequence"], ["endmission"], ["addHelpMessage", "soundSequence"])
     assert host.mission(0, 1) == 3
     assert host.pending() == ""
     assert host.post_name() == ""
@@ -688,6 +842,7 @@ def run_good(host, image):
     host.place(image)
     host.plant_untouched()
     host.set_global(0xC, MARK_GLOBAL)
+    host.set_global(0, MARK_GLOBAL + 2)
     host.counts[0] = 1
     host.run("start")
     assert host.global_cell(0xC) == 1
@@ -706,8 +861,15 @@ def run_good(host, image):
     for _frame in range(first + 1, second):
         host.deferred()
         assert host.mission(0, 1) == 1
+    mark = host.mark()
     host.deferred()
-    assert host.mission(0, 1) == 3
+    entered, scripts, stubs = host.since(mark)
+    # Count 2 in slot 0: one removePlayerItem after slot 0's query, then slots 1-3.
+    assert entered == SHARD_GRANT_NATIVES + [
+        "onePlayerHasItem", "removePlayerItem"] + ["onePlayerHasItem"] * 3, entered
+    assert scripts == ["shardCheckLoop"] and stubs == ["playGotItemSound", "addHelpMessage"], stubs
+    assert [host.mission(slot, 1) for slot in range(4)] == [3, 2, 2, 2]
+    assert host.global_cell(0) == MARK_GLOBAL + 2
     assert host.global_cell(0xC) == 1
     assert host.global_cell(8) == 0
     assert host.queued_names() == [], host.queued_names()
@@ -729,6 +891,48 @@ def run_good(host, image):
     assert host.mission(0, 1) == 1
     assert host.global_cell(8) == MARK_GLOBAL + 1
     assert host.global_cell(0xC) == 1
+
+
+def set_var(host, name, value):
+    host.ee.mem.write(host.names, name.encode("latin1") + b"\0")
+    host.ee.call(0x1ED854, host.names, value, max_steps=100000)
+
+
+def run_knights(host, image):
+    """Each knight death entry with the other three knight variables planted."""
+    checks = 0
+    for position, (entry, _set_at, _call_at, var) in enumerate(KNIGHT_ENTRIES):
+        for others_set in (True, False):
+            host.reset_campaign()
+            host.place(image)
+            host.plant_untouched()
+            for cell in (0, 8, 0xC, 0x10):
+                host.set_global(cell, MARK_GLOBAL + cell)
+            planted = {}
+            for index, name in enumerate(KNIGHT_VARS):
+                planted[name] = MARK_GLOBAL + index if others_set else 0
+                set_var(host, name, planted[name])
+            mark = host.mark()
+            assert host.run(entry) == 0
+            entered, scripts, stubs = host.since(mark)
+            expect = dict(planted, **{var: 1})
+            assert {name: host.vars().get(name) for name in KNIGHT_VARS} == expect, host.vars()
+            assert scripts == [entry, "knightDefeatedPause"] and stubs == []
+            if others_set:
+                assert entered == ["setv", "callScript"] + ["getv"] * 4 + ["addDeferedCall"]
+                assert host.queued_names() == ["knightDefeatedDelay"]
+            else:
+                # The four reads stop at the first clear variable.
+                reads = 2 if position == 0 else 1
+                assert entered == ["setv", "callScript"] + ["getv"] * reads, entered
+                assert host.queued_names() == []
+            assert [host.global_cell(cell) for cell in (0, 8, 0xC, 0x10)] == [
+                MARK_GLOBAL + cell for cell in (0, 8, 0xC, 0x10)]
+            assert [host.mission(slot, 1) for slot in range(4)] == [1, 0, 0, 0]
+            assert host.post_name() == "" and host.pending() == ""
+            host.assert_untouched()
+            checks += 1
+    return checks
 
 
 def hp_boundary(host, image):
@@ -789,10 +993,11 @@ def run_rallos(host, image):
     assert "showMonster" in host.stubs and "cutScene" in host.stubs and "setSaveInhibit" in host.stubs
     assert "grantBronze" not in host.stubs
     host.assert_untouched()
-    before = list(host.stubs)
+    mark = host.mark()
     host.post()
-    added = [name for name in host.stubs[len(before):]]
-    assert set(added) == {"killMonster", "hideMonster", "deleteMonster"}, added
+    # Every native entered during the post action, original or stubbed, in order.
+    removal = [row[1] for row in RALLOS_REMOVE]
+    assert host.since(mark) == (removal, ["removeRallos"], removal), host.since(mark)
     assert host.post_name() == ""
     assert host.mission(0, 1) == 1
     assert host.ee.mem.u32(PLAYERS + QUEST_COUNT) == 1
@@ -884,6 +1089,7 @@ def main():
     host = Host(args.elf, args.seed)
     end_call, notice_call = run_evil(host, images["drunare"])
     run_evil_gates(host, images["drunare"])
+    checks += run_knights(host, images["drunare"])
     run_good(host, images["drunarm"])
     low, high = hp_boundary(host, images["drunarm"])
     rallos_call = run_rallos(host, images["drunarm"])

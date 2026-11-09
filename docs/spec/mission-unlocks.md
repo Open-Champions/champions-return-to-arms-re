@@ -286,7 +286,11 @@ interpreter. `grantMission` `0x1420a4`, `mission_setComplete` `0x1bf770`,
 `removePlayerItem` `0x14598c`, `removeQuest` `0x143448`, `newWorld` `0x143dd0`,
 `script_runDeferred` `0x1ed5a0` and `script_runPostAction` `0x1edac0` are the
 original functions. Cutscene, sound, HUD, monster and bag-walk callees are
-stubbed. `inventory_countItemByName` `0x1c5880` returns the test's counts;
+stubbed (the `STUB_NAMES` set in the tool). Every other native handler keeps
+its original body and only gets a recording hook at its first instruction,
+and `script_runByName` `0x1ed694` records each entry it starts. A "recorded
+call list" below is that log, in order, stubbed and original natives
+together. `inventory_countItemByName` `0x1c5880` returns the test's counts;
 `inventory_findItemBySubstring` `0x1c5a70` and `inventory_removeItem`
 `0x1c1cb0` record one removal and do not walk a bag. The register seed is
 unchanged. This is not a played fight, a cutscene, or a level load.
@@ -313,12 +317,37 @@ stubbed and is not entered.
 
 ### Evil arena
 
-**Observed:** `CazicAvatar` `deathscript` is `callScria381`, which only calls
-`bossDefeatedPause`. The four `knight` death scripts set `knight1`..`knight4`
-and are not read by the completion entries.
+**Observed:** `CazicAvatar` `deathscript` is `callScria381`. Its only native
+is `callScript('bossDefeatedPause')` (`0xd14`) and it has no script-to-script
+`call` op. `bossDefeatedPause`'s only native is
+`addDeferedCall('bossDefeatedDelay')` (`0x6ec`). The four `UndeadKnight1`..`4`
+objects (each named `knight`) have `deathscript` `setv4d6b`, `setv772a`,
+`setv5138`, and `setvcccf`. Each of those is `setv(knightN, 1)` then
+`callScript('knightDefeatedPause')`, for `knight1`..`knight4` in that order.
+`knightDefeatedPause` is four `getv` reads of `knight1`..`knight4` and an
+`addDeferedCall('knightDefeatedDelay')`. The four completion entries below have
+no `getv`, no `callScript`, no script-to-script `call`, and no constant
+`knight1`..`knight4` argument. Two pushes in `shardCheckLoop` (`0xa54` and
+`0xa9c`, argument 1) are not constant cells and are not decoded.
 
-**Executed:** `bossDefeatedPause` stores 0 into script global 0. A planted
-`0x5a` is 0 after `callScria381`, and the queued name is `bossDefeatedDelay`.
+**Executed, recorded call list:** running `callScria381` enters `callScript`
+then `addDeferedCall`, and the only entries started are `callScria381` and
+`bossDefeatedPause`. No stub is entered. A planted global 0 `0x5a` is 0
+afterwards, and the queued name is `bossDefeatedDelay`. Running
+`bossDefeatedPause` alone does the same store and queue, so the store is in
+that entry's script code, not in a native.
+
+**Executed, knights:** each knight entry, with `knight1`..`knight4` planted
+`0x5a`..`0x5d`, stores 1 into its own variable and leaves the other three
+planted. Its recorded list is `setv`, `callScript`, four `getv`, and
+`addDeferedCall`; entries started are that entry and `knightDefeatedPause`;
+`knightDefeatedDelay` is queued. With the other three planted 0 the reads stop
+at the first clear variable (two `getv` for `knight1`, one for the others) and
+nothing is queued. No stub is entered. Script globals `0`, `0x8`, `0xc`, and
+`0x10` keep their planted values, mission 1 stays `1,0,0,0`, no post action or
+level is set, and the sentinels listed under the post action below stay.
+`knightDefeatedDelay` and `knightDefeated` are not run here; what they do is
+**Unknown** from this probe.
 With pause clear, deferred call 0 only promotes that name and leaves the cell
 at 0. Call 1 stores 1. Call 252 sets quest variables `endsound` and
 `firstmissionever` to 1 and does not set the post action or the complete bit.
@@ -367,20 +396,29 @@ queues `shardCheckLoop` on the back half. The probe then stores 0 into global
 the snapshot. Just before deferred call 25 the cell is 24 and the front half
 is still `shardCheckLoop`. `script_runDeferred` leaves the back half empty
 because it promotes that half into the front count. A live count that is not
-greater leaves `shardCheckLoop` on the front half. A greater count plays the
-stubbed item sound and the stubbed help message, sets a 14-character quest
-variable and `firstmissionever` to 1, calls `grantMission(1)`, posts
-`endmission`, and leaves both halves empty. With the snapshot at 0 and the
+greater leaves `shardCheckLoop` on the front half. A greater count enters the
+stubbed `playGotItemSound` and the stubbed `addHelpMessage`, sets a
+14-character quest variable and `firstmissionever` to 1, calls
+`grantMission(1)`, posts `endmission`, and leaves both halves empty. The
+recorded list for that call is `gamePaused`, `playerHasItem`,
+`playGotItemSound`, `addHelpMessage`, `setv`, `grantMission`, `setv`,
+`postAction`, then `onePlayerHasItem` once per player slot (four times) when
+slot 0's count is 1. With slot 0 at 2, `removePlayerItem` follows slot 0's
+query and the other three queries come after it. The stubs entered on both
+granting calls are exactly `playGotItemSound` and `addHelpMessage`. With the snapshot at 0 and the
 live count at 1, that is deferred call 25, and global `0xc` is still 0.
 With the snapshot at 1, call 25 clears global `0x8`, leaves `0xc` at 1, does
 not grant, and leaves the front name queued; raising the live count to 2
 grants on call 50 and leaves the front half empty. Twenty-five paused calls
-leave the planted global `0x8` and do not grant. The mission bytes written
-are the same four-record pattern as `levelChange`. Gold, experience, the
-medal bytes, evil, decision, mission 2, global 0, and the other difficulty
-rows stay at the sentinels planted above. `endmission` here is the stubbed
-help message and `soundSequence`: it does not grant again and it does not
-request a level. Pending level stays empty.
+leave the planted global `0x8` and do not grant. On both granting calls
+(snapshot 0 at call 25 and snapshot 1 at call 50) mission 1 is read back on
+all four slots as `3,2,2,2`, the same four-record pattern as `levelChange`,
+and a planted global 0 (`0x5c`) is still `0x5c`. Gold, experience, the medal
+bytes, evil, decision, mission 2, and the other difficulty rows stay at the
+sentinels planted above on both. `endmission` here records exactly the
+stubbed `addHelpMessage` and stubbed `soundSequence` and starts only
+`endmission`: it does not grant again and it does not request a level.
+Pending level stays empty.
 
 **Executed:** one `removePlayerItem` runs only when `onePlayerHasItem`
 returns a count above 1. A rise from 0 to 1 grants and removes nothing. A
@@ -399,8 +437,11 @@ is the copy that calls `playRallosRuns`. That entry's original `postAction`
 is `removeRallos` and its original `removeQuest` drops the matching title;
 the planted `Keep` remains and the quest count goes from 2 to 1. The mission
 byte stays the planted `1`. `showMonster`, `cutScene`, and `setSaveInhibit`
-are stubs. The following `script_runPostAction` runs `removeRallos`, whose
-natives are all stubbed (`killMonster`, `hideMonster`, `deleteMonster`); the
+are stubs. The following `script_runPostAction` starts only `removeRallos`.
+Its recorded list is five stubbed natives and nothing else:
+`killMonster('rallos')`, `hideMonster('rallos')`, `deleteMonster('rallos')`,
+`hideMonster('rallos2')`, `deleteMonster('rallos2')` (`0x72c`..`0x7dc`). All
+five are stubs, so what they do to the world is not executed here. The
 mission byte and the quest count stay. Both deferred halves are empty after
 call 277. `playRallosRuns` and `removeRallos` contain no `grantMission`.
 Who reaches the trigger, and the real hit-point float before `getHitPoints`
@@ -435,8 +476,11 @@ complete.
 
 ### What the client can implement from this
 
-1. Do not mark mission 1 complete on the `blood1` exits or on the ordinary
-   `strife` / `drundar` exits. Those exits request `drunarm` or `drunare`.
+1. `blood1` has no `grantMission` site, so nothing in that file marks
+   mission 1 complete. Do not mark it complete on the ordinary `strife` /
+   `drundar` exits either: with `demoRunning` 0, `strife` `exitzone` requests
+   `drunarm` and `drundar` `exitzone` requests `drunare`. No `blood1` exit is
+   run here; its requests are not taken from this probe.
 2. On the evil arena, run the avatar death entry, then the deferred delay.
    The death entry stores 0 into global 0. Set `endsound` and
    `firstmissionever` when scaled time passes 250. On the call that passes
