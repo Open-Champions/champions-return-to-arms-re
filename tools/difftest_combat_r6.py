@@ -13,6 +13,7 @@ import hashlib
 import json
 from pathlib import Path
 import random
+import re
 import sys
 import unittest  # noqa: F401 - preload before tools/ is on the path
 
@@ -69,6 +70,7 @@ GAMEOBJECT_CTOR = 0x14CB10      # GameObject_ctor: the shared draw of a new obje
 SAMPLE_COUNT = 0x1799C8         # model_getSamplePointCount: stub, 8 points
 SAMPLE_POINT = 0x178E18         # model_getSamplePoint: stub, writes (0, 0, 0)
 RES_FIND = 0x17365C             # res_find: stub, returns 0 (no clip for the phantom)
+SPRINTF = 0x3B7EF0              # sprintf: stand-in with real_reaction (see real_reaction)
 STATIC_INIT, STAT_SETUP = 0x16AC74, 0x1EBCA0   # the executable's skill start-up
 ATTACH_SPELL = 0x11A838
 
@@ -101,6 +103,32 @@ BLOCK_REL = 0x6000              # processDamage block: |rel| >= 0x6000 lowers on
 DEATH_ORDER = ('loot', 'slot28', 'state', 'flag', 'award')   # with Horsemen_setState
 AWARD_SITES = {1: 0x1121E8, 2: 0x1120E4}   # player_giveExp call site by player count
 DEAD_FLAG_PC = 0x111E04
+DEAD_QUERY_SITE = 0x111E08      # obj_getPropInt(creature, "Dead") call site
+HORSEMEN_STATE_PC = 0x2735C4    # Horsemen_setState's own store of 0x14 at +0x232
+KNOCK_NAME = re.compile(rb'knockdown[12]_([abcd])\.anm')   # 0x308578 a2 (skills-35-68.md)
+
+
+def knock_letter(rel):
+    """The animation letter of docs/spec/skills-35-68.md (Player_processDamage) for
+    rel = hit angle minus facing."""
+    rel = ee_emu.sx16(rel & 0xFFFF)
+    if rel < -0x5FFF or rel >= 0x6000:
+        return b'a'
+    if ((rel + 0x6000) & 0xFFFF) <= 0x4000:
+        return b'c'
+    if ((rel + 0x2000) & 0xFFFF) <= 0x4000:
+        return b'b'
+    return b'd'
+
+
+def guest_string(emu, addr, limit=64):
+    out = bytearray()
+    while len(out) < limit:
+        byte = emu.mem.u8(addr + len(out))
+        if not byte:
+            break
+        out.append(byte)
+    return bytes(out)
 
 
 def block_added(state, behind, flags, amount=PLAIN):
@@ -362,7 +390,8 @@ class Probe:
         skill start-up has run, and the chance getter 0x30851c runs for real. With
         real_reaction: 0x308578 runs for real with every callee, except four fixture
         stubs (pool_new: a zeroed block; the model's sample-point count 8 and points
-        (0, 0, 0), because the planted player has no model; res_find: 0)."""
+        (0, 0, 0), because the planted player has no model; res_find: 0), and
+        sprintf is a stand-in that copies its format (see real_reaction)."""
         emu = self.guest(seed, skills=rank_stub is not None)
         obj, table = self.player(emu, 0, flags=flags)
         record = G_PLAYERS
@@ -405,10 +434,23 @@ class Probe:
             for index in range(3):
                 guest.mem.w32((guest.r[9] & M32) + 4 * index, 0)
 
+        def sprintf(guest):
+            # Followed as library code, sprintf leaves the buffer empty here (its
+            # callee 0x3c0170 is past DC.LIB_HI, so a stub), and the name's prefix
+            # (Player_processDamage, call at 0x1b2f54) is lost. The stand-in copies the
+            # format; a format with a conversion is copied as it is, and the name
+            # check then fails.
+            fmt = guest_string(guest, guest.r[5] & M32)
+            emu.formats.append(fmt)
+            guest.mem.write(guest.r[4] & M32, fmt + b'\0')
+            return len(fmt)
+
         def enter(guest):
             ret = guest.r[31] & M32
+            # a2, the animation name, read while the call is live (it is on the stack).
             info.update(seed_in=guest.mem.u32(DC.G_SEED), first=len(guest.calls) - 1,
-                        follow=guest.follow)
+                        follow=guest.follow, name_ptr=guest.r[6] & M32,
+                        name=guest_string(guest, guest.r[6] & M32))
             guest.follow = None
 
             def leave(back):
@@ -420,11 +462,15 @@ class Probe:
         emu.stub(SAMPLE_COUNT, ret=8, name='sample_count')
         emu.stub(SAMPLE_POINT, function=point, name='sample_point')
         emu.stub(RES_FIND, name='res_find')
+        emu.formats = []
+        emu.stub(SPRINTF, function=sprintf, name='sprintf')
         emu.hook(KNOCK_RESIST, enter)
 
-    def reaction_ok(self, emu, obj, speed):
+    def reaction_ok(self, emu, obj, speed, rel=0):
         """0x308578 ran to its return: one LightEffect and one StrongStancePhantom, each
-        built by GameObject_ctor with one shared draw, and nothing else on the seed."""
+        built by GameObject_ctor with one shared draw, and nothing else on the seed.
+        a2 is a knockdown animation name whose letter fits rel, and the phantom gets
+        the same pointer."""
         info = emu.reaction
         if 'seed_out' not in info:
             return False
@@ -439,6 +485,9 @@ class Probe:
               and lights[0].args[0] == emu.blocks[0][1]
               and ghosts[0].args[0] == emu.blocks[1][1] and ghosts[0].args[1] == obj
               and ghosts[0].args[3] == speed and ghosts[0].args[4] == 0)
+        name = KNOCK_NAME.fullmatch(info.get('name', b''))
+        ok = (ok and name is not None and name.group(1) == knock_letter(rel)
+              and ghosts[0].args[2] & M32 == info['name_ptr'])
         if ok:
             ghost = emu.blocks[1][1]
             ok = emu.mem.u32(ghost + 0x2E8) == R.fmul(R.itof(speed), 0x3FA00000)   # x 1.25
@@ -557,7 +606,7 @@ class Probe:
             else:
                 self.check('block_back_resisted', emu.mem.u32(obj + 0x58C) == 8
                            and emu.mem.u32(obj + 0x2E8) == 0
-                           and self.reaction_ok(emu, obj, 150)
+                           and self.reaction_ok(emu, obj, 150, angle - facing)
                            and emu.mem.u32(DC.G_SEED) == self.draws(planted, 2 + REACTION_DRAWS))
         # PvP mode A (0x4f711c): one knock level less and half the speed.
         for bits, speed, state, count in ((0x40000, 0x42480000, 2, 2), (0x80000, 0x42960000, 3, 1)):
@@ -688,15 +737,19 @@ class Probe:
     @staticmethod
     def event_order(emu, index):
         """Sort named events by when they happened: writes and calls share one clock,
-        the write count at the time of each call."""
+        the write count at the time of each call. Two calls with no write between them
+        (stack writes are not logged) share a stamp; their order is the order in which
+        they were recorded (the call index), never the event name."""
         stamps = {}
         clock = Probe.call_clock(emu)
         for name, (kind, hits) in index.items():
             if not hits:
                 return []
-            # A write at index i comes after every call made with at most i writes before it.
-            stamps[name] = hits[0] + 0.5 if kind == 'w' else clock[hits[0]]
-        return sorted(stamps, key=lambda name: (stamps[name], name))
+            # A write at index i comes after every call made with at most i writes before
+            # it. A write never ties with a call (i + 0.5), and two writes never tie.
+            stamps[name] = ((hits[0] + 0.5, -1) if kind == 'w'
+                            else (clock[hits[0]], hits[0]))
+        return sorted(stamps, key=lambda name: stamps[name])
 
     @staticmethod
     def call_clock(emu):
@@ -779,10 +832,18 @@ class Probe:
                    and emu.mem.u32(victim + 0x0C) == 0x2129)
         self.check('death_award_after_state', awards == [(0, 2202)])
         self.check('death_no_delete', not self.calls(emu, OBJ_DELETE))
+        # The one obj_getPropInt call is the Dead query, from the call right after the
+        # flag store, on the creature with the name "Dead".
+        query = self.calls(emu, PROP_INT)
+        self.check('death_dead_query', len(query) == 1 and query[0].site == DEAD_QUERY_SITE
+                   and query[0].args[0] & M32 == victim
+                   and guest_string(emu, query[0].args[1] & M32) == b'Dead')
         # The Dead property and cflag 0x100000000 stop before the award.
         emu, victim, _a, awards, _ = self.kill(seed, 1, [('p0', 0, PLAIN)], prop=1)
+        query = self.calls(emu, PROP_INT)
         self.check('dead_property', awards == [] and len(self.calls(emu, SNAP_TOP)) == 1
-                   and emu.mem.u16(victim + 0x232) == 0x14)
+                   and emu.mem.u16(victim + 0x232) == 0x14
+                   and len(query) == 1 and query[0].site == DEAD_QUERY_SITE)
         emu, victim, _a, awards, _ = self.kill(seed, 1, [('p0', 0, PLAIN)], cflags=0x100000000)
         self.check('cflag_no_award', awards == [] and emu.mem.u16(victim + 0x232) == 0x14)
         # A class slot 27: Horsemen_setState case 0x14 calls Creature_dropLoot and slot 28.
@@ -802,9 +863,14 @@ class Probe:
             self.check('class_on_death', len(death) == 1 and death[0].args[0] == victim
                        and death[0].site == 0x2733B0)
             # Order of the whole death path: loot and slot 28 inside the class set-state,
-            # then its state store, the flag store, the award.
+            # then its own state store (pc HORSEMEN_STATE_PC, the only store of 0x14 at
+            # +0x232; the base body 0x3c2688 is not called), the flag store, the award.
+            states = self.stored(emu, victim + 0x232, 0x14)
+            self.check('class_state_store', len(states) == 1
+                       and emu.writes[states[0]][0] == HORSEMEN_STATE_PC
+                       and not self.calls(emu, SET_STATE))
             index = {
-                'state': ('w', self.stored(emu, victim + 0x232, 0x14)),
+                'state': ('w', self.stored(emu, victim + 0x232, 0x14, pc=HORSEMEN_STATE_PC)),
                 'flag': ('w', self.stored(emu, victim + 0x0C, pc=DEAD_FLAG_PC)),
                 'loot': ('c', [n for n, call in enumerate(emu.calls) if call.target == DROP_LOOT]),
                 'slot28': ('c', [n for n, call in enumerate(emu.calls) if call.target == ONDEATH_STUB]),
@@ -812,6 +878,14 @@ class Probe:
             }
             self.check('class_death_order', self.event_order(emu, index) == list(DEATH_ORDER)
                        and awards == self.award_oracle(emu, [30, 34], [True, True], killer))
+            # Loot before slot 28 by the recorded call order itself, whatever the clock.
+            calls_first = [name for name in DEATH_ORDER if name in ('loot', 'slot28')]
+            self.check('class_loot_slot28_call_order', index['loot'][1] and index['slot28'][1]
+                       and sorted(calls_first, key=lambda name: index[name][1][0]) == calls_first)
+            if index['loot'][1] and index['slot28'][1]:
+                clock = self.call_clock(emu)
+                same = clock[index['loot'][1][0]] == clock[index['slot28'][1][0]]
+                self.counts['class_loot_slot28_same_write_stamp'] += int(same)
             if not loot:
                 continue
             call = loot[0]
@@ -821,13 +895,16 @@ class Probe:
             killer_obj = actors['p%d' % killer]
             # a0 the creature, a1 a copy of its position, a2 its facing, a3 0 (the
             # Observed signature, docs/issues/kill-loot-xp.md section 2). No register
-            # argument a0-t3 is the killer object, its handle node or its slot.
+            # argument a0-t3 is the killer object or its handle node; for killer slot 1,
+            # none is 1 either (slot 0 cannot be told from the zeros).
             self.check('drop_loot_args', ints[0] == victim
                        and position == tuple(emu.mem.u32(victim + 0x10 + 4 * n) for n in range(3))
                        and ee_emu.sx16(ints[2] & 0xFFFF) == 0x2345 and ints[3] == 0
                        and killer_obj not in ints and node not in ints
-                       and (killer == 0 or killer not in ints[:4]))
-            seen.append((ints[0] - victim, ints[2], ints[3], position, call.fargs[:6]))
+                       and (killer == 0 or killer not in ints))
+            # Compared between the two killers: all eight integer registers (a0 relative
+            # to the creature, a1 as a value), the three words behind a1, f12-f17.
+            seen.append(((ints[0] - victim) & M32,) + ints[1:8] + (position, call.fargs[:6]))
             self.counts['drop_loot_calls'] += 1
         self.check('drop_loot_killer_independent', len(seen) == 2 and seen[0] == seen[1])
         # A corpse with more pending damage: pending cleared, flags kept, nothing else.

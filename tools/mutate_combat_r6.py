@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ELF = ROOT / 'local/SLUS_209.73'
 SEED = 20973
 VICTIM = (10.0, 20.0)
+SHIFT = {b'a': b'b', b'b': b'c', b'c': b'd', b'd': b'a'}
 
 
 def attr(owner, name, value):
@@ -52,6 +53,7 @@ def controls():
     threshold = T.Probe.stagger_threshold
     award = T.Probe.award_oracle
     added = T.block_added
+    letter = T.knock_letter
     return [
         ('direction+1', lambda p: p.hit_direction(SEED),
          lambda: attr(T.Probe, 'direction', lambda self, v, a: (direction(self, v, a) + 1) & 0xFFFF)),
@@ -90,6 +92,16 @@ def controls():
         ('dead_flag_pc_0x111e08', lambda p: p.death_path(SEED), lambda: attr(T, 'DEAD_FLAG_PC', 0x111E08)),
         ('award_sites_swapped', lambda p: p.kill_credit(SEED),
          lambda: attr(T, 'AWARD_SITES', {1: 0x1120E4, 2: 0x1121E8})),
+        # Added in the second fix round: the class state-store pc, the Dead query site,
+        # the animation name handed to 0x308578.
+        ('horsemen_state_pc_0x2735c0', lambda p: p.death_path(SEED),
+         lambda: attr(T, 'HORSEMEN_STATE_PC', 0x2735C0)),
+        ('dead_query_site_0x111e04', lambda p: p.death_path(SEED),
+         lambda: attr(T, 'DEAD_QUERY_SITE', 0x111E04)),
+        ('knock_name_letter_shifted', lambda p: p.knock_down(SEED),
+         lambda: attr(T, 'knock_letter', lambda rel: SHIFT[letter(rel)])),
+        ('knock_name_style_2', lambda p: p.knock_down(SEED),
+         lambda: attr(T, 'KNOCK_NAME', T.re.compile(rb'knockdown2_([abcd])\.anm'))),
     ]
 
 
