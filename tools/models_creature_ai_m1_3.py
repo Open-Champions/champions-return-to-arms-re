@@ -202,6 +202,14 @@ def warwraith(m):
     elif s == 0x13:
         if m.q("notStunned"):
             m.set(0)
+    elif s == 0x14:
+        # fade + 1; at 100 the object deletes itself, otherwise one particle:
+        # an angle draw and a unit-ball rejection point (three draws a try).
+        if fade + 1 >= 100:
+            m.act("objDelete")
+        else:
+            m.rand()
+            m.rng.in_unit_sphere()
 
 
 # ---------------------------------------------------------------- Orc
@@ -1063,7 +1071,7 @@ def _states(*excluded):
 
 
 SPECS.update({
-    "WarWraith": dict(model=warwraith, states=_states(0x14),
+    "WarWraith": dict(model=warwraith, states=_states(),
                       variants=({0x3C8: (8, 0), 0x3CC: (32, 0)},
                                 {0x3C8: (8, 100), 0x3CC: (32, 500)})),
     "Orc": dict(model=orc, states=_states(),
@@ -1092,3 +1100,58 @@ SPECS.update({
     "Amphian": dict(model=amphian, states=_states(), hp=None),
     "SeaMonster": dict(model=seamonster, states=_states()),
 })
+
+
+# ---------------------------------------------------------------- setState entries
+# Authored from docs/monsters-2.md class notes. land: state stored at +0x232
+# (default: the request). fields: offset -> exact value, or (base, mod) for
+# clock + base + (own draw % mod), or ("abs", base, mod) without the clock.
+# calls: names that must be called.
+def _e(land=None, calls=(), **fields):
+    return dict(land=land, calls=calls,
+                fields={int(k[1:], 16): v for k, v in fields.items()})
+
+
+DEATH = ("dropLoot", "onDeath")
+SET_ENTRY = {
+    "Kobold": {0: _e(xF4=(0, 120)), 1: _e(xF4=(120, 120)), 5: _e(xF4=(60, 120)),
+               6: _e(x3C8=6), 7: _e(x3C8=7), 8: _e(x3C8=8), 0x17: _e(x3C8=0x17),
+               0x10: _e(x318=60), 4: _e(0), 0xA: _e(0), 0x11: _e(0),
+               0x14: _e(calls=DEATH)},
+    "WarWraith": {0: _e(xF4=(0, 120)), 7: _e(x3CC=(300, 120)), 0x11: _e(xF4=(120, 60)),
+                  0x14: _e(calls=("lootGenerate", "onDeath"))},
+    "Orc": {0: _e(xF4=(120, 60)), 4: _e(xF4=(40, 120)), 6: _e(xF4=("abs", 10, 10)),
+            0x10: _e(x318=60), 0x11: _e(xF4=(120, 1), xA8=0x200),
+            0x17: _e(xF4=(240, 240)), 0x14: _e(calls=DEATH)},
+    "Goblin": {0: _e(xF4=(120, 60)), 4: _e(xF4=(40, 120)), 0x10: _e(x318=60),
+               0x11: _e(xF4=(120, 1), xA8=0x200), 0x17: _e(xF4=(240, 240)),
+               0x14: _e(calls=("dropLoot",))},
+    "Ogre": {0: _e(xF4=(0, 120)), 6: _e(x460=6), 7: _e(x460=7), 8: _e(x460=8),
+             9: _e(x460=9), 0x10: _e(x318=60), 4: _e(0), 0xA: _e(0), 0x11: _e(0),
+             0x17: _e(0), 0x14: _e(calls=DEATH)},
+    "Warrior": {0: _e(xF4=(0, 120)), 3: _e(x474=0, x478=0), 5: _e(xF4=(0, 360)),
+                6: _e(x470=6, x474=1), 7: _e(x474=1), 8: _e(x470=8, x474=1),
+                0x10: _e(x318=60), 0x17: _e(xF4=(60, 120), xA8=0x200),
+                4: _e(0), 0x11: _e(0), 0x14: _e(calls=DEATH)},
+    "Clockwork": {6: _e(x3CC=6), 7: _e(x3CC=7), 8: _e(x3CC=8, xF4=(120, 1)),
+                  9: _e(xF4=(0, 1), x4F8=(0, 1)), 0x10: _e(x318=60),
+                  4: _e(0), 0xA: _e(0), 0x11: _e(0), 0x17: _e(0),
+                  0x14: _e(calls=DEATH)},
+    "Droid": {0x10: _e(x318=60), 4: _e(0), 6: _e(0), 0xA: _e(0), 0x11: _e(0),
+              0x14: _e(calls=("onDeath",)), 0x17: _e(calls=("onDeath",))},
+    "IronGuardian": {9: _e(x3C8=0), 10: _e(x3C8=0), 0x10: _e(x318=60),
+                     4: _e(0), 0x11: _e(0), 0x17: _e(0), 0x14: _e(calls=DEATH)},
+    "Froglock": {0: _e(xF4=(0, 120)), 7: _e(xF4=("abs", 0, 15)), 8: _e(xF4=("abs", 0, 15)),
+                 0x10: _e(x318=60), 0x14: _e(calls=DEATH)},
+    "Amphian": {0x10: _e(x318=60), 0x17: _e(xF4=(60, 120), xA8=0x200),
+                4: _e(0), 0xA: _e(0), 0x11: _e(0), 0x14: _e(calls=DEATH)},
+    "SeaMonster": {0x14: _e(calls=DEATH)},
+}
+
+
+# Slot 20 (isEnemy), 21 (isAlly), 2 (takeDamage) per class table, as the
+# class notes give them: base 0x119328 / 0x119400 / 0x116638 unless named.
+SLOTS = {name: (0x119328, 0x119400, 0x116638) for name in SPECS}
+SLOTS["Kobold"] = (0x119328, 0x280434, 0x116638)
+SLOTS["WarWraith"] = (0x2C1BC0, 0x119400, 0x116638)
+SLOTS["Orc"] = (0x119328, 0x119400, 0x2A2EAC)
