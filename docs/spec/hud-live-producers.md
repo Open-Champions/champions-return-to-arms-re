@@ -33,8 +33,9 @@ draws (regen 70, bars 25, experience 22, messages 49); automap probe 608
 cases and 0 seed draws, including 48 fractional reveals. The stdout is
 `local/hud-live-20973.log`, `local/hud-live-7.log`,
 `local/hud-inputs-20973.log` and `local/hud-inputs-7.log`. The round-3 probe
-`tools/difftest_hud_feeds.py` is 12 properties: 693 cases on seed 20973 and
-676 on seed 7, 0 seed draws. The two seeds differ only in the random tile
+`tools/difftest_hud_feeds.py` is 13 properties: 740 cases on seed 20973 and
+723 on seed 7, 0 seed draws. The first property is the 43-site census of
+section 5. The two seeds differ only in the random tile
 states (100 and 83 strip packets, 712,960 and 523,512 vertices). Its stdout is
 `local/hud-feeds-20973.log` and `local/hud-feeds-7.log`. The analysis suite
 figures are in section 11.
@@ -202,8 +203,12 @@ alpha becomes `4 * timer`. Otherwise it rises by 3. A result that is not
 below 129 becomes 128.
 
 `hud_clearMessage` `0x1d9330` zeros the timer halfword and leaves the text
-(O). Forty call sites pass a frame count in the argument register (O). Only
-`player_giveExp` was executed as a caller. The others are named here by the
+(O). There are 43 direct jumps to `hud_showMessage` in `.text`: 40 `jal` and 3
+tail-call `j` (O). The `message census` property of `difftest_hud_feeds.py`
+scans `.text` and asserts every site and its containing function from
+`ghidra_funcs.tsv`. Each site passes a frame count in `a1` (O). Pointer calls
+(`jalr`) were not searched (**U**). Only `player_giveExp` was executed as a
+caller. The others are named here by the
 function that contains the call and the immediate it passes; the condition
 that reaches the call is **U** except where an older note already executed
 that function.
@@ -211,21 +216,31 @@ that function.
 | Frames | Callers (O) |
 |---|---|
 | 360 (`0x168`) | `player_giveExp` `0x1d3298` (E) |
-| 300 (`0x12c`) | `hud_onMsg` `0x1d8e9c`; HUD draw `0x1dc024` and `0x1dc054`; `Vehicle_run` `0x207e40` |
-| 180 (`0xb4`) | `script_setInfo` `0x1431c0`; `newWorld_netGate`; `recall_execute` (two); four sites in `Player_run` (`0x1a6ebc`, `0x1a7af0`, `0x1a8040`, `0x1aafc4`); `Vehicle_run` `0x207d7c`; `save_game` (three); `JumpGate_run`; `JumpGate_interactPrompt`; `DoorSwing_interact`; `Savepoint_interactPrompt` (two); skill `canUse` for ground pound, convert undead, cyclone, harm touch, the five arrow skills, bash, shield bash, and both axes |
+| 300 (`0x12c`) | `hud_onMsg` `0x1d8e9c`; HUD draw `0x1dc024` and `0x1dc054`; `Vehicle_run` `0x207e40`; tail jump `0x328140` in the unnamed function `0x328090` (slot −1; `docs/lobby-protocol.md:813` cites that function on the character-creation reply path) |
+| 180 (`0xb4`) | `script_setInfo` `0x1431c0`; `newWorld_netGate`; `recall_execute` (two); four sites in `Player_run` (`0x1a6ebc`, `0x1a7af0`, `0x1a8040`, `0x1aafc4`); `Vehicle_run` `0x207d7c`; `save_game` (three); `JumpGate_run`; `JumpGate_interactPrompt`; `DoorSwing_interact`; `DoorSecret_interact` (tail jump `0x28b2f8`, slot −1); `Savepoint_interactPrompt` (two); skill `canUse` for ground pound, convert undead, cyclone, harm touch, the five arrow skills, bash, shield bash, and both axes |
 | 120 (`0x78`) | `Savepoint_run` `0x28d6a0` |
-| 90 (`0x5a`) | `SkillConvertEnemy_canUse`, `SkillRoot_canUse`, and one `SkillResurrect_canUse`; the other resurrect site is 180 |
+| 90 (`0x5a`) | `SkillConvertEnemy_canUse`, `SkillRoot_canUse`, and one `SkillResurrect_canUse` (the other resurrect site is 180, one of the 14 skill sites); tail jump `0x1de3c8` in `hud_onQuickCastWarn` `0x1de340`, the kind-1 ability warning of game message 13 (`docs/issues/doc-corrections.md:1430`), slot in `s0` |
 
-`script_setInfo` is the level-script producer the play view already draws.
-Section 7 executes the branch conditions of the callers an ordinary mission
+That is 1 + 5 + 32 + 1 + 4 = 43 sites. `script_setInfo` is the level-script
+producer the play view already draws. Section 7 executes the branch conditions of the callers an ordinary mission
 reaches. The rest keep a known frame count and an unexecuted condition.
 
 ## 6. Acknowledged level `+0x58`
 
-The only store is inventory message 9. Three executed links, all in
+**During play** the only store is inventory message 9. Outside play other
+writers set the byte. Character creation starts it at 1, and import caps it
+at 50 (`docs/player.md:52`, O). The player loop of `save_load` `0x221d60`
+overwrites the live record from the save snapshot. `t3/research-levelup`
+98a8a47 executed that loop and it put back acknowledged 4
+(`docs/spec/levelup.md:186-196` there). The three in-play links, all in
 `difftest_hud_feeds.py` (`acknowledge edge` 37 cases, `acknowledge chain` 9):
 
-1. **Edge, `hud_run` `0x1db870`, once per HUD run tick** (E). For each slot
+1. **Edge, `hud_run` `0x1db870`, once per HUD run tick** (E). Interpreter
+   (`ack_cases`): nothing is followed, so every callee that is not named here
+   returns 0 without running, the three calls at the entry (`0x1db890–0x1db8a0`)
+   included. `pauseMenu_isOpen`, `game_isFrozen`, `jumpgate_getTravelState`
+   and `task_isRunning` (keyed on its name pointer) answer from the test.
+   `menu_openInventory` and `script_runByName` only record their arguments. For each slot
    below the player count `0x4d8ae0`, with `g_rawPads` `0x4028d0 + 0x58*slot`:
    the pressed word `+0xc` must have bit `0x100` and the held word `+0x8` must
    not have bit `0x80` (`0x1db964–0x1db980`). Then 14 gates, in this order:
@@ -244,16 +259,27 @@ The only store is inventory message 9. Three executed links, all in
    earned 1 is a pending level (E). After any of these three outcomes, every
    player whose record `+0x1330` is above 0 gets one
    `script_runByName(<name at 0x53c5c0>)` (E, recorded call count). Bit `0x100`
-   of the byte-swapped pad word is Select by the usual PS2 layout, where Up is
-   `0x1000` (I).
+   is Select. `docs/issues/live-rig.md:228` confirmed it on the running game by
+   holding the button and reading `g_pads`+8 (Ran, for the lockstep pad, with Up
+   `0x1000`). `pad_readAll` copies `g_pads` to `g_rawPads`
+   (`docs/mainloop.md:257`, O).
 2. **Send, `menu_openInventory(slot, levelUp)` `0x1c15c8`** (E, on an owner
-   machine and a non-owner machine). Off the owner it returns before any store.
+   machine and a non-owner machine). Interpreter (`ack_chain_cases`): only
+   `menu_openInventory` and `invmsg_dispatch` are followed. `net_isLocalSlot`
+   (1 on the owner, 0 on the other machine), `menuMutex_tryAcquire` (0) and
+   `net_sendGameMsg` (records the bytes) are stubs. Every other callee returns 0
+   without running. Off the owner it returns before any store.
    Offline, a nonzero `menuMutex_tryAcquire` `0x22fc04` also returns early (O;
    the probe answered 0). On the owner it sets `g_localMenuOpen` to 1. With `levelUp` set it sends
    three bytes `{9, slot, signed earned level +0x59}` through
-   `net_sendGameMsg` (`0x1c17f8–0x1c1818`), then stores slot at `+0xed` and 0
-   at `+0xee` (`0x1c183c`, `0x1c1840`). With `levelUp` 0 it sends nothing and
-   leaves both bytes. `inventory_onJoinPanel` `0x1c0360` sends the same message
+   `net_sendGameMsg` (`0x1c17f8–0x1c1818`). It then stores word 5 at
+   `0x4f4090` (`0x1c1834`), byte 1 at `0x4f65c8` (`0x1c1838`), slot at `+0xed`
+   and 0 at `+0xee` (`0x1c183c`, `0x1c1840`). All four were checked against
+   planted sentinels. The two globals are part of the panel open; what they
+   mean is **U**. With `levelUp` 0 it sends nothing and leaves all four. For
+   this path, this answers the open `R+0xee` question of `t3/research-levelup`
+   98a8a47 (`docs/spec/levelup.md:197` there): opening the panel with a
+   pending level clears `+0xee` and sends the acknowledgement. `inventory_onJoinPanel` `0x1c0360` sends the same message
    from inventory message 4 with its level-up flag (prior: `ref_messages.on_join_panel`,
    `difftest_messages.py`).
 3. **Store, `invmsg_dispatch` `0x1bfdb0` case 9** (E, on both machines with the
@@ -270,30 +296,40 @@ bookkeeping bytes.
 
 ## 7. Message callers in ordinary missions
 
-All 43 jumps to `hud_showMessage` (`jal`/`j 0x1d92a0`) were listed (O). Below,
-**E** means the caller ran with `hud_showMessage` followed and its store
-checked against a planted timer 77, force 9 and empty text.
+The 43 direct jumps to `hud_showMessage` (40 `jal`, 3 `j`) are asserted site
+by site by `message census` (O, section 5). Pointer calls were not searched.
+Below, **E** means the caller ran with `hud_showMessage` followed and its
+store checked against a planted timer 77, force 9 and empty text.
+Interpreter for every row (`message_machine`): only `hud_showMessage` and its
+wide copy `0x19e854` are followed, plus `libc_strcmp` for the door. Every
+callee not listed in the row returns 0 without running. `net_isLocalSlot`
+returns 1. `text_lookup` records its key and returns a planted one-character
+wide string.
 
 | Event | Caller | Condition (E unless marked) | Call |
 |---|---|---|---|
 | level up | `player_giveExp` `0x1d3298` | every level step (section 2) | 360, slot, 0 |
-| script info line | `script_setInfo` `0x14318c` | always; refused while the local menu is open | 180, −1, 0 |
-| locked door | `DoorSwing_interact(door, slot)` `0x28aa7c` | slot is not −10, the door has the string property at `0x549070`, and `script_runByName` on it returned 0. Also `player_voice(slot, 7)` and a sound: none when the property at `0x549078` exists and differs from the string at `0x549080`; `res_find(0x549088, 0x549090)` when it equals it; `res_find(0x549088, 0x5490a8)` when the property is absent. Text key `0x5490c0` | 180, −1, 0 |
-| door opens | same | any other case: no message, interactable bit `0x100000` cleared | — |
+| script info line | `script_setInfo` `0x14318c` | always; refused while the local menu is open. Stubs: `scr_getString` writes a planted key pointer, `scr_copyString` returns 0 | 180, −1, 0 |
+| locked door | `DoorSwing_interact(door, slot)` `0x28aa7c` | slot is not −10, the door has the string property at `0x549070`, and `script_runByName` on it returned 0. Also `player_voice(slot, 7)` and a sound: none when the property at `0x549078` exists and differs from the string at `0x549080`; `res_find(0x549088, 0x549090)` when it equals it; `res_find(0x549088, 0x5490a8)` when the property is absent. Text key `0x5490c0`. Stubs: `obj_getPropStr` / `obj_getPropInt` answer by key address, `script_runByName` returns the planted result, `player_voice` and `res_find` record their arguments, `sound_playOnObject` returns 0 | 180, −1, 0 |
+| door opens | same | any other case: no message, interactable bit `0x100000` cleared. The run stops early: door `+0x4c` was planted `0xFFFF` (no world cell), so the rest of the open path did not run (**U**). Same stubs | — |
 | save point, refused | `Savepoint_interactPrompt(sp, buffer)` `0x28da58` | memory card idle (`memcard_isBusy` `0x217518`), `net_allPlayersState2` `0x1ec5d8` false, and `game_inNoSaveZone` `0x1e7b78` true. If some active player's object (list `0x4f8440`, count `0x4f8420`) has `+0x540` set, text key `0x549278`. Otherwise the save point's property `0x549258` when present, else key `0x549268`. Returns 0 | 180, −1, 0 |
-| save point prompt | same | not in a no-save zone: no message, returns 1, writes a prompt into the buffer: key `0x5492b0` offline; online `0x549288` when word `0x4f8f30 >= 0x709` and `sp+0xc7 == −1`, else `0x5492a0` | — |
-| jump gate first use | `JumpGate_interactPrompt(gate, buffer, i)` `0x27d7a0` | `gate+0x4f == 0`, `task_isRunning(0x547e10)` false, the property at `0x547e40` is absent or its script returned nonzero, and `gate+0x4d == 0`: sets `+0x4d = 1`, calls `0x27db60`, text key `0x547e90`. With `+0x4f` set another branch runs; it was not followed | 180, word `0x4f8440[i]`, 0 |
-| item pickup | `itemprop_tryPickup(slot, item)` `0x154dbc` | never calls it (E, 60 cases). Full bag (`count + 1 >= 64`): a sound, returns 0. Over the load limit `+0x124`: `player_voice(slot, 0)`, returns 0. Accepted: a sound named from the item flags, `script_runByName(0x532678)`, `inventory_giveItem(slot, item, 1)`, `0x1bec10(slot)`, returns 1 | — |
+| save point prompt | same | not in a no-save zone: no message, returns 1, writes a prompt into the buffer: key `0x5492b0` offline; online `0x549288` when word `0x4f8f30 >= 0x709` and `sp+0xc7 == −1`, else `0x5492a0`. Stubs for both rows: `memcard_isBusy`, `net_allPlayersState2` and `game_inNoSaveZone` answer from the test; `obj_getPropStr` / `obj_getPropInt` by key address | — |
+| jump gate first use | `JumpGate_interactPrompt(gate, buffer, i)` `0x27d7a0` | `gate+0x4f == 0`, `task_isRunning(0x547e10)` false, the property at `0x547e40` is absent or its script returned nonzero, and `gate+0x4d == 0`: sets `+0x4d = 1`, calls `0x27db60`, text key `0x547e90`. With `+0x4f` set another branch runs; it was not followed. Stubs: `task_isRunning` records its name pointer (`0x547e10` asserted on the first call) and answers from the test, `script_runByName` returns the planted result, `0x27db60` is recorded and not run, properties by key address | 180, word `0x4f8440[i]`, 0 |
+| item pickup | `itemprop_tryPickup(slot, item)` `0x154dbc` | its own body never calls it and leaves the planted timer, force and text (E, 60 cases). Full bag (`count + 1 >= 64`): a sound, returns 0. Over the load limit `+0x124`: `player_voice(slot, 0)`, returns 0. Accepted: a sound named from the item flags, `script_runByName(0x532678)`, `inventory_giveItem(slot, item, 1)`, `0x1bec10(slot)`, returns 1 (the arguments shown are asserted). Every callee was a stub that records its name and arguments: `item_weight` (planted float), `res_find`, `sound_playOnObject`, `sprintf`, `script_runByName`, `inventory_giveItem`, `0x1bec10`, `player_voice`. The level-script function that `script_runByName` starts can call `setInfo` (row 2), so a pickup may still put text here through it (**U**). `inventory_giveItem` has no direct jump to `hud_showMessage` (census); its callees did not run | — |
 
-What was not found (O, from the full call list): no quest-add or
-quest-complete caller of its own. Quest and objective text reaches this line
-only through `setInfo`. The help box `hud_showHelpMessage` `0x1d9830` is a
+What the census does not contain (I: from the names of the containing
+functions, not from reading each reaching condition, and only for direct
+jumps): no quest-add or quest-complete caller of its own, so quest and
+objective text reaches this line only through `setInfo`. The help box `hud_showHelpMessage` `0x1d9830` is a
 different box (`script_addHelpMessage`, `script_addHelpMessageF`, and two
 first-pickup hints in `inventory_giveItem` at `0x1c1a50` and `0x1c1c28`). No
-caller tests a health threshold: there is no low-health line. The nearest HUD
-cue is notice line 1, "no health potion" (hud-quickslots.md). Not executed
-here, with their frame counts in section 5: `DoorSecret_interact` (tail call
-`0x28b2f8`), `Savepoint_run` `0x28d6a0`, `recall_execute`, `newWorld_netGate`,
+containing function is a health check, so there is no low-health line (I).
+The reaching condition of about 30 sites, the 17 skill `canUse` sites
+included, was not read (section 5). The nearest HUD cue is notice line 1,
+"no health potion" (hud-quickslots.md). Not executed here, with their frame
+counts in section 5: `DoorSecret_interact` (tail call `0x28b2f8`),
+`hud_onQuickCastWarn` (tail call `0x1de3c8`), `0x328090` (tail call
+`0x328140`), `Savepoint_run` `0x28d6a0`, `recall_execute`, `newWorld_netGate`,
 the four `Player_run` attack refusals, `Vehicle_run`, `save_game`,
 `JumpGate_run`, `hud_onMsg`, `hud_netStatusDraw`, and the skill `canUse`
 sites (those are in the skill specs).
@@ -313,7 +349,7 @@ not low.
 | 3 no arrows | same block | not a prediction copy (`object+0xc` bit `0x20000`) and `+0x4410` null; also `player_voice(slot, 5)` | 120 |
 | 6, 3 | `Player_run` `0x1a7d4c–0x1a7eb4` (after the bow's ammunition search) | the same two tests, but a prediction copy skips both | 240, 120 |
 | 7 low thrown | `Player_run` `0x1a888c`, `SkillFireAxe_cast` `0x319cc4`, `SkillColdAxe_cast` `0x31a5f8` | the stack being thrown is low before its decrement; these slices do not change the count | 240 |
-| 7 on swap | `Player_weaponSwapInput` `0x1bb9b0` | the new weapon set `record+0x4a7c` is 1 and that set's weapon (`+0x4434`) has class byte `+0x1e == 6`, at any count | 240 |
+| 7 on swap | `Player_weaponSwapInput` `0x1bb9b0` | the new weapon set `record+0x4a7c` is 1 and that set's weapon word (`+0x4430 + 4*set`, so `+0x4434`) points to an item whose definition has class byte `+0x1e == 6`, at any count. Each set word held its own item, only set 1's with the tested class and the others with the opposite answer, and counts were drawn from 0, 1, 20, 21, 50 and 0xFFFF | 240 |
 
 The count each line shows is the draw's (hud-dynamic.md section 3): line 6
 the item at `+0x4410`, line 7 the item at `+0x43f8` when weapon class
@@ -322,8 +358,11 @@ the item at `+0x4410`, line 7 the item at `+0x43f8` when weapon class
 ## 9. Map icons
 
 **Registrar `0x1689a4(pos, rotate, name, angle, offset, scale, var, script)`**
-(E, 58 cases, through the whole `PushTrigger_ctor` `0x1ec900` with
-`GameObject_ctor` stubbed). A null name adds nothing. Otherwise entry
+(E, 62 cases: 58 through the whole `PushTrigger_ctor` `0x1ec900` with
+`GameObject_ctor` stubbed, and 4 direct calls). A null name adds nothing:
+called directly with name 0 and real offset, scale, var and script strings,
+the registrar leaves the count, the entry words, `res_find` and `sprintf`
+untouched (E, 4 calls). Otherwise entry
 `0x6e0f90 + 0x1c*count` gets x/y = position + the two `%f` read from the offset
 string (0 when it is null), the texture `res_find(0x533be8, <texture name>)`, `+0xc`
 rotate, `+0x10` = `0x3f266666` (0.65) when the scale string holds a nonzero
@@ -340,7 +379,8 @@ divided by `0x4000` toward zero. `sscanf` was a disclosed stub that parses
 reads five string properties, `0x53e258` name, `0x53e278` offset, `0x53e288`
 scale, `0x53e298` var and `0x53e2a8` script (the symbol table calls them
 icon, iconOffset, iconHalfSize, iconValue, iconScript). It registers only when
-the name exists. Rotate is 0 when the name equals the string at `0x53e260` or
+the name exists: with no name property the registrar is not entered (E,
+recorded calls). Rotate is 0 when the name equals the string at `0x53e260` or
 `0x53e268`, else 1. The angle is the constructor's third argument. The
 integer property `0x53e248` clears object flag bit 0. `JumpGate_ctor`
 `0x27c834` (unless its integer property `0x547de0` is set) and
@@ -380,12 +420,18 @@ unchanged.)
   step 5) is cut into strips of 30 columns that start 29 apart: the last
   column of one strip is the first of the next. For each strip, every row
   from `r_min` to `r_end − 1` is one `memcpy` of `n` u16 cells from
-  `0x4044f0 + row*0x1b0 + col*2`, in row order. The tile path reads grid
-  cells only through these copies.
-- **Quads.** For each pair of adjacent rows and each pair of adjacent columns
-  in a strip the program emits one 4-vertex strip. Corners are in the order
+  `0x4044f0 + row*0x1b0 + col*2`, in row order. No read trace was taken, so
+  other grid reads by the tile path are not ruled out.
+- **Quads.** Each pair of adjacent rows in a strip is one GS triangle strip:
+  one PRIM write of `0x15c` (triangle strip, Gouraud, textured, alpha blend,
+  UV coordinates), then four `XYZ2` vertices with ADC 0 for each pair of
+  adjacent columns (E: the vertex count after each PRIM write and every
+  vertex's PRIM, ADC bit and register are asserted). Corners are in the order
   `(c,r)`, `(c,r+1)`, `(c+1,r)`, `(c+1,r+1)`. A strip of `n` columns and `R`
-  rows gives `(R−1)(n−1)` quads. The tile is taken from the cell at
+  rows gives `R−1` PRIM writes and `(R−1)(n−1)` quads. The next quad repeats
+  the shared column's two corners with its own UV, so each join triangle has
+  two vertices on the same corner. If positions follow the corners, those
+  triangles have no area (I; X/Y were not compared). The tile is taken from the cell at
   `(c+1, r+1)`: atlas column = bits 0–4, atlas row = bits 8–11, orientation =
   bits 5–7.
 - **UV.** A tile spans GS UV `col*160 .. col*160+158` and `row*160 .. row*160+158`
@@ -399,8 +445,10 @@ unchanged.)
   Their relation to the uploaded origin and steps was not established, so
   positions are **U** here. Texel content of the atlas is **U**.
 
-This agrees with `t3/research-textures` 5d3dd39 (`docs/formats/level-draw.md`
-section 4), which ran one fixed argument list. This round runs every strip of
+This agrees with `t3/research-textures`: the code at 5d3dd39
+(`tools/ref_leveldraw.py` `AUTOMAP_ORIENT` equals `ref_hud_feeds.ORIENT` row
+for row) and the doc at 391cf6b (`docs/formats/level-draw.md` section 4),
+which ran one fixed argument list. This round runs every strip of
 random states on both seeds and pins which cells are read.
 
 ## 11. Verification
@@ -409,14 +457,21 @@ On the Mac mini, after the final edit, with stdlib `dis` imported first:
 
 - `tools/difftest_hud_feeds.py local/SLUS_209.73 --seed 20973` and `--seed 7`:
   `local/hud-feeds-20973.log`, `local/hud-feeds-7.log` (figures in the
-  header above).
+  header above). Each log starts with the commit and the blob hash of the
+  difftest it ran. Per seed: census 43, edge 37, chain 9, setInfo 4, door 30,
+  save point 18, jump gate 32, pickup 60, ammunition 144, thrown 148,
+  registrar 62, icon gates 53, and 100 (seed 20973) or 83 (seed 7) strip
+  packets.
 - `tools/difftest_hud_live.py` and `tools/difftest_hud_inputs.py` on both seeds,
   rerun unchanged: `local/hud-live-*.log`, `local/hud-inputs-*.log`.
 - `python3 -m unittest discover -s tools -p 'test_*.py'`:
   `local/unittest-discover.log`.
 
-Mutation check (not retained): nineteen one-line changes to
-`ref_hud_feeds.py`, covering the conditions above. Each made the difftest fail.
+Mutation check (not retained, round 3 before this fix): nineteen one-line
+changes to `ref_hud_feeds.py`, covering the conditions above. Each made the
+difftest fail. The checks added in the fix (census, panel globals, stub
+arguments, swap sets, direct registrar call, PRIM runs) compare against
+fixed values in the difftest and were not mutation-tested.
 
 ## What the client can implement
 
@@ -435,8 +490,10 @@ Mutation check (not retained): nineteen one-line changes to
    alpha clamp (section 5), for these producers: level-up (360 frames, the
    slot), script `setInfo`, locked door, refused save point and first jump
    gate use (180 frames), with the exact conditions in section 7. A zero force
-   does not replace a message while the local menu is open. Pickups put no
-   text here. Show no low-health line and no quest-specific line.
+   does not replace a message while the local menu is open. The pickup code
+   itself puts no text here; a pickup's level script can, through `setInfo`.
+   Show no low-health line and no quest-specific line (I, from the census of
+   direct callers).
 4. Quick-slot spells and potion counts from the existing executed contracts.
    Scale the bars by the 17 equipment modifiers. Start notice lines 3, 6 and 7
    from the five starters in section 8 with their counts and prediction-copy
@@ -448,17 +505,20 @@ Mutation check (not retained): nineteen one-line changes to
    names with 0, and skip on 0. Run the named script function and skip only
    on a 0 result; draw when there is no machine or no such function.
 7. Automap tiles: carry the strip, row and quad layout, the bottom-right tile
-   choice, the eight orientations, the UV rectangle and the per-corner alpha
-   (section 10). The atlas texture must come from the world file.
+   choice, the eight orientations, the UV rectangle and the per-corner alpha,
+   one triangle strip per row pair (section 10). The atlas texture must come from the world file.
 
 ## Unknown
 
 - Texel content of the `world+0x6c` atlas, and the screen X/Y the tile program
   computes (section 10).
 - The bodies of the level script functions an icon or a locked door runs.
-- Callers of section 7 that were not executed, and the camera notice line 0.
-- The `inventory_onJoinPanel` path is prior evidence only. The physical button
-  for raw bit `0x100` is inferred.
+- Callers of section 7 that were not executed, their reaching conditions,
+  pointer calls to `hud_showMessage`, and the camera notice line 0.
+- Whether a pickup's level script, or the callees of `inventory_giveItem`, put
+  text on the message line. The door's open path past the world cell.
+- What word 5 at `0x4f4090` and byte 1 at `0x4f65c8` mean.
+- The `inventory_onJoinPanel` path is prior evidence only.
 - Level bytes outside 0..80, and the body of `player_recalcStats` inside this probe.
 - How many displayed frames fall in one simulation tick.
 - The console's last bit where it can differ from the `ee_emu` FPU.
