@@ -160,7 +160,9 @@ SPECS = {
 
 # ---------------------------------------------------------------- WarWraith
 def warwraith(m):
-    fade = m.field(0x3C8)
+    # The fade byte +0x3c8 is read signed (2026-11-09, executed at 128, 150
+    # and 255): a stored 128-255 is negative, so it neither turns nor deletes.
+    fade = (m.field(0x3C8) & 0xFF ^ 0x80) - 0x80
     s = m.state
     entry(m)
     m.act("stepAnim", 1.0)
@@ -216,8 +218,9 @@ def warwraith(m):
             m.set(0)
     elif s == 0x14:
         # A tick that starts with fade >= 100 deletes the object (99 does not:
-        # executed at 98/99/100), otherwise one particle: an angle draw and a
-        # unit-ball rejection point (three draws a try).
+        # executed at 98/99/100/101/127; 128/150/255 read negative and do not),
+        # otherwise one particle: an angle draw and a unit-ball rejection point
+        # (three draws a try).
         if fade >= 100:
             m.act("objDelete")
         else:
@@ -844,6 +847,7 @@ def ironguardian(m):
         if not m.anim & 8:
             m.set(5)
     elif s in (7, 8):
+        # exactly one alive player (executed with 0, 1, 2, 3 and 4)
         if m.c.get("alive", 0) == 1:
             m.act("turn")
         if m.ev & 1:
@@ -1098,7 +1102,11 @@ SPECS.update({
                                 {0x3C8: (8, 100), 0x3CC: (32, 500)})
                       + tuple({0x3C8: (8, 0), 0x3CC: (32, c), "states": (3, 5)} for c in EDGE)
                       # fade >= 99 turns; fade >= 100 deletes in 0x14
-                      + tuple({0x3C8: (8, fade), 0x3CC: (32, 500)} for fade in (98, 99))),
+                      + tuple({0x3C8: (8, fade), 0x3CC: (32, 500)} for fade in (98, 99))
+                      # above 100 and past the signed byte range (the turn is in
+                      # the head, so three states show it)
+                      + tuple({0x3C8: (8, fade), 0x3CC: (32, 500), "states": (0, 3, 0x14)}
+                              for fade in (101, 127, 128, 150, 255))),
     "Orc": dict(model=orc, states=_states(),
                 variants=tuple({0x478: (32, v)} for v in range(6))
                 + tuple({0x478: (32, 5), 0x47C: (32, c), "states": (0x17,)} for c in EDGE),
@@ -1126,7 +1134,10 @@ SPECS.update({
                          + tuple({0x3CC: (32, c), "states": (3, 5)} for c in EDGE)
                          + tuple({0x3CC: (32, c), "states": (0,)} for c in (119, 121))
                          # alive-player count 0x4f8420 = 1: the 7/8 turn
-                         + ({0x3CC: (32, 0), "alive": 1, "states": (7, 8)},)),
+                         + ({0x3CC: (32, 0), "alive": 1, "states": (7, 8)},)
+                         # 2, 3 and 4 alive (2026-11-09): no turn, so == 1
+                         + tuple({0x3CC: (32, 0), "alive": n, "states": (7, 8)}
+                                 for n in (2, 3, 4))),
     "Froglock": dict(model=froglock, states=_states(7, 8),
                      variants=({"holder": {0x7C: 0x12}}, {"holder": {0x7C: 0x10}})),
     # (hit points, maximum): below, at and above half, at two maxima.

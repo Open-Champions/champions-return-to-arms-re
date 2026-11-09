@@ -11,8 +11,11 @@ list, and the probe walks every answer path depth-first over the full context
 grid (target, ev, animation flags, deadline, ally, variant fields at and
 around the clock), an HP pass (hit points below, at and above half of the
 maximum) and the two tick exits (Creature_run nonzero, updateActive zero).
-Model line coverage is printed per class and an unmarked unreached line
-fails. The emitted events
+Model line coverage and branch-arm coverage (both outcomes of every
+conditional jump, one-line conditionals and short-circuit tests included;
+Python 3.14 sys.monitoring) are printed per class, and an unmarked unreached
+line or arm fails. Every walked run is also checked for loads of hit points
++0x228/+0x22c (HP_READS). The emitted events
 (query arguments, slot-27 requests, hit-helper arguments, movement calls)
 and the final own-generator state are compared with ref_creature_ai_m1_3.
 The hit helpers 0x119938 / 0x1196e8 / 0x119b58 are then executed with sight
@@ -146,6 +149,53 @@ class Coverage:
         return bad
 
 
+class Arms:
+    """Branch-arm coverage of the model functions: sys.monitoring BRANCH_LEFT /
+    BRANCH_RIGHT events against code.co_branches() (Python 3.14). An arm is the
+    jump taken or not taken at one conditional jump, so the two sides of a
+    one-line conditional and every test of a short-circuit chain count apart.
+    Model code runs only while the walk compares it, so a taken arm is a
+    compared one."""
+    TOOL = 1        # sys.monitoring.COVERAGE_ID
+
+    def __init__(self, functions):
+        mon = sys.monitoring
+        if not hasattr(MODELS.entry.__code__, "co_branches"):
+            raise SystemExit("branch-arm coverage needs Python 3.14 (code.co_branches)")
+        self.seen = set()
+        mon.use_tool_id(self.TOOL, "creature-ai-arms")
+        for event in (mon.events.BRANCH_LEFT, mon.events.BRANCH_RIGHT):
+            mon.register_callback(self.TOOL, event, self._hit)
+        for function in functions:
+            mon.set_local_events(self.TOOL, function.__code__,
+                                 mon.events.BRANCH_LEFT | mon.events.BRANCH_RIGHT)
+
+    def _hit(self, code, source, destination):
+        self.seen.add((code, source, destination))
+        return sys.monitoring.DISABLE           # each arm is recorded once
+
+    def report(self, label, functions):
+        """Unreached arms (as model lines) without a 'not walked' marker."""
+        source = Path(MODELS.entry.__code__.co_filename).read_text().splitlines()
+        arms, taken, allowed, bad = 0, 0, 0, []
+        for function in functions:
+            code = function.__code__
+            lines = [p[0] for p in code.co_positions()]
+            for src, left, right in code.co_branches():
+                line = lines[src // 2]
+                for dst in (left, right):
+                    arms += 1
+                    if (code, src, dst) in self.seen:
+                        taken += 1
+                    elif "not walked" in source[line - 1]:
+                        allowed += 1
+                    else:
+                        bad.append(line)
+        print("ARMS  %-12s %3d branch arms, %3d taken, %d marked not walked%s"
+              % (label, arms, taken, allowed, "" if not bad else ", UNTAKEN at lines %s" % bad))
+        return bad
+
+
 def mismatch(name, ctx, used, got, want, seed, model_seed):
     same = 0
     while same < min(len(got), len(want)) and got[same] == want[same]:
@@ -161,6 +211,16 @@ def mismatch(name, ctx, used, got, want, seed, model_seed):
 # Object fields the grid varies that a run can only see by reading them.
 VARIED = {"anim": (0x11A, 2), "deadline": (0xF4, 4)}
 ALIVE = 0x4F8420                 # alive-player count (0 unless a variant sets it)
+# Hit points +0x228 and maximum +0x22c: loads by any walked run, per class, as
+# (state, offset, whether that path asked a hitAtReach). Replayed
+# contexts repeat a walked run exactly, so this covers the whole grid.
+HP_FIELDS = {0x228: 4, 0x22C: 4}
+HP_READS = {}
+# The only expected loads (anything else fails the run): Amphian's block test
+# in state 5, and the WarWraith drain in state 7 after its hitAtReach (on
+# either result; the heal write is not compared).
+HP_READERS = {"Amphian": {(5, 0x228, False), (5, 0x22C, False)},
+              "WarWraith": {(7, 0x228, True), (7, 0x22C, True)}}
 
 
 def walk(executable, name, ctx, model, cover, limit=4000):
@@ -189,6 +249,11 @@ def walk(executable, name, ctx, model, cover, limit=4000):
                                        for _pc, a, s, _v in rig.emu.reads):
                 read.add(dim)
         used = [prefix[i] if i < len(prefix) else 0 for i in range(len(rig.asked))]
+        reached = "hitAtReach" in rig.asked
+        for offset, size in HP_FIELDS.items():
+            lo = rig.obj + offset
+            if any(a < lo + size and lo < a + s for _pc, a, s, _v in rig.emu.reads):
+                HP_READS.setdefault(name, Counter())[(ctx["state"], offset, reached)] += 1
         got = events(rig, calls)
         m = R.M(ctx, used)
         cover.run(model, m)
@@ -491,8 +556,7 @@ def check_hits(executable, seed):
             (36.0, 36.0, 0.0, 0.0, 20.0, 20.0, 0.0, 8, 0),
             (36.0, 36.0, 0.0, 0.0, 20.0, 20.0, 0.0, 0x40, 1),
             # y alone (+ and -), then x+y (59.40 / 60.10), then x+y+z (59.93 / 60.10).
-            # y is asserted at 59.9 / 60.1: exactly 60.0 along +y or -y still
-            # hits (the reach point is not exactly on the x axis at facing 0).
+            # y is asserted at 59.9 / 60.1 both ways.
             (36.0, 36.0, 59.9, 0.0, 20.0, 20.0, 0.0, 0, 1),
             (36.0, 36.0, 60.1, 0.0, 20.0, 20.0, 0.0, 0, 0),
             (36.0, 36.0, -59.9, 0.0, 20.0, 20.0, 0.0, 0, 1),
@@ -511,7 +575,12 @@ def check_hits(executable, seed):
             (36.0, 36.0, 70.1, 0.0, 20.0, 20.0, 10.0, 0, 0),
             (36.0, 36.0, -49.9, 0.0, 20.0, 20.0, 10.0, 0, 1),
             (36.0, 36.0, -50.1, 0.0, 20.0, 20.0, 10.0, 0, 0),
-            (36.0, 36.0, 10.0, 0.0, 20.0, 20.0, 10.0, 0, 1)):
+            (36.0, 36.0, 10.0, 0.0, 20.0, 20.0, 10.0, 0, 1),
+            # exactly 60.0 along y (2026-11-09): +y hits, -y misses (the edges
+            # bisect to about 60.00001 and 59.99999), so the reach point sits
+            # slightly on the +y side at facing 0; the cause is Inferred.
+            (36.0, 36.0, 60.0, 0.0, 20.0, 20.0, 0.0, 0, 1),
+            (36.0, 36.0, -60.0, 0.0, 20.0, 20.0, 0.0, 0, 0)):
         reach, x, y, z, radius, own_radius, own_y, oflags, expect = row
         rig = Rig(executable, cls, 6, seed)
         emu = rig.emu
@@ -611,6 +680,7 @@ def main():
     bad = []
     unreached = []
     shared = Coverage()
+    arms = Arms([spec["model"] for spec in MODELS.SPECS.values()] + [MODELS.head, MODELS.entry])
     for name in MODELS.SPECS:
         if (args.k and name not in args.k) or args.skip_walk:
             continue
@@ -628,10 +698,19 @@ def main():
               % (name, sum(kinds.values()), kinds["grid"], kinds["draw"], kinds["hp"], kinds["exit"],
                  walks, paths, replayed), flush=True)
         unreached += [(name, n) for n in cover.report(name, [MODELS.SPECS[name]["model"]])]
+        unreached += [(name, "arm", n) for n in arms.report(name, [MODELS.SPECS[name]["model"]])]
+        hp = HP_READS.get(name, Counter())
+        print("HPREAD %-11s %s" % (name, ", ".join(
+            "state %#x +%#x%s on %d paths" % (st, o, " after a hitAtReach" if h else "", hp[st, o, h])
+            for st, o, h in sorted(hp)) or "no walked path loads +0x228 or +0x22c"))
+        want = HP_READERS.get(name, set())
+        if set(hp) != want:
+            bad.append("%s HP loads %s, expected %s" % (name, sorted(hp), sorted(want)))
         shared.hits.update(cover.hits)
         total += paths
     if total and not args.k:
         unreached += [("shared", n) for n in shared.report("head/entry", [MODELS.head, MODELS.entry])]
+        unreached += [("shared", "arm", n) for n in arms.report("head/entry", [MODELS.head, MODELS.entry])]
     assert not bad, "failing classes: %s" % bad
     assert not unreached, "unreached model lines: %s" % unreached
     if not args.k or args.skip_walk:
