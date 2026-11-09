@@ -2851,6 +2851,9 @@ setState (0x2350d0): 3 and 0x10 use the run clip; 0x12 one of two hit clips by o
 Phases: below half hit points each melee decision has a 1-in-4 chance of a block instead.
 Per-machine: (a) none found (the scan on run, setState, ctor; body read). (b) Amphian_draw is
 Creature_draw(this, slot 16 model, slot 38 second resource, 0); no store. (c) no.
+Correction 2026-11-09 (executed, `docs/creature-ai-m1-3.md` §3.11): state 0x13 tests `isNotStunned`
+before -> 3 (not unconditional); the block test in 5 is hit points < 0.5 x maximum (49 of 100
+and 99 of 200 may block, 50 of 100 and 100 of 200 never).
 
 ### Bubo, FemaleDarkElf, Critter, Creep, Cyclops family, Clockwork
 
@@ -3743,6 +3746,9 @@ nothing (sets the draw parameter 0x41c14c = 2.0, `Creature_draw`, holder draw, r
 
 Open: stack arguments of `MissileWeapon_ctor`; value returned by slot 36; cflag bits
 0x2000000000 and 0x20000000000.
+Correction 2026-11-09 (executed, `docs/creature-ai-m1-3.md` §3.7): state 0x13 tests `isNotStunned`
+before -> 3 (not unconditional); state 9 without a target requests 0 and still runs both exit
+tests that tick.
 
 ---
 
@@ -5040,6 +5046,8 @@ Per-machine: (a) none found (the scan on run, setState, ctor, slot 21). (b) Kobo
 is one `Creature_draw` call. (c) none.
 Open: requesters of states 9 and 0x17; whether `creature_findWoundedAlly` can return the
 shaman itself.
+Correction 2026-11-09 (executed, `docs/creature-ai-m1-3.md` §3.1): the shaman state 8 searches for
+a corpse and a wounded ally on event bit 0 even without a target.
 
 ---
 
@@ -5477,6 +5485,10 @@ one extra model-part draw (0x178c28 with weapon-list entries +0x5c / +0x64).
 Open: what cflags 0x200000000 / 0x400000000 / 0x800000000 / 0x2000000000 are for; the body
 of `MissileWeapon_ctor` and of the three arrow constructors (not in this range); why Healing
 is cast with the ally in the caster argument (the skill's cast body was not read).
+Correction 2026-11-09 (executed, `docs/creature-ai-m1-3.md` §3.3): state 2 answers a plain sight
+with request 0 (a forced archer sight with 3); the state 6 stand counter +0xf4 is decremented only
+once the clip has ended but tested every tick; states 4 and 5 continue after their attack request
+in the same tick (4: one own draw and the move; 5: not rooted -> 3).
 
 #### Skeleton  (factory names `WatSkel`, `Skeleton*`; vtable 0x5175f8; size 0x478)
 
@@ -6565,6 +6577,9 @@ Per-machine:
 
 Open: meaning of damage flag 0x400000 (not tested in `damage_apply`); item-type numbers
 0x16–0x1c; whether anything requests states 9 and 10.
+Correction 2026-11-09 (executed, `docs/creature-ai-m1-3.md` §3.6): in state 5 the 156-unit sight
+test is asked every tick once not rooted (the ally count only when the 1-in-60 draw hits); in the
+combo window, combo count 1 chains to 7 when blocking or on an even own draw.
 
 #### Ulthork  (factory prefix `Ulthork*`; vtable 0x517a60; size 0x468)
 
