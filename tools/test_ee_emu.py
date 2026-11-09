@@ -658,6 +658,158 @@ class ControlTests(unittest.TestCase):
         emu.call(BASE)
         self.assertEqual(seen, [60])
 
+    def test_deci2_kputs_is_opt_in_and_rejects_other_numbers(self):
+        kputs = [addiu(V1, ZERO, 124), addiu(A0, ZERO, 0x10), R(0x0C), addiu(V0, V0, 5)]
+        with self.assertRaises(CpuTrap) as unhandled:
+            machine(kputs)
+        self.assertEqual(str(unhandled.exception),
+                         'SYSCALL at 0x%08x (v1 = 124); no kernel is modelled' % (BASE + 8))
+        emu = machine(kputs, run=False)
+        emu.install_deci2_kputs()
+        self.assertEqual(emu.call(BASE), 5)
+        self.assertEqual(emu.r[V0], 5)
+        with self.assertRaises(EmuError):
+            emu.install_deci2_kputs()
+        other = machine([addiu(V1, ZERO, 124), addiu(A0, ZERO, 1), R(0x0C)], run=False)
+        other.install_deci2_kputs()
+        with self.assertRaises(CpuTrap) as rejected:
+            other.call(BASE)
+        self.assertIn('v1 = 124, a0 = 1', str(rejected.exception))
+        self.assertIn('outside the observed function-0x10 contract', str(rejected.exception))
+        plain = machine([addiu(V1, ZERO, 60), R(0x0C)], run=False)
+        plain.install_deci2_kputs()
+        with self.assertRaises(CpuTrap) as other_syscall:
+            plain.call(BASE)
+        self.assertEqual(str(other_syscall.exception),
+                         'SYSCALL at 0x%08x (v1 = 60); no kernel is modelled' % (BASE + 4))
+
+    def test_terminate_thread_is_opt_in_and_rejects_a_caller_that_reads_v0(self):
+        terminate = [addiu(V1, ZERO, 37), R(0x0C), addiu(V0, V0, 5)]
+        with self.assertRaises(CpuTrap) as unhandled:
+            machine(terminate)
+        self.assertEqual(str(unhandled.exception),
+                         'SYSCALL at 0x%08x (v1 = 37); no kernel is modelled' % (BASE + 4))
+        emu = machine(terminate, run=False)
+        emu.install_terminate_thread()
+        with self.assertRaises(EmuError):
+            emu.install_terminate_thread()
+        emu.hook(BASE + 4, lambda e: e.set_reg('ra', 0x17e480))
+        emu.hook(BASE + 8, lambda e: e.set_reg('ra', EE.RETURN_ADDR))
+        self.assertEqual(emu.call(BASE), 5)
+        self.assertEqual(emu.writes, [])
+        signed = machine(terminate, run=False)
+        signed.install_terminate_thread()
+        signed.hook(BASE + 4, lambda e: e.set_reg('ra', 0x35f3bc))
+        with self.assertRaises(CpuTrap) as observed:
+            signed.call(BASE)
+        self.assertIn('v1 = 37, ra = 0x0035f3bc', str(observed.exception))
+        self.assertIn('outside the observed TerminateThread contract', str(observed.exception))
+        both = machine([addiu(V1, ZERO, 124), addiu(A0, ZERO, 0x10), R(0x0C),
+                        addiu(V0, V0, 1)], run=False)
+        both.install_terminate_thread()
+        both.install_deci2_kputs()
+        self.assertEqual(both.call(BASE), 1)
+        other = machine([addiu(V1, ZERO, 60), R(0x0C)], run=False)
+        other.install_terminate_thread()
+        other.install_deci2_kputs()
+        with self.assertRaises(CpuTrap) as still:
+            other.call(BASE)
+        self.assertEqual(str(still.exception),
+                         'SYSCALL at 0x%08x (v1 = 60); no kernel is modelled' % (BASE + 4))
+
+    def test_modelled_boot_is_opt_in_and_labels_its_ids(self):
+        create = [addiu(V1, ZERO, 32), R(0x0C)]
+        with self.assertRaises(CpuTrap) as unhandled:
+            machine(create, {A0: DATA})
+        self.assertIn('no kernel is modelled', str(unhandled.exception))
+        param = struct.pack('<6I', 0, 0x17ca58, 0x7cbd00, 0x4000, 0, 6)
+        emu = machine(create, {A0: DATA}, data=param, run=False)
+        emu.install_modelled_boot()
+        with self.assertRaises(EmuError):
+            emu.install_modelled_boot()
+        self.assertEqual(emu.call(BASE), 2)
+        self.assertEqual(emu.call(BASE), 3)
+        current = machine([addiu(V1, ZERO, 47), R(0x0C)], run=False)
+        current.install_modelled_boot()
+        self.assertEqual(current.call(BASE), 1)
+        empty = struct.pack('<6I', 0, 4, 0, 0, 0, 0)
+        waiting = machine([addiu(V1, ZERO, 64), R(0x0C),
+                           addiu(V1, ZERO, 68), addiu(A0, ZERO, 1), R(0x0C)],
+                          {A0: DATA}, data=empty, run=False)
+        waiting.install_modelled_boot()
+        with self.assertRaises(CpuTrap) as blocked:
+            waiting.call(BASE)
+        self.assertIn('modelled WaitSema count is 0', str(blocked.exception))
+        other = machine([addiu(V1, ZERO, 99), R(0x0C)], run=False)
+        other.install_modelled_boot()
+        other.install_deci2_kputs()
+        with self.assertRaises(CpuTrap) as plain:
+            other.call(BASE)
+        self.assertEqual(str(plain.exception),
+                         'SYSCALL at 0x%08x (v1 = 99); no kernel is modelled' % (BASE + 4))
+
+    def test_modelled_intc_delivers_one_handler_then_retries(self):
+        handler = 0x30000
+        wrapper = 0x352a10
+        # Cause is stored, then a0 is reloaded from DATA+0x40, then iSignalSema.
+        body = [R(0x21, T1, RA, ZERO),
+                I(0x0F, T0, 0, 2),
+                I(0x2B, A0, T0, 0x60),
+                I(0x0F, A0, 0, 2),
+                I(0x23, A0, A0, 0x40),
+                J(3, wrapper),
+                NOP,
+                addiu(S0, ZERO, 99),
+                R(0x21, RA, T1, ZERO),
+                JR_RA,
+                NOP]
+        main = [I(0x0F, A0, 0, 2),
+                addiu(V1, ZERO, 64),
+                R(0x0C),
+                addiu(A0, ZERO, 2),
+                I(0x0F, A1, 0, 3),
+                addiu(A2, ZERO, 0),
+                addiu(V1, ZERO, 16),
+                R(0x0C),
+                addiu(A0, ZERO, 2),
+                addiu(V1, ZERO, 20),
+                R(0x0C),
+                addiu(S0, ZERO, 0x11),
+                addiu(A0, ZERO, 1),
+                addiu(V1, ZERO, 68),
+                R(0x0C)]
+        param = struct.pack('<6I', 0, 1, 0, 0, 0, 0) + bytes(0x28) + struct.pack('<I', 1)
+        blocked = machine(main, data=param, run=False)
+        blocked.load_words(handler, body)
+        blocked.load_words(wrapper, [addiu(V1, ZERO, -0x43), R(0x0C), JR_RA, NOP])
+        blocked.install_modelled_boot()
+        blocked.hook(BASE + 40, lambda emu: emu.set_reg('ra', 0x353560))
+        blocked.hook(BASE + 44, lambda emu: emu.set_reg('ra', EE.RETURN_ADDR))
+        with self.assertRaises(CpuTrap) as still:
+            blocked.call(BASE)
+        self.assertIn('modelled WaitSema count is 0', str(still.exception))
+        self.assertEqual(blocked.mem.u32(DATA + 0x60), 0)
+        self.assertEqual(blocked.intc_deliveries, [])
+        delivered = machine(main, data=param, run=False)
+        delivered.load_words(handler, body)
+        delivered.load_words(wrapper, [addiu(V1, ZERO, -0x43), R(0x0C), JR_RA, NOP])
+        delivered.install_modelled_boot()
+        delivered.install_modelled_intc()
+        with self.assertRaises(EmuError):
+            delivered.install_modelled_intc()
+        delivered.hook(BASE + 40, lambda emu: emu.set_reg('ra', 0x353560))
+        delivered.hook(BASE + 44, lambda emu: emu.set_reg('ra', EE.RETURN_ADDR))
+        self.assertEqual(delivered.call(BASE), 1)
+        self.assertEqual(delivered.r[S0], 0x11)
+        self.assertEqual(delivered.mem.u32(DATA + 0x60), 2)
+        self.assertEqual(delivered.intc_deliveries, [(2, handler, 1)])
+        self.assertEqual(delivered._semas[1]['count'], 0)
+        bare = machine([addiu(V1, ZERO, -0x43), R(0x0C)], run=False)
+        bare.install_modelled_boot()
+        with self.assertRaises(CpuTrap) as unsigned:
+            bare.call(BASE)
+        self.assertIn('no kernel is modelled', str(unsigned.exception))
+
     def callee_program(self):
         """v0 = callee(a0 + 1) + 1000, where callee(x) = x * 2 and stores x at DATA."""
         return [R(0x25, S0, RA, ZERO),          # 0: s0 = ra
