@@ -521,3 +521,107 @@ def shell_packet(start, model, mode, records, boundaries, alpha_bits, fill=0xa5)
     # 0x175314 stores a fresh qword: the qword count of the trailer, with 0x10000000.
     sd(trailer, (_sra(_sra(final - trailer, 3) - 2, 1) & 0xffffffff) | 0x10000000)
     return final, bytes(image[:final - start])
+
+
+# ---------------------------------------------------------------------------
+# Round 5 additions: float bits, the preview body mask, VU1 joint and attach
+# matrices. Nothing above this line changed.
+# ---------------------------------------------------------------------------
+import struct as _struct
+
+
+def f32(bits):
+    return _struct.unpack('<f', _struct.pack('<I', bits & 0xffffffff))[0]
+
+
+def f32_bits(value):
+    return _struct.unpack('<I', _struct.pack('<f', value))[0]
+
+
+def preview_body_mask(hair_hide, beard_hide, item_hides):
+    """0x224d80: all 64 bits, minus the chosen hair's hide qword, the chosen
+    beard's, then each loaded preview item's, in that order. None means the
+    choice is -1 or its pointer slot is empty."""
+    mask = U64
+    for hide in (hair_hide, beard_hide):
+        if hide is not None:
+            mask &= ~hide
+    for hide in item_hides:
+        mask &= ~hide
+    return mask & U64
+
+
+def _vu_ops():
+    """VU1 adds and multiplies as tools/vu1_emu.py models them ('chop')."""
+    import ee_emu
+    from vu1_emu import vu_in, vu_out
+
+    def add(a, b):
+        return vu_out(ee_emu.fp_add(vu_in(a), vu_in(b), 'chop'))
+
+    def mul(a, b):
+        return vu_out(ee_emu.fp_mul(vu_in(a), vu_in(b), 'chop'))
+
+    def itof(word, shift):
+        scale = ee_emu.float_to_raw(1.0 / (1 << shift))
+        return mul(ee_emu.fp_from_int(word & 0xffffffff, 'chop'), scale)
+    return add, mul, itof
+
+
+def pose_qwords(rows):
+    """Entry 0x3a: one joint's three pose-buffer rows of s16 (r0, r1, r2, t)
+    become three float qwords: xyz / 4096 (ITOF12), w / 16 then * 0.25."""
+    add, mul, itof = _vu_ops()
+    out = []
+    for row in rows:
+        lanes = [itof(v, 12) for v in row[:3]]
+        lanes.append(mul(itof(row[3], 4), 0x3e800000))
+        out.append(lanes)
+    return out
+
+
+def _combine(add, mul, rows, coefficients, last=None):
+    """MULA, MADDA..., MADD in order: sum_k rows[k] * coefficients[k], plus an
+    optional fourth row times 1 (vf0.w)."""
+    acc = [mul(rows[0][i], coefficients[0]) for i in range(4)]
+    terms = list(zip(rows[1:], coefficients[1:]))
+    if last is not None:
+        terms.append((last, 0x3f800000))
+    for row, c in terms:
+        acc = [add(acc[i], mul(row[i], c)) for i in range(4)]
+    return acc
+
+
+def vu_joint(pose, transform):
+    """Entry 0x0c for one joint. pose: the three qwords of pose_qwords.
+    transform: the four rows vf1..vf4 loaded by entry 0x02. Row c of the
+    joint matrix is T0*p0[c] + T1*p1[c] + T2*p2[c], and row 3 adds T3."""
+    add, mul, _itof = _vu_ops()
+    rows = []
+    for c in range(4):
+        coefficients = [pose[0][c], pose[1][c], pose[2][c]]
+        rows.append(_combine(add, mul, transform[:3], coefficients,
+                             transform[3] if c == 3 else None))
+    return rows
+
+
+def attach_qwords(values, mirrored=False):
+    """The three V4-32 rows model_emitPartSetup uploads after the joint word:
+    row k is (v[k], v[3+k], v[6+k], v[9+k]); mirroring negates v[0..2]."""
+    v = list(values)
+    if mirrored:
+        for i in range(3):
+            v[i] ^= 0x80000000
+    return [[v[k], v[3 + k], v[6 + k], v[9 + k]] for k in range(3)]
+
+
+def vu_attach(joint, attach):
+    """Entry 0x1a: slot 0 row c = J0*A0[c] + J1*A1[c] + J2*A2[c], and row 3
+    adds J3. joint: the four rows at qword joint*4. attach: attach_qwords."""
+    add, mul, _itof = _vu_ops()
+    rows = []
+    for c in range(4):
+        coefficients = [attach[0][c], attach[1][c], attach[2][c]]
+        rows.append(_combine(add, mul, joint[:3], coefficients,
+                             joint[3] if c == 3 else None))
+    return rows

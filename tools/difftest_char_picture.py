@@ -17,9 +17,16 @@ Executed:
 * model_emitShellPasses 0x174e78, and the flag/count gates in model_draw
   and model_drawPart
 
-Observed, not a run of playerSel_task: every direct jal/j target and every
-jalr from 0x225478 through 0x22e700, plus every jal, composed address, and
-aligned data word that names anim_advance. Indirect callees are not followed.
+Observed, not a run of playerSel_task: every direct jal/j target, every
+linking branch (REGIMM rt 16-19), every jalr and every jr through a register
+other than $ra from 0x225478 through 0x22e700. Across the executable: every
+jal, j and linking branch that names anim_advance, every lui-pair site under
+two register rules (the Elf.analyze reset at heuristic function starts, and no
+reset at all), and every aligned word in every allocated section that has file
+data. Then the direct-call closure of the span over the exact bodies in
+ghidra_funcs.tsv: jal, linking branches, and j that leaves its body. Indirect
+calls inside that closure are counted, not followed; tools/difftest_char_frame.py
+records them at run time.
 
 Renderer submission stays stubbed. No archive bytes are printed.
 """
@@ -130,7 +137,11 @@ def _composed_sites(words, base, starts, target):
     return sites
 
 
-def _direct_in_span(words, base):
+LINK_RT = (16, 17, 18, 19)   # bltzal, bgezal, bltzall, bgezall
+HOLDERS = (0x1162b0, 0x189870, 0x1b9520, 0x1709d8)   # functions holding the four sites
+
+
+def _direct_in_span(words, base, jrs=None):
     jals, jumps, links, jalrs = [], [], [], []
     for index, word in enumerate(words):
         pc = base + index * 4
@@ -140,32 +151,124 @@ def _direct_in_span(words, base):
         if op in (2, 3):
             target = (pc & 0xF0000000) | ((word & 0x03FFFFFF) << 2)
             (jals if op == 3 else jumps).append((pc, target))
-        elif op == 1 and ((word >> 16) & 31) in (16, 17):
+        elif op == 1 and ((word >> 16) & 31) in LINK_RT:
             imm = word & 0xFFFF
             simm = imm - 0x10000 if imm & 0x8000 else imm
             links.append((pc, (pc + 4 + (simm << 2)) & 0xFFFFFFFF))
         elif op == 0 and (word & 0x3F) == 9:
             jalrs.append(pc)
+        elif op == 0 and (word & 0x3F) == 8 and ((word >> 21) & 31) != 31 and jrs is not None:
+            jrs.append((pc, (word >> 21) & 31))
     return jals, jumps, links, jalrs
+
+
+def _data_words(elf, target):
+    """Aligned words equal to target in every allocated section with file data."""
+    hits, scanned = [], []
+    for name, (addr, offset, size) in elf.sections.items():
+        if not addr or name in ('.text', '.bss', '.sbss', '.vubss') or offset + size > len(elf.d):
+            continue
+        scanned.append(name)
+        start = (4 - addr % 4) % 4
+        for pos in range(start, size - 3, 4):
+            if struct.unpack_from('<I', elf.d, offset + pos)[0] == target:
+                hits.append(addr + pos)
+    return hits, scanned
+
+
+def _composed_noreset(words, base, target):
+    """lui-pair sites with no reset at function starts (the wider rule)."""
+    return _composed_sites(words, base, set(), target)
+
+
+def _bodies(path):
+    """Exact function bodies from ghidra_funcs.tsv: entry -> [(lo, hi_inclusive)]."""
+    bodies = {}
+    with open(path) as source:
+        for line in source:
+            if not line.strip() or line.startswith('#'):
+                continue
+            entry, _name, body = line.rstrip('\n').split('\t')
+            ranges = []
+            for part in body.split(','):
+                if part:
+                    lo, hi = (int(x, 16) for x in part.split('-'))
+                    ranges.append((lo, hi))
+            bodies[int(entry, 16)] = ranges
+    return bodies
+
+
+def closure(elf, words, base, roots, bodies):
+    """Direct-call closure. Returns (reached entries, parent map, indirect sites)."""
+    owner = []
+    for entry, ranges in bodies.items():
+        for lo, hi in ranges:
+            owner.append((lo, hi, entry))
+    owner.sort()
+    import bisect
+    starts = [lo for lo, _hi, _e in owner]
+
+    def entry_of(address):
+        i = bisect.bisect_right(starts, address) - 1
+        if i >= 0 and owner[i][0] <= address <= owner[i][1]:
+            return owner[i][2]
+        return None
+    parent, queue, indirect = {}, [], []
+    for root in roots:
+        entry = entry_of(root)
+        if entry is not None and entry not in parent:
+            parent[entry] = None
+            queue.append(entry)
+    while queue:
+        entry = queue.pop(0)
+        for lo, hi in bodies[entry]:
+            for pc in range(lo, hi + 1, 4):
+                if not elf.in_text(pc):
+                    continue
+                word = words[(pc - base) // 4]
+                op = word >> 26
+                target = None
+                if op in (2, 3):
+                    target = (pc & 0xF0000000) | ((word & 0x03FFFFFF) << 2)
+                    if op == 2 and entry_of(target) == entry:
+                        target = None
+                elif op == 1 and ((word >> 16) & 31) in LINK_RT:
+                    imm = word & 0xFFFF
+                    simm = imm - 0x10000 if imm & 0x8000 else imm
+                    target = (pc + 4 + (simm << 2)) & 0xFFFFFFFF
+                elif op == 0 and (word & 0x3F) == 9:
+                    indirect.append(pc)
+                elif op == 0 and (word & 0x3F) == 8 and ((word >> 21) & 31) != 31:
+                    indirect.append(pc)
+                if target is None:
+                    continue
+                callee = entry_of(target)
+                if callee is not None and callee not in parent:
+                    parent[callee] = (entry, pc)
+                    queue.append(callee)
+    return parent, indirect
 
 
 def selection_census(path):
     """Direct-call census of playerSel_task through 0x22e700. Not a task run."""
     elf = ps2elf.Elf(path)
     base, words = _text_words(elf)
-    jals, jumps, links, jalrs = _direct_in_span(words, base)
+    jrs = []
+    jals, jumps, links, jalrs = _direct_in_span(words, base, jrs)
     family = set(ADVANCE_DIRECT)
-    named = [target for _pc, target in jals + jumps + links if target in family]
+    named = sorted({target for _pc, target in jals + jumps + links if target in family})
     check(not named and not jalrs, 'selection span names an advance entry or uses jalr')
     unique = sorted({target for _pc, target in jals})
     check(unique, 'selection span has no direct calls')
+    holders = sorted(set(unique) & set(HOLDERS))
+    check(not holders, 'a direct target holds an anim_advance site')
     advance_jals, advance_jumps, advance_links = [], [], []
     for index, word in enumerate(words):
         pc = base + index * 4
         op = word >> 26
         if op in (2, 3):
             target = (pc & 0xF0000000) | ((word & 0x03FFFFFF) << 2)
-        elif op == 1 and ((word >> 16) & 31) in (16, 17):
+        elif op == 1 and ((word >> 16) & 31) in LINK_RT:
             imm = word & 0xFFFF
             simm = imm - 0x10000 if imm & 0x8000 else imm
             target = (pc + 4 + (simm << 2)) & 0xFFFFFFFF
@@ -181,21 +284,43 @@ def selection_census(path):
             advance_links.append(pc)
     starts = _function_starts(elf, words, base)
     advance_refs = _composed_sites(words, base, starts, ANIM_ADVANCE)
+    wide_refs = _composed_noreset(words, base, ANIM_ADVANCE)
     advance_ptrs = elf.ptrs_to(ANIM_ADVANCE)
-    inside = [site for site in advance_jals + advance_jumps + advance_links
-              + advance_refs + advance_ptrs if SEL_LO <= site <= SEL_HI]
+    data_ptrs, scanned = _data_words(elf, ANIM_ADVANCE)
+    check(set(advance_ptrs) <= set(data_ptrs), 'the wider data scan covers ptrs_to')
+    inside = [site for site in advance_jals + advance_jumps + advance_links + advance_refs
+              + wide_refs + data_ptrs if SEL_LO <= site <= SEL_HI]
     check(not inside, 'anim_advance is named inside the selection span')
-    print('CENSUS range=0x%x-0x%x inclusive jal=%d j=%d bal=%d jalr=%d unique=%d advance_direct='
-          % (SEL_LO, SEL_HI, len(jals), len(jumps), len(links), len(jalrs), len(unique)),
-          flush=True)
+    bodies = _bodies(os.path.join(_TOOL_DIR, '..', 'ghidra_funcs.tsv'))
+    roots = [pc for pc in range(SEL_LO, SEL_HI + 1, 4)]
+    parent, indirect = closure(elf, words, base, roots, bodies)
+    reached_family = sorted(set(parent) & (family | set(HOLDERS)))
+    print('CENSUS range=0x%x-0x%x inclusive jal=%d j=%d bal=%d jalr=%d jr_other=%d unique=%d '
+          'advance_direct=%s holders=%s'
+          % (SEL_LO, SEL_HI, len(jals), len(jumps), len(links), len(jalrs), len(jrs),
+             len(unique), ' '.join('%x' % t for t in named) or '-',
+             ' '.join('%x' % t for t in holders) or '-'), flush=True)
+    print('CENSUS jr_other %s' % (' '.join('%x:r%d' % site for site in jrs) or '-'), flush=True)
     print('CENSUS targets %s' % ' '.join('%x' % target for target in unique), flush=True)
-    print('CENSUS anim_advance jal=%s j=%s bal=%s refs=%s ptrs=%s in_range=0' % (
+    print('CENSUS anim_advance jal=%s j=%s bal=%s refs=%s refs_noreset=%s ptrs=%s in_range=%d' % (
         ' '.join('%x' % site for site in advance_jals) or '-',
         ' '.join('%x' % site for site in advance_jumps) or '-',
         ' '.join('%x' % site for site in advance_links) or '-',
         ' '.join('%x' % site for site in advance_refs) or '-',
-        ' '.join('%x' % site for site in advance_ptrs) or '-'), flush=True)
-    return unique
+        ' '.join('%x' % site for site in wide_refs) or '-',
+        ' '.join('%x' % site for site in data_ptrs) or '-', len(inside)), flush=True)
+    print('CENSUS data_sections %s' % ' '.join(sorted(scanned)), flush=True)
+    paths = []
+    for entry in reached_family:
+        chain, at = [], entry
+        while parent[at] is not None:
+            chain.append('%x@%x' % (at, parent[at][1]))
+            at = parent[at][0]
+        chain.append('%x' % at)
+        paths.append('<'.join(chain))
+    print('CENSUS closure functions=%d indirect_sites=%d reached_writers=%s' % (
+        len(parent), len(indirect), ' '.join(paths) or '-'), flush=True)
+    return unique, reached_family
 
 
 class Bounded(EE):
@@ -347,6 +472,7 @@ def creation(pic):
     check((word >> 26) == 0x09 and (word & 0xFFFF) == 3, 'flags immediate')
     pointers, copies = literal_rows(e)
     check(pointers == [0] and not copies, 'import literal row')
+    pic.literal = (pointers, copies)
     count = 0
     for marked, flags, track_count, expect in (
             (False, 0x80, 0, True), (True, 0x88, 1, True),
@@ -683,8 +809,11 @@ def main():
         drawn = mask_and_shell(pic)
         print('SLICE creation targets %s' % ' '.join(
             '%x' % target for target in sorted(pic.slice_targets)), flush=True)
-        print('PASS seed=%d creation=%d pose=%d draw=%d race=%d literal_rows=0' % (
-            seed, created, posed, drawn, race), flush=True)
+        print('PASS seed=%d creation=%d pose=%d draw=%d race=%d literal_pointer_rows=%s '
+              'literal_copy_rows=%s' % (
+                  seed, created, posed, drawn, race,
+                  ','.join(map(str, pic.literal[0])) or '-',
+                  ','.join(map(str, pic.literal[1])) or '-'), flush=True)
 
 
 if __name__ == '__main__':
