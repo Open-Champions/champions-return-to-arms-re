@@ -135,6 +135,23 @@ def prop(props, key):
     return None
 
 
+def site_strings(image, command, holder):
+    """The string argument (the last PUSH.C of a pool string before each SYSREQ.C) of every
+    call of command in entry holder, in code order.  Read at run time; never printed."""
+    parsed = scr.parse(image)
+    pool = dict(scr.strings(image, *parsed['strings']))
+    c0 = parsed['code'][0]
+    out = []
+    for off, name in call_sites(image, command):
+        if name != holder:
+            continue
+        words = struct.unpack_from('<14I', image, c0 + off - 56)
+        pushes = [words[j + 1] for j in range(13) if words[j] == 0x27 and words[j + 1] in pool]
+        if pushes:
+            out.append(pool[pushes[-1]].encode('latin-1'))
+    return out
+
+
 def call_sites(image, command):
     """Code offsets of every SYSREQ.C of the command, with the entry point holding it."""
     parsed = scr.parse(image)
@@ -613,7 +630,7 @@ def group_direct(rig, seed, cases, controls):
     image = D.synthetic_image()
     machine, saved = new_machine(rig, image)
     master = random.Random(seed ^ 0x1E7E1)
-    names = [b'brazier1', b'brazier5', b'trigger2', b'portal', b'gnome1', b'gnome6', b'door_a', b'gob']
+    names = [b'propA', b'propB', b'propC', b'propD', b'crittE', b'crittF', b'door_a', b'gob']   # synthetic
     stats = {'ok_returns': 0}
     for command in COMMANDS:
         tally = D.Tally()
@@ -731,7 +748,7 @@ def group_tormenta(rig, data, seed, cases):
         start_names.append(pool[pushes[-1]].encode('latin-1'))
     present = {prop(p, b'name'): (c, p) for c, p in records if prop(p, b'name') is not None}
     targets = [n for n in start_names if n in present]
-    targets_all = sorted({n for n in present if n.startswith((b'brazier', b'trigger'))})
+    targets_all = sorted({n for n, (_c, p) in present.items() if prop(p, b'autoprop') not in (None, b'0')})
     print('      tormenta start: %d autoPropSetState calls at %s; %d of their names have an object record '
           '(names T1..T5 in call order: %s present)' % (len(start_sites), ' '.join('0x%x' % s for s in start_sites),
                                                         len(targets), ''.join('T%d ' % (i + 1) for i, n in
@@ -747,7 +764,7 @@ def group_tormenta(rig, data, seed, cases):
     for case_index in range(cases):
         case_seed = random.Random(seed ^ 0x70A + case_index).getrandbits(32)
         rng = random.Random(case_seed)
-        variables = [b'tor_bri1', b'tor_bri2', b'tor_bri5', b'startedmission5', b'currentmission', b'tor_beenhere']
+        variables = [v.lower() for v in site_strings(image, 'getv', 'start') + site_strings(image, 'setv', 'start')]
         scene = fresh(rig, machine, saved, rng, start_names + [b'blocker1', b'x'], variables)
         reals = {}
         for name in targets_all:
@@ -848,6 +865,15 @@ def group_islgnome(rig, data, seed, cases):
     death = sorted({prop(present[n][1], b'deathscript') for n in gnomes})
     parsed = scr.parse(image)
     publics = {name for _o, name in parsed['internals']}
+    fail_entry = sites[0][1]
+    entrances = sorted({h for off, h in call_sites(image, 'callScript')
+                        if site_strings(image, 'callScript', h) == [fail_entry.encode()]})
+    v_started, v_finished = site_strings(image, 'getv', entrances[0])[:2]
+    d2 = site_strings(image, 'callScript', death[0].decode())[0].decode()
+    v_alive = site_strings(image, 'setv', d2)[0]
+    travel = site_strings(image, 'newWorld', entrances[0])[0]
+    print('      islgnome: the kill entry is called from %d entrances; V-started/V-finished read there, V-alive '
+          'stored by D2' % len(entrances))
     print('      islgnome: %d killMonster calls at %s, all in %s; %d names G1..G%d have records of classes %s; '
           'one deathscript for all, a public entry: %s'
           % (len(sites), '-'.join('0x%x' % s for s in (sites[0][0], sites[-1][0])),
@@ -860,7 +886,7 @@ def group_islgnome(rig, data, seed, cases):
     for case_index in range(cases):
         case_seed = random.Random(seed ^ 0x6E0 + case_index).getrandbits(32)
         rng = random.Random(case_seed)
-        variables = [b'startedquest', b'finishedquest', b'gnomesalivev']
+        variables = [v_started.lower(), v_finished.lower(), v_alive.lower()]
         scene = fresh(rig, machine, saved, rng, kill_names + [b'x'], variables)
         reals = {}
         for name in gnomes:
@@ -880,7 +906,7 @@ def group_islgnome(rig, data, seed, cases):
         mode = case_index % 4
         started, finished = [(1, 0), (1, 0), (1, 1), (0, 0)][mode]
         alive0 = rng.randrange(0, 20)
-        scene.quest_vars([(b'startedQuest', started), (b'finishedQuest', finished), (b'gnomesAliveV', alive0)])
+        scene.quest_vars([(v_started, started), (v_finished, finished), (v_alive, alive0)])
         # the script's own gnome counter (data cell 0x26c, written by gnomeinit / gnomeDied)
         counter = alive0
         rig.poke(rig.base + machine.data_offset + 0x26C, struct.pack('<i', counter))
@@ -888,13 +914,13 @@ def group_islgnome(rig, data, seed, cases):
         table = body_table(rng)
         game, host = make_model(scene, case_seed, machine, table)
         rig.responder = D.Responder(case_seed, scene)
-        entry_name = b'entrance%d' % (1 + case_index % 3)
+        entry_name = entrances[case_index % len(entrances)].encode()
         mem = rig.emu.mem
         before = {n: (mem.u32(e['addr'] + L.O_FLAGS), mem.u32(e['addr'] + L.C_RAND)) for n, e in reals.items()}
         gate = (mem.u32(L.G_ARENA) != 0 and mem.u32(L.G_ARENA_B) == 0 and mem.u32(L.G_GATE_C) != 0
                 and mem.u32(L.G_GATE_D) == 0)
         outcome = run_entry(rig, machine, game, host, entry_name, table, scene.cstring(entry_name))
-        tally.add(outcome, 'islgnome %s seed %d' % (entry_name.decode(), case_seed))
+        tally.add(outcome, 'islgnome entrance seed %d' % case_seed)
         expect_n += 1
         problems = []
         order = [item[0] for item in rig.order]
@@ -927,7 +953,7 @@ def group_islgnome(rig, data, seed, cases):
         if True:
             pending = mem.cstr(N.G_PENDING_LEVEL).encode('latin-1')
             orient = mem.u8(N.G_PENDING_ORIENT)
-            if pending != b'islc2':
+            if pending != travel:
                 problems.append('pending level')
             if died:
                 cleared += 1
@@ -937,21 +963,21 @@ def group_islgnome(rig, data, seed, cases):
                 kept += 1
                 if orient != orientation or mem.u32(L.G_SELECTED_OBJ) != trigger['addr']:
                     problems.append('orientation kept')
-            value = quest_var(mem, b'gnomesalivev')
+            value = quest_var(mem, v_alive.lower())
             if value != max(-128, min(127, expect_var)):
-                problems.append('gnomesAliveV %r expected %d' % (value, expect_var))
+                problems.append('V-alive %r expected %d' % (value, expect_var))
             ebytes = written_bytes(rig, rig.base, rig.base + rig.image_size + 0x200)
             for key, value in classify(rig, ebytes, {e['addr'] for e in reals.values()}).items():
                 regions_seen[key] = regions_seen.get(key, 0) + value
         if problems:
             expect_bad += 1
-            examples.append('seed %d %s: %s' % (case_seed, entry_name.decode(), '; '.join(problems[:4])))
+            examples.append('seed %d entrance %d: %s' % (case_seed, case_index % len(entrances), '; '.join(problems[:4])))
     report('shipped: islgnome entrances', tally.bad, tally.cases, 'whole entries vs model; %d call-outs'
            % tally.calls, tally.examples)
     report('shipped: islgnome expectations', expect_bad, expect_n,
            'quest started and not finished: 8 killMonster then newWorld; each living gnome gets 0x2009 and hp 0; '
-           'past the gate: state 0x14, one own draw, deathscript -> gnomesAliveV - 1; %d kills, %d refused by the '
-           'arena gate; pending islc2 with orientation 0xff and selected object 0 after a death (%d runs) or the '
+           'past the gate: state 0x14, one own draw, deathscript -> V-alive - 1; %d kills, %d refused by the '
+           'arena gate; pending level = the entrances\' newWorld argument, with orientation 0xff and selected object 0 after a death (%d runs) or the '
            'trigger\'s orientation with none (%d runs); other quest states: no kill, the same travel' %
            (kills, deaths_refused, cleared, kept), examples)
     other = sorted(k for k in regions_seen if k.startswith('OTHER'))
