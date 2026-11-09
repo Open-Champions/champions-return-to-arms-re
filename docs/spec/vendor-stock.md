@@ -214,10 +214,14 @@ the subject of its control-flow checks.
 
 **Unknown / port gates** that this round does not remove:
 
-- Termination is bounded only in probability. The first two lists have no
-  retry limit; "Generation failure" below shows that no supported input
-  failed any of 20 reference calls at its smallest budget. That is not a
-  fixed upper bound.
+- Termination has no fixed bound. The first two lists have no retry limit,
+  and three outcomes leave a list where it was: a failed call, a weapon
+  (category 0) record with flag bit 40, and a duplicate while fewer than six
+  retries were spent. "Generation failure" below sweeps one player, seeds
+  20973 and 7, difficulty 1..5 and `storeLevel` 0..11 at the smallest
+  budget, counting all three. Whether some other input (player count,
+  class, seed state, a later budget) never accepts enough records for the
+  first two lists is Unknown.
 - Resource loading completion, persistence/save transactions and exact
   readiness integration. A synchronous stock return on this fixture does not
   complete these other services.
@@ -323,24 +327,27 @@ byte; that is the generic quest-variable load, not a second formula.
 
 ## `storeLevel` by mission progress
 
-Round 3, 2026-11-09. `tools/difftest_vendor_progress.py` group `store`
-(lines 167–219) and group `acts` (lines 223–261); reference
+Round 3, 2026-11-09; fix round 2026-11-09. `tools/difftest_vendor_progress.py`
+group `store` (lines 223–308) and group `acts` (lines 312–371); reference
 `ref_vendor_stock.hub_store_level`. Script offsets are into each archive's
 `script.scr` code; no script bytes are copied here.
 
-**Observed** (decoded with `ref_amx`, lines 90–129 and 170–181): every
-`storeLevel` store in `hub` and `hub2` is in the entry `start`. Hub stores
-sit at 0x29fc, 0x2aa8, 0x2b18, 0x2b88, 0x2bc4, 0x2c3c, 0x2cb4 and 0x2d1c;
-hub2 at 0x2cc, 0x378, 0x3e8, 0x458, 0x494, 0x50c, 0x584 and 0x5ec. The
-computed store (hub 0x2d1c, hub2 0x5ec) follows `getv(currentMission)`
-0x34 bytes earlier (hub 0x2ce8, hub2 0x5b8) and pushes that result minus
-1: `stack`, `move.alt`, `const.pri 1`, `sub.alt`, `push.pri`, then the
-name and the argument size. So it is `setv(storeLevel, currentMission-1)`.
-The literal 8 is the constant that the `scr.py` listing prints as a string
-name; the argument of `getMissionAvailable` in the same `start` is the same
-constant 8.
+**Observed** (decoded with `ref_amx`, lines 105–182 and 227–247): every
+`storeLevel` store in `hub` and `hub2` is inside the `PROC` of the public
+entry `start` (hub 0x2838, hub2 0x134). Each offset is resolved against the
+AMX public table: the containing `PROC` is the last one at or before the
+offset (`entry_of`, lines 147–157). Hub stores sit at 0x29fc, 0x2aa8,
+0x2b18, 0x2b88, 0x2bc4, 0x2c3c, 0x2cb4 and 0x2d1c; hub2 at 0x2cc, 0x378,
+0x3e8, 0x458, 0x494, 0x50c, 0x584 and 0x5ec. The computed store (hub
+0x2d1c, hub2 0x5ec) follows `getv(currentMission)` 0x34 bytes earlier (hub
+0x2ce8, hub2 0x5b8, also inside `start`) and pushes that result minus 1:
+`stack`, `move.alt`, `const.pri 1`, `sub.alt`, `push.pri`, then the name and
+the argument size. So it is `setv(storeLevel, currentMission-1)`. Inside
+`start`, the only `getMissionComplete` call pushes the constant 9, and the
+two `getMissionAvailable` calls push 9 and 8 (`native_calls`, lines
+160–182, asserted at 240–244).
 
-**Executed** (lines 196–217, both hubs, seeds 20973 and 7, original
+**Executed** (lines 274–306, both hubs, seeds 20973 and 7, original
 `scr_load` / `scr_interpret` / `script_runByName` with `vars_set` 0x1ed854
 recorded; engine services are the named `difftest_natives.Rig` stubs).
 With `c = currentMission` (absent counts as 0) and the active difficulty
@@ -355,14 +362,20 @@ row of the player's mission bytes (bit 0 available, bit 1 complete):
 | 9 | 7 |
 
 Each run makes exactly one store and the variable then reads back that
-value. All 16 byte pairs of missions 8 and 9, on difficulty rows 0 and 2,
-match the table; bytes planted on another difficulty row are ignored
-(lines 209–212). `stobonus` `start` stores 7 and `islgnome` `start` stores 3
-whatever `currentMission` holds.
+value. Every `c` other than 7 runs with 17 mission-byte rows on difficulty
+row 0: all 16 byte pairs (values 0..3) of missions 8 and 9, and one row with
+every mission byte 0..12 set to 3. None of them changes the stored value.
+For `c = 7`, all 16 pairs on difficulty rows 0 and 2 match the table, and
+bytes planted on another difficulty row are ignored (lines 295–297). The
+hook also records the machine's `cip` (structure +0x0c, written before
+every native call) at each store. Every run stores from one of the eight
+decoded sites, a literal site stores its own literal, and across the matrix
+all eight sites of each hub run (lines 282–300). `stobonus` `start` stores
+7 and `islgnome` `start` stores 3 whatever `currentMission` holds.
 
-**Observed** (lines 182–195, census of all 23 archives that name the
+**Observed** (lines 249–262, census of all 23 archives that name the
 variable): only `hub` and `hub2` read `currentMission`, and only mission
-levels store it, once each, as a literal inside `start`:
+levels store it, once each, as a literal inside `start` (resolved as above):
 
 | mission | levels that store it |
 |---|---|
@@ -379,19 +392,28 @@ levels store it, once each, as a literal inside `start`:
 | 11 | `nit1`, `nitmar1` |
 | 12 | `bossgood`, `bossevil` |
 
-Whether every one of those `start` stores is unconditional was not checked
-here; the cited story-route research executes some of them.
+**Executed** (lines 264–272, both seeds): each of those 21 `start` entries,
+run from zeroed quest variables with the same rig, returns 0 and stores its
+literal exactly once, from the census offset. Whether each store is reached
+from every other quest state was not checked here.
 
-**Executed** (lines 223–261): `save_findAct` 0x217d30 searches the current
-act's table first, by prefix, then every act from 0. From every current act
--1..12 (13 acts at 0x4f8e7c), `hub` and `hub2` resolve to the current act
-(act 0 from -1). So `save_actChanged` 0x217f70 reports no change when the
-party returns to a hub, and the pre-load clear at 0x320f8c does not run.
-Mission levels resolve to their own act from any current act: `blood1` 0,
-`innovat1` 1, `islc1` 2, `wat1` 3, `tormenta` 4, `swamp1`/`swamp2` 5,
-`valor` 6, `fire1` 7, `storm1`/`storm2`/`storm4` 8, `fay1`/`fay2` 9,
-`nit1` 10, `bossgood`/`bossevil` 11. `islcave1`, `nitmar1`, `obsfor1` and
-`water1` are in no act table, which is never an act change.
+**Executed** (lines 312–371): `save_findAct` 0x217d30 searches the current
+act's table first, then every act from 0. A table entry matches when it is
+a prefix of the name (strncmp over the entry's own length, 0x217db0 /
+0x217dd4): `blood1zz`, `innovat1zz` and `valorzz` find acts 0, 1 and 6, and
+`blood`, `innovat` and `valo` find none (lines 357–365). From every current
+act -1..12 (13 acts at 0x4f8e7c), `hub` and `hub2` resolve to the current
+act (act 0 from -1). So `save_actChanged` 0x217f70 reports no change when
+the party returns to a hub, and the pre-load clear at 0x320f8c does not
+run. Mission levels resolve to their own act from any current act:
+`blood1` 0, `innovat1` 1, `islc1` 2, `wat1` 3, `tormenta` 4,
+`swamp1`/`swamp2` 5, `valor` 6, `fire1` 7, `storm1`/`storm2`/`storm4` 8,
+`fay1`/`fay2` 9, `nit1` 10, `bossgood`/`bossevil` 11. `islcave1`,
+`nitmar1`, `obsfor1` and `water1` are in no act table. `save_actChanged`
+for each of the 21 names from each current act -1..12 (lines 347–356)
+returns 1 and writes the level's act to 0x88d3d4 only when the level is
+listed and its act differs from the current one. For the four unlisted
+names it returns 0 and leaves the act unchanged, from every act.
 
 **Observed** (`docs/script.md` §2.1 lines 427–432 and its table line 450):
 `level_loadScriptAndObjects` 0x217978 runs `start` (call 0x217bac) during
@@ -402,113 +424,175 @@ stored.
 
 **Inferred**, from the rows above and the audited story route
 (`t3/research-story-route-r3` `019a155`, `docs/story-route.md` §§1 and 6;
-`t3/research-mission-unlocks` `7b924e1`): entering a mission level in a new
-act clears the quest variables (0x1ed728) and then that level's `start`
-stores `currentMission`. Later hub and hub2 visits in that act keep it. The
-hub shop level is therefore 0 before mission 1 starts and after mission 1
-starts, then 1, 2, 3, 4, 5 after missions 2..6 start, the mission 7 row
-(5..8) after `valor` starts, 6 after mission 8 starts, 7 after mission 9,
-then 9, 10, 11 after missions 10, 11, 12. The `islgnome` shop is always 3
-and the `stobonus` shop always 7. The audited story research executes the
-fresh hub branch (`c = 0`), the menu's mission order and act resolution
-from acts -1 and 0; the mission-unlocks research supplies the availability
-bits. Neither plays a mission level's `start` into a later hub visit, so
-this mapping is a consequence of the act rule, not a played sequence.
+`t3/research-mission-unlocks` `2ab82b2`, audited PASS): entering a mission
+level in a new act clears the quest variables (0x1ed728) and then that
+level's `start` stores `currentMission`. Entering one of the four unlisted
+levels is not an act change, so it clears nothing and its `start` still
+stores. Later hub and hub2 visits in that act keep the value. The hub shop
+level is therefore 0 before mission 1 starts and after mission 1 starts,
+then 1, 2, 3, 4, 5 after missions 2..6 start, the mission 7 row (5..8)
+after `valor` starts, 6 after mission 8 starts, 7 after mission 9, then 9,
+10, 11 after missions 10, 11, 12. The `islgnome` shop is always 3 and the
+`stobonus` shop always 7. The audited story research executes the fresh hub
+branch (`c = 0`), the menu's mission order and act resolution from acts -1
+and 0; the mission-unlocks research supplies the availability bits, and
+this branch executes them itself in the `c = 7` matrix. Nothing here plays
+a mission level's `start` into a later hub visit, so this mapping is a
+consequence of the act rule, not a played sequence.
 
 ## Generation failure
 
-`tools/difftest_vendor_progress.py` group `failure` (lines 265–379).
+`tools/difftest_vendor_progress.py` group `failure` (lines 375–518).
 
-**Executed** (lines 297–308, both seeds, item services stubbed and named in
+**Executed** (lines 407–418, both seeds, item services stubbed and named in
 `stock_rig`): when the category-0 or category-1 generator returns 0 for K
 calls in a row (K = 1, 6, 40) and then succeeds, every failed call and the
 next one carry the same budget, suffix request, level cap and list count,
 and the shared seed is not drawn by the loop. The pass then returns with
 counts 26, 17 and 9. A failure therefore costs a retry, not a slot.
 
-**Executed** (lines 309–315): the third list makes exactly six attempts
+**Executed** (lines 419–425): the third list makes exactly six attempts
 whatever fails, and its count is 3 plus the successes.
 
-**Executed** (lines 316–326): a category-0 or category-1 generator that
+**Executed** (lines 426–436): a category-0 or category-1 generator that
 always fails is called more than 500 times in 400,000 instructions with an
 identical argument and count row, and the function never returns. That is
 the original's behaviour: there is no overall bound.
 
-**Executed / reference** (`fit_cases`, lines 331–379): at the smallest
-budget of each list (progress 0, `low + step`) for every `storeLevel` 0..11
-and difficulty 1..5, both categories and both seeds, 20 consecutive calls
-of the unchanged `ref_items.generate_with_affixes` never fail: 240
-contexts, 4,800 calls, longest failure run 0. The original 0x104ca4
-at the two extremes (`storeLevel` 0 difficulty 1, `storeLevel` 11
+**Reference sweep, with an executed check** (`fit_cases`, lines 441–518):
+at the smallest budget of each list (progress 0, `low + step`) for every
+`storeLevel` 0..11 and difficulty 1..5, both categories, one player and
+seeds 20973 and 7, 20 consecutive calls of the unchanged
+`ref_items.generate_with_affixes` run per context: 240 contexts, 4,800
+calls. A call counts as non-advancing when it fails, when it is a category-0
+record with flag bit 40 (the `stock_plan` rejection, `docs/spec/items.md:67`),
+or when it duplicates an earlier accepted category-0 record while fewer
+than six retries were spent. Residue bytes are packed as zero, so every
+equal pair counts as a duplicate, which is the worst case for advancing.
+Category 1 scans the previous third list, whose records use other-category
+definitions, so it is modelled as never duplicating (Inferred: a
+category-2 definition never equals an armour definition). In that sweep no
+call failed (longest failure run 0), one category-0 record carried bit 40,
+619 calls were duplicate rejections, every context advanced, and the
+longest non-advancing run was 6 of 20 (category 0, `storeLevel` 6,
+difficulty 1, seed 7; printed at lines 512–516). The original
+0x104ca4 at the two extremes (`storeLevel` 0 difficulty 1, `storeLevel` 11
 difficulty 5) matches that reference return and shared seed call by call
-(32 calls). Budgets only rise with progress. **Inferred**: within
-the supported inputs each call has a positive success chance, so the loops
-end with probability 1; a generator change that empties a group at some
+(32 calls). Budgets only rise with progress.
+
+**Unknown**: this sweep bounds nothing outside its inputs. The inner
+generators also read player count and class (this file, lines 40–43), the real
+loop carries one shared seed through all three lists and raises the budget
+after each acceptance, and the residue bytes are not zero in the original.
+Whether the first two lists can fail to accept enough records for some
+other input is not established, and no claim of termination with
+probability 1 is made. A generator change that empties a group at some
 level would hang the original.
 
 ## Shop menu state machine
 
-`tools/difftest_vendor_progress.py` group `menu` (lines 383–636); reference
+`tools/difftest_vendor_progress.py` group `menu` (lines 521–900); reference
 `ref_vendor_stock` `choice_step`, `list_cancel`, `buy_allowed`. Executed
 with the original `shop_task` 0x1c6068, `shop_run` 0x1c74c0,
 `shop_buySellMenu` 0x1c6bb8, `menu_cursorInput` 0x1c6570 and helper
 0x1c6438, join scan 0x1c5b48, `itemList_update` 0x1d14c8, `itemList_input`
-0x1cd988 and `shop_close` 0x1d0ab8 live, both seeds. Stubs (lines 383–392):
-local slot 1, resource ready 1, a 32×32 texture header, item value 100,
-item weight 1.0, one-cell picture size; drawing, text, sound, network,
-menu-state message and task calls return 0 and are recorded. The stock and
-bag grids come from the original `itemGrid_build` 0x1cbbe8 into test
-buffers at `g_itemListCells` 0x4ebbb0 and 0x4f4228. No frame is rendered.
+0x1cd988, `menu_resetListState` 0x1d1380 and `shop_close` 0x1d0ab8 live,
+both seeds. Stubs (lines 521–531): local slot 1, resource ready 1, a 32×32
+texture header, item value 100, item weight 1.0, one-cell picture size;
+drawing, text, sound, network, menu-state message and task calls return 0
+and are recorded. The stock and bag grids come from the original
+`itemGrid_build` 0x1cbbe8 into test buffers at `g_itemListCells` 0x4ebbb0
+and 0x4f4228. No frame is rendered.
 
 Panels are at 0x86a4b0 + panel×0x74: +0x4c state, +0x18 row, +0x14 cursor
 direction, +0x3c cursor animation, +0x34 pad slot, +0x54 saved row. Pad
-words are at 0x4028d0 + slot×0x58: +0x8 held, +0xc pressed, +0x10 held.
+words are at 0x4028d0 + slot×0x58: +0x8 held (the choice cursor reads only
+this word, helper 0x1c6454), +0xc pressed, +0x10 held (read by
+`itemList_input` 0x1cdfcc with the list confirm mask; not executed alone).
 States: 3 Buy/Sell choice, 0 stock list, 1 own bags, 2 idle.
 
 | from | input | to, effect | evidence |
 |---|---|---|---|
-| closed | `shop_openOrStock(slot,0,_)` | panel 0 state 3 with pad slot 0; panel 1 state 2, slot -1; `g_shopOpen` 1; offline pause 1 | lines 469–473 |
-| 3 | Up / Down held (0x1000 / 0x4000, or 0x100000 / 0x200000) | direction ±1 when another row exists; +0x3c rises by 0x3dba2e8b a tick; the row changes on the 11th tick | lines 474–488 |
-| 3 | confirm while +0x3c ≠ 0 | ignored | lines 480–481 |
-| 3 | confirm, row 0 | state 0; `menu_resetListState` 0x1d1380 | lines 497–498 |
-| 3 | confirm, row 1 | state 1; 0x1c4e88(slot, panel, 0) | lines 489–492 |
-| 0 or 1 | cancel | state 3, row restored from +0x54; sound 0x1cdb34 | lines 492–495, 533–535 |
-| 0 | list confirm over a stock cell | the checks below, then shop msg 0 | lines 500–526 |
-| 1 | list confirm over a bag cell | the sale sequence below | lines 537–584 |
-| 0 or 1 | any, while lockout 0x41b4fc ≠ 0 | the list reads the zero pad 0x86a6b0; cancel ignored | lines 529–532 |
-| 3 | cancel | state 2, unless the panel's word at 0x4f4878 or 0x4f4880 is set | lines 585–590 |
-| 2 | next tick, both panels 2 or one player | 0x1de0dc, `shop_close`: `g_shopOpen` 0, lockout 60, pause 0, task removed | lines 592–600 |
-| 2 (panel 1) | another living local player presses confirm | panel 1 state 3 with that pad slot; `itemGrid_build` | lines 612–622 |
-| any | shopper HP ≤ 0 | state 2, but only on the offline two-player path of `shop_task` | lines 602–611 |
+| closed | `shop_openOrStock(slot,0,_)` | panel 0 state 3 with pad slot 0; panel 1 state 2, slot -1; `g_shopOpen` 1; offline pause 1 | lines 635–640 |
+| 3 | Up / Down on pad +0x8 (0x1000 / 0x4000, or 0x100000 / 0x200000) | direction ±1 when another row exists; +0x3c rises by 0x3dba2e8b a tick; the row changes on the 11th tick. The same bits on +0x10 alone do nothing | lines 641–662 |
+| 3 | confirm while +0x3c ≠ 0 | ignored | lines 647–648 |
+| 3 | confirm, row 0 | state 0; `menu_resetListState` 0x1d1380 (call 0x1c6d70) | lines 673–677 |
+| 3 | confirm, row 1 | state 1; 0x1c4e88(slot, panel, 0); 0x1d1380 (call 0x1c6e50) | lines 663–667 |
+| 0 or 1 | cancel | state 3, row and +0x24 (row×39) taken from +0x54; sound 0x1cdb34 | lines 668–672, 707–717 |
+| 0 | list confirm over a stock cell | the checks below, then shop msg 0 | lines 679–706 |
+| 1 | list confirm over a bag cell | the sale sequence below | lines 724–784 |
+| 0 or 1 | any, while lockout 0x41b4fc ≠ 0 | the list reads the pad at 0x86a6b0 instead of the slot's pad | lines 707–717, 786–795 |
+| 3 | cancel | state 2, unless the panel's word at 0x4f4878 or 0x4f4880 is set | lines 796–802 |
+| 2 | one player: the next tick | 0x1de0dc(slot, 0, 0) at 0x1c7690, then `shop_close`: `g_shopOpen` 0, lockout 60, pause 0, task 0x1c6068 removed (0x19e664) | lines 803–815 |
+| 2 | two players: a run whose panel starts at 2 while both are 2 | the same close; the tick runs panel 1 then panel 0, so the close is on the same tick when panel 1 cancels last and on the next when panel 0 does | lines 826–844 |
+| 2 (panel 1) | another living local player presses confirm | panel 1 state 3 with that pad slot; `itemGrid_build` | lines 826–833 |
+| any | shopper HP ≤ 0 | state 2, but only on the offline two-player path of `shop_task` | lines 816–825 |
 
-**Executed**: the choice uses the masks at 0x41bfbc (confirm) and 0x41bfb8
-(cancel). The lists confirm with 0x41b970 instead, and the choice confirm
-does not buy (lines 527–528). `game_initCamera` 0x1e6b68 writes them by the
-region byte 0x41b69c. The shipped `.data` byte is 1: confirm 0x40, cancel
-0x20, list confirm 0x80. Region 0 writes 0x20, 0x140 and leaves 0x41b970
-at its static 0; other values write nothing (lines 623–636).
+**Executed** (lines 845–871): the choice and both lists read the masks at
+0x41bfbc (confirm) and 0x41bfb8 (cancel). With 0x10000 and 0x20000 planted
+there (bits that no mask word holds), only those bits confirm and cancel;
+the shipped values 0x40 and 0x120 do nothing. The lists confirm with
+0x41b970 instead, and the choice confirm does not buy (lines 705–706). In a
+shop opened after `game_initCamera` 0x1e6b68 ran with region 1 in the same
+machine, a lone 0x20 cancels the list and the choice, and 0x100 does not.
+`game_initCamera` writes the masks by the signed region byte 0x41b69c. The
+shipped `.data` byte is 1: confirm 0x40, cancel 0x20, list confirm 0x80.
+Region 0 writes 0x20, 0x140 and leaves 0x41b970 at its static 0. Every
+other byte value, 2..255, writes nothing, so the static 0x40, 0x120, 0
+remain (all 256 values run, lines 885–897).
 
-**Executed buy checks** (lines 500–526, value 100, price 59): gold below
-the price shows a message (0x1d9954) and sends nothing; a bag count of 64
-at player +0x1330 plays a sound only; carried weight +0x120 plus the item
-weight above capacity +0x124 shows a message and calls 0x1b7ba8. Otherwise
-`shopmsg_sendBuy` 0x1c5f78 gets the slot and the grid cell address, then
-0x1bec10. The sender does not change gold; `shop_buy` on the receiver
-debits ("Buy and sell prices").
+**Executed lockout** (lines 707–717 and 786–795): with 0x41b4fc at 60, a
+cancel on the slot's pad is ignored in state 0 and in state 1. A cancel
+planted at 0x86a6b0 + 0xc, with the slot's pad empty, cancels the list. The
+list therefore reads that pad, which is zero in the game.
 
-**Executed sale** (lines 537–584): a list confirm sets the pending word
-0x86a680 + panel×4 and is handled in the same tick. Record flag bit 38
-refuses with a message. If `0x1c41d8` (the record is one of the player's
-equipped pointers) is true, the yes/no prompt 0x1dadc0 runs with the
-panel's 0x4f4880 word at 100: result 0 keeps the sale pending and holds
-cancel, 1 abandons it, 2 sends. A send writes the 13-byte shop msg 1
-(type 1, slot, …, mode 1) through 0x13db38, clears pending, sets 0x4f4218
-+ panel×4 to 3 and sets byte +0x47a of the object at player +0x43d8; that
-byte holds a second send.
+**Executed saved row** (lines 668–672 and 707–717): cancel copies +0x54
+into +0x18 and row×39 into +0x24. Planting +0x54 = 0 over row 1 returns to
+row 0, and +0x54 = 1 over row 0 returns to row 1 with +0x24 = 39. The choice
+writes +0x54 from +0x18 every tick (Observed: the store at 0x1c6c3c).
 
-**Unknown**: pixels, the analogue free cursor beyond the tested cell, net
-play (0x402791 set) beyond the single-panel path, who clears byte +0x47a,
-and stacked-item quantity entry.
+**Executed buy checks** (lines 614–627 and 679–704, value 100, price 59,
+item weight 1.0, capacity 100.0; the same 13 rows are locked in
+`test_ref_vendor_stock.Round4`). Gold is compared signed: 59 buys, 58, 10,
+−1 and −2³¹ show a message (0x1d9954) and send nothing. The bag count at
+player +0x1330 is compared signed with 64: 63 and −1 buy, and 64 and 65
+play the sound at 0x1ce148 and nothing else. Carried weight +0x120 plus the
+item weight is compared with capacity +0x124 by `c.ole.s`: 99.0 (sum equal
+to capacity) buys, and 99.5 and 100.0 show a message and call 0x1b7ba8.
+Otherwise the sound at 0x1ce19c plays, `shopmsg_sendBuy` 0x1c5f78 gets the
+slot and the grid cell address, and then 0x1bec10 runs (call 0x1ce1b4). The
+sender does not change gold; `shop_buy` on the receiver debits ("Buy and
+sell prices").
+
+**Executed sale** (lines 724–784). In these cases `inventory_isEquipped`
+0x1c41d8 and `hud_confirmBox` 0x1dadc0 are stubs with chosen returns (0 or
+1, and 0, 1 or 2); neither function runs, so the prompt results below are
+inputs, not executed results. A list confirm sets the pending word 0x86a680
++ panel×4 and is handled in the same tick. Record flag bit 38 refuses with
+a message. If the stubbed 0x1c41d8 returns true, the stubbed prompt 0x1dadc0
+is called with the panel's 0x4f4880 word at 100: return 0 keeps the sale
+pending and holds cancel, 1 abandons it, 2 sends. With a test object
+planted at player +0x43d8 and 0x5a at absolute 0x47a, a send sets byte
++0x47a of that object to 1 and leaves 0x47a at 0x5a; that byte holds a
+second send. The 13 message bytes are pre-filled with 0xa5 at 0x1ce4e0,
+before their stores; after the send none is 0xa5, byte 0 is type 1, byte 1
+is the local slot 0, byte 0xb the panel 0 and byte 0xc mode 1. The message
+goes through 0x13db38, then 0x1bec10 (call 0x1ce528); pending is cleared
+and 0x4f4218 + panel×4 is set to 3. The receiver clears the byte:
+`inventory_dropItem` 0x1c4310 step 2 stores 0 at object (`R`+0x43d8)
++0x47a, and the sale's receiver tail is `dropItem` mode 1
+(`docs/spec/game-messages.md:105-113`).
+
+**Executed** (lines 872–884): `hudmsg_sendMenuState` 0x1de0dc run live
+sends nothing while the net byte 0x402791 is 0, and one 4-byte message of
+type 2 through 0x13db38 when it is 1. The close calls it unconditionally,
+so offline the call is a no-op, which agrees with "net games only" in
+`docs/ui.md:87`.
+
+**Unknown**: pixels, the analogue free cursor beyond the tested cell, the
+list's own use of pad +0x10, net play (0x402791 set) beyond the
+single-panel path, the real equipped test and prompt, and stacked-item
+quantity entry.
 
 ## What a client can implement
 
@@ -529,18 +613,22 @@ and stacked-item quantity entry.
    Keep the scan address.
 6. Get `storeLevel` by running each level's authored `start`, or, for a
    client that does not run scripts, from `hub_store_level(currentMission,
-   mission bytes)` in `hub`/`hub2`, 7 in `stobonus` and 3 in `islgnome`.
-   Store `currentMission` from the mission level's `start`, clear quest
-   variables only on an act change, and do not treat a hub return as one.
-7. Retry a failed weapon or armour attempt at the same budget with no slot
-   used, give the third list exactly six attempts, and keep the loops
-   unbounded as the original does; a safety cap is a deviation and must be
-   stated as one.
+   mission bytes)` in `hub`/`hub2` (it refuses `currentMission` outside
+   0..13), 7 in `stobonus` and 3 in `islgnome`. Store `currentMission`
+   from the mission level's `start`, clear quest variables only on an act
+   change, and do not treat a hub return, or entering `islcave1`,
+   `nitmar1`, `obsfor1` or `water1`, as one.
+7. Retry a failed weapon or armour attempt, a bit-40 weapon and a
+   duplicate within six retries at the same budget with no slot used,
+   give the third list exactly six attempts, and keep the loops unbounded
+   as the original does; a safety cap is a deviation and must be stated
+   as one. Termination is not established for every input (gate above).
 8. Drive the shop with the state table in "Shop menu state machine": choice
-   3, lists 0 and 1, idle 2, the 11-tick cursor, region-1 masks 0x40 / 0x20
-   and list confirm 0x80, the local buy checks, the pending sale with the
-   equipped prompt and send latch, the two-player join, close on idle and
-   lockout 60.
+   3, lists 0 and 1, idle 2, the 11-tick cursor on pad +0x8, the masks
+   read from 0x41bfbc / 0x41bfb8 / 0x41b970 (region 1: 0x40 / 0x20 /
+   0x80), the signed buy checks, the pending sale with the equipped prompt
+   and send latch, the two-player join, close on idle (next tick for one
+   player) and lockout 60 with the lists reading an empty pad.
 9. Refuse only for the gates still listed above: resource completion,
    save-load `storeLevel`, rendered UI and pixels, net-play menus, and
    save I/O.
