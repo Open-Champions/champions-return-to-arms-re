@@ -268,6 +268,8 @@ def start_select(e, difficulty, players, arena=0, net=0):
     m.w32(R.NET_CHOSEN, net)
     m.w8(R.PLAYER_SEL_PLAYERS, SENT8)
     m.w8(R.PLAYER_SEL_OFFLINE, SENT8)
+    m.w8(0x4FBBE1, SENT8)
+    m.w32(0x4FDCB4, SENT32)
     m.write(R.SEL_LEVEL, bytes([SENT8]) * 0x40)
     run(e, R.FRONTEND_START_PLAYER_SELECT)
     return calls(e, R.PLAYER_SEL_START, 0x304BC8)
@@ -287,6 +289,7 @@ def check_select_entry(path, seed):
             assert m.u8(R.PLAYER_SEL_OFFLINE) == 1
             assert same_cstr(e, R.SEL_LEVEL, STR_SELECT_LEVEL)
             assert m.u32(0x4F701C) == 0 and m.u32(0x41B4F4) == 0
+            assert m.u8(0x4FBBE1) == 0 and m.u32(0x4FDCB4) == 0
             n += 1
     # Arena route: the level name comes from 0x304BC8 (stubbed to an authored name).
     e = emulator(path, seed)

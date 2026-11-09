@@ -6,6 +6,16 @@ function was run in `tools/ee_emu.py` with authored state. **Ran** refers only
 to the earlier Play! rig observation cited below. The function-level tests do
 not prove a rendered or controller-driven screen.
 
+**Update 2026-11-09:** `docs/frontend-flow.md` and
+`tools/difftest_frontend_flow.py` now execute the 20-point pool slice
+0x226c68–0x226d58, the ability-point phase (cursor, add, floor, warning,
+accept and back), `nameEntry_run` 0x22be68 (30-byte bound, space, done,
+delete, case, keyboard and cancel) and the name result in phase 4. Two
+leads below are corrected there: an increment is allowed while a stat is
+below 100, so the maximum is **100**, not 99; and the done check requires a
+non-space byte but does **not** trim spaces. The remaining Unknown items in
+this note are unchanged unless that note says otherwise.
+
 ## Entry and carousel
 
 **Observed:** `frontend_startPlayerSelect` 0x1e3ba0 calls
