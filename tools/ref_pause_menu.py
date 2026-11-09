@@ -112,8 +112,24 @@ LEAVE_OPTIONS = (
     (1, 0x00, None),
 )
 
-# The HUD's inventory button (run task hud_run 0x1db870): edge bit on the lockstep pad,
-# blocked while this held bit is down.
+# The HUD's inventory button (run task hud_run 0x1db870): edge bit in the raw pad's
+# pressed word (g_rawPads 0x4028d0 + 0x58 * slot, +0xc), blocked while this bit is down
+# in the held word (+0x8).
 INVENTORY_EDGE = 0x100
 INVENTORY_BLOCK_HELD = 0x80
-PAUSE_EDGE = 0x800
+PAUSE_EDGE = 0x800                 # lockstep pad edge (0x41bfe4 + 0x58 * slot)
+
+# ---- minimap (minimap_draw 0x1e42e0, minimap_applyMode 0x1e3ff0)
+MINIMAP_DRAW = 0x1E42E0
+MINIMAP_MODE = 0x4F8400            # g_minimapMode, cycled 0 -> 1 -> 2 -> 0 by the map button
+MINIMAP_ZOOM = 0x4F71A0            # float, clamped to [0.5, 2.0] while the button is held
+MAP_BUTTON_MASKS = 0x41B9E0        # configured map-button mask per local slot
+MINIMAP_CURRENT = 0x86AF58         # scale, x, y, half-width, half-height (chased floats)
+# Targets by player count (1, or 2 and more) and mode: (scale, x, y, half-width,
+# half-height).  Mode 0 is the centred big map; mode 1 the corner map; mode 2 hidden.
+MINIMAP_MODES = {
+    1: {0: (0.9, 0.0, 0.0, 320.0, 224.0), 1: (0.7, 200.0, -120.0, 120.0, 100.0),
+        2: (0.0, 180.0, -120.0, 0.0, 0.0)},
+    2: {0: (0.9, 0.0, 0.0, 320.0, 224.0), 1: (0.7, -240.0, 140.0, 120.0, 100.0),
+        2: (0.0, -240.0, 140.0, 0.0, 0.0)},
+}

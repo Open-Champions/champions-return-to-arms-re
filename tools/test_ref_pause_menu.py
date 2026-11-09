@@ -34,6 +34,14 @@ class PauseMenuReference(unittest.TestCase):
                 self.assertEqual(commit[:2], (0, 0))
                 self.assertIn(commit[2], (0, 1))
 
+    def test_minimap_modes(self):
+        self.assertEqual(set(R.MINIMAP_MODES), {1, 2})
+        for modes in R.MINIMAP_MODES.values():
+            self.assertEqual(set(modes), {0, 1, 2})
+            scale, x, y, width, height = modes[0]
+            self.assertEqual((x, y, width, height), (0.0, 0.0, 320.0, 224.0))  # centred
+            self.assertEqual(modes[2][0], 0.0)                                  # hidden
+
 
 if __name__ == "__main__":
     unittest.main()
