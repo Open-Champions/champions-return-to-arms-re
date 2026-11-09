@@ -1,7 +1,11 @@
 """Synthetic checks of tools/ref_audio_session.py. No executable and no disc data.
 
 tools/difftest_audio_session.py compares the same functions with the original code;
-this file only keeps the model on the patterns that comparison established.
+this file only keeps the model on the patterns that comparison established. Expected
+values are literals worked out by hand from the generator constants 0x19660d and
+0x3c6ef35f and the table order of docs/audio-session.md, not taken from the model:
+lcg(0) = 0x3c6ef35f (high half 15470), lcg(2) = 0x3ca1bf79 (15521), lcg(3) = 0x3cbb2586
+(15547).
 """
 
 import os
@@ -23,11 +27,16 @@ class LevelEntry(unittest.TestCase):
         self.assertEqual(S.level_entry(0, 0, None, 5), ([("stream_queueStop", 2)], 5))
         self.assertEqual(S.level_entry(0, 0, ["", "x_enttag"], 5), ([("stream_queueStop", 2)], 5))
 
+    def test_generator(self):
+        self.assertEqual(S.lcg(0), 0x3C6EF35F)
+        self.assertEqual(S.lcg(2), 0x3CA1BF79)
+        self.assertEqual(S.lcg(3), 0x3CBB2586)
+
     def test_tag_plays_and_sets_the_timer(self):
         calls, seed = S.level_entry(0, 0, ["a", "b_enttag_c"], 0)
-        self.assertEqual(seed, S.lcg(0))
-        self.assertEqual(calls[0], ("music_playLevel", 1, 2))
-        self.assertEqual(calls[1], ("timer", (S.lcg(0) >> 16) % 1200 + 1800))
+        self.assertEqual(seed, 0x3C6EF35F)
+        # row 1; 15470 % 1200 + 1800 = 2870
+        self.assertEqual(calls, [("music_playLevel", 1, 2), ("timer", 2870)])
 
     def test_countdown(self):
         self.assertEqual(S.session_countdown(0, 0, 999), 60)
@@ -38,8 +47,10 @@ class LevelEntry(unittest.TestCase):
 class Music(unittest.TestCase):
     def test_pvp(self):
         self.assertEqual(S.pvp_music(0, 3), ([], 3))
-        calls, seed = S.pvp_music(1, 3)
-        self.assertEqual(calls, [("music_playGlobal", S.PVP_TRACKS[(S.lcg(3) >> 16) % 11], 1)])
+        # 15547 % 11 = 4, the fifth name of the 0x4f8320 table
+        self.assertEqual(S.pvp_music(1, 3), ([("music_playGlobal", "mx_ba_droon_l.vag", 1)], 0x3CBB2586))
+        # 15521 % 11 = 0
+        self.assertEqual(S.pvp_music(1, 2)[0], [("music_playGlobal", "mx_ba_avataroffear_l.vag", 1)])
 
     def test_pause_preview_and_fade(self):
         calls, timer = S.slider_preview("pause", 0, 0, 0x3F000000, 0x3F800000, 0, 77, 1)
@@ -60,9 +71,12 @@ class Music(unittest.TestCase):
 
 class Voice(unittest.TestCase):
     def test_got_item_line(self):
+        # kind 9, model 0: lines 035-036; 15470 % 2 = 0, 15521 % 2 = 1
         calls, seed = S.player_voice(0, 9, 1, 0, 0, 0, 0, S.FLOAT_ONE, 0)
-        n = 35 + (S.lcg(0) >> 16) % 2
-        self.assertEqual(calls[-1], ("playGlobalRandom", 1, "bwm%03d" % n, 0x24))
+        self.assertEqual(calls, [("isLocal",), ("status", 1), ("playGlobalRandom", 1, "bwm035", 0x24)])
+        self.assertEqual(seed, 0x3C6EF35F)
+        calls, seed = S.player_voice(11, 9, 1, 0, 0, 0, 0, S.FLOAT_ONE, 2)
+        self.assertEqual(calls[-1], ("playGlobalRandom", 1, "im042", 0x24))
 
     def test_gates(self):
         self.assertEqual(S.player_voice(0, 9, 0, 0, 0, 0, 0, S.FLOAT_ONE, 0)[0], [("isLocal",)])

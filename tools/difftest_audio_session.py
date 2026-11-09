@@ -56,6 +56,12 @@ PLAYER_STRIDE = 0x4C30
 LEVEL_TABLE = 0x4F7210
 RPC_SEND = 0x877200
 G_STREAMS = 0x876C10
+STRCMP = 0x3B8534
+STRSTR = 0x3B96A8
+STREAM_PLAY_GLOBAL = 0x215C20
+VOICE_START, VOICE_END = 0x1B7BA8, 0x1B8F28     # player_voice .. Player_startSpawnProtection
+VOICE_COMPARE_SITES = 34                        # strcmp + strstr jal sites in player_voice
+VOICE_STRCMP_SITES = 20
 
 FAILS = 0
 FILTER = None
@@ -317,12 +323,38 @@ def level_names(e):
     return names
 
 
+def voice_compare_sites(e):
+    """[(site, 'strcmp' or 'strstr')] for every jal to libc strcmp/strstr in player_voice."""
+    sites = []
+    for pc in range(VOICE_START, VOICE_END, 4):
+        w = e.mem.u32(pc)
+        if w >> 26 == 3 and ((w & 0x3FFFFFF) << 2) in (STRCMP, STRSTR):
+            sites.append((pc, "strcmp" if ((w & 0x3FFFFFF) << 2) == STRCMP else "strstr"))
+    return sites
+
+
+VOICE_BYTES = ((CUTSCENE_BYTE, 1), (NET_BYTE, 1), (MENU_BYTE, 1), (VOICE_NAME, 64))
+
+
+def save_voice_bytes(e):
+    return [(addr, e.mem.read(addr, n)) for addr, n in VOICE_BYTES]
+
+
+def restore_voice_bytes(e, saved):
+    for addr, data in saved:
+        e.mem.write(addr, data)
+
+
 def test_player_voice(h, rng):
     """player_voice 0x1b7ba8, whole function. Stubs: net_isLocalSlot 0x13e150 (case value),
     stream_activeFlags 0x216388 (case value for stream 1) and
     stream_playGlobalRandom 0x2160c0 (recorded). sprintf and the string compares run.
-    Kind 2 is run with every g_levelTable name in the string at 0x41b721."""
+    Every call puts one randomly chosen g_levelTable name in the string at 0x41b721, so
+    only a few kind-2 calls reach the name compares here; the 'idle voice' property runs
+    kind 2 with every level name. The cutscene, network, menu and 0x41b721 bytes are
+    restored afterwards."""
     e = h.emu
+    saved = save_voice_bytes(e)
     state = {"local": 1, "status": 0}
     addrs = h.stubs({
         0x13E150: h.recorder("isLocal", ret=lambda _e: state["local"]),
@@ -369,9 +401,89 @@ def test_player_voice(h, rng):
                 bad.append((model, kind, slot, local, cut, net, menu, hex(status), hex(hp), got, want))
     finally:
         h.unstub(addrs)
-        e.mem.w8(NET_BYTE, e.mem.u8(NET_BYTE))
-    check("player voice", not bad, "%d calls over models 0-11 and kinds -2..23, %d distinct lines, "
-          "%d level names for kind 2; mismatches %s" % (len(cases), len(played), len(levels), bad[:2]))
+        restore_voice_bytes(e, saved)
+    check("player voice", not bad, "%d calls over models 0-11 and kinds -2..23, %d distinct lines; "
+          "mismatches %s" % (len(cases), len(played), bad[:2]))
+
+
+def test_idle_voice(h, rng):
+    """player_voice(slot 0, kind 2) 0x1b7ba8, whole function, with every gate open: local
+    slot, no cutscene, no menu, no voice playing, hit points 1.0. Stubs: net_isLocalSlot
+    0x13e150 (returns 1), stream_activeFlags 0x216388 (returns 0), and
+    stream_playGlobalRandom 0x2160c0 and stream_playGlobal 0x215c20 (both recorded).
+    sprintf and libc strcmp 0x3b8534 / strstr 0x3b96a8 run.
+
+    1. With the empty string at 0x41b721, every one of the 34 compare sites runs once,
+       each with 0x41b721 as its first argument.
+    2. Positive control: with each of the 34 compared strings at 0x41b721 (read from the
+       compare calls at run time, never printed), exactly one stream_playGlobal call is
+       made. So the recorders below can see a match.
+    3. For each of the 12 models and each of the 90 g_levelTable names, and the empty
+       string: models 0-9 run all 34 compares and models 10-11 run none, no stream call
+       is made, the cosmetic seed is left alone, and the calls equal
+       ref_audio_session.player_voice(model, 2, ...)."""
+    e = h.emu
+    saved = save_voice_bytes(e)
+    rec = PLAYERS
+    saved_rec = e.mem.read(rec + 0x54, 4), e.mem.read(rec + 0xAC, 4)
+    addrs = h.stubs({
+        0x13E150: h.recorder("isLocal", ret=1),
+        0x216388: h.recorder("status", ret=0),
+        0x2160C0: h.recorder("playGlobalRandom", strings=(1,)),
+        STREAM_PLAY_GLOBAL: h.recorder("playGlobal"),
+    })
+    static = [pc for pc, _ in voice_compare_sites(e)]
+    levels = level_names(e)
+    problems = []
+    matched = runs = 0
+
+    def run(model, text, seed):
+        e.mem.w32(rec + 0x54, model)
+        e.mem.write(VOICE_NAME, text + b"\0")
+        e.mem.w32(G_COSMETIC_SEED, seed)
+        h.call(0x1B7BA8, 0, 2)
+        compares = [c for c in e.calls if c.target in (STRCMP, STRSTR)]
+        return compares, [(n,) if n == "isLocal" else (n, ints[0]) for n, ints, _ in h.log]
+
+    try:
+        e.mem.w32(rec + 0xAC, S.FLOAT_ONE)
+        e.mem.w8(CUTSCENE_BYTE, 0)
+        e.mem.w8(NET_BYTE, 0)
+        e.mem.w8(MENU_BYTE, 0)
+        compares, _ = run(0, b"", rng.getrandbits(32))
+        sites = [c.site for c in compares]
+        if sites != static or len(static) != VOICE_COMPARE_SITES:
+            problems.append(("compare sites", len(sites), len(static)))
+        if any(c.args[0] & 0xFFFFFFFF != VOICE_NAME for c in compares):
+            problems.append("a compare does not read 0x41b721")
+        needles = [e.mem.cstr(c.args[1] & 0xFFFFFFFF, 64).encode("latin-1") for c in compares]
+        for needle in needles:
+            _, got = run(0, needle, rng.getrandbits(32))
+            plays = [c for c in got if c[0] in ("playGlobal", "playGlobalRandom")]
+            if [c[0] for c in plays] == ["playGlobal"] and plays[0][1] == 1:
+                matched += 1
+            else:
+                problems.append(("compared string %d" % needles.index(needle), got))
+        for model in range(12):
+            for name in levels + [""]:
+                seed = rng.getrandbits(32)
+                compares, got = run(model, name.encode("latin-1"), seed)
+                runs += 1
+                want, want_seed = S.player_voice(model, 2, 1, 0, 0, 0, 0, S.FLOAT_ONE, seed)
+                want_compares = VOICE_COMPARE_SITES if model < 10 else 0
+                if (len(compares) != want_compares or got != want
+                        or e.mem.u32(G_COSMETIC_SEED) != want_seed):
+                    problems.append((model, name, len(compares), got, want))
+    finally:
+        h.unstub(addrs)
+        restore_voice_bytes(e, saved)
+        e.mem.write(rec + 0x54, saved_rec[0])
+        e.mem.write(rec + 0xAC, saved_rec[1])
+    ok = not problems and matched == VOICE_COMPARE_SITES and len(levels) == 90 and runs == 12 * 91
+    check("idle voice", ok, "%d compare sites run on the empty string; %d of %d compared strings "
+          "reach stream_playGlobal; %d calls (12 models x 90 level names + empty string), 34 "
+          "compares in each for models 0-9 and none for 10-11, 0 stream calls; problems %s"
+          % (len(static), matched, len(needles), runs, problems[:3]))
 
 
 # ---- foley and hits -----------------------------------------------------------------------
@@ -666,8 +778,14 @@ def test_image(h):
           and strings == (S.ENTRY_TAG, S.PAUSE_PREVIEW[0], S.FRONT_PREVIEW[0], "mx_endcredits_ext_l.vag")
           and e.mem.u8(RECALL_RETURN) == 0 and e.mem.u8(RECALL_OUT) == 0
           and len(level_names(e)) == 90)
+    sites = voice_compare_sites(e)
+    n_strcmp = sum(1 for _, kind in sites if kind == "strcmp")
+    ok = ok and len(sites) == VOICE_COMPARE_SITES and n_strcmp == VOICE_STRCMP_SITES
     check("image", ok, "PvP table of %d names, entry tag, preview and credits names, recall bytes 0, "
-          "90 level names" % len(table))
+          "90 level names, %d strcmp/strstr jal sites in player_voice 0x%x-0x%x (%d strcmp, "
+          "%d strstr, first 0x%x, last 0x%x)"
+          % (len(table), len(sites), VOICE_START, VOICE_END, n_strcmp, len(sites) - n_strcmp,
+             sites[0][0] if sites else 0, sites[-1][0] if sites else 0))
 
 
 def find_elf(argv):
@@ -722,6 +840,7 @@ def main(argv=None):
         ("pause preview", lambda: test_slider_preview(harness, rng, "pause")),
         ("front preview", lambda: test_slider_preview(harness, rng, "front")),
         ("player voice", lambda: test_player_voice(harness, rng)),
+        ("idle voice", lambda: test_idle_voice(harness, rng)),
         ("foley", lambda: test_foley(harness, rng)),
         ("hit name", lambda: test_hit(harness, rng)),
         ("update order", lambda: test_update_order(harness, rng)),

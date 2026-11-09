@@ -140,8 +140,10 @@ def player_voice(model, kind, local, cutscene, net_byte, menu_byte, voice_status
     """Returns (calls, seed). model is record +0x54 (0-11), hp_bits is record +0xac.
 
     Calls: ('isLocal',), ('status', 1), ('playGlobalRandom', 1, name, 0x24).
-    Kind 2 compares a level name with 34 names that are not Return to Arms levels; it is
-    modelled here only for names that match none of them (no stream call).
+    Kind 2 compares the string at 0x41b721 with 34 fixed names (34 strcmp/strstr sites in
+    0x1b7ba8-0x1b8f28). A match calls stream_playGlobal 0x215c20, which is not modelled:
+    this model is only valid for strings that match none of them, such as every
+    g_levelTable name and the empty string (difftest property 'idle voice').
     """
     calls = [("isLocal",)]
     if not local or cutscene:
@@ -173,11 +175,13 @@ def player_voice(model, kind, local, cutscene, net_byte, menu_byte, voice_status
 FOLEY_LUMP = "fx.lmp"
 FOLEY_ARMOUR = ((0x400000, "foly_plate", 5), (0x200000, "foly_chainmail", 5),
                 (0x100000, "foly_leather", 5), (0x80000, "foly_cloth", 4))
-FOLEY_DEFAULT_BOOTS = 0x80000      # Player_footstep 0x1beef8 when no boot item
+FOLEY_DEFAULT_FLAGS = 0x80000      # Player_footstep 0x1beef8 when neither equipped slot 4
+                                   # (+0x4400) nor slot 10 (+0x4418) holds an item
 
 
 def foley(in_water, flags, seed):
-    """Returns (sequence name or None, seed). flags is the 32-bit boot-item word."""
+    """Returns (sequence name or None, seed). flags is the 32-bit word +0x08 of the item in
+    equipped slot 4 (record +0x4400), else slot 10 (+0x4418), else FOLEY_DEFAULT_FLAGS."""
     if in_water:
         seed = lcg(seed)
         return "fs_water%d.anm" % (((seed >> 16) & 1) + 1), seed
@@ -197,7 +201,7 @@ HIT_LUMP = "fx.lmp"
 # creature victims: object flag bit (of the 64-bit word +0xa8), in test order
 HIT_CREATURE = ((35, "lthr"), (36, "chnmail"), (37, "mtlplate"), (40, "bone"),
                 (39, "exo"), (38, "stone"), (34, "cloth"))
-# player victims: armour item word +0x08, in test order
+# player victims: word +0x08 of the item in equipped slot 4 (record +0x4400), in test order
 HIT_PLAYER = ((0x80000, "cloth"), (0x100000, "lthr"), (0x200000, "chnmail"),
               (0x400000, "mtlplate"))
 HIT_SLSH = ("stone", "exo")
@@ -206,7 +210,8 @@ HIT_MEDIUM = 0x3F199999    # about 0.6
 
 
 def hit_material(victim_is_player, creature_flags, armour_flags):
-    """armour_flags is None when the victim player has no armour item."""
+    """armour_flags is the word +0x08 of the item in equipped slot 4 (record +0x4400), or
+    None when that slot is empty."""
     if victim_is_player:
         if armour_flags is None:
             return "flesh"
