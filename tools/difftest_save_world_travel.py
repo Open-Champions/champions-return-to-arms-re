@@ -5,9 +5,9 @@ Usage: PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_save_world_travel.py
        /path/to/SLUS_209.73 --seed 20973
 
 Runs original functions in tools/ee_emu.py on synthetic memory:
-  * Creature_loadState 0x116920 (alive and dead branches, flag decode, the
-    optional +0x312 word, dead-animation clip search, Orc typeid test);
-  * JumpGate_loadState 0x27d998 with the original grid relink 0x148bc8;
+  * Creature_loadState 0x116920, a seed-varied cross-check of the stub-free
+    t3/research-death-reload probe (difftest_death_reload_creature.py);
+  * JumpGate_loadState 0x27d998 with the original light_link2 0x148bc8;
   * save_game 0x218128 checkpoint decisions with the original act table;
   * a multi-level travel sequence through the original save_storeLevelState
     0x21777c, save_writeLevelState 0x218600, save_levelStateStored 0x2182d4,
@@ -36,7 +36,7 @@ SHA256 = '292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675'
 
 CREATURE_LOAD = 0x116920
 JUMPGATE_LOAD = 0x27D998
-GRID_RELINK = 0x148BC8
+LIGHT_LINK2 = 0x148BC8
 SAVE_GAME = 0x218128
 SAVE_STORE = 0x21777C
 SAVE_WRITE = 0x218600
@@ -71,6 +71,8 @@ G_SAVE_GAME_WORD = 0x4F8F30
 
 ORC_TYPEINFO = 0x3C4658
 CREATURE_TYPEINFO = 0x3C2608
+ORC_DESCRIPTOR = 0x9083F0
+CREATURE_DESCRIPTOR = 0x908130
 
 # Callees replaced by recording stubs, by probe.  Everything else that the
 # probed bodies call runs as original code.
@@ -187,8 +189,14 @@ def check_creature(elf, rng):
         ee.stub(0x170BC8, function=lambda e: events.append(('anim_end', e.r[4] & 0xFFFFFFFF)) or 0)
         ee.stub(0x1A1698, function=lambda e: events.append(('handle_clear', e.r[4] & 0xFFFFFFFF)) or 0)
 
+        # Both type descriptors start zeroed in the image: the getters below
+        # construct them lazily (0x3c466c / 0x3b12b8) when the corpse branch runs.
+        assert ee.mem.u32(ORC_DESCRIPTOR) == 0 and ee.mem.u32(CREATURE_DESCRIPTOR) == 0
         size = ee.call(CREATURE_LOAD, obj, buf)
         want_size, want, want_events = R.creature_load(record, before, names, orc)
+        descriptors_built = ee.mem.u32(CREATURE_DESCRIPTOR) != 0 and (
+            not orc or ee.mem.u32(ORC_DESCRIPTOR) != 0)
+        assert descriptors_built == (want['hp'] <= 0), (case, descriptors_built)
         assert size == want_size == len(data), (case, size, want_size, len(data))
 
         # Expand the reference's symbolic events into the addresses recorded.
@@ -240,7 +248,7 @@ def check_creature(elf, rng):
 
 
 def check_jumpgate(elf, rng):
-    """JumpGate_loadState 0x27d998 with the original relink 0x148bc8."""
+    """JumpGate_loadState 0x27d998 with the original light_link2 0x148bc8."""
     checked = 0
     for case in range(12):
         ee = fixture(elf)
@@ -260,7 +268,7 @@ def check_jumpgate(elf, rng):
         ee.mem.w32(node, other)
         ee.mem.w32(node + 4, head)
         ee.mem.w32(other + 4, node)
-        cell = R.grid_cell(x, y)
+        cell = R.light_grid_cell(x, y)
         old_cell_head = ee.mem.u32(cell)
         clip = ee.alloc(16)
         events = []
@@ -283,7 +291,7 @@ def check_jumpgate(elf, rng):
         want.append(('run_every_frame', obj))
         assert events == want, (case, events, want)
         checked += 1
-    print('PASS JumpGate_loadState %d cases (grid relink original)' % checked)
+    print('PASS JumpGate_loadState %d cases (light_link2 original)' % checked)
 
 
 def act_rows(ee):

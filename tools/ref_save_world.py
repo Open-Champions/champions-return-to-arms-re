@@ -186,17 +186,17 @@ def creature_record(variant, hp_fraction, bits, dead_handle=-1, word312=None):
     return bytes(out)
 
 
-GRID_CELLS_AT = 0x5d34d8
-GRID_OFF_LIST = 0x5db368
-GRID_SIDE = 90
+LIGHT_GRID_AT = 0x5d34d8      # g_lightGrid, symbols/objects.tsv
+LIGHT_OVERFLOW = 0x5db368     # g_lightOverflowList
+LIGHT_GRID_SIDE = 90
 
 
-def grid_cell(x, y):
-    """0x148bc8: cell list for integral x/y, or the off-grid list."""
+def light_grid_cell(x, y):
+    """light_link2 0x148bc8: light-grid cell for integral x/y, or the overflow list."""
     ix, iy = (int(x) + 0x2d00) >> 8, (int(y) + 0x2d00) >> 8
-    if 0 <= ix < GRID_SIDE and 0 <= iy < GRID_SIDE:
-        return GRID_CELLS_AT + 4 * (iy * GRID_SIDE + ix)
-    return GRID_OFF_LIST
+    if 0 <= ix < LIGHT_GRID_SIDE and 0 <= iy < LIGHT_GRID_SIDE:
+        return LIGHT_GRID_AT + 4 * (iy * LIGHT_GRID_SIDE + ix)
+    return LIGHT_OVERFLOW
 
 
 def save_game_path(living, act, menu_running, act_found, is_row0, stored, quiet):
