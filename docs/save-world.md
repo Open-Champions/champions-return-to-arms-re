@@ -40,8 +40,15 @@ a twelfth wrote the slot-10 body again, and a duplicate of slot 4 retained its
 original size. **Observed** (`save_levelStateStored` 0x2182fc–0x218340 and
 `level_loadScriptAndObjects` 0x217a18–0x217a9c): lookup stops at the first
 empty name and examines only slots 0..9. **Executed**: `save_levelStateStored`
-reported false for the eleventh name and true for the tenth. The gap is thus
-not a usable eleventh saved level. A retained entry whose body write failed is
+reported false for the eleventh name and true for the tenth. **Executed
+(round 4, `check_travel`, correcting the loader half of the line above):**
+the loader compares names only in slots 0..9 (loop 0x2179c0–0x2179f4), but its hit test at 0x217a18
+reads the first name byte of the slot where that search stopped. After ten
+misses that is the gap slot 10. With the gap written, every name that misses
+(the gap's own name or any other) loads the gap body as saved state. With the
+gap empty, a miss loads fresh. The gap is thus not a usable eleventh saved
+level: the lookup reports it absent, the loader restores it for every miss,
+and every miss shares one body. A retained entry whose body write failed is
 also not a proven valid restore target.
 
 **Observed** (0x218620–0x218690): a body has `u32 world_length`, four unused
@@ -123,31 +130,42 @@ They also cover the clip search with original `loadStr_ptr` 0x14f688 and
 death handler 0x10beb8 (it clears 0x08c00000 from +0xa8 before the saved
 masks are ORed back), and the typeid branch that sets +0x28 to 70. The
 optional +0x312 word's three eligibility conditions are covered too. Round 1
-of that branch (`docs/death-reload.md` lines 120–140) also covers
-`JumpGate_loadState` 0x27d998 with recorded services.
+of that branch (`docs/death-reload.md` line 82 at `16f86da`, the JumpGate
+row; lines 120–140 from `05a654e` on) also covers `JumpGate_loadState`
+0x27d998 with recorded services.
 
 **Executed here, additive:** `tools/difftest_save_world_travel.py`. It
 replaces only the callees in its printed `STUBS` table with recording stubs.
 
 - Creature, 48 seed-varied cases per seed. Random initial +0xa8, +0x231,
-  object flags, +0x310 dword and saved bits; HP fractions from 1 to −1;
+  object flags, +0x310 qword and saved bits; HP fractions from 1 to −1;
   death clip found, missing, or handle −1. These agree with the death-reload
   result, and add three details. The return size is 12 or 16 bytes, plus 4
   for bit 6, matching the writer above. The bytes at +0x311 and +0x314–0x317
   survive the 64-bit low-byte clear at 0x116b88. And the original
   `Orc_typeinfo` 0x3c4658 / `Creature_typeinfo` 0x3c2608 getters run from
   the executable's zeroed descriptors, so the lazy descriptor construction
-  that that note left outside its fixture is executed. Only the Orc
-  descriptor sets +0x28 to 0x46.
-- JumpGate, 12 cases per seed. It restores +0x4d and +0x4e and returns 2.
+  that that note left outside its fixture is executed. Of the two
+  descriptors run here, Orc and Creature, only Orc sets +0x28 to 0x46. The
+  test is name equality (`16f86da` `docs/death-reload-creature.md` lines
+  142–145), so a distinct descriptor with an equal name would also set it.
+- JumpGate, 26 cases per seed: 12 seed-varied, then 14 fixed light
+  positions. It restores +0x4d and +0x4e over sentinel bytes and returns 2.
   When +0x4e is nonzero, the original `light_link2` 0x148bc8 runs
   (`symbols/objects.tsv`; death-reload round 1 recorded it as the "light
   service"). It unlinks the light node at +0x100 from a prior list and
-  pushes it onto `g_lightGrid` 0x5d34d8. The cell is (x + 0x2d00) >> 8,
-  (y + 0x2d00) >> 8 on the 90 × 90 grid, from the node's floats at
-  +0x130/+0x134; outside the grid it goes to `g_lightOverflowList` 0x5db368.
-  Then come `res_find(+0x90, "jumpgate_idle.anm")` and
-  `anim_push(+0xd8, clip, 3)`. Both states call `obj_runEveryFrame` 0x14f248.
+  pushes it onto `g_lightGrid` 0x5d34d8. The cell is (trunc(x) + 0x2d00) >> 8,
+  (trunc(y) + 0x2d00) >> 8 on the 90 × 90 grid, from the node's floats at
+  +0x130/+0x134, with the float truncated toward zero before the offset is
+  added: x = −0.5 lands in index 45, not 44. If either index is outside 0..89
+  it goes to `g_lightOverflowList` 0x5db368. Executed: indexes −1, 0, 89
+  and 90 on both axes, y outside with x inside (4 cases), and non-integral
+  positions (4). When the destination already has a node, the old head's
+  back-link (+4) is set to the new node (10 cases), and the new node's +4
+  points at the cell. Then come `res_find(+0x90, "jumpgate_idle.anm")` and
+  `anim_push(+0xd8, clip, 3)`. Both states call `obj_runEveryFrame`
+  0x14f248. An inactive gate (+0x4e = 0) leaves the node in its prior list
+  and the cell unchanged.
 - **Unknown here:** the effects of the stubbed virtual hooks, run-list and
   animation services. The death-reload note executes those for Creature,
   but not for JumpGate. The jump-gate destination list is in the save header
@@ -160,29 +178,41 @@ The original `save_storeLevelState` 0x21777c, `save_writeLevelState` 0x218600,
 `level_getQualifiedName` 0x1ec0f0, `save_levelStateStored` 0x2182d4,
 `save_clearBuffer` 0x21f144 and `level_loadScriptAndObjects` 0x217978 all run
 on one memory image. The act table is the executable's own static table at
-0x4f8e10/0x4f8e48. Recording stubs supply the world, decal and automap
+0x4f8e10/0x4f8e48, with the act count read from `g_actCount` 0x4f8e7c. Recording stubs supply the world, decal and automap
 writers, plus the loader's file, script and object callees. Each departure
 writes visit-tagged sentinel bytes. When a departure was not stored, nothing
 was written.
 
 | Event | Original result |
 |---|---|
-| Leave `hub`, then a level of act 2 | Two directory keys, with row sizes 15000 and the level's row. Bodies are adjacent at 0x8ab698. |
+| Leave `hub`, then a level of act 2 | Two directory keys, with row sizes 15000 (act 2 row 0, asserted) and the level's row. Bodies are adjacent at 0x8ab698. |
 | Return to `hub` | The loader copies the *latest departure* body's world and decal blobs into 0x88d480, unpacks that visit's explored map, constructs saved records, then loads `objects.ob` with `filterOnly=1`. |
 | Leave `hub` again | Slot 0 is rewritten in place with its old size. The other level's body bytes are unchanged, and returning there reads them. |
 | Enter a level never left | `save_levelStateStored` is 0. Every `objects.ob` record is constructed (`filterOnly=0`): a fresh level. |
 | Card state 4 at 0x88d3a0, or level flag 0x800 at 0x44fe08 | Neither store changes any byte of the 0x4bc78 image. |
 | Leave `hub_west` | A new key with row 0's 15000 bytes. `hub_west` and `hub` are different keys, so each hub sub-area keeps its own state. |
-| Act change: `save_clearBuffer(0)` | Only directory slot 0 survives, with its name, its first 15000 bytes in place, and its size set to act 0 row 0's 15000. Every other key is gone. `hub` still restores; the act's other levels and `hub_west` load fresh. Word 0x4f9234 is cleared. With block byte 0x4f8f2a set, the image is untouched. |
-| Slot 0 is not a hub | `blood1` stored first keeps its name through the clear. Its size becomes 15000, not its row's 25000, while `hub` is dropped. |
+| Act change: `save_clearBuffer(0)` | Only directory slot 0 survives, with its name, its first 15000 bytes in place, and its size set to act 0 row 0's 15000. Every other key is gone. `hub` still restores, and the act-2 level left earlier loads fresh. For `hub_west` only the lookup was checked (`save_levelStateStored` = 0). Word 0x4f9234 is cleared. With block byte 0x4f8f2a set, the image is untouched. |
+| Slot 0 is not a hub | `blood1` (act 0 row 1, asserted at 25000) stored first keeps its name through the clear. Its size becomes 15000, not 25000, while `hub` is dropped. |
+| Act 2: leave all ten rows, then `hub_west` | The eleventh key goes to gap slot 10 at body offset 128000, the act's asserted total. `save_levelStateStored` reports `hub_west` absent. Before the gap is written, a missing name loads fresh. Afterwards the loader loads the gap body for `hub_west` and for a synthetic name in no act. A second miss (`hub_zz`, synthetic) rewrites that body under the name `hub_west`, and `hub_west` then loads `hub_zz`'s body. |
 
-**Observed / Executed (act table, read at run time; counts only):** all 13
-acts have `hub` as row 0 with 15000 bytes, and act row counts range from 1 to
-10. The largest act's rows total 153000 of the 220000 bytes after +0x16118.
-**Inferred:** one act's own rows fit both the space and the ten readable
-slots. Each extra `hub*` sub-area costs another 15000-byte slot, though. An
-act with ten rows plus one visited hub sub-area reaches the write-only
-eleventh slot (lines 28–45 above) if every row is departed.
+**Executed (act table, read at run time; asserted in `check_act_table`,
+counts and sizes only):** `g_actCount` 0x4f8e7c is 13, matching the
+**Observed** row in `docs/issues/sync-breakers.md` line 291 ("13 acts, each
+beginning with `hub`", 0x4f8e48). Every act's row 0 is `hub` with 15000
+bytes. Row counts per act are 7, 6, 10, 9, 6, 7, 5, 7, 10, 5, 8, 5 and 1, so
+every act has at most 10 rows. Act totals are 153000, 140000, 128000, 140000,
+141000, 147000, 115000, 153000, 134000, 115000, 140000, 55000 and 15000. The
+largest, 153000 (acts 0 and 7), is under the 220000 bytes after +0x16118.
+Act 0 row 1 is `blood1`, 25000 bytes. **Derived from those assertions:** one
+act's own rows fit both the space and the ten readable slots. Each extra
+`hub*` sub-area needs another key with 15000 bytes. Acts 2 and 8 have ten
+rows, and adding one sub-area gives 143000 and 149000 bytes, still under
+220000, so only the slot limit stops the eleventh key. **Executed** for act 2
+(last table row): it lands in the gap slot, and every later loader miss
+restores that slot's body. **Inferred:** act 8 behaves the same (same code,
+asserted sizes). **Unknown:** whether real play departs every row of act 2
+or 8 and then enters a hub sub-area. The act table does not list
+sub-areas.
 
 **Cross-reference, not redone:** the departure call and its skips are
 `t3/research-exits-r3` `e86f3de` `docs/exits-r4-travel.md` lines 25–43 and
@@ -209,31 +239,42 @@ header, not the level body (lines 69–73 above).
 ## Checkpoints and the death reload (round 3)
 
 **Executed** `save_game` 0x218128 (names.tsv; script `saveCheckPoint`,
-`Savepoint_run` and the daemon), 20 cases per seed. The original act search,
+`Savepoint_run` and the daemon), 26 cases per seed. The original act search,
 qualified name, `strcmp` and `save_levelStateStored` run against the
 executable's act table. Messages, `task_isRunning`, `save_build` and
 `game_sendCharacterToLobby` are recording stubs.
 
 1. It needs one counted living player. A record at 0x4d8af0 + slot × 0x4c30
    needs an object pointer at +0x43d8, object flag 8 clear, and HP at +0xac
-   above 0. Otherwise nothing happens.
+   above 0. Otherwise nothing happens. Only slots below `g_numPlayers`
+   0x4d8ae0 count: a living record at slot = `g_numPlayers` behind a dead
+   party did nothing in 4 cases (missing level, found level with a1 = 0 and
+   1, and act −1).
 2. If act 0x88d3d4 is −1, or the `missionmenurun` task is running, it calls
    `save_build(a0, 0)` with no message.
-3. If no act row is a prefix of the name, it shows `CheckPoint` and returns
-   **without** building. The level's state is not stored.
+3. If no act row is a prefix of the name, it shows the text-table entry
+   keyed `CheckPoint` (lookup 0x173c84; the displayed wording is not
+   documented) and returns **without** building. The level's state is not
+   stored. This is the same for a1 = 0 and for the daemon's call
+   `save_game(0, 1)` (`docs/audio-save.md` lines 158–159), executed with
+   act 0 and act 2 current.
 4. For the exact row-0 name (`hub`; `hub_west` is not row 0) with no stored
    entry, it builds silently. Every other found level, and a stored `hub`,
-   first gets a HUD message from 0x1d92a0 with arguments (text, 0xb4, −1, 0). The message is `CheckPoint` when a1 is 0,
-   otherwise the level title from 0x22233c.
+   first gets a HUD message from 0x1d92a0 with arguments (text, 0xb4, −1, 0).
+   The text is the entry keyed `CheckPoint` when a1 is 0, otherwise the
+   level title from 0x22233c.
 5. After any build, word 0x4f8f30 is cleared and
    `game_sendCharacterToLobby(−1)` 0x1eb5c8 is called.
 
 `save_build` stores the current level into the same directory
-(`t3/research-saves` `docs/save-format.md` lines 55–58). The checkpoint is
-therefore the header plus the directory as of that moment, all in
-`g_saveBuffer` 0x895580 (directory at +0x16010 = 0x8ab590).
+(`t3/research-saves` `8d43286` `docs/save-format.md` lines 55–58), except
+when the game is complete: that path skips `save_findAct` and the level
+store (lines 58–60). The checkpoint is therefore the header plus the
+directory as of that moment, all in `g_saveBuffer` 0x895580 (directory at
++0x16010 = 0x8ab590). After a completed game, the current level's body is
+whatever the directory already held.
 
-**Cross-reference, not redone:** `t3/research-death-reload`
+**Cross-reference, not redone:** `t3/research-death-reload` `89c7c0f`
 `docs/death-reload-sequence.md` lines 15–67: `deathTask` calls `save_reload`,
 which calls `save_load` on that buffer. Lines 69–88: the following
 `mainloop_loadRequestedWorld` finds the death task and skips the store, and
@@ -246,9 +287,20 @@ same buffer and are not undone. A death reload therefore restores the
 checkpoint's header (players, quests, spawn and level) together with each
 level's *latest* stored body. A level left after the checkpoint comes back
 in its departure state; the level being played when the party died comes
-back in its last stored state, because the death skips its store. This is
-composed from separate probes, and no continuous death-to-playable run
-exists (the death-reload refusal stands).
+back in its last stored state, because the death skips its store. There are
+three exceptions:
+
+- An act change after the checkpoint runs `save_clearBuffer(0)` on that same
+  buffer (travel table; exits-r3 lines 66–72). Only slot 0 survives, so the
+  checkpoint level (unless it is slot 0) and the old act's other levels come
+  back fresh, not in their latest stored state.
+- When the game is complete, `save_build` skips the level store, so the
+  checkpoint adds no body for its own level.
+- Once the gap slot is written, a level that misses comes back with the gap
+  body (directory paragraph above).
+
+This is composed from separate probes, and no continuous death-to-playable
+run exists (the death-reload refusal stands).
 
 ## Client-implementable list (save-world)
 
@@ -259,7 +311,9 @@ until the listed **Unknown** is probed.
    act row 0's size; others take the first current-act row they start with,
    and no row means no store. A new key appends; an existing key keeps its
    size. Readers stop at the first empty name or after 10 entries (lines
-   28–45; exits-r3 lines 25–43).
+   28–45; exits-r3 lines 25–43). The original loader then also accepts a
+   written gap slot 10 for every miss. A port must choose a policy for this
+   rather than copy it as a feature (travel table, last row).
 2. Departure store when leaving a level, unless the name is empty, a death
    task is running, card state is 4, or level flag 0x800 is set (travel
    table; exits-r3 lines 51–56).
@@ -314,7 +368,7 @@ display, save and revisit every shipped level with full object fidelity.
 ## Ordered native port list
 
 1. **Load the actual level data first.** Decode `.GOB`/`.lmp` and `.world`, retain every terrain cell, height-field element, chunk, piece and texture reference, then remove the one-plain-element presentation refusal through a measured multi-element renderer. Keep simulation terrain and rendered surfaces separate.
-2. **Define the native world-state envelope.** Key by qualified level name and version the native schema. Preserve current player/quest/position fields; add per-level object records, decals and explored map. Choose an explicit capacity and failure policy. The original's ten readable slots, write-only overflow gap, retained failed-fit entry and 0x4bc78-byte limit cannot serve as an all-level guarantee.
+2. **Define the native world-state envelope.** Key by qualified level name and version the native schema. Preserve current player/quest/position fields; add per-level object records, decals and explored map. Choose an explicit capacity and failure policy. The original's ten readable slots, an overflow gap that the loader restores for every miss, retained failed-fit entry and 0x4bc78-byte limit cannot serve as an all-level guarantee.
 3. **Implement the object registry and save policy.** Match stable class/property/pose identity, transient and filtered classes, deletion, save ordering and overflow behavior. Port the verified serialized layouts for Chest, ItemProp plus Prop suffix, Creature, Trigger and door/gate writers. Keep the original string table and definition-index semantics explicit in the native schema. Port the load effects verified in `death-reload-objects.md` OBJ2-2 to OBJ2-6, `death-reload-creature.md`, and the JumpGate light link above. Refuse reconstruction that depends on JumpGate animation, Creature subclass overrides, trap fuses, other classes' lights or the ItemProp primary factory rather than fabricating it.
 4. **Restore in original order.** Restore saved player spawn poses from the main save, load the actual level and a fresh script machine, consume and clear the saved spawn rank before `preStart`, then unpack the explored map, construct saved objects and their state, load decals, construct filtered `objects.ob` records, and run `start`. Rebuild moving-piece collision and doors only after their load effects are verified against the original with `.world` present.
 4a. **Apply the travel rules** in "What a level remembers across travel": store on departure with the four skips, keep only slot 0 on an act change, and keep a card-loaded directory as loaded.
@@ -377,3 +431,18 @@ printing its stub list. Two deliberate reference mutations (a swapped
 Creature flag mask, and swapped `save_game` message choice) each failed the
 run before these passes. The retained logs are under the mini worktree's
 `local/sw3-logs/`, untracked. `work/cursor-report.md` has the exact counts.
+
+**Executed 2026-11-09, round 4 (audit fix), on the Mac mini**, same two
+commands. Each seed now asserts the act table (13 acts read through
+`g_actCount`, row 0, row counts, totals and act 0 row 1). It runs 26 JumpGate
+loads (grid edges, y outside, non-integral positions, non-empty heads,
+sentinel bytes) and 26 `save_game` cases. These add two `save_game(0, 1)`
+calls on a level in no act, and four with a living record at slot
+`g_numPlayers`. The travel sequence has 27 steps, including the act-2 gap
+slot. Creature tallies are unchanged from round 3. Two new deliberate
+reference mutations each failed on seed 20973: add-then-truncate for the
+light cell failed in JumpGate, and an a1-dependent message for a missing
+level failed at the first `save_game(0, 1)` case. Both ran on a scratch copy
+inside the untracked `local/`. The retained logs are in `local/sw4-logs/`
+of both the mini and the MacBook worktree, untracked. Each log starts with
+the commit and the SHA-256 of the difftest and `ref_save_world.py`.
