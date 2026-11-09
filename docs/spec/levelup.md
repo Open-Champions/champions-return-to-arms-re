@@ -501,8 +501,8 @@ the `+0x58` store scan.
 `PYTHONDONTWRITEBYTECODE=1 python3 tools/difftest_levelup.py local/SLUS_209.73`
 still passed its 15, 44, 48 and 9 cases and the pending restore on both seeds.
 The companion models this note leans on passed again:
-`difftest_combat.py --quick --seed {20973,7} -k player` and
-`difftest_messages.py --quick --seed {20973,7}`. The unit suite
+`difftest_combat.py --quick --seed {20973,7} -k player` (28 properties per
+seed) and `difftest_messages.py --quick --seed {20973,7}` (44 per seed). The unit suite
 `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools -p 'test_*.py'`
 passed 652 tests. Its log has the line `Ran 652 tests in` with that run's time,
 and then `OK`. Interpreter evidence on constructed state: no console,
