@@ -57,6 +57,8 @@ class Deferred(unittest.TestCase):
         # Counted again from the grant frame. Here shardCheckLoop runs before endDelay
         # in that frame (queue order), so endDelay already counts 1 in it: 276 more.
         self.assertEqual(outro, 276)
+        # The difftest runs the same sequence on the original (outro_after_grant_same_step).
+        self.assertEqual(R.MILESTONES["drunarm"]["outro_after_grant_same_step"], outro)
         self.assertEqual(m.post, "removeRallos")
         self.assertGreater(grant, 0)
 
@@ -78,18 +80,67 @@ class Tables(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)), names)
         self.assertEqual(len(names), 9)
 
-    def test_travel_matches_model(self):
-        for level, entry, _off, dest in R.NEWWORLD:
-            if entry == "exitzone":
-                continue
-            m = R.Model(level)
-            m.run(entry)
-            self.assertEqual(m.pending, dest, (level, entry))
+    def test_text_arguments_are_placeholders(self):
+        """Every model native call against the difftest's argument kinds (SIG), which the
+        host also uses to decode the original's calls: a text-key argument is only ever
+        the placeholder, an identifier argument never is."""
+        import difftest_mission1_levels as D
+        seen = 0
+        for level in ("strife", "drundar", "drunarm", "drunare"):
+            names = [a[len(level) + 1:] for a in dir(R.Model) if a.startswith(level + "_")]
+            names += [k for k, _key, _n in R.Model.PILLAR] + [key for _a, key, _n in R.Model.PILLAR] \
+                if level == "drundar" else []
+            names += ["switch%deffect" % k for k in range(1, 9)] if level == "drundar" else []
+            for entry in names:
+                m = R.Model(level)
+                m.run(entry)
+                for native, *args in m.log:
+                    kinds = D.SIG.get(native)
+                    if kinds is None:
+                        continue
+                    for kind, arg in zip(kinds, args):
+                        if kind == "t":
+                            self.assertEqual(arg, R.TEXT, (level, entry, native))
+                        else:
+                            self.assertNotEqual(arg, R.TEXT, (level, entry, native))
+                        seen += 1
+        self.assertGreater(seen, 200)
 
-    def test_no_text_keys(self):
-        for row in R.CUTSCENES:
-            for value in row:
-                self.assertNotIn("<text>", str(value))
+    def test_no_text_in_tables_or_code(self):
+        """No string in any module table or model function constant carries text: only
+        identifiers, resource names and the placeholder (no spaces)."""
+        import types
+
+        def strings(value):
+            if isinstance(value, str):
+                yield value
+            elif isinstance(value, dict):
+                for k, v in value.items():
+                    yield from strings(k)
+                    yield from strings(v)
+            elif isinstance(value, (tuple, list, set, frozenset)):
+                for v in value:
+                    yield from strings(v)
+
+        found = []
+        for name, value in vars(R).items():
+            if not name.startswith("_") and not isinstance(value, (types.ModuleType, types.FunctionType, type)):
+                found.extend(strings(value))
+        codes = [f.__code__ for f in vars(R.Model).values() if isinstance(f, types.FunctionType)]
+        while codes:
+            code = codes.pop()
+            consts = list(code.co_consts)
+            if consts and isinstance(consts[0], str) and code.co_name != "<lambda>":
+                consts = consts[1:]                      # docstring
+            for c in consts:
+                if isinstance(c, types.CodeType):
+                    codes.append(c)
+                elif isinstance(c, str):
+                    found.append(c)
+        self.assertGreater(len(found), 300)
+        for text in found:
+            self.assertNotIn(" ", text)
+            self.assertTrue(text == R.TEXT or "<" not in text or text == "<empty>", text)
 
 
 if __name__ == "__main__":

@@ -165,6 +165,45 @@ CUTSCENES = (
 # Cutscene files in the lump that no script requests (besides the ten autosave files).
 UNREQUESTED = {"strife": (), "drundar": (), "drunarm": ("rallosrun",), "drunare": ()}
 AUTOSAVE = {"strife": 10, "drundar": 10, "drunarm": 10, "drunare": 9}
+# Actor classes of the unrequested files.
+UNREQUESTED_ACTORS = {"rallosrun": ("UndeadKnight",)}
+# Object keys of type 3 / 4 (virtual slot 3 with 1 / 0, cut_execKey 0x196788) per
+# cutscene: (actor index, key type) -> count.
+SLOT3_KEYS = {
+    "step1com": {}, "step2complete": {(1, 3): 1}, "step3complete": {(2, 3): 1},
+    "doors": {(0, 3): 1, (1, 3): 1, (2, 3): 1, (3, 3): 1, (4, 3): 1},
+    "rallosintro": {}, "rallosruns": {}, "knights": {},
+    "cazic": {(0, 3): 1, (0, 4): 1}, "bossdefeated": {(0, 3): 1, (0, 4): 1},
+}
+
+# ---------------------------------------------------------------- record properties
+# (level, class, record name) -> ((key, value or None for presence only), ...), (absent keys)
+RECORD_FACTS = {
+    ("drunarm", "RalosZek", "rallos"): ((("dropitem", "shardofwar"),), ("wait", "hide")),
+    ("drunarm", "RalosZek", "rallos2"): ((("wait", None),), ("dropitem",)),
+    ("drunare", "RalosZek", "rallos"): ((("wait", None),), ("dropitem",)),
+    ("drunare", "CazicAvatar", "avatar"): ((("wait", None), ("deathscript", "callScria381")), ("dropitem",)),
+    ("drunare", "arenadoor", "exitdoor"): ((("triggerable", None), ("autodoor", None)), ()),
+}
+# (level, class) -> property key tuple of every record of the class (as a multiset).
+CLASS_KEYS = {
+    ("drunarm", "GladiatorBare"): ((),) * 82,
+    ("drunarm", "Portal"): (("lump", "script"),),
+    ("strife", "Portal"): (("lump",),),
+    ("drundar", "Portal"): (("lump",),),
+    ("drunarm", "Trigger"): (("w", "h", "t"),) * 3,
+}
+# (level, class, key) -> the values of that key over the class's records (as a multiset).
+# "<empty>" is the record's own placeholder value; it names no entry.
+CLASS_VALUES = {
+    ("drunarm", "Trigger", "t"): ("callScricb6b", "callScric1d7", "<empty>"),
+    ("drunarm", "Portal", "script"): ("if6896",),
+}
+# Every `dropitem` value in each level (as a multiset).
+DROPS = {
+    "strife": (), "drundar": (), "drunarm": ("shardofwar",),
+    "drunare": ("rejuvpotion", "healingpotion", "rejuvpotion", "healingpotion"),
+}
 
 # ---------------------------------------------------------------- travel requests
 # (level, entry, call offset, destination) for every newWorld site in the four scripts.
@@ -936,7 +975,8 @@ class Model:
 # from the scenarios in the difftest. Equal on the model and the original.
 MILESTONES = {
     "drunarm": {"grant_after_pickup": 16, "outro_after_kill": 303, "outro_after_grant": 277,
-                "outro_after_kill_no_shard": 279, "outro_after_queue": 277},
+                "outro_after_kill_no_shard": 279, "outro_after_queue": 277,
+                "outro_after_grant_same_step": 276},
     "drunare": {"cazic_after_fourth_death": 303, "end_after_death": 878},
     "strife": {"step1_after_queue": 102, "step2_after_queue": 102, "step3_after_queue": 102},
     "drundar": {"doors_after_queue": 102},
@@ -966,4 +1006,18 @@ DEATHS = {
     ("drunare", "UndeadKnight3"): [("script", "setv5138", True), ("drop", "rejuvpotion")],
     ("drunare", "UndeadKnight4"): [("script", "setvcccf", True), ("drop", "healingpotion")],
     ("strife", "Orc2Shaman"): [("script", "callScri4980", True)],
+}
+# The same, picked by record name (class, `name` property; "" for none). Covers every
+# DEATHS row and the records DEATHS left out (rallos2, the second shaman).
+DEATHS_BY_NAME = {
+    ("drunarm", "RalosZek", "rallos"): [("drop", "shardofwar")],
+    ("drunarm", "RalosZek", "rallos2"): [],
+    ("drunare", "RalosZek", "rallos"): [],
+    ("drunare", "CazicAvatar", "avatar"): [("script", "callScria381", True)],
+    ("drunare", "UndeadKnight1", "knight"): [("script", "setv4d6b", True), ("drop", "rejuvpotion")],
+    ("drunare", "UndeadKnight2", "knight"): [("script", "setv772a", True), ("drop", "healingpotion")],
+    ("drunare", "UndeadKnight3", "knight"): [("script", "setv5138", True), ("drop", "rejuvpotion")],
+    ("drunare", "UndeadKnight4", "knight"): [("script", "setvcccf", True), ("drop", "healingpotion")],
+    ("strife", "Orc2Shaman", "orcshamanboss1"): [("script", "callScri4980", True)],
+    ("strife", "Orc2Shaman", "orcshamanboss2"): [("script", "callScri4980", True)],
 }

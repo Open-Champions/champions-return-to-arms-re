@@ -35,6 +35,7 @@ from ee_emu import EE, EmuError
 from dump_tables import parse_objects
 from gob import gob_entries, lmp_entries
 import ref_mission1_levels as R
+import ref_strife_drundar as RS
 import scr
 
 ELF_SHA256 = "292f6f48e3609c0026def2307d76c222cd5b389303d53b89b0e107d7b1dcd675"
@@ -63,7 +64,15 @@ G_PREV_LEVEL, G_GATE_TRAVEL, G_ENTRANCE, G_START_RANK = 0x41B7C2, 0x41B51E, 0x4F
 G_WORLD = 0x44FDC8
 CREATURE_ON_DEATH, OBJECT_CTOR, OBJ_GET_PROP_STR = 0x10BEB8, 0x14CB10, 0x14F4C0
 LOOT_SPAWN_NAMED = 0x100BA0
-BIND_RADIUS = 240.0
+# cut_setup 0x19a6cc actor search: box half-extents (lui 0x4370 / 0x47c3_5000 at
+# 0x19b098-0x19b0ac), result capacity 0x40 (0x19b0f8), nearest-candidate start 600.0
+# (lui 0x4416 at 0x19b0fc).
+BIND_BOX = (240.0, 240.0, 100000.0)
+BIND_FIRST = 600.0
+# A second matching record is excluded when it lies outside the box grown by this much
+# on x and y, i.e. for any object radius below it (world_collectObjectsInBox 0x14a928
+# tests x/y against the radius; the default radius is 24).
+BIND_MARGIN = 240.0
 
 STUB_NAMES = {
     "hideMonster", "showMonster", "killMonster", "deleteMonster", "setMonsterVal",
@@ -375,7 +384,7 @@ CELLS = {
     "drunarm": (0x0, 0x4, 0x8, 0xc, 0x10),
     "drunare": (0x0, 0x4),
     "strife": (0x140, 0x144, 0x148, 0x14c, 0x150, 0x154, 0x158, 0x15c),
-    "drundar": (0x0, 0x2c, 0x30) + tuple(range(0x8, 0x28, 4)),
+    "drundar": (0x0, 0x28, 0x2c, 0x30) + tuple(range(0x8, 0x28, 4)),
 }
 WATCH = ("addDeferedCall", "cutScene", "newWorld", "grantMission", "postAction", "callScript", "killMonster",
          "showMonster", "setCFlag", "removeQuest", "addQuest", "trigger", "setSaveInhibit",
@@ -512,7 +521,7 @@ def scenario_drunarm(host, levels):
     assert host.pending() == "strife"
     out["frames"], out["steps"] = p.frame_no, p.steps
     # Same fight, endmission run (notice box) before the outro replaces the post action.
-    q = Pair(host, lv)
+    q = Pair(host, lv, {0x4: marks[0x4], 0xc: marks[0xc], 0x10: marks[0x10]})
     q.run("start")
     q.run("callScric1d7")
     q.post()
@@ -523,7 +532,21 @@ def scenario_drunarm(host, levels):
     q.post()                                 # endmission
     q.frames(300)
     q.post()                                 # removeRallos
+    assert q.first("grantMission", 1) > 0
     out["steps"] += q.steps
+    # The other order inside the grant frame: shardCheckLoop and rallosHPcheck both
+    # queued before the first frame, death and pickup in the same step.
+    x = Pair(host, lv)
+    x.run("start")
+    x.run("callScric1d7")
+    x.post()
+    x.frames(1)
+    x.hp("rallos", 0)
+    x.count(0, 1)
+    x.frames(330)
+    out["outro_after_grant_same_step"] = (x.first("cutScene", "rallosruns")
+                                          - x.first("grantMission", 1))
+    out["steps"] += x.steps
     # Control: no shard until after the outro, so nothing resets global 0x10.
     w = Pair(host, lv)
     w.run("start")
@@ -607,7 +630,8 @@ def scenario_strife(host, levels):
     lv = levels["strife"]
     out = {}
     links = R.LINKS["strife"]
-    p = Pair(host, lv)
+    marks = {c: 0x5A + c for c in CELLS["strife"]}
+    p = Pair(host, lv, marks)               # sentinels: every zeroing store is visible
     p.run("preStart")
     for _ in range(links[("Orc2Archer", "initscript", "callScri52e")]
                    + links[("Orc2Soldier", "initscript", "callScri52e")]):
@@ -675,7 +699,7 @@ def scenario_strife(host, levels):
     assert host.pending() == "blood1"
     out["frames"], out["steps"] = p.frame_no, p.steps
     # Reload after all three stages.
-    s = Pair(host, lv)
+    s = Pair(host, lv, marks)
     for name, value in (("sfe_step1Complete", 1), ("sfe_step2Complete", 1),
                         ("sfe_step3Complete", 1), ("sfe_step3counter", 2),
                         ("sfe_talkedtofirstscout", 1)):
@@ -692,7 +716,8 @@ def scenario_drundar(host, levels):
     """Evil story level: arena message, eight switches, doors cutscene, exits, reload."""
     lv = levels["drundar"]
     out = {}
-    p = Pair(host, lv)
+    marks = {c: 0x5A + c for c in CELLS["drundar"]}
+    p = Pair(host, lv, marks)               # sentinels: every zeroing store is visible
     p.run("preStart")
     p.run("start")
     p.run("return56e0", 0)
@@ -720,7 +745,7 @@ def scenario_drundar(host, levels):
     p.run("newWorld5d32")
     assert host.pending() == "blood1"
     out["frames"], out["steps"] = p.frame_no, p.steps
-    s = Pair(host, lv)
+    s = Pair(host, lv, marks)
     s.var("drun_sawdoors", 1)
     s.var("drun_arenaMess", 1)
     for k in range(1, 9):
@@ -815,7 +840,98 @@ def links(levels):
     return total
 
 
-def cutscene_files(levels):
+CTORS = dict(RS.FACTORY)
+CTORS.update(R.FACTORY)
+
+
+def makes_object(row):
+    """The census rule: the factory returns 0 for these (asserted in census())."""
+    key = row["class"].lower()
+    if key in R.NO_OBJECT and not (key == "crate" and row["properties"]):
+        return False
+    assert key in CTORS, key
+    return True
+
+
+def type_names(elf, levels):
+    """C++ type name of every constructor the four levels' records select.
+
+    The factory runs with only its own code, the selected constructor and the
+    GameObject constructor 0x14cb10; the constructor stores its virtual table at +0x48
+    (base constructors are stubbed, so a later fault on missing level data is ignored).
+    Entry 0 of the table is the type-info function; its result's first word is the
+    mangled name, whose leading digits cut_setup skips (0x19b1e0-0x19b1f8)."""
+    out = {}
+    for name in sorted(levels):
+        for row in levels[name].rows:
+            if not makes_object(row):
+                continue
+            ctor = CTORS[row["class"].lower()][1]
+            if ctor in out:
+                continue
+            ee = EE(elf)
+            ee.syscall_handler = lambda e: e.r.__setitem__(2, 0)
+
+            class Follow:
+                def __contains__(self, addr, ctor=ctor):
+                    return addr in FactoryFollow() or addr in (ctor, OBJECT_CTOR)
+            ee.follow = Follow()
+            block = ee.alloc(0x1000)
+            ee.mem.w32(G_WORLD, ee.alloc(0x100))
+            ee.stub(POOL_NEW, ret=block)
+            try:
+                ee.call(FACTORY, put(ee, row["class"]), ee.alloc(12), row["angle"], props_ptr(ee, row),
+                        max_steps=3000000)
+            except EmuError:
+                pass
+            table = ee.mem.u32(block + 0x48)
+            if not 0x500000 <= table < 0x520000:
+                continue                     # faulted before the store; another record of this ctor
+            info = ee.call(ee.mem.u32(table + 4), max_steps=200000) & 0xFFFFFFFF
+            out[ctor] = ee.mem.cstr(ee.mem.u32(info), 60).lstrip("0123456789")
+    for name, lv in levels.items():
+        for row in lv.rows:
+            if makes_object(row):
+                assert CTORS[row["class"].lower()][1] in out, (name, row["class"])
+    return out
+
+
+def f32(x):
+    return struct.unpack("<f", struct.pack("<f", x))[0]
+
+
+def bind_actor(lv, types, cls, at, taken):
+    """cut_setup's search for one placed actor (0x19b098-0x19b324), over the records.
+
+    Candidates are objects in the box at +-BIND_BOX whose class string (+0x34, the
+    factory's class name) or C++ type name equals the actor's class, skipping objects
+    already bound (flag 0x80000). The pick is the nearest in 2-D below 600; once a
+    class-string match is held, type-only matches are skipped. Returns the one record
+    and asserts it is the only candidate even with a radius up to BIND_MARGIN."""
+    lo = [f32(at[i] - BIND_BOX[i]) for i in range(3)]
+    hi = [f32(at[i] + BIND_BOX[i]) for i in range(3)]
+    inner, outer = [], []
+    for row in lv.rows:
+        if not makes_object(row) or id(row) in taken:
+            continue
+        by_name = row["class"] == cls
+        by_type = types[CTORS[row["class"].lower()][1]] == cls
+        assert by_name or not by_type, (lv.name, cls, row["class"])   # no type-only match here
+        if not by_name:
+            continue
+        x, y, z = float(row["x"]), float(row["y"]), float(row["height"])
+        assert lo[2] + 1000 < z < hi[2] - 1000, (lv.name, cls)
+        if lo[0] <= x <= hi[0] and lo[1] <= y <= hi[1]:
+            inner.append(row)
+        if lo[0] - BIND_MARGIN <= x <= hi[0] + BIND_MARGIN and lo[1] - BIND_MARGIN <= y <= hi[1] + BIND_MARGIN:
+            outer.append(row)
+    assert len(inner) == 1 and outer == inner, (lv.name, cls, len(inner), len(outer))
+    row = inner[0]
+    assert math.hypot(float(row["x"]) - at[0], float(row["y"]) - at[1]) < BIND_FIRST, (lv.name, cls)
+    return row
+
+
+def cutscene_files(levels, types):
     """Requested cutscenes: call site, file in the level lump, header, actors, binding."""
     requested = {}
     for name, lv in levels.items():
@@ -826,35 +942,73 @@ def cutscene_files(levels):
     for row in R.CUTSCENES:
         want.setdefault(row[0], []).append(row[1:4])
     assert {k: sorted(v) for k, v in requested.items()} == {k: sorted(v) for k, v in want.items()}
+    bindings = 0
     for level, entry, off, cut, flags, keys, actors, cast, shows in R.CUTSCENES:
         lv = levels[level]
         data = lv.files[cut + ".cut"]
         got_flags, key_off, key_count, actor_off, actor_count = struct.unpack_from("<5I", data, 0)
         assert (got_flags, key_count, actor_count) == (flags, keys, actors), (level, cut)
-        bound = []
+        bound, taken = [], set()
         for k in range(actor_count):
             rec = data[actor_off + 0x2C * k: actor_off + 0x2C * (k + 1)]
             cls = rec[8:0x1C].split(b"\0")[0].decode("latin1")
-            x, y, _z = struct.unpack_from("<3f", rec, 0x1C)
+            at = struct.unpack_from("<3f", rec, 0x1C)
             if rec[0x2B]:
                 bound.append((cls, "create"))
                 continue
-            near = [row for row in lv.rows if row["class"] == cls
-                    and math.hypot(float(row["x"]) - x, float(row["y"]) - y) <= BIND_RADIUS]
-            assert len(near) == 1, (level, cut, k, cls, len(near))
-            names = [v for key, v in lv.props(near[0]) if key == "name"]
+            row = bind_actor(lv, types, cls, at, taken)
+            taken.add(id(row))
+            bindings += 1
+            names = [v for key, v in lv.props(row) if key == "name"]
             bound.append((cls, names[0] if names else ""))
         assert tuple(bound) == cast, (level, cut, bound)
         keyset = [struct.unpack_from("<fhh", data, key_off + 20 * k) for k in range(key_count)]
         got_shows = tuple(sorted(a for _t, a, kind in keyset if kind == 8 and a >= 0))
         assert got_shows == shows, (level, cut, got_shows)
+        slot3 = Counter((a, kind) for _t, a, kind in keyset if kind in (3, 4) and a >= 0)
+        assert sorted(slot3.items()) == sorted(R.SLOT3_KEYS[cut].items()), (level, cut, sorted(slot3.items()))
     for name, lv in levels.items():
         cuts = {f[:-4] for f in lv.files if f.endswith(".cut")}
         auto = {c for c in cuts if c.startswith("autosave")}
         asked = {row[3] for row in R.CUTSCENES if row[0] == name}
         assert len(auto) == R.AUTOSAVE[name], name
         assert cuts - auto - asked == set(R.UNREQUESTED[name]), (name, sorted(cuts - auto - asked))
-    return len(R.CUTSCENES)
+        for cut in R.UNREQUESTED[name]:
+            data = lv.files[cut + ".cut"]
+            _f, _ko, _kc, actor_off, actor_count = struct.unpack_from("<5I", data, 0)
+            classes = tuple(data[actor_off + 0x2C * k + 8: actor_off + 0x2C * k + 0x1C].split(b"\0")[0]
+                            .decode("latin1") for k in range(actor_count))
+            assert classes == R.UNREQUESTED_ACTORS[cut], (name, cut, classes)
+    return len(R.CUTSCENES), bindings
+
+
+def record_facts(levels):
+    """Record properties the document relies on, by record name (R.RECORD_FACTS)."""
+    checked = 0
+    for (name, cls, record), (present, absent) in R.RECORD_FACTS.items():
+        rows = [r for r in levels[name].rows if r["class"] == cls
+                and dict(levels[name].props(r)).get("name", "") == record]
+        assert len(rows) == 1, (name, cls, record, len(rows))
+        keys = {k for k, _v in levels[name].props(rows[0])}
+        props = dict(levels[name].props(rows[0]))
+        for key, value in present:
+            assert key in keys and (value is None or props[key] == value), (name, record, key)
+        for key in absent:
+            assert key not in keys, (name, record, key)
+        checked += 1
+    for (name, cls), want in R.CLASS_KEYS.items():
+        got = Counter(tuple(k for k, _v in levels[name].props(r)) for r in levels[name].rows if r["class"] == cls)
+        assert got == Counter(want), (name, cls, got)
+        checked += 1
+    for (name, cls, key), want in R.CLASS_VALUES.items():
+        got = Counter(dict(levels[name].props(r)).get(key) for r in levels[name].rows if r["class"] == cls)
+        assert got == Counter(want), (name, cls, key, got)
+        checked += 1
+    for name, lv in levels.items():
+        drops = Counter(dict(lv.props(r)).get("dropitem") for r in lv.rows if "dropitem" in dict(lv.props(r)))
+        assert drops == Counter(R.DROPS[name]), (name, drops)
+        checked += 1
+    return checked
 
 
 def travel_sites(levels):
@@ -926,7 +1080,12 @@ def deaths(elf, levels):
             return addr in (CREATURE_ON_DEATH, OBJ_GET_PROP_STR, 0x14C880, OBJECT_CTOR) or 0x3A5000 <= addr < 0x3C0000
     count = 0
     for (name, cls), want in R.DEATHS.items():
-        row = next(r for r in levels[name].rows if r["class"] == cls)
+        assert any(k[:2] == (name, cls) and v == want for k, v in R.DEATHS_BY_NAME.items()), (name, cls)
+    for (name, cls, record), want in R.DEATHS_BY_NAME.items():
+        rows = [r for r in levels[name].rows if r["class"] == cls
+                and dict(levels[name].props(r)).get("name", "") == record]
+        assert len(rows) == 1, (name, cls, record, len(rows))
+        row = rows[0]
         for quiet in (0, 1):
             ee = EE(elf)
             ee.follow = Follow()
@@ -940,7 +1099,7 @@ def deaths(elf, levels):
             ee.call(OBJECT_CTOR, obj, pos, definition, props_ptr(ee, row), max_steps=2000000)
             ee.call(CREATURE_ON_DEATH, obj, quiet, max_steps=2000000)
             expected = [x for x in want if not (quiet and x[0] == "drop")]
-            assert got == expected and ee.mem.u32(SELECTED) == 0, (name, cls, quiet, got)
+            assert got == expected and ee.mem.u32(SELECTED) == 0, (name, cls, record, quiet, got)
             count += 1
     return count
 
@@ -972,6 +1131,26 @@ def controls(host, levels):
         finally:
             R.scaled_time = saved
     cases.append(("model getScaledTime n", model_off_by_one))
+
+    def model_without(level_run, method, cell):
+        """The model with one zeroing store removed: the sentinel must expose it."""
+        def run():
+            saved_body = getattr(R.Model, method)
+
+            def body(self):
+                before = self.g.get(cell)
+                result = saved_body(self)
+                if before is not None:
+                    self.g[cell] = before
+                return result
+            setattr(R.Model, method, body)
+            try:
+                level_run(host, levels)
+            finally:
+                setattr(R.Model, method, saved_body)
+        return run
+    cases.append(("model strife step2pause keeps 0x154", model_without(scenario_strife, "strife_step2pause", 0x154)))
+    cases.append(("model drundar preStart keeps 0x28", model_without(scenario_drundar, "drundar_preStart", 0x28)))
     for name, run in cases:
         try:
             run()
@@ -1001,7 +1180,9 @@ def main():
     levels = {name: Level(args.disc, name) for name in ("strife", "drundar", "drunarm", "drunare")}
     made = census(args.elf, levels, args.seed)
     linked = links(levels)
-    cuts = cutscene_files(levels)
+    types = type_names(args.elf, levels)
+    cuts, bindings = cutscene_files(levels, types)
+    facts = record_facts(levels)
     travel = travel_sites(levels)
     names = loader_names(args.elf)
     arrivals = markers(args.elf, levels)
@@ -1021,10 +1202,12 @@ def main():
     milestones = " ".join("%s:%s" % (n, ",".join("%s=%s" % kv for kv in sorted(
         (k, v) for k, v in r.items() if k not in ("steps", "frames")))) for n, r in results.items())
     digest = hashlib.sha256(open(__file__, "rb").read()).hexdigest()[:16]
-    print("PASS seed %d: %d arena objects made, %d record links, %d cutscenes, %d travel sites, "
+    print("PASS seed %d: %d arena objects made, %d record links, %d cutscenes (%d actor bindings by the "
+          "cut_setup box search, %d type names), %d record facts, %d travel sites, "
           "%d loader names, %d marker cases, %d death cases, %d hub cases, %d controls rejected, %d compared steps "
           "(%d frames in the four main runs); milestones %s; tool %s"
-          % (args.seed, made, linked, cuts, travel, names, arrivals, died, hubs, rejected, steps, frames, milestones, digest))
+          % (args.seed, made, linked, cuts, bindings, len(types), facts, travel, names, arrivals, died, hubs,
+             rejected, steps, frames, milestones, digest))
 
 if __name__ == "__main__":
     main()
