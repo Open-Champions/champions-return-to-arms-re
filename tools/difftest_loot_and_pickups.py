@@ -26,8 +26,10 @@ never printed; output is addresses, counts and raw floats only.
 """
 import argparse
 import hashlib
+import itertools
 import os
 import struct
+import subprocess
 import sys
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -48,7 +50,21 @@ CLASS_TYPES = (0x3c4888, 0x3c3c78, 0x3cc938, 0x3cca98, 0x3c9330, 0x3cc568,
                0x3ca4ac, 0x3cba24, 0x3cc29c, 0x3cb1a0, 0x3ccd64)
 NOLOOT_KEY = 0x52ffd8          # key string address; its text is read at run time
 RANK2_NAME = 0x52fd48          # first entry of creature_bossRank's name list
+BOSS_RANK = 0x10d940
+# creature_bossRank string arguments (addresses only; the text is read at run time).
+# Sixteen type names that give rank 2 on their own (0x10d964-0x10dbb0) ...
+BOSS_PLAIN = (0x52fd48, 0x52fd58, 0x52fd68, 0x52fd78, 0x52fd88, 0x52fd90, 0x52fda0,
+              0x52fdb0, 0x52fdc0, 0x52fdd0, 0x52fde0, 0x52fdf0, 0x52fe00, 0x52fe10,
+              0x52fe50, 0x52fe60)
+# ... and three (type name, value of the object's property) pairs; the property is read
+# with obj_getPropStr 0x14f4c0 (this, key 0x52fab0, 0) at 0x10dad8, 0x10db18, 0x10db5c.
+BOSS_PROP_KEY = 0x52fab0
+BOSS_PAIRS = ((0x52fe20, 0x52fe30), (0x52fe20, 0x52fe38), (0x52fe40, 0x52fe48))
+NAMED_ITEM = 0x100ba0
+NAMED_ITEM_SITES = (0x10bf54, 0x147838, 0x1478b0, 0x26d648, 0x2a3d9c)
+NAMED_ITEM_OWNERS = (0x10beb8, 0x1477ac, 0x147860, 0x26ccfc, 0x2a323c)
 COMMON = (36.0, 2.0, 1.6, 0.6, 1.4, 0.25)   # the common death-helper arguments
+GOLD_CHANCES = (0.0, 0.25, 0.6, 1.0)        # 0.6 is the common death-helper value
 
 GIVE, GIVE_END = 0x145a88, 0x145d20
 CTOR2, CTOR3, PHPROP_CTOR = 0x1590ec, 0x1592bc, 0x155a0c
@@ -205,6 +221,23 @@ def drop_cases(elf, seed):
     sites = [a for a in range(0x100000, 0x3c0000, 4)
              if emu.mem.u32(a) == (3 << 26) | (DROP >> 2)]
     check(len(sites) == 49, 'Creature_dropLoot has %d jal sites (49 expected)' % len(sites))
+    named = tuple(a for a in range(0x100000, 0x3c0000, 4)
+                  if emu.mem.u32(a) == (3 << 26) | (NAMED_ITEM >> 2))
+    check(named == NAMED_ITEM_SITES, 'loot_spawnNamedItem 0x100ba0 jal sites: %s'
+          % ', '.join(map(hex, named)))
+    # Owner of each site: the nearest preceding stack-frame prologue (addiu sp, sp, -n),
+    # then the script native whose handler is that address, if any.
+    natives = {emu.mem.u32(NATIVE_TABLE + 8 * i + 4): i for i in range(256)}
+    owners = []
+    for site in named:
+        start = next(a for a in range(site, site - 0x4000, -4)
+                     if emu.mem.u32(a) >> 16 == 0x27bd and emu.mem.u32(a) & 0x8000)
+        owners.append((start, natives.get(start)))
+        print('INFO  loot_spawnNamedItem site 0x%x: function 0x%x, script native %s'
+              % (site, start, natives.get(start)))
+    check(owners == list(zip(NAMED_ITEM_OWNERS, (None, 173, 174, None, None))),
+          'loot_spawnNamedItem sites lie in 0x10beb8, natives 173 (0x1477ac) and 174 '
+          '(0x147860), 0x26ccfc and 0x2a323c')
     key = emu.mem.cstr(NOLOOT_KEY).encode('latin-1')
     cases = 0
     grid = []
@@ -283,6 +316,71 @@ def drop_cases(elf, seed):
         print('LOCK  class %d players 3: %s draws %d' % (index, [
             ('%s' % '/'.join('%g' % number(a) for a in args[2:]), int(bool(f)), force)
             for args, f, force in entries], len(used)))
+    return cases + boss_rank_cases(elf)
+
+
+def boss_rank_run(elf, name_addr=None, c=0x20, a8=0, prop_value=None):
+    """Run the real creature_bossRank 0x10d940. The type name is a fresh copy of the
+    executable's string (so the compare is by content, not pointer); the object's
+    property list holds `<key 0x52fab0>=<value>` when prop_value is given."""
+    emu = EE(elf)
+    obj = emu.alloc(0x600)
+    emu.mem.w32(obj + 0xc, c)
+    emu.mem.w64(obj + 0xa8, a8)
+    if name_addr:
+        text = emu.mem.cstr(name_addr).encode('latin-1')
+        copy = emu.alloc(len(text) + 1)
+        emu.mem.write(copy, text + b'\0')
+        emu.mem.w32(obj + 0x34, copy)
+    if prop_value:
+        entry = (emu.mem.cstr(BOSS_PROP_KEY) + '=' + emu.mem.cstr(prop_value)).encode('latin-1')
+        s = emu.alloc(len(entry) + 1)
+        emu.mem.write(s, entry + b'\0')
+        table = emu.alloc(8)
+        emu.mem.w32(table, s)
+        emu.mem.w32(obj + 0x2c, table)
+    emu.reset_log()
+    rank = emu.call(BOSS_RANK, obj) & M32
+    return rank, emu
+
+
+def boss_rank_cases(elf):
+    cases = 0
+    ok = True
+    for name in BOSS_PLAIN:
+        for c, a8, want in ((0x20, 0, 2), (0x20, 1, 2), (0, 0, 0), (0, 1, 0)):
+            rank, _ = boss_rank_run(elf, name, c=c, a8=a8)
+            ok &= rank == want
+            cases += 1
+    check(ok, 'creature_bossRank: the 16 plain type names give 2 with +0xc & 0x20, '
+              '0 without it, regardless of the MiniBoss bit')
+    ok = True
+    for c, a8, want in ((0x20, 0, 0), (0x20, 1, 1), (0, 1, 0)):
+        rank, _ = boss_rank_run(elf, None, c=c, a8=a8)
+        ok &= rank == want
+        cases += 1
+    rank, _ = boss_rank_run(elf, 0x52ffd8, c=0x20, a8=1)   # a name not on the list
+    ok &= rank == 1
+    cases += 1
+    check(ok, 'creature_bossRank: no or unlisted type name -> +0xa8 bit 0 when +0xc & 0x20')
+    names = sorted({n for n, _ in BOSS_PAIRS})
+    values = [v for _, v in BOSS_PAIRS]
+    rows = []
+    for name in names:
+        # Without the property obj_getPropStr returns 0 and the original compares the
+        # string at address 0 (no null test between 0x10dad8 and 0x10dae8), which the
+        # emulator does not map; so every state here carries a value, one of them unlisted.
+        for value in values + [NOLOOT_KEY]:
+            for a8 in (0, 1):
+                rank, emu = boss_rank_run(elf, name, a8=a8, prop_value=value)
+                want = 2 if (name, value) in BOSS_PAIRS else a8
+                reads = [x for x in emu.calls if x.target == 0x14f4c0]
+                rows.append(rank == want and reads
+                            and all(x.args[1] & M32 == BOSS_PROP_KEY for x in reads))
+                cases += 1
+    check(all(rows), 'creature_bossRank: the two conditional type names give 2 only with '
+          'their own property values (key 0x52fab0, read by obj_getPropStr 0x14f4c0), '
+          'otherwise the MiniBoss bit (%d states)' % len(rows))
     return cases
 
 
@@ -312,49 +410,60 @@ def scale_cases(elf, seed):
     libc = LIBC
     gold_cases = 0
     seen = {}
-    for players in (1, 2, 4):
-        for level in (1.0, 10.0, 22.0, 40.0):
-            for difficulty in (1, 5):
-                for pvp_a in (0, 1):
-                    for k in range(6):
-                        # The start seed depends on everything but the difficulty and the
-                        # PvP flag, so those two can be compared on equal seeds.
-                        start = (seed * 0x19660d + k * 0x9e3779b1 + players * 7919
-                                 + int(level) * 104729) & M32
-                        emu = EE(elf)
-                        emu.follow = {GENERATE, 0x1ebf20, 0x1ebf70} | libc
-                        emu.mem.w32(SHARED, start)
-                        emu.mem.w32(NUM_PLAYERS, players)
-                        emu.mem.w32(LEVEL, bits(level))
-                        emu.mem.w32(DIFFICULTY, difficulty)
-                        emu.mem.w32(PVP_A, pvp_a)
-                        got = []
-                        emu.stub(0x100974, function=lambda m: got.append(m.r[5] & M32 if
-                                 m.r[5] & 0x80000000 == 0 else (m.r[5] & M32) - (1 << 32)),
-                                 name='loot_spawnGold')
-                        pos = emu.alloc(16)
-                        emu.call(GENERATE, pos, 0, 0, 0,
-                                 fargs=(36.0, 2.0, 1.6, 1.0, 1.4, 0.0))
-                        game = R.Game(num_players=players, difficulty=difficulty, pvp_a=pvp_a,
-                                      level=level)
+    counts = {c: [0, 0] for c in GOLD_CHANCES}
+    # loot_spawnGold 0x100974 is a recorder here and World.spawn_gold draws nothing, so
+    # the scatter and GameObject_ctor draws of a real Gold are absent on both sides.
+    for gold_chance, players, level, difficulty, pvp_a, k in itertools.product(
+            GOLD_CHANCES, (1, 2, 4), (1.0, 10.0, 22.0, 40.0), (1, 5), (0, 1), range(6)):
+        # The start seed depends on everything but the difficulty and the
+        # PvP flag, so those two can be compared on equal seeds.
+        start = (seed * 0x19660d + k * 0x9e3779b1 + players * 7919
+                 + int(level) * 104729) & M32
+        emu = EE(elf)
+        emu.follow = {GENERATE, 0x1ebf20, 0x1ebf70} | libc
+        emu.mem.w32(SHARED, start)
+        emu.mem.w32(NUM_PLAYERS, players)
+        emu.mem.w32(LEVEL, bits(level))
+        emu.mem.w32(DIFFICULTY, difficulty)
+        emu.mem.w32(PVP_A, pvp_a)
+        got = []
+        emu.stub(0x100974, function=lambda m: got.append(m.r[5] & M32 if
+                 m.r[5] & 0x80000000 == 0 else (m.r[5] & M32) - (1 << 32)),
+                 name='loot_spawnGold')
+        pos = emu.alloc(16)
+        emu.call(GENERATE, pos, 0, 0, 0,
+                 fargs=(36.0, 2.0, 1.6, gold_chance, 1.4, 0.0))
+        game = R.Game(num_players=players, difficulty=difficulty, pvp_a=pvp_a,
+                      level=level)
 
-                        class World(R.World):
-                            def spawn_item(self, kind, item, rng):
-                                return False
-                        world = World()
-                        R.loot_generate_drops(tables, game, R.Rng(start), world, bits(1.6),
-                                              bits(1.0), bits(1.4), 0)
-                        want = [v for k2, v in world.drops if k2 == 'gold']
-                        if got != want:
-                            check(False, 'gold P=%d L=%g d=%d pvpA=%d start %08x: %r vs %r'
-                                  % (players, level, difficulty, pvp_a, start, got, want))
-                        seen.setdefault((players, level, pvp_a, k), []).append(tuple(got))
-                        gold_cases += 1
+        class World(R.World):
+            def spawn_item(self, kind, item, rng):
+                return False
+        world = World()
+        R.loot_generate_drops(tables, game, R.Rng(start), world, bits(1.6),
+                              bits(gold_chance), bits(1.4), 0)
+        want = [v for k2, v in world.drops if k2 == 'gold']
+        if got != want:
+            check(False, 'gold c=%g P=%d L=%g d=%d pvpA=%d start %08x: %r vs %r'
+                  % (gold_chance, players, level, difficulty, pvp_a, start, got,
+                     want))
+        seen.setdefault((gold_chance, players, level, pvp_a, k), []).append(
+            tuple(got))
+        if not pvp_a:
+            counts[gold_chance][0] += 1
+            counts[gold_chance][1] += len(got)
+        gold_cases += 1
     same = all(len(set(v)) == 1 for v in seen.values())
-    check(gold_cases and same, 'gold amounts of 0x100d54 equal ref_items on %d runs; the two '
-          'difficulties give identical gold for the same seed' % gold_cases)
-    check(all(not v[0] for (p, l, a, k), v in seen.items() if a),
+    check(gold_cases and same, 'gold amounts of 0x100d54 equal ref_items on %d runs (goldChance '
+          '%s, goldScale 1.6); the two difficulties give identical gold for the same seed'
+          % (gold_cases, '/'.join('%g' % c for c in GOLD_CHANCES)))
+    check(all(not v[0] for (gc, p, l, a, k), v in seen.items() if a),
           'PvP mode A: no gold roll reaches loot_spawnGold')
+    for c in GOLD_CHANCES:
+        print('INFO  goldChance %g: %d non-PvP-A runs, %d loot_spawnGold calls'
+              % (c, counts[c][0], counts[c][1]))
+    check(counts[0.0][1] == 0 and all(counts[c][1] for c in GOLD_CHANCES if c),
+          'goldChance 0 gives no gold; every nonzero chance gives some')
     # Per-roll range as a client table (goldScale 1.6), from the reference.
     for players in (1, 2):
         for level in (1.0, 10.0, 22.0, 40.0):
@@ -738,6 +847,18 @@ def main():
         digest = hashlib.sha256(handle.read()).hexdigest()
     if digest != SHA256:
         sys.exit('unexpected executable %s' % digest)
+    here = os.path.dirname(os.path.abspath(__file__))
+    with open(os.path.abspath(__file__), 'rb') as handle:
+        tool = hashlib.sha256(handle.read()).hexdigest()
+    try:
+        commit = subprocess.run(['git', '-C', here, 'rev-parse', 'HEAD'], capture_output=True,
+                                text=True).stdout.strip() or 'none'
+        dirty = subprocess.run(['git', '-C', here, 'status', '--porcelain', '--untracked-files=no'],
+                               capture_output=True, text=True).stdout.strip()
+    except OSError:
+        commit, dirty = 'none', ''
+    print('commit %s%s tool-sha256 %s seed %d' % (commit, ' (tracked files modified)' if dirty
+                                                  else '', tool, args.seed))
     total = 0
     for name, function in SECTIONS.items():
         if args.only and name != args.only:

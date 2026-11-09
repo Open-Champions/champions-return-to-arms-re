@@ -18,12 +18,16 @@ branches had only been skimmed (`symbols/creatures.tsv` line 33). The other new
 items are level/difficulty scaling and gold amounts measured on the real roll,
 the `ItemProp_ctor2` 0x1590ec call sites (an open item in `5a683b4`,
 `give-player-item.md` line 183), the givePlayerItem-versus-pickup boundaries,
-and the generic `AutoChest_dropLoot` 0x23ba3c roll.
+and the generic `AutoChest_dropLoot` 0x23ba3c roll. `creature_bossRank`
+0x10d940 is executed with its 16 plain names and three name/property pairs.
+A census gives the five `loot_spawnNamedItem` 0x100ba0 call sites.
 
 **Labels.** **Observed** means read from addressed original instructions.
 **Executed** means those instructions ran in `tools/ee_emu.py` on constructed
-state, seeds 20973 and 7, in `tools/difftest_loot_and_pickups.py` (cited
-as `lp:<line>`). **Inferred** is a deduction. **Unknown** means not
+state in `tools/difftest_loot_and_pickups.py` (cited as `lp:<line>`), run with
+seeds 20973 and 7. Only the gold comparison in §1.3 depends on the seed.
+Every other section scripts or stubs each draw it depends on, so the two
+seeds give the same results there (§7). **Inferred** is a deduction. **Unknown** means not
 established. Nothing here was seen in a running game. No game text is stored.
 Descriptor and key strings are read from the executable at run time, and
 creature classes are named only by their type-getter address. The matching
@@ -38,43 +42,79 @@ class): there is no per-monster loot table. Each class's death state (0x14)
 calls `Creature_dropLoot(zOffset, throwSpeed, goldScale, goldChance,
 qualityRow, itemChance; this, &pos, angle, reagentFilter)` with float
 immediates. The most common set is `(36, 2, 1.6, 0.6, 1.4, 0.25)`.
-**Executed** (`lp:207`): there are exactly 49 `jal 0x10f2c8` sites.
+**Executed** (`lp:223`): there are exactly 49 `jal 0x10f2c8` sites.
 
 ### 1.2 `Creature_dropLoot` 0x10f2c8, executed
 
-`loot_generateDrops` 0x100d54 is replaced by a recorder that keeps the position
-copy, angle, filter, force flag and the six floats of each call. The own
-generator `GameObject_rand` 0x1509d0 is replaced by a scripted sequence, so that
-each threshold is tested on both sides. Everything else is original:
-`obj_getPropInt` 0x14c880, `creature_bossRank` 0x10d940, type compare 0x3b1250
-and the string routines (`lp:116–168`). The reference is `ref_drop`
-(`lp:171–196`), written from the instructions at 0x10f2c8–0x110718.
+Stubs and constructed state in this section (`drop_run`, `lp:132–184`):
+
+- `loot_generateDrops` 0x100d54 is a recorder that keeps the position copy,
+  angle, filter, force flag and the six floats of each call.
+- The own generator `GameObject_rand` 0x1509d0 is a stub that returns a scripted
+  sequence (and asserts it is asked for the creature itself), so that each
+  threshold is tested on both sides.
+- The creature's type getter (the word at vtable + 4; the vtable pointer is at
+  object `+0x48`) is a stub. For the
+  plain creature it returns a sentinel type object built in emulator memory,
+  whose name is the made-up string `probe-only-type`, so it matches none of the
+  eleven classes. For a class test it returns what the real class getter
+  (0x3c4888, …) returned when run first.
+- The object (0x600 zeroed bytes), its flags, name pointer, tint byte and
+  property list are constructed.
+
+Everything else is original: `obj_getPropInt` 0x14c880, `creature_bossRank`
+0x10d940, type compare 0x3b1250 and the string routines. The reference is
+`ref_drop` (`lp:187–212`), written from the instructions at
+0x10f2c8–0x110718.
 
 **Observed / Executed**, in order:
 
 1. Creature flag `+0xa8 & 0x100000000` set: no drop at all (0x10f33c–0x10f358).
 2. Property `noloot` (key at 0x52ffd8) with a **nonzero integer value**: no drop,
    unless PvP mode B (0x4f7120) is set (0x10f360–0x10f37c). The property is read
-   with `obj_getPropInt`, so `noloot=0` still drops (`lp:222`).
+   with `obj_getPropInt`, so `noloot=0` still drops (`lp:255`).
 3. Eleven exact-type tests (the getter's type compared by 0x3b1250, which
-   matches on pointer or name). A matching class makes its own calls and
-   **returns**: no tint and no trailing ordinary call (`lp:239–289`). Two are gated: class 5 (getter
-   0x3cc568) only when `+0xa8` bit 0 is set (0x10fb7c), and class 6 (0x3ca4ac)
-   only when the word at `+0x3d8` is nonzero (0x10fcfc). Ungated, both fall
-   through to the generic path, tint included (Executed).
-4. Generic path. Rank comes from `creature_bossRank`: 0 unless object flag
-   `+0xc & 0x20`. Then 2 if the type name at `+0x34` is on its list (0x10d964
-   onward, plus three level-name conditions, Observed only). Otherwise
-   `+0xa8 & 1` (the MiniBoss flag).
-   - Rank 2 makes four calls before the per-player loop: the caller's six
+   matches on pointer or name). The count of eleven is the earlier Observed
+   reading (`docs/data-tables.md` line 173; `docs/issues/kill-loot-xp.md`
+   line 236). The tool runs those eleven getters (`lp:49–50`) but
+   does not itself count the type compares in 0x10f2c8–0x110718. A matching
+   class makes its own calls and **returns**: no tint and no trailing ordinary
+   call (`lp:272–318`). Two are gated: class 5 (getter 0x3cc568) only when
+   `+0xa8` bit 0 is set (0x10fb7c), and class 6 (0x3ca4ac) only when the word
+   at `+0x3d8` is nonzero (0x10fcfc). Ungated, both fall through to the generic
+   path, tint included (Executed).
+4. Generic path. Rank comes from `creature_bossRank` 0x10d940, **Executed**
+   on its own (`lp:322–383`, the real function, no stubs):
+   - 0 unless object flag `+0xc & 0x20` (0x10d954–0x10d95c).
+   - 2 if the type name at `+0x34` equals one of 16 strings (0x52fd48–0x52fe10
+     and 0x52fe50, 0x52fe60; compares 0x10d964–0x10dbb0 through 0x3b81a0). The
+     names are compared by content: the test stores a fresh copy.
+   - 2 for two more type names only together with a value of the creature's
+     own **`name` placement property**. The key is at 0x52fab0, read with
+     `obj_getPropStr` 0x14f4c0 at 0x10dad8, 0x10db18 and 0x10db5c. The pairs
+     are (0x52fe20, 0x52fe30), (0x52fe20, 0x52fe38) and (0x52fe40, 0x52fe48).
+     It is a property of the object, not the level name. This is the reading
+     of `docs/data-tables.md` lines 296–298, now executed. With any other value
+     these two names fall to the MiniBoss bit.
+   - Otherwise `+0xa8 & 1` (the MiniBoss flag), also when `+0x34` is 0.
+   - **Observed, not executed:** if one of the two conditional names has no
+     `name` property, `obj_getPropStr` returns 0 and the string compare at
+     0x10dae8 reads address 0 (there is no null test). The emulator does not
+     map address 0. On the console the result depends on what is there
+     (**Unknown**).
+
+   Then:
+   - Rank 2 makes three calls before the per-player loop: the caller's six
      numbers with its filter, then `(4, 1, 6, 2)`, then `(5, 1, 7, 2)`. These
      are gold scale, gold chance, quality row and item chance, with the caller's
      z offset and throw speed. Then, for each joined player, one own draw and
-     `(0, 0, 8.5, 2)`, with the preset forced when the draw is below 0x8000
-     (one half).
+     `(0, 0, 8.5, 2)`, with the preset forced when the draw is below 0x8000.
    - Rank 1 makes two calls, `(4, 1, 3, 1.5)` and `(5, 1, 5, 1.5)`. Then, per
      player, `(0, 0, 7, 1.5)`, with the preset forced when the draw is below
-     0x4000 (one quarter).
+     0x4000.
+   - `GameObject_rand` returns `state >> 16`, so 0…0xffff (Executed earlier,
+     `docs/issues/dynamic-tests.md` line 319, row i7). Below 0x8000 is
+     therefore one half of the values and below 0x4000 one quarter.
    - Tint byte `+0xa0` nonzero: gold scale ×3 and quality row ×4, applied only
      to the trailing ordinary call (0x1106bc–0x1106dc).
    - Trailing ordinary call (caller's numbers and filter, force 0): only when
@@ -84,9 +124,12 @@ and the string routines (`lp:116–168`). The reference is `ref_drop`
 extras **and** the ordinary drop: 5, 6 or 8 calls for 1, 2 or 4 players. A
 MiniBoss gets 2 + players calls and no ordinary drop. A MiniBoss-flagged object
 without `+0xc & 0x20` drops **nothing**, because its rank is 0 and the ordinary
-call is gated off (`lp:213`, `a8=1 c=0`). The meaning of `+0xc & 0x20` and
-`+0x3d8` is **Unknown**. **Inferred:** `+0xc & 0x20` is set by creature
-construction.
+call is gated off (`lp:246`, `a8=1 c=0`). **Observed:** `Creature_ctor`
+0x109d68 ORs 0x20 into `+0xc` at 0x109e54–0x109e64. The path from entry to
+there has no branch and one call, 0x14cb10 at 0x109db4. So every creature built
+through `Creature_ctor` has the bit, and the "drops nothing" case needs
+something to clear it. Whether anything does is **Unknown**, as is the meaning
+of the bit and of `+0x3d8`.
 
 Class branches (Executed, 3 players, `LOCK` lines in the retained log). The
 first number set is (gold scale, gold chance, quality row, item chance), "c" is
@@ -128,19 +171,39 @@ The full roll is `docs/spec/items.md` lines 485–556 (executed by
   200`, tripled 1 % of the time and doubled 4 %. Category: weapon 30000/65536,
   then armour or other. Preset 3 % or when forced, otherwise affixes.
 
-**Executed** (`lp:292–372`). `level_monsterLevelTimes0_4` 0x1ebf20 =
+**Executed** (`lp:390–478`). `level_monsterLevelTimes0_4` 0x1ebf20 =
 `L × 0.4`, and `level_monsterLevelTimesDifficulty` 0x1ebf70 = `L × (8, 9, 10,
 11, 12)` for difficulty 1…5. In PvP mode B, L is replaced by `max(1, L − 4)` in
-both. These equal `ref_items.Game` on 60 states (L 1…60, difficulty 1…5, PvP B
-0/1). The real 0x100d54, with `loot_spawnGold` recorded, the pool refusing and
-every non-roll service auto-stubbed, matched `ref_items.loot_generate_drops`
-gold amounts on 288 runs per seed (players 1/2/4, L 1/10/22/40, difficulty
-1/5, PvP A 0/1).
+both. These equal `ref_items.Game` on 60 states: L ∈ {1, 4, 4.5, 5, 22, 60}
+(which include the `max(1, L − 4)` edges), difficulty 1…5, and PvP B 0/1.
 
-- **Gold does not scale with difficulty.** The same seed gave identical gold at
-  difficulty 1 and 5. Difficulty enters only the equipment budget and chests
-  (`levelFactorDiff`).
-- PvP mode A produced no gold call.
+Gold amounts: the real 0x100d54 matched `ref_items.loot_generate_drops` on
+1,152 runs per seed. The caller numbers were z 36, throw speed 2, gold scale
+1.6, quality row 1.4 and item chance 0. Gold chance was 0, 0.25, 0.6 (the
+common value) and 1.0. The other variables were players 1/2/4, L 1/10/22/40,
+difficulty 1/5 and PvP A 0/1. What this comparison leaves out:
+
+- `loot_spawnGold` 0x100974 is a **recorder** on the emulator side, and the
+  reference's default `World.spawn_gold` draws nothing (`tools/ref_items.py`
+  lines 1326–1340). So the real Gold's own shared-seed draws are absent on
+  **both** sides: three scatter draws per try (redrawn while outside the unit
+  sphere), up to ten tries, plus one
+  `GameObject_ctor` draw (`docs/spec/items.md` lines 558–563). After the first
+  gold roll, the draw sequence compared is therefore not the in-game one. The
+  first roll's amount, and the rule, are unaffected.
+- The pool refuses every item (`spawn_item` returns False on the reference
+  side), and every non-roll service is an auto-stub (`emu.follow`).
+- The 576 PvP-A runs have no gold by construction, so they compare empty
+  lists. The non-PvP-A runs made 0, 56, 128 and 158 gold calls at chances 0,
+  0.25, 0.6 and 1.0 on seed 7 (`INFO goldChance` lines; the counts depend on
+  the seed).
+
+Results:
+
+- **Gold does not scale with difficulty.** For each chance, the same start
+  seed gave identical gold at difficulty 1 and 5. Difficulty enters only the
+  equipment budget and chests (`levelFactorDiff`).
+- PvP mode A produced no gold call, and gold chance 0 produced none.
 
 Gold per successful roll for the common gold scale 1.6 (from the reference;
 amounts are integers):
@@ -161,9 +224,22 @@ figurine generators get half the level (`items.md` line 547).
 
 `dropitem` placements and script built-ins use `loot_spawnNamedItem` 0x100ba0:
 parse, `world_findFreeSpot`, then a PhProp 36 above the point
-(`docs/loot-drop.md` lines 53–56; `items.md` lines 565–567). It has callers at
-0x10bf54 (inside `Creature_onDeath` 0x10bf08), 0x147838, 0x1478b0 and 0x26d648
-(Observed `jal` census).
+(`docs/loot-drop.md` lines 53–56; `items.md` lines 565–567).
+
+**Executed** static census (`lp:224–240`): there are exactly **five**
+`jal 0x100ba0` sites in 0x100000–0x3c0000. Each site's function is the nearest
+preceding stack-frame prologue:
+
+| Site | Function |
+|---|---|
+| 0x10bf54 | `Creature_onDeath` 0x10beb8 (the `dropitem` property; `docs/issues/kill-loot-xp.md` lines 220–222) |
+| 0x147838 | script native 173 `dropItem` 0x1477ac (`docs/script.md` line 734) |
+| 0x1478b0 | script native 174 `selectDropItem` 0x147860 (`docs/script.md` line 735) |
+| 0x26d648 | 0x26ccfc (symbol row `Goblin_setState`, `symbols/monsters.tsv`) |
+| 0x2a3d9c | 0x2a323c (symbol row `Orc_setState`, `symbols/monsters.tsv`) |
+
+The native numbers come from the handler table 0x403370. What the two
+monster-state sites drop, and when, was not read (**Unknown**).
 
 ## 2. From drop to ground object
 
@@ -176,7 +252,7 @@ parse, `world_findFreeSpot`, then a PhProp 36 above the point
 
 ### 2.1 `ItemProp_ctor2` 0x1590ec: every caller
 
-**Executed** (static census, `lp:390–419`). There are seven `jal` sites, each a
+**Executed** (static census, `lp:499–528`). There are seven `jal` sites, each a
 few instructions after `pool_new(0x190)`, and every one passes `a3 = 0`
 (launch flags):
 
@@ -192,7 +268,7 @@ The symbol row's "5 callers" (`symbols/objects.tsv` line 145) counts functions,
 not the seven sites.
 
 **Executed: the givePlayerItem drop closes the `5a683b4` open item**
-(`lp:512–606`). With a real pool block, an overweight gift calls
+(`lp:621–712`). With a real pool block, an overweight gift calls
 `pool_new(0x190)` and then ctor2 at 0x145c78 with the player object's position
 unchanged, the parsed 0x48-byte record, and flags 0. Nothing is written to the
 bag and the script result is 0. Other cases:
@@ -221,8 +297,11 @@ copy, countdown 0 and amount ≠ 0. It queues a HUD floater, zeroes the amount
 and deletes the Gold. The balance (`record +0xe4`) is credited by
 `hud_tickGold` 0x1dcb80, starting at floater age 43 at `(pending + 7) >> 3`
 per tick, capped at 99,999,999. When all eight floaters are busy it credits at
-once. No button is involved, and Gold is the only walk-over loot.
-**Inferred:** the LifeTap orb (`docs/spec/skills-35-68.md` lines 6901–6939) is a
+once. No button is involved.
+
+**Inferred** (from the object table in §2, not from a census of touch
+handlers): Gold is the only walk-over loot. Every other loot object above is an
+item that needs the use button (§3.2). **Inferred:** the LifeTap orb (`docs/spec/skills-35-68.md` lines 6901–6939) is a
 skill reward, not loot.
 
 ### 3.2 Items: use button
@@ -233,19 +312,23 @@ nearest object with bit `0x100000`. On the use edge, PhProp slot 14 0x155020
 or ItemProp slot 14 0x159b38 calls `itemprop_tryPickup` 0x154dbc. Flag-39 items
 try every player.
 
-**Executed end to end** (`lp:578–606`): the ground ItemProp built by the replayed
-ctor2 is refused at limit 0 and stays. At `limit == weight` it is taken: it is
-in the bag through the real `inventory_giveItem` and destroyed once. Recorded
-stubs on that path are 0x17365c, `player_recalcStats` 0x1b6458,
-`player_countPotions` 0x1ba5f8, `script_runByName` 0x1ed694 and a sound at
-0x214230. On refusal the only stub is 0x1b7ba8. `PICKUP_REAL` (`lp:72`) lists
-what ran.
+**Executed end to end** (`lp:687–712`): the ground ItemProp built by the
+replayed ctor2 is refused at limit 0 and stays. At `limit == weight` it is
+taken: it is in the bag through the real `inventory_giveItem`, and its
+destructor is called once. "Destroyed" means exactly that call. The
+destructor, the word at vtable 0x511c38 + 0xc, is replaced by a **recorder**
+that only notes its argument (`lp:692–693`). The real destructor did not
+run. Other recorded stubs on the taking path are 0x17365c,
+`player_recalcStats` 0x1b6458, `player_countPotions` 0x1ba5f8,
+`script_runByName` 0x1ed694 and a sound at 0x214230. On refusal the only one
+is 0x1b7ba8. `PICKUP_REAL` (`lp:88`) lists what ran as original
+code. The player record and its bags are constructed (`give_machine`).
 
 ### 3.3 `itemprop_tryPickup` against `givePlayerItem`
 
 Both paths insert through the real `inventory_giveItem` 0x1c1868, on the same
 definition and bag states. Load recalculation is stubbed so that the
-constructed load stays fixed (`lp:609–675`).
+constructed load stays fixed (`lp:718–781`).
 
 **Executed:**
 
@@ -274,8 +357,19 @@ item when the bag is already at 64 (`give-player-item.md` lines 67–81 for the
   `r1 % 100 + trunc((r2 % 24 + 12) × worth × (act + 1) × levelFactor04) + 50`,
   with worth 1.5 by default. A second use pays it through the HUD floater.
   Traps zero it.
-- **AutoChest** (`AutoChest_dropLoot` 0x23ba3c, Executed `lp:678–723`): with no
-  placed properties and `+0xec == 0` it makes three generic rolls,
+- **AutoChest** (`AutoChest_dropLoot` 0x23ba3c, Executed `lp:787–830`).
+  Stubs and scripted inputs in this run:
+  - `loot_generateDrops` 0x100d54 is a recorder, so the rolls themselves did
+    not run. Only their arguments are checked.
+  - `GameObject_rand` 0x1509d0 is scripted to return one fixed value per run:
+    4999, 5000, 14999, 15000, and 0 for the `+0xec` case.
+  - `item_parseDescriptor` 0x1069b8 is a stub returning 0.
+    `item_generateConsumable` 0x108590 is a stub returning 1.
+  - `pool_new` 0x14fdb8 is a stub returning 0, so no object is built.
+  - The chest object (0x200 zeroed bytes, position, facing, `+0xec`) is
+    constructed.
+
+  With no placed properties and `+0xec == 0` it makes three generic rolls,
   `(36, 2, 0, 0, 5, 0x3f733333)`, `(36, 2, 0, 0, 6, 0x3ca3d70a)` and
   `(36, 2, 0, 0, 9, 0x3ba3d70a)`. These have no gold chance, are at the chest
   position and facing `+0x38`, and pass no filter and no force. Then comes one
@@ -320,9 +414,17 @@ item when the bag is already at 64 (`give-player-item.md` lines 67–81 for the
 
 ## 6. Unknown
 
-- The three name-list exceptions inside `creature_bossRank` (Observed, not
-  executed). Which retail creatures have `+0xc & 0x20`, a tint byte, or
-  `+0x3d8` set.
+- `creature_bossRank` for a conditional type name with no `name` property
+  (the compare reads address 0; §1.2). Which retail creatures carry those
+  names and property values, a tint byte, or `+0x3d8`. Whether anything clears
+  `+0xc & 0x20` after `Creature_ctor`.
+- The eleven-class count is the earlier Observed reading; the type compares
+  were not counted by the tool.
+- What the `loot_spawnNamedItem` sites at 0x26d648 and 0x2a3d9c drop.
+- Gold in the in-game draw order: the Gold scatter and constructor draws were
+  left out on both sides (§1.3).
+- Touch handlers of other object types: "Gold is the only walk-over loot" is
+  Inferred (§3.1).
 - `giveOnePlayerItem` and `givePlayerRandom` ctor2 sites, and 0x1c2120: not
   executed.
 - `ItemProp_ctor2` with real resources from these callers (only synthetic
@@ -343,9 +445,18 @@ for s in 20973 7; do
 done
 ```
 
-Both seeds: `PASS loot-and-pickups seed N: 74 checks, 0 failed, 415 cases`.
-Logs are in ignored `local/loot-and-pickups/seed-{20973,7}.log`, with the
-`LOCK` class rows and the gold `TABLE` lines. Regression runs after the final
-edit: `difftest_loot_drop.py` 1,172/1,172 and `difftest_pickups.py` 17/17 on
-both seeds, and `unittest discover -s tools -p 'test_*.py'` 652 tests OK. No
-existing reference API, vector or difftest was changed.
+Each run's first line is `commit <sha> tool-sha256 <hash> seed <n>`; the
+commit is followed by `(tracked files modified)` when the worktree differs from
+it. Results, logs and the commit they were run at are in `work/cursor-report.md`.
+Logs are kept in ignored `local/loot-and-pickups/seed-{20973,7}.log`, with the
+`LOCK` class rows, the named-item `INFO` rows and the gold `TABLE` lines.
+
+**Seed dependence.** Only the scale section uses the seed: the gold start
+seeds are derived from it. The drop and autochest sections script
+`GameObject_rand` and stub `loot_generateDrops`. The compare section and the
+givePlayerItem cases stub `ItemProp_ctor2` and make no roll. The ctor2 replay
+runs `GameObject_ctor` on the seed, but it checks only values that do not depend
+on the draw: vtable, record, flags, launch count, radius, height, timer and
+zero velocity. The two seed logs, diffed, differ only in the header, the
+`INFO goldChance` counts and the summary line. Seed 7 adds coverage only to the gold comparison. No existing
+reference API, vector or difftest was changed.

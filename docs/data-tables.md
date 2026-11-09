@@ -297,6 +297,9 @@ executed the function against a reference model (the block is left as first writ
   strings compared in code (0x52fd48 onward; three of them also need a particular `name`
   property), else 1 for the `MiniBoss` creature flag, else 0. **Observed**; the strings
   are printed by `--table boss_names`.
+  **Executed** 2026-11-09 (`docs/loot-and-pickups.md` §1.2): 16 names alone, two more
+  only with given values of the object's `name` property (key 0x52fab0,
+  `obj_getPropStr` 0x14f4c0), and only when object flag `+0xc & 0x20` is set.
 
 ### 3.3 What the constructors hold
 
