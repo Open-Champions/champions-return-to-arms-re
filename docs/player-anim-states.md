@@ -8,7 +8,11 @@ Everything else is cited from earlier notes rather than repeated. Revised the sa
 after the audit `research-player-anim-states` (verdict FIX): the probe now also checks
 the ticks after an early press, a held attack, state 3, the Drowsy finder, the 7-track
 block gate, the flinch fade, the next swing's hit and clip starts in modes 1–6; the
-controls are a tracked script run on both seeds.
+controls are a tracked script run on both seeds. Revised again after the re-audit
+`research-player-anim-states-fix` (verdict FIX): fixed Drowsy cases where the
+multiply/slow order changes the bits, a swap-order control, a baseline run in the control
+script that replays the probe's own cases, the mode-5 step and fade call sites asserted,
+and four wording fixes.
 
 Labels: **Executed** = the original function ran in `tools/ee_emu.py` on constructed state
 and a check of this probe compared it with the reference or a fixed expectation, on seeds
@@ -42,12 +46,12 @@ Cross-references, not redone here:
 
 | Part | Original function | What is compared | Lines |
 |---|---|---|---|
-| L | `Player_move` 0x1b4020, mode 0 and modes 1–6 | rate passed to `Player_animStep`, blend `+0x46c`, held speed `+0x468`, weight and life of cells 1–3, idle time reset `+0x134`, returned footstep bits; no clip start in any mode 0–6; mode 1/4/6 clearing and mode 2/3/5 keeping (sentinels) | [140–194](../tools/difftest_player_anim_states.py#L140) |
-| R | `Player_animStep` 0x1b9520; `Player_move` move stage | speed and arguments handed to `anim_advance`; the Drowsy gate (finder arguments, timer 0/−1, spell not found) with a planted fraction; root delta in world axes at `+0xbc/+0xc0`, return bits; `root × 60` added to the move vector and root cleared; in mode 0 the step overwrites a stale root before the move | [200–312](../tools/difftest_player_anim_states.py#L200) |
-| H | `Player_processDamage` 0x1b2cc0 | name looked up (`res_find`) and clip, flags, blend times and call site of every animation start; the resisted knock's name; old-top-track fade for the knock-down, light knock and flinch; state stores | [322–442](../tools/difftest_player_anim_states.py#L322) |
-| M | `Player_run` 0x1a5030, one call per tick | swing start clip and site, `Player_meleeHit` tick and arguments, combo start tick, the press tick one early plus three held ticks after it, attack held without a fresh press, the next swing's hit ticks, `Player_move` mode per tick, swing end tick; block entry, block clips, release gate (weight; 6 and 7 tracks); state 3 (no move call, root stored, position kept, exit on marker 8) | [448–666](../tools/difftest_player_anim_states.py#L448) |
+| L | `Player_move` 0x1b4020, mode 0 and modes 1–6 | rate passed to `Player_animStep`, blend `+0x46c`, held speed `+0x468`, weight and life of cells 1–3, idle time reset `+0x134`, returned footstep bits; no clip start in any mode 0–6; mode 1/4/6 clearing and mode 2/3/5 keeping (sentinels) | [141–196](../tools/difftest_player_anim_states.py#L141) |
+| R | `Player_animStep` 0x1b9520; `Player_move` move stage | speed and arguments handed to `anim_advance`; the Drowsy gate (finder arguments, timer 0/−1, spell not found) with a planted fraction, and three fixed cases where the multiply/slow order changes the bits; root delta in world axes at `+0xbc/+0xc0`, return bits; `root × 60` added to the move vector and root cleared; in mode 0 the step overwrites a stale root before the move | [202–332](../tools/difftest_player_anim_states.py#L202) |
+| H | `Player_processDamage` 0x1b2cc0 | name looked up (`res_find`) and clip, flags, blend times and call site of every animation start; the resisted knock's name; old-top-track fade for the knock-down, light knock and flinch; state stores | [342–463](../tools/difftest_player_anim_states.py#L342) |
+| M | `Player_run` 0x1a5030, one call per tick | swing start clip and site, `Player_meleeHit` tick and arguments, combo start tick, the press tick one early plus three held ticks after it, attack held without a fresh press, the next swing's hit ticks, `Player_move` mode per tick, swing end tick; block entry, block clips, release gate (weight; 6 and 7 tracks); state 3 (no move call, root stored, position kept, exit on marker 8) | [469–687](../tools/difftest_player_anim_states.py#L469) |
 
-Per seed: L 132 cases, R 30, H 315, M 187. **Stubs (disclosed).** Followed for real: the C
+Per seed: L 132 cases, R 33, H 315, M 187. **Stubs (disclosed).** Followed for real: the C
 library and software-float range 0x3a5000–0x3c0000, the printf core 0x3c0170 (part H's
 name building needs it), `math_cos16`/`sin16`/`atan2_16`, `angle_approach`,
 `net_isSlotActive`, `GameObject_rand`, plus the camera-yaw/dialog/local-slot/cam-flag
@@ -65,14 +69,19 @@ Clip pointers are sentinels in a constructed definition table. The M target is a
 pre-linked handle, because `world_collectObjectsInBox` and `handle_clear` are stubs.
 
 **Controls.** [`tools/mutate_player_anim_states.py`](../tools/mutate_player_anim_states.py)
-changes the reference one item at a time. All 17 changes must make the probe fail, and
-all 17 did on both seeds 20973 and 7 (`local/anim-states/mutations-{20973,7}.log`): ramp
+first runs the unmutated reference as a baseline: parts L, R, H, M in that order on one
+`random.Random(seed)`, as the probe does, and all four must pass with 0 failing checks
+(they did, with the probe's case counts). It saves the rng state each part starts from
+and prints the same fingerprint the probe prints (`rng=…`), and each control reruns its
+part from that state, so the controls run the logged probe's own cases. It then changes
+the reference one item at a time. All 18 changes must make the probe fail, and all 18
+did on both seeds 20973 and 7 (`local/anim-states/mutations-{20973,7}.log`): ramp
 +1 ulp, run-event threshold, IEEE rounding instead of truncation, acceleration step,
-root sign, slow ignored, Drowsy fraction ignored, suffix boundary, class-3 prefix, death
-models, reaction flags, fade rate, hit frame, combo window, swing life, lunge time,
-stick end. The no-buffering, held-attack, 7-track and state-3 checks compare the original
-with fixed expectations (nothing happens, the state stays), not with a reference value,
-so no reference mutation targets them.
+root sign, slow ignored, Drowsy fraction ignored, slow before Drowsy, suffix boundary,
+class-3 prefix, death models, reaction flags, fade rate, hit frame, combo window, swing
+life, lunge time, stick end. The no-buffering, held-attack, 7-track and state-3 checks
+compare the original with fixed expectations (nothing happens, the state stays), not
+with a reference value, so no reference mutation targets them.
 
 ## 2. Action state machine (`P+0x58c`)
 
@@ -101,8 +110,8 @@ jump. State 7's handler (0x1a5f98) is a jump arc, with vertical speed 360 after 
 track reaches 4.02 ticks, but **Inferred** unreachable from input. A client needs no jump.
 
 **Turn.** There is no turn clip. **Executed (L):** `Player_move` starts no animation in any
-mode 0–6 (in mode 0 with `Player_animStep` stubbed; modes 1–6 do not call it). The turn
-rates are **Observed** in `movement-camera.md` 4.1(d): the facing moves 40 % of the
+mode 0–6 (in mode 0 with `Player_animStep` stubbed; modes 1–6 make no `Player_animStep`
+call, asserted for each). The turn rates are **Observed** in `movement-camera.md` 4.1(d): the facing moves 40 % of the
 remaining angle per tick in mode 0 (20 % in mode 1, 0.0514 in mode 4, `0.08 × s` in
 mode 6), and the body moves along the facing, never along the stick. `tools/ee_tests.py`
 m2 (lines 3777–3797) executes mode 0 only: the facing is still turning on call 1 and has
@@ -120,9 +129,11 @@ reference [`locomotion_step` lines 106–132](../tools/ref_player_anim_states.py
    `+0x4c20` × level `runSpeed`, capped at 1.2, then × the Drowsy fraction when s16
    `+0x31a > 0` and the player carries a SpellDrowsy. base = 0.861945 offline; 0.75 in a
    net game when PvP mode B is off or word 0x4f7124 ≠ 0; the level `watmedal` keeps
-   0.861945. The record multiplier is 1.0 in the campaign and 1.25 net / 1.75 offline in
-   the arena (same section). **Executed here** only with record and `runSpeed` 1.0 and no
-   Drowsy, so `S` = 0.861945 / 0.75; the multipliers, the cap and the `watmedal`,
+   0.861945. The record multiplier is stored as 1.0 by `player_importCharacter` and
+   `player_initNewCharacter`, as 1.25 net / 1.75 offline by the arena set-up, and is
+   also written by `SpellGiantGrowth` (0x3093c4, 0x30965c) and `SpellResurrect`
+   (0x312a28, 0x312adc) (same section, lines 192–196). **Executed here** only with
+   record and `runSpeed` 1.0 and no Drowsy, so `S` = 0.861945 / 0.75; the multipliers, the cap and the `watmedal`,
    PvP-mode-B and Drowsy branches were not executed here (`tools/ee_tests.py` m1/m3
    execute some of them; cited, not re-run here).
 2. Playback rate `r` ([48–54](../tools/ref_player_anim_states.py#L48)):
@@ -156,7 +167,7 @@ multiplies the velocity by `(60 − n)/60`. Carried load does not change speed
 
 ## 4. Root motion
 
-**Executed (R)**, [`anim_step_speed`, `root_to_world` lines 139–156](../tools/ref_player_anim_states.py#L139):
+**Executed (R)**, [`anim_step_speed`, `root_to_world` lines 139–158](../tools/ref_player_anim_states.py#L139):
 
 - `Player_animStep(speed, P)`: when s16 `+0x31a > 0` it calls
   `creature_findSpellByType(P, SpellDrowsy_typeinfo())` (0x11a710, 0x3d1234), and when that
@@ -164,7 +175,13 @@ multiplies the velocity by `(60 − n)/60`. Carried load does not change speed
   **Executed with stubs** (section 1): the type-info getter returns a sentinel, the finder
   a constructed spell or 0, and the fraction is planted. Checked: the finder gets
   `(P, the getter's answer)`; timer 0 or −1 calls no finder; no spell found leaves the
-  speed and calls no fraction; the multiply comes before the slow scaling. What
+  speed and calls no fraction; the multiply comes before the slow scaling. The order is
+  **Observed** (movement-camera 4.1, 0x1b9520) and **Executed** in three fixed cases
+  chosen so that the two orders give different bits: speed 1.0, fraction 0.8, slow 1
+  gives 0x3f4962fa (slow first would give …fb); 1.25, 0.333, slow 2 gives 0x3ece0416
+  (…17); 1.0, 0.75, slow 1 gives 0x3f3ccccc (…cb). The original gave the first value in
+  each; the unit test pins both values, and the control "slow before Drowsy" fails. The
+  random Drowsy cases alone need not separate the orders. What
   `SpellDrowsy_getStat3Fraction` returns is not executed here (it is a
   `difftest_skills_c.py` entry, scenario "88 drowsy"; cited, not re-run here).
 - When slow byte `+0x2fc` is 1..60 it computes `(speed × float(60 − n)) × (1/60)`. 0, 61
@@ -180,15 +197,22 @@ multiplies the velocity by `(60 − n)/60`. Carried load does not change speed
 Only clips with flag 0x800 (ROOT) give a delta: melee swings 0x802, knock-down 0x80a,
 block 0x803/0x2801, block move 0x808. The delta reaches the body only through
 `Player_move`'s move stage (movement-camera 4.1(l)). In states 1, 8 and 0xb `Player_run`
-calls `Player_move` in modes 4/3, 1 and 1, whose own velocity is zero there, so the body
-moves only by its clip (**Observed**, movement-camera 4.1(i) and 4.4; the mode per tick
-is **Executed** M for states 1 and 8).
+calls `Player_move` in modes 4/3, 1 and 1. That their own velocity is zero there, so the
+body moves only by its clip, is **Inferred** (movement-camera 4.1(i), labelled [I] there
+for state 1, lines 304–305, and 4.4); the mode per tick is **Executed** M for states 1
+and 8.
 
 State 3 is different. **Executed (M):** in state 3 `Player_animStep` runs at 1.0 and
 stores the knock-down clip's root at `+0xbc/+0xc0`, but `Player_run` makes no
 `Player_move` and no `obj_moveWithCollision` call and the position does not change; the
-tick that returns to 2 makes none either. **Executed (R):** in mode 0 `Player_move`'s own
-step overwrites a stale root before the move stage. So, **Inferred**: the knock-down
+tick that returns to 2 makes none either. **Executed (R):** in mode 0, with `anim_advance`
+stubbed to write the planted root (section 1), `Player_move` calls `Player_animStep`
+before the move stage, `Player_animStep` stores the rotated root over the stale one
+without adding, and the move uses it and clears it. That the real `anim_advance`
+overwrites the root rather than adding to it is movement-camera 4.1 (line 347: "which
+overwrites `root`, it does not add to it") and `docs/spec/animation.md` section 5
+(`rootDelta = (0, 0)` on entry, lines 284–292; executed by `difftest_anim.py`, section 7.2
+for `Player_animStep`; cited, not re-run here). So, **Inferred**: the knock-down
 clip's root delta is computed but never applied (`movement-camera.md` 4.4 row "3
 staggered": "`Player_run` does not move the object"). A client must not move a knocked
 player by root motion; offline knock-back is a separate push (movement-camera 4.8).
@@ -199,7 +223,7 @@ player by root motion; offline knock-back is a separate push (movement-camera 4.
 
 **Executed (M)** for weapon classes 0, 1, 3, 5, 7, offline and net, with no haste and with
 status counter `+0x374` (haste +0.25). Reference [`hit_frame`, `combo_window`,
-`first_combo_frame`, `swing_end_frame`, `move_mode` lines 219–262](../tools/ref_player_anim_states.py#L219).
+`first_combo_frame`, `swing_end_frame`, `move_mode` lines 221–264](../tools/ref_player_anim_states.py#L221).
 `e` = ticks since the swing started (`frame − P+0x448`).
 
 `speed` is the swing speed of `player-tick.md` state 1 steps 3–4 (**Observed**): the
@@ -219,7 +243,7 @@ result (0x7fffffff at 60). **Executed here** only with speed 1.0 (no haste) and 
 | combo | a **fresh press** (attack in pad `pressed` +0x0c) with `e > window/speed` starts the next swing: `Player_pickAttackAnim`, `anim_start(named clip, 0x802)` at 0x1aae5c, `+0x448 = frame`. `window = 22.02` (17.616 dual wield) − `min(haste×30, 17.4)`. A press one tick earlier does nothing on that tick, and with attack then held (pad +0x08, no fresh press) nothing on the next three ticks either; attack held from tick 1 without a fresh press starts no combo through `window + 3`: **there is no buffering or latch** | classes 0/1/3/5: 23 / 12; class 7: 18 / 9 |
 | end | `+0x470×60 ≤ e` → state 2 (96 ticks for 1.6 s). Haste does not shorten it | 96 |
 | stick end | stick length > 0.8 and `e ≥ 39.3` → state 2 | 40 |
-| next hit | the new swing's own damage tick, counted from the combo tick. A hit frame of the old swing later than the combo tick never comes | press at 23 → hit at 39 (23 + 16); window + 12 with haste; window + 1 net. Class 7 with haste: combo at 9 < hit 12, so only the new swing's hit at 21 lands |
+| next hit | the new swing's own damage tick, counted from the combo tick. A hit frame of the old swing later than the combo tick never comes | press at 23 → hit at 39 (23 + 16); window + 12 with haste; window + 1 net. Class 7 with haste, offline: combo at 9 < hit 12, so only the new swing's hit at 21 lands (net: hits on ticks 1 and 10) |
 
 Combo length (step cap) by class, **Observed** 0x1a9678 (`player-tick.md` state 1 step 2):
 4 (class 2), 7 (1), 9 (3), 2 (5), 7 (others: classes 0, 4, 6 and 7); heavy attack 1.
@@ -282,7 +306,8 @@ resist roll are combat-r6 2.2.
 
 When 5 or more tracks run, the knock-down, the light knock and the surviving-hit flinch
 each first set the old top track's life rate to −1/12 and cap its life at 1.0
-(**Executed** for all three, 5 and 6 tracks; 4 tracks untouched). A
+(**Executed** for all three, 5 and 6 tracks, each with its call site 0x1b30bc, 0x1b317c
+or 0x1b38d0 asserted; 4 tracks untouched). A
 knock-down whose name is already playing (`Player_hasAnim`) is not restarted.
 
 **Get-up. Inferred:** there is no separate get-up clip or state. Flags 0x80a and 0xa
@@ -365,8 +390,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 -c 'import unittest,runpy,sys; sys.path.insert
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools -p 'test_*.py'
 ```
 
-Results after the final edit: each seed prints `PASS` for L (132), R (30), H (315) and
-M (187), and the controls reject 17 of 17 on each seed. `difftest_player_anim_select.py`
+Results after the final edit: each seed prints `PASS` for L (132), R (33), H (315) and
+M (187), the control baseline passes with the same counts and fingerprints, and the
+controls reject 18 of 18 on each seed. `difftest_player_anim_select.py`
 passes 96/10/1 on both seeds. The unit suite runs 657 tests OK. The logs are ignored
 files under `local/anim-states/`, each headed by the commit and the SHA-256 prefixes of
-the probe, the reference and the control script.
+the probe, the reference, the control script and the unit test file.
