@@ -1384,6 +1384,72 @@ def check_obsfor1(run):
     return 2
 
 
+# Every setMissionAvailable or grantMission call whose first argument is the
+# immediate 6, 7, 8 or 9, over every level archive: (level, entry, site, native, mission).
+WRITERS = {
+    ('dis2', 'gotAllPortals', 0xE28, 'grantMission', 6),
+    ('dis2', 'talkedToBert', 0xFD8, 'grantMission', 6),
+    ('fire1', 'start', 0x0E4, 'setMissionAvailable', 8),
+    ('fire5', 'shardCheck', 0x58C, 'grantMission', 8),
+    ('honor', 'shardCheck', 0x122C, 'grantMission', 7),
+    ('hub', 'setMissi95d5', 0x1194, 'setMissionAvailable', 6),
+    ('hub', 'setMissi4082', 0x11E0, 'setMissionAvailable', 6),
+    ('hub', 'setMissi26bc', 0x1400, 'setMissionAvailable', 7),
+    ('hub', 'setMissi167', 0x144C, 'setMissionAvailable', 7),
+    ('hub', 'setMissicaba', 0x23DC, 'setMissionAvailable', 6),
+    ('hub', 'setMissi6d46', 0x245C, 'setMissionAvailable', 6),
+    ('hub', 'setMissib9fb', 0x2534, 'setMissionAvailable', 7),
+    ('hub2', 'setMissi95d5', 0x3550, 'setMissionAvailable', 6),
+    ('hub2', 'setMissi4082', 0x359C, 'setMissionAvailable', 6),
+    ('hub2', 'setMissi26bc', 0x37BC, 'setMissionAvailable', 7),
+    ('hub2', 'setMissi167', 0x3808, 'setMissionAvailable', 7),
+    ('hub2', 'setMissic3ab', 0x459C, 'setMissionAvailable', 6),
+    ('hub2', 'setMissib9fb', 0x4640, 'setMissionAvailable', 7),
+    ('obsfor1', 'start', 0x078, 'setMissionAvailable', 8),
+    ('obsfor1', 'steppedOnTrigger', 0x124, 'grantMission', 8),
+    ('storm1', 'start', 0x24C, 'setMissionAvailable', 9),
+    ('storm2', 'checkEveryFrame', 0xF70, 'grantMission', 9),
+    ('swamp1', 'start', 0x114, 'setMissionAvailable', 6),
+    ('swamp1', 'steppedOnTrigger', 0x1C0, 'grantMission', 6),
+    ('swamp2', 'start', 0x114, 'setMissionAvailable', 6),
+    ('valor', 'setMissi1bb4', 0x528, 'setMissionAvailable', 8),
+    ('valor', 'setMissie47a', 0x730, 'setMissionAvailable', 9),
+    ('valor', 'start', 0xF70, 'setMissionAvailable', 7),
+    ('valor', 'steppedOnTrigger', 0x184C, 'grantMission', 7),
+}
+
+
+def check_writers(data):
+    found, computed, scripts = set(), [], 0
+    for name in sorted(os.listdir(data)):
+        if not name.upper().endswith('.GOB'):
+            continue
+        level = name[:-4].lower()
+        try:
+            image = M.lump_map(os.path.join(data, name))['script.scr']
+        except AssertionError:
+            continue
+        scripts += 1
+        entries = sorted(scr.parse(image)['internals'])
+        for site, native, args in site_rows(image):
+            if native not in ('setMissionAvailable', 'grantMission'):
+                continue
+            owner = [entry for off, entry in entries if off <= site][-1]
+            if not args or args[0] is None:
+                computed.append((level, owner, site, native))
+            elif 6 <= args[0][0] <= 9:
+                found.add((level, owner, site, native, args[0][0]))
+    require(found == WRITERS, sorted(found ^ WRITERS))
+    require(computed == COMPUTED_WRITERS, computed)
+    require(scripts == SCRIPT_ARCHIVES, scripts)
+    return 3
+
+
+# No call in any archive passes these two natives a computed first argument.
+COMPUTED_WRITERS = []
+SCRIPT_ARCHIVES = 119
+
+
 def check_seed(rig, disc, seed):
     run = Run(rig, disc, seed)
     checks = check_sites(disc)
@@ -1416,11 +1482,12 @@ def main():
     if hashlib.sha256(blob).hexdigest() != ELF_SHA256:
         raise SystemExit('unexpected executable')
     disc = Disc(args.data)
+    writers = check_writers(args.data)
     for seed in (args.seeds or [20973, 7]):
         rig = N.Rig(args.elf)
         rig.checkpoint()
         rig.responder = M.Quiet()
-        count = check_seed(rig, disc, seed)
+        count = check_seed(rig, disc, seed) + writers
         print('PASS seed %d: %d mission-6/7/8 checks' % (seed, count))
 
 
