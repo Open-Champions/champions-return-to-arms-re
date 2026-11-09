@@ -700,16 +700,21 @@ def ack_writers(elf):
             e.default_ret = 0
             e.stub(IS_LOCAL, ret=1)
             rec = L.RECORD + panel_owner * L.REC_STRIDE
+            other = L.RECORD + (1 - panel_owner) * L.REC_STRIDE
             e.mem.w8(rec + 0x58, 2)
             e.mem.w8(rec + 0x59, 9)
+            e.mem.w8(other + 0x58, 3)
+            e.mem.w8(other + 0x59, 4)
             e.mem.w32(0x4F4040 + 0x34, panel_owner)
             e.record_writes = True
-            e.call(JOIN_PANEL, 0, panel_owner, 1, max_steps=1_000_000)
+            # the joining slot argument differs from the panel's owner word
+            e.call(JOIN_PANEL, 0, 1 - panel_owner, 1, max_steps=1_000_000)
             sent = [c for c in e.calls if c.target == SEND_MSG]
             assert len(sent) == 1 and sent[0].site == 0x1C0478, sent
             body = bytes(e.mem.read(sent[0].args[1] & 0xFFFFFFFF, sent[0].args[2] & 0xFFFFFFFF))
             assert body == bytes((9, panel_owner, 9)), body
-            assert all(w[1] != rec + 0x58 for w in e.writes)
+            assert e.mem.u8(rec + 0xED) == panel_owner and e.mem.u8(rec + 0xEE) == 0
+            assert all(w[1] not in (rec + 0x58, other + 0x58) for w in e.writes)
             assert e.mem.u32(L.SEED) == seed
             count += 1
         # character creation: the record is cleared, then +0x59 and +0x58 get 1
@@ -816,6 +821,7 @@ def live_b(e):
             m.w8(rec + off, 0x55)
         m.w32(rec + 0x5C, 0)
         m.w32(rec + 0xE8, 0)
+    m.w32(0x88D3D4, 1)
     m.w8(0x8E1AD6, 0)
     m.w8(0x41B720, 0)
     m.w32(0x88D40C, 0)
