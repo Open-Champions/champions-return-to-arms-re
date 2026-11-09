@@ -261,8 +261,10 @@ Round 4 continues the archive open and the in-range prompt in
 portal use and the loader past the SIF DMA in
 [mission2-round5.md](mission2-round5.md). Round 6 runs the portal menu to
 travel, the destination-list save and load, and the loader to the gate
-arrival in [mission2-round6.md](mission2-round6.md). This round left the following
-open. In-range NPC, trigger, and portal use. The loader body after a successful
+arrival in [mission2-round6.md](mission2-round6.md). The `LIMIT` line the
+compose test still prints is this round's unedited text: arrival and the
+destination-list save and load are now covered by round 6, sections 2–4.
+This round left the following open. In-range NPC, trigger, and portal use. The loader body after a successful
 archive open, arrival, and save/load of the destination list. Real
 cancel-button reachability of the constructed counter 16. Mission 1's own
 completion writer is not run here; the session starts from the completed
