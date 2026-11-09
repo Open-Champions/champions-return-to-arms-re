@@ -306,10 +306,10 @@ def object_record(table, cls, props, angle, pos, tail, at=0):
     body += b''.join(struct.pack('<I', o) for o in prop_offs) + struct.pack('<I', 0)
     tail_at = ((at + 4 * len(prop_offs) + 0x1F) & ~7) - at
     record = bytearray(body.ljust(tail_at, b'\0'))
-    gap = (len(body), tail_at)              # bytes [len(body), tail_at) are not written
+    gap = (len(body), tail_at)              # obj_writeRecord does not store these
     record += tail
     size = ((at + len(record) + 3) & ~3) - at
-    pad = (len(record), size)               # nor are the bytes up to the size
+    pad = (len(record), size)               # nor these; the copy carries stack bytes
     record = record.ljust(size, b'\0')
     struct.pack_into('<h', record, 4, size)
     return bytes(record), table, (gap, pad)
@@ -322,8 +322,9 @@ def objects_section(records, base=0):
     base is the address modulo 8 of the record area. Returns (bytes, holes,
     padded length). bytes runs from the section start: s16 count, u16 1,
     s32 string-table offset (record bytes + 8), records, strings. holes are
-    (start, end) ranges inside bytes that the original does not write. The
-    padded length rounds the end up to 4; those pad bytes are not written.
+    (start, end) ranges that obj_writeRecord leaves unset in its stack record
+    buffer; memcpy 0x14e734 copies them with the records. The padded length
+    rounds the end up to 4; those pad bytes are not written at all.
     """
     table, body, holes = b'', b'', []
     for cls, props, angle, pos, tail in records:

@@ -138,7 +138,8 @@ gates above. Clear the act-scoped lists only under the three conditions at
 blocking geometry, the original free-spot search and its seed use, player and
 destination constructors, object bytes written by `0x218600`, derived-creature
 departure, script bodies, vehicles, and menu states 0–4. No client refusal was
-removed.
+removed. Round five executes the disc load, free-spot search, writer bytes and
+entry-script order (`docs/exits-r5-travel.md`).
 
 ## Verification
 

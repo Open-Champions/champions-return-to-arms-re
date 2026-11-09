@@ -56,6 +56,7 @@ SET_SCRIPT, RUN_SCRIPT, CALL_NATIVE, CALL_SCRIPT = 0x1ED650, 0x1ED694, 0x141050,
 BUILTINS, QUALIFIED = 0x403370, 0x1EC0F0
 HEAP, HEAP_SIZE = 0x1A00000, 0x480000
 HANDLE_INIT = 0x1A17D0             # engine_init calls it at 0x19d710
+FILTER, FILTER_LIST, REGISTER_FACTORY, SAVE_FILTER = 0x403A0C, 0x403A68, 0x15DA54, 0x15D9C8
 VTABLES = {'GameObject': 0x5122A8, 'Counter': 0x50D888, 'Lever': 0x50D918,
            'JumpGate': 0x50DBE8, 'Savepoint': 0x50DC78}
 SENTINEL = 0xA5                     # destination bytes before the write
@@ -341,7 +342,15 @@ WIDTH = {0xC: 4, 0x4C: 4, 0x4D: 1, 0x4E: 1, 0x50: 1, 0x51: 1, 0x80: 4, 0x84: 4, 
          0xC6: 1}
 
 
-def build_world(p, ee, rng, specs):
+def filter_names(ee):
+    out, at = [], FILTER_LIST
+    while ee.mem.u32(at):
+        out.append(ee.mem.cstr(ee.mem.u32(at)))
+        at += 4
+    return out
+
+
+def build_world(p, ee, rng, specs, filtered=()):
     """Objects in grid A, grid B and the off-grid list, linked by hand.
 
     specs: (list name, cell, name text, class, flags, props, angle, pos, fields).
@@ -385,7 +394,7 @@ def build_world(p, ee, rng, specs):
     records = []
     for i in walk:
         where, cell, name, cls, flags, props, angle, pos, fld = specs[i]
-        if flags & 0x4000:
+        if flags & 0x4000 or name.lower() in filtered:
             continue
         fld = dict(fld)
         fld[0xC] = flags
@@ -393,9 +402,9 @@ def build_world(p, ee, rng, specs):
     return records
 
 
-def writer_case(p, ee, rng, specs, decal_blocks=()):
+def writer_case(p, ee, rng, specs, decal_blocks=(), filtered=()):
     m = ee.mem
-    records = build_world(p, ee, rng, specs)
+    records = build_world(p, ee, rng, specs, filtered)
     m.write(DECALS, b'\0' * (30 * 30 * 4))
     expect_decals = []
     for k in range(15):
@@ -465,7 +474,7 @@ def writer_case(p, ee, rng, specs, decal_blocks=()):
 
 def writer(p, ee, rng):
     m = ee.mem
-    p.equal(m.u32(0x403A0C), 0)              # g_saveFilter in the image
+    p.equal(m.u32(FILTER), 0)                # g_saveFilter in the image, before boot
     for cls, vt in VTABLES.items():
         p.equal(m.s16(vt + 0x48), 0)         # slot-9 this adjustment
     p.equal(writer_case(p, ee, rng, [])[1], 8)
@@ -504,7 +513,21 @@ def writer(p, ee, rng):
                        rng.randrange(-300, 300), rng.randrange(-300, 300),
                        rng.randrange(0x3D3, 0x5D3)) for _ in range(2)]),
               (0, 0, [(1, 2, 3, 30, -40, 0x3D3 + 21)])]
-    return writer_case(p, ee, rng, specs, decals)
+    writer_case(p, ee, rng, specs, decals)
+    # Boot state: main 0x323ecc calls objects_registerFactory, which installs
+    # world_saveFilter. It compares the whole +0x34 name, ignoring case.
+    p.call(ee, REGISTER_FACTORY)
+    p.equal(m.u32(FILTER), SAVE_FILTER)
+    names = filter_names(ee)
+    p.equal(len(names) >= 1, True)
+    pick = names[rng.randrange(len(names))]
+    specs = specs + [
+        ('A', 120 * 9 + 9, pick, 'GameObject', 0, [], rng.getrandbits(16), pos(), {}),
+        ('A', 120 * 9 + 9, pick.upper(), 'GameObject', 0, [], rng.getrandbits(16), pos(), {}),
+        ('off', 0, pick + ';1', 'GameObject', 0, ['SYN_k=1'], rng.getrandbits(16), pos(), {}),
+    ]
+    p.counts['filter_names'] = len(names)
+    return writer_case(p, ee, rng, specs, decals, {n.lower() for n in names})
 
 
 # ---------------------------------------------------------------------------
